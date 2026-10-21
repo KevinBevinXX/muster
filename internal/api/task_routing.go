@@ -692,11 +692,21 @@ func (s *Server) toolTaskDispatch(ctx context.Context, a agents.Agent, taskID in
 	// (provisioner_seam_test.go) is function-granular — a body that calls the
 	// provisioner and nil-checks it is the barrier — and because the deployment
 	// can stop taking kickoffs while the reservation ran.
+	//
+	// 🔴 A REFUSAL HERE RELEASES THE START IT RESERVED. Nothing was created, so
+	// leaving the task's one start spent would answer every later call
+	// already_dispatched with no agent, and only the owner could start one.
+	refuse := func(msg string) string {
+		if _, err := s.ext.ChiefDispatch.ReleaseUnstartedChiefDispatch(ctx, taskID); err != nil {
+			s.logger.Printf("task routing: release the unused start for task %d: %v", taskID, err)
+		}
+		return toolErr("%s", msg)
+	}
 	if s.ext.Provisioner == nil {
-		return toolErr("this deployment cannot start agents")
+		return refuse("this deployment cannot start agents")
 	}
 	if reason := s.ext.Provisioner.KickoffUndeliverableReason(); reason != "" {
-		return toolErr("this deployment cannot start an agent now: %s", reason)
+		return refuse("this deployment cannot start an agent now: " + reason)
 	}
 	rec, err := s.createAndDispatchAgent(ctx, p)
 	if err != nil {

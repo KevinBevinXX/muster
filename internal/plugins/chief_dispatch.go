@@ -97,6 +97,13 @@ type DispatchStore interface {
 	// task's latest, unreleased reservation started. It reports whether it
 	// wrote a release.
 	ReleaseChiefDispatch(ctx context.Context, taskID, agentID int64) (bool, error)
+	// ReleaseUnstartedChiefDispatch releases taskID's latest, unreleased
+	// reservation when — and only when — it recorded no agent: the caller
+	// reserved, then refused before creating one (the deployment stopped taking
+	// kickoffs in between), so nothing was started and the task's one start must
+	// not stay spent. The day's unit stays spent (fail-closed). It reports
+	// whether it wrote a release.
+	ReleaseUnstartedChiefDispatch(ctx context.Context, taskID int64) (bool, error)
 	// ChiefStartedAgent is the agent the task's latest, unreleased chief start
 	// made, for the principal (the task's owner). ok is false when the task has
 	// no chief start, its latest start is released, or that start recorded no
@@ -200,8 +207,10 @@ func (s *PGStore) ReserveChiefDispatch(ctx context.Context, taskID int64, detail
 			      SELECT (detail->>'agent_id')::bigint FROM audit_log WHERE action = $1 AND user_id = $5))
 			+ (SELECT count(*) FROM audit_log r
 			    WHERE r.action = $3 AND r.user_id = $5 AND r.at > now() - make_interval(secs => $4)
-			      AND NOT EXISTS (SELECT 1 FROM audit_log g WHERE g.action = $1 AND g.user_id = $5 AND g.object = r.object AND g.id > r.id))`,
-			ActionChiefDispatchAgent, liveAgentStatuses, ActionChiefDispatch, pendingAgentWindow.Seconds(), p.UserID).Scan(&live); err != nil {
+			      AND NOT EXISTS (SELECT 1 FROM audit_log g WHERE g.action = $1 AND g.user_id = $5 AND g.object = r.object AND g.id > r.id)
+			      AND NOT EXISTS (SELECT 1 FROM audit_log x WHERE x.action = $6 AND x.user_id = $5 AND x.object = r.object AND x.id > r.id))`,
+			ActionChiefDispatchAgent, liveAgentStatuses, ActionChiefDispatch, pendingAgentWindow.Seconds(), p.UserID,
+			ActionChiefDispatchReleased).Scan(&live); err != nil {
 			return err
 		}
 		if live >= MaxChiefLiveAgents {
@@ -330,6 +339,35 @@ func (s *PGStore) ReleaseChiefDispatch(ctx context.Context, taskID, agentID int6
 		}
 		wrote = true
 		return audit(ctx, tx, ActionChiefDispatchReleased, NoteObject(taskID), map[string]any{"agent_id": agentID})
+	})
+	return wrote, err
+}
+
+// ReleaseUnstartedChiefDispatch: see DispatchStore. Under the owner's
+// reservation lock, as ReleaseChiefDispatch.
+func (s *PGStore) ReleaseUnstartedChiefDispatch(ctx context.Context, taskID int64) (bool, error) {
+	p, ok := authz.From(ctx)
+	if !ok || p.UserID <= 0 {
+		return false, errors.New("plugins: a chief-dispatch release needs a user principal")
+	}
+	wrote := false
+	err := s.inTx(ctx, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('muster.chief_dispatch:' || $1::text, 0))`,
+			strconv.FormatInt(p.UserID, 10)); err != nil {
+			return err
+		}
+		reserved, released, err := chiefStartRows(ctx, tx, p.UserID, taskID)
+		if err != nil {
+			return err
+		}
+		if reserved == 0 || released > reserved {
+			return nil
+		}
+		if _, ok, err := latestStartAgent(ctx, tx, p.UserID, taskID, reserved); err != nil || ok {
+			return err // an agent was started: only the owner's destroy releases it
+		}
+		wrote = true
+		return audit(ctx, tx, ActionChiefDispatchReleased, NoteObject(taskID), map[string]any{"unstarted": true})
 	})
 	return wrote, err
 }

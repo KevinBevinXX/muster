@@ -41,8 +41,8 @@ import (
 // 🔴 EXACTLY ONCE, BY THE ROW, NOT BY THIS PROCESS. Every move is one
 // conditional UPDATE on the state it leaves (internal/attention): the claim
 // (queued → delivering, with a lease), the outcome (delivering → delivered |
-// unconfirmed, only by the lease holder), and the reader's MarkWaited (queued →
-// waited). A restart re-reads the owed rows (DueDeliveries) and delivers each
+// unconfirmed, only by the lease holder), and the reader's MarkWaited (queued,
+// pull, delivering or unconfirmed → waited; an in-flight one loses its lease). A restart re-reads the owed rows (DueDeliveries) and delivers each
 // once; a delivery whose lease lapsed mid-turn (its process died) settles
 // UNCONFIRMED and is never resent on its own — the plugin deliverer's rule, and
 // the operator's Retry on /attention puts it back.
