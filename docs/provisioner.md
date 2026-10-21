@@ -268,6 +268,8 @@ Delete the task stays as it was; reopen it on its card.
 Neither door writes an audit row for the destroy: an `agent_destroy` call's
 host and session are in muster's server log only.
 
+A task becoming `complete` **stops** (never destroys) the agent the chief started for it: see [plugins.md](plugins.md#completing-a-task-stops-the-chiefs-agent).
+
 ## The chief
 
 The **chief** is an ordinary agent row: your fleet agent. Its slug is `chief` for

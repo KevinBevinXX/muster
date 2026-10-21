@@ -292,6 +292,20 @@ type Msg struct {
 	// a pane it resolves as Claude Code NOW, and refuses otherwise: the rendered
 	// view's send must never land a prompt meant for Claude in a shell.
 	AnyPane bool `json:"anyPane,omitempty"`
+	// Runtime (paste) is the agent runtime muster decided this paste for.
+	// "hermes" sends it to the host's GATED SEND into a Hermes pane (Hermes
+	// Phase 3, docs/design/hermes.md; mirrorhost's hermes_send.go), which a
+	// host runs only with -hermes-send; "" is every other paste, unchanged.
+	// 🔴 A host never trusts it to OPEN anything: an unset Runtime aimed at a
+	// Hermes pane still meets the host's paste guard, and "hermes" aimed at
+	// a pane that runs no Hermes NOW is refused. An older host ignores it,
+	// and muster never sends it one (an older host never advertises
+	// HermesSend).
+	Runtime string `json:"runtime,omitempty"`
+	// Since (paste, Runtime "hermes") is the window's StatusSince the paste
+	// was decided on. The host sends only while the window's status is still
+	// idle at exactly this time, and refuses as superseded otherwise.
+	Since int64 `json:"since,omitempty"`
 	// Lines (scroll) is how far to scroll the pane's history: positive is BACK
 	// (tmux scroll-up, older output), negative is forward (scroll-down, toward
 	// the live screen). 0 and anything beyond MaxScrollLines either way is
@@ -1127,15 +1141,33 @@ const (
 	// PasteRefusalUnchecked: the host could not read the pane's processes, so
 	// it could not rule Hermes out. Nothing was typed.
 	PasteRefusalUnchecked = "unchecked"
+
+	// The gated send into a Hermes pane (Msg.Runtime "hermes"), by how it
+	// ended when it did not end "sent":
+	//
+	// PasteRefusalHermesNotSubmitted: refused before anything was pasted (the
+	// text rules, the screen check, the Escape sequence's abort, the host's
+	// -hermes-send off). Nothing was typed but, possibly, Escapes.
+	PasteRefusalHermesNotSubmitted = "hermes-not-submitted"
+	// PasteRefusalHermesSuperseded: the window's status moved after muster
+	// decided (not idle, or idle since another time). Nothing was pasted; a
+	// queued message can be decided on again.
+	PasteRefusalHermesSuperseded = "hermes-superseded"
+	// PasteRefusalHermesPasted: pasted, NOT submitted: the text is in
+	// Hermes's input box and Enter was withheld. Not to be resent blindly.
+	PasteRefusalHermesPasted = "hermes-pasted"
+	// PasteRefusalHermesUnconfirmed: Enter was sent and Hermes recorded no
+	// message in time: it MAY have been submitted. Never resent blindly.
+	PasteRefusalHermesUnconfirmed = "hermes-unconfirmed"
 )
 
 // The texts of the paste guard's refusals, for the person sending: the host
 // sends them as its reason, and muster shows the same words when the page
 // posted without script (one source, so the two paths cannot drift).
 const (
-	PasteRefusedHermesText = "Not sent: Hermes runs in this pane. muster never pastes into Hermes, because Enter " +
-		"there can answer a prompt Hermes is showing, such as a command approval. Type it in the terminal; " +
-		"sending to Hermes from its own rendered view comes in a later release."
+	PasteRefusedHermesText = "Not sent: Hermes runs in this pane. muster sends to Hermes only from its window's " +
+		"rendered view, and only on a host whose muster-mirror runs with -hermes-send, because Enter there can " +
+		"answer a prompt Hermes is showing, such as a command approval. Type it in the terminal."
 	PasteRefusedMultiplexerText = "Not sent: this pane runs another terminal multiplexer (tmux, screen, dtach, " +
 		"abduco or zellij), so muster cannot see whether Hermes runs inside it. Type it in the terminal."
 	PasteRefusedUncheckedText = "Not sent: muster-mirror could not check whether Hermes runs in this pane. " +

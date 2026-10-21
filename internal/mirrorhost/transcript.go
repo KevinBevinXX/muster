@@ -469,6 +469,12 @@ func (h *hostSide) paste(m mirror.Msg) {
 		}
 		_ = h.send(mirror.Msg{Type: mirror.TypePasted, ID: m.ID, Error: msg, Refusal: pasteRefusalOf(err)})
 	}
+	if m.Runtime == mirror.RuntimeHermes {
+		// The gated send (hermes_send.go): its own checks, replies and
+		// refusal kinds, and the one deliberate exception to the guard.
+		h.hermesPaste(m)
+		return
+	}
 	if !h.c.cfg.Interactive {
 		reply(errors.New("this host is read-only (muster-mirror was not started with -interactive)"))
 		return

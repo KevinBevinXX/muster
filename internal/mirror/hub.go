@@ -100,6 +100,10 @@ type HostView struct {
 	Online bool
 	// Interactive: the host advertised -interactive.
 	Interactive bool
+	// HermesSend: the host advertised Msg.HermesSend (it runs with
+	// -hermes-send and is -interactive, v2): a Hermes window's rendered view
+	// offers Send and Queue, through the host's gated send (Hermes Phase 3).
+	HermesSend bool
 	// PanePaste: the host advertised that a paste may target a session's active
 	// pane whatever runs there (Msg.PanePaste). False for an older muster-mirror
 	// and for an offline host.
@@ -364,7 +368,7 @@ func (h *Hub) Hosts(owner int64) []HostView {
 		hc.mu.Lock()
 		out = append(out, HostView{Host: k.host, Sessions: append([]string(nil), hc.sessions...), Windows: slices.Clone(hc.windows),
 			Claude: append([]string(nil), hc.claude...), Labels: maps.Clone(hc.labels), Activity: maps.Clone(hc.activity), Repos: maps.Clone(hc.repos), Rendered: hc.version >= 2, Online: true, Interactive: hc.interactive, PanePaste: hc.panePaste, PaneScroll: hc.paneScroll,
-			StatusReport: hc.statusReport, AskAnswer: hc.askAnswer})
+			StatusReport: hc.statusReport, AskAnswer: hc.askAnswer, HermesSend: hc.hermesSend})
 		hc.mu.Unlock()
 	}
 	now := h.now()

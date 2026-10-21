@@ -1,6 +1,6 @@
 # Design: Hermes mirroring and the `hermes` agent kind
 
-**Status: proposed, with Phases 0, 1, 2 and 5 done.** Phase 5, the `hermes`
+**Status: proposed, with Phases 0, 1, 2, 3 and 5 done.** Phase 5, the `hermes`
 agent kind, is implemented (`cmd/hermesd`, `images/hermes-agent`, the kind in
 `internal/agents` and `internal/agentspec`, migration `0038`); what it built
 differently from this page is under [Phase 5 as built](#phase-5-as-built).
@@ -18,7 +18,14 @@ session is resolved from its terminal's breadcrumb and its status from the
 `hermes-hook` status files; it has a read-only rendered view, the Hermes kind
 chip and `-list -hermes`; there is no send path. The Home Manager declaration
 of the hook and its allowlist entries is the host configuration's (devrc).
-Nothing of Phases 3–4 is implemented. The
+Phase 3 is implemented (see [Phase 3 as built](#phase-3-as-built)): the gated
+send — the screen check, one Escape, the post-paste check and the
+database-confirmed submit — behind the `-hermes-send` switch on both sides,
+Send, Queue and Send now for Hermes windows, and its live harness,
+`make test-livehermes`, whose fixtures and measurements are recorded there.
+**Send ships OFF**: the operator enables it per host once the harness is
+green against that host's Hermes; the host refuses vi mode itself. Nothing of
+Phase 4 is implemented. The
 version target is **decided** (below). Every other section describes the design
 the Phase 0 spikes support; the [Phase 0 results](#phase-0-results) table names
 what each spike changed. Where this page states how muster works today, the
@@ -58,7 +65,9 @@ The design, in one line each:
   🔴 Three overlays (the palette, the model picker, the stash) leave no mark on
   the input line. A bounded Escape sequence reduces that risk without removing
   it; Send stays off until Phase 3 has measured it, then is enabled with the
-  remaining cases accepted as residual risk (operator decision).
+  remaining cases accepted as residual risk (operator decision). Phase 3
+  found, at the pin, that all three DO mark the status bar, which the screen
+  check now requires ([as built](#phase-3-as-built)).
 - **Questions and approvals:** clarify cards from the database, approval and
   sudo items from the hooks. Approvals are answered through the gateway viewer's
   `approval.respond`; clarify through the viewer if Phase 4 measures it, else in
@@ -371,8 +380,10 @@ churn: `hermesCLIShape`, beside this match. Phase 2 builds on it.)
 - **It also refuses when the screen shows Hermes's chrome** (the status bar and
   input rules around a `❯ ` input line, from the recorded fixtures), as a
   best-effort extra. ⚠ That check **fails open** exactly when the chrome is not
-  drawn: after a resize, the status bar and rules stay hidden until the next
-  keypress (`P:hermes_cli/cli_tui_mixin.py:139-140,2177-2179`); with the status
+  drawn: after a resize, the status bar and rules are hidden
+  (`P:hermes_cli/cli_tui_mixin.py:139-140,2177-2179`) — ⚠ for 0.35 s, cleared
+  by a debounce (`P:hermes_cli/cli_terminal_mixin.py:395,436-452`), not
+  "until the next keypress" as this page first said (Phase 3); with the status
   bar turned off; and in a narrow pane.
 - **Known gaps**, named: a Hermes CLI run over `ssh` or `docker exec` inside the
   pane (invisible to the local process walk), in one of the chrome-less states
@@ -670,6 +681,257 @@ below in these ways, each decided while building it:
 - **Notices** are a new `cctranscript.NoticeHermes` source, drawn as the
   harness's compact rows; a tool result is a failure only when its JSON says
   so (`error`, or a non-zero `exit_code`), since Hermes records no `is_error`.
+
+### Phase 3 as built
+
+Phase 3 (`internal/hermeshost`'s `screen.go` and `vilabels.go`,
+`internal/mirrorhost`'s `hermes_send.go`, the hub's Hermes routing, the
+rendered view's composer, and `make test-livehermes`) differs from the
+sections above in these ways, each decided while building it:
+
+- 🔴 **The status bar is a REQUIRED part of the idle layout, and the stash
+  panel has a mark in it.** Read from the pinned source and then measured:
+  `_get_status_bar_fragments` returns **nothing** while
+  `_model_picker_state` or `_command_palette_state` is set
+  (`P:hermes_cli/cli_status_bar_mixin.py:1128-1133`), and the stash
+  indicator reads `📌 N ▲` while its panel is open
+  (`P:hermes_cli/prompt_stash.py:68-71`). The screen check therefore
+  requires the row above the upper input rule to be Hermes's status bar (its
+  `☤ ` model marker) and refuses the `▲` mark — so the command palette and
+  the model picker, at every stage measured, and the stash panel are
+  **refused before any Escape**, which the design above said no passive
+  signal could do. 🔴 That also closes the model picker's **hidden draft**
+  case: the screen is refused before the Escape that would destroy the
+  draft (measured: the injected picker over a typed draft; one Escape left
+  the box empty, the draft gone — the mechanism the design names — but the
+  gated send never sends it). The cost: a Hermes with its status bar turned
+  off, hidden for 0.35 s after a resize, or in a pane under 64 columns
+  (compact chrome, no lower rule) cannot be sent to; muster says why. This
+  is a signal of the pin's code, not a contract: the overlay ledger (which
+  now pins the blanking condition itself) and the harness re-check it on
+  every pin bump.
+- 🔴 **The stash panel is refused by its HEADER, not its status-bar mark**
+  (round-1 audit F1; round 2). Once the session has a title, Hermes right-aligns the
+  title badge and CLIPS the bar's left side to make room
+  (`_right_align_status_title_fragments`), and the `📌 N ▲` mark is the first
+  thing cut: measured clipped at 100 and 120 columns, kept at 160 — so an
+  open panel was ADMITTED, and Enter would have restored the stashed draft
+  over muster's message. The check finds the header row `╭─ 📌 …` above
+  the bar (every bundled language starts the header so). Round 1 also
+  required its `╰… ─╯` footer, and round 2 measured why that was wrong: the
+  panel is an unbounded window drawn top-down, so on a short pane its
+  BOTTOM is cut, footer first, and the panel was ADMITTED at 100x12 with 7
+  drafts and at 100x24 and 80x24 with 20 (Hermes's cap). The harness varies
+  the pane's height for it (`stash-short-*`). This also refuses the stash
+  with the bar's stash field turned off, which had been a residual case. A
+  reply line that starts `╭─ 📌` is refused too, which is a false refusal
+  and so the safe way round.
+- **ONE Escape, not three** (round-0 audit D1). Every overlay a second or
+  third Escape closed (the filtered picker, the reasoning stage, palette and
+  stash together) is refused before any Escape, and the stash panel now is
+  too; one Escape, 1.5 s, a re-capture that must pass, else refused. It
+  stays for an overlay a future pin adds before the ledger catches it.
+- **The frame's upper rule is the HIGHEST same-width rule within the box's
+  rows whose row above is the real status bar**, and rows are trimmed of
+  every Unicode space (audit F2; round 2). A draft could type a status bar,
+  a full-width rule and `❯ ` ended by an NBSP or U+3000 on its continuation
+  rows and be read as an idle frame, so the closest rule is never taken. The
+  highest rule alone was not right either: a reply ending in a line of `─`
+  as wide as the pane landed in range above the bar, and every send was
+  refused until the next turn (measured at 100 and 130 wide). "The real
+  status bar" means its text AND its background (`class:status-bar`). A
+  draft draws no background at the pin, and a pasted escape is drawn as `^[`,
+  not obeyed. With the bar blank (palette, picker) no rule is anchored, the
+  highest is taken, and the screen is refused as before. A skin whose bar
+  has no background is never anchored, so the transcript-rule case is then
+  refused, never admitted.
+- **The bar is read by its exact start on its background, everywhere**
+  (round 3). That means ` ☤ `, or the battery label (`🔋 N%`/`⚡ N%`) then
+  ` │ ☤ `. This applies to the anchor and to the status-row check alike. The
+  background alone is not enough: the subagent dock is drawn on the bar's own
+  background and can show a goal a model wrote, such as ` x │ ☤ m`. With the
+  bar hidden (`display.statusbar` off, or just after a resize), that row sits
+  above the rule. The dock's rows start with two spaces or a localised
+  heading, never so. The paste guard's recognition of Hermes keeps the
+  looser form, where matching more is the safe way.
+- 🟡 **A pane with no row above the bar is refused** (round 3, "the pane is
+  too short …"). On a pane exactly as tall as the input chrome (4 rows), an
+  open stash panel has no visible row. It was measured admitted at 100x4
+  with 20 drafts, and at 100x14 with no key pressed its header was back. The
+  harness shrinks a stash and an idle pane to 100x4
+  (`stash-short-100x4-20`, `idle-100x4`). This refuses every 4-row pane,
+  which costs only those.
+- **`mirrorhost.Runtime` keeps `Name` and `LocatePanes`.** The gated send is
+  its own code (`runHermesSend` over injected steps; `Tmux.SendHermes` fills
+  them), reached only through `hostSide.hermesPaste` for a paste with
+  `Msg.Runtime` `"hermes"` — the one deliberate exception to the paste
+  guard, held by `TestEveryWayThisHostTypesIntoAPaneGoesThroughTheHermesGuard`.
+  Claude Code's send was not moved behind an interface: nothing would call a
+  Claude implementation of it. `Tmux.PastePane` was split into its two
+  primitives (`pasteBracketed`, `pasteEnter`), which both sends share, so the
+  Hermes send pastes exactly as the Enter margin was measured.
+- **Wire:** `Msg.Runtime` and `Msg.Since` on `paste` (the window's
+  `StatusSince` the hub decided on), and four refusal kinds on `pasted`:
+  `hermes-not-submitted`, `hermes-superseded` (the hub makes it
+  `ErrSuperseded`, so a queued message is decided on again),
+  `hermes-pasted` and `hermes-unconfirmed` (the hub makes it
+  `ErrPasteUnconfirmed`: never "not sent"). `Msg.Runtime` on `watch` and
+  `answer` is still not sent (Phase 4).
+- **The server's idle gate is in `Hub.PasteWindow`**, after the hermesSend
+  switch: a rendered-view send (`PasteClaude`, which now means "the window's
+  agent pane") to a Hermes window is refused unless the hub lists it idle
+  with a since (`HermesNotIdleError`, its own words per status), and the
+  Terminal composer's `PasteActivePane` stays a plain paste for the host's
+  guard. The hub waits up to 40 s for a Hermes send, the API 50 s.
+- **The text rules, plus two:** besides the leading `/` or `!` and the
+  trailing `\`, a message that is only digits is refused — after a person's
+  bare `/resume`, Hermes reads a number as the session to switch to
+  (`_consume_pending_resume_selection`) — and a message Hermes would not collapse (fewer than 5 newlines
+  and 2,000 characters — `paste_collapse_threshold` counts NEWLINES, so it
+  collapses from 6 lines, not 5) whose wrapped height at the pane's width
+  exceeds the input box's 8 rows is refused before anything: measured, a
+  1,599-character line scrolls the box and the prompt row out of sight, so
+  the post-paste check could not see it. Shorter, or 6+ lines, is sent.
+- **The post-paste check compares the box with every space removed**, since
+  the box wraps; a single collapse placeholder must carry the message's line
+  count. A draft before the message, or anything else, is refused. A tab is
+  drawn `^I` (two cells), so the message is compared — and its height
+  counted — as drawn; before, every message with a tab was left pasted and
+  unsubmitted (measured live).
+- **The database confirm** reads the conversation's lineage past the newest
+  row id taken before the paste, for a `user` row equal to the message, both
+  stripped, polling every 100 ms for 8 s.
+- **The gated send also refuses** a pane whose tree holds a terminal
+  multiplexer client anywhere — below the Hermes CLI too, which the guard's
+  walk stops at (`HermesIdentity.MultiplexerInTree`) — and a tmux without
+  `paste-buffer -S` (it cannot type an Escape); and it takes the pane's drive
+  lock, shared with Claude Code's picker answers.
+- **Measured: the hook says idle before the CLI has drawn the turn's end.**
+  A send in that moment is refused by the screen check ("not its idle
+  prompt"), with nothing pasted. The queue's idle wait never meets it.
+- **The paste guard's chrome check** (moved here from Phase 1a) is in
+  `Tmux.PaneHermes`, after the process walk finds nothing: a screen showing
+  Hermes's input frame with a `❯` row **and Hermes's `☤`** (its status bar,
+  or the busy prompt) is refused. 🔴 The `☤` is required because Claude
+  Code's idle screen is also a `❯` between two rules
+  (`TestLooksLikeHermes` runs every `internal/askdrive` fixture through it).
+  It fails open as the design says, and also while the palette or the
+  picker blanks the status bar.
+- 🔴 **Vi mode is refused STRUCTURALLY**, not only by the screen. The host
+  reads `display.vim_mode` from the Hermes home's `config.yaml` — the
+  `display:` section alone, decoded as Hermes reads it (Python `bool()` of
+  the YAML 1.1 value, so a quoted `"no"` is on) — on every hello and every
+  send, and with it on, or unreadable, neither advertises `hermesSend` nor
+  sends; the startup log and `-list -hermes` (`vi-mode` line) say so. The
+  screen's vi-label refusal stays as a second layer. This widens what the
+  daemon reads (see [secret hygiene](#secret-hygiene)).
+- **The queue's outcomes** (round-1 audit, #201): a queued paste into a
+  Hermes window that turned busy after the queue decided is ErrSuperseded
+  (decided on again), never the person-facing not-idle refusal; a delivery
+  that may have landed, or sits pasted in Hermes's box, reads so on the row
+  and on Send now — never "Not sent".
+- 🔴 **No repeat by nonce after "may have been submitted".** The composer's
+  duplicate-send guard KEEPS a nonce the host never confirmed; the same
+  message sent again with it is refused, and the answer offers an explicit
+  **Send again**, which mints a new nonce.
+- **The rendered view** draws its composer enabled, with Queue, only when the
+  host advertised `hermesSend` and is `-interactive`; otherwise disabled
+  with `ui.MirrorHermesNoSendNote`. Routing stays Claude-only (a route pins a
+  Claude session).
+
+**The live harness (`make test-livehermes`, `tests/livehermes.sh`).** Build
+tag `livehermes`; never in CI. It proves `hermes` on PATH is the pin (its
+launcher's `HERMES_REVISION`), and runs everything in a scratch directory: its
+own `HERMES_HOME`s and `HOME`, a private tmux server (`-S`, `-f /dev/null`),
+a scripted OpenAI-compatible stub model on loopback (no credential; the
+model's `api_key` is a literal stub string), and a `muster-mirror` built from
+the tree for the hook. Every process it stops is stopped by PID after its own
+`/proc/<pid>/environ` names one of the run's homes. It ends with
+`HERMES HARNESS VERDICT: GREEN` or `RED` (required tests named to
+`tests/verdict.py`, so a skipped or missing one is RED).
+
+- `TestLiveHermesScreens` reaches every state below on the real CLI, measures
+  the check and three Escapes on each, and with
+  `MUSTER_LIVEHERMES_RECORD=1` writes the scrubbed fixtures
+  (`internal/hermeshost/testdata/screens/`, expectations in `screens.json`,
+  written by hand). Secret capture, the connection form, voice, an attached
+  image and the picker over a hidden draft have no stub-model path at the
+  pin; they are **injected**: a `sitecustomize.py` on the CLI's
+  `PYTHONPATH` sets the state on the running CLI exactly as Hermes's own
+  callback does (or calls the `/model` handler with a draft in the box), and
+  the real renderer draws it.
+- `TestLiveHermesTimings` re-measures under load (2 × NumCPU busy loops).
+  **Opt-in** (`MUSTER_LIVEHERMES_TIMINGS=1 make test-livehermes`, required
+  when set): run it on every pin bump; it is a measurement, not a per-run
+  gate.
+- `TestLiveHermesSend` runs the real `Tmux.SendHermes`: an idle line and an
+  8-line (collapsed) message are sent and confirmed in `state.db` (about 5 s
+  each); every blocking state is refused with nothing pasted, its state
+  still on screen.
+- `TestOverlayLedgerMatchesThePinnedSource`,
+  `TestScreenConditionsMatchThePinnedSource` and
+  `TestViLabelsMatchThePinnedLocales` hold the overlay ledger (every
+  `self._*_state` of `cli_tui_mixin.py`/`cli_modal_mixin.py`; the layout's
+  children in order; every condition the prompt prefix branches on; every
+  condition that blanks the status bar; every attribute the chrome's
+  visibility filters read) and the 17 languages' vi labels against the
+  installed pin: grown, shrunk or reordered is RED. Not pinned: key
+  bindings, skins and plugins — the fixtures' to catch.
+
+**Measured against the pin `5fc490e`** (the screen check before any
+Escape; then what three Escapes 1.5 s apart did; "overlay" is whether it was
+still drawn after them):
+
+| state | how | check | Escape 1 → 2 → 3 | overlay |
+|---|---|---|---|---|
+| idle; idle with profile `coder ❯`; idle in German | real | **admit** | admit ×3 | – |
+| busy (`☤`) | real | NotIdle | NotIdle ×3 | – |
+| approval (`⚠`), also in German | real | NotIdle | NotIdle ×3 | open |
+| clarify with choices (`?`), also in German; free-text clarify (`✎`) | real | NotIdle | NotIdle ×3 | – |
+| sudo (`🔐`) | real | NotIdle | admit ×3 (Escape 1 cancels it) | closed |
+| `/new` confirm (`⚠`; no hook fires) | real | NotIdle | admit ×3 (Escape 1 dismisses it) | closed |
+| hook consent `[y/N]`, before the UI | real | NoLayout | NoLayout ×3 | – |
+| command palette; with a filter | real | NoStatusBar | admit ×3 | closed |
+| command palette over a draft | real | NoStatusBar | Text ×3 (the draft restored: abort) | closed |
+| model picker, provider stage | real | NoStatusBar | admit ×3 | closed |
+| model picker, model stage with a filter; reasoning stage | real | NoStatusBar | NoStatusBar → admit → admit (Escape 1 clears the filter / steps back) | closed |
+| model picker opened by `/model` during a turn | real | NoStatusBar | NotIdle ×3 (the turn) | closed |
+| model picker over a hidden draft | injected | NoStatusBar | admit ×3 — **the draft destroyed by Escape 1** | closed |
+| stash panel | real | Stash | admit ×3 | closed |
+| palette and stash together | real | NoStatusBar | Stash → admit → admit (Escape 1 closes only the palette) | closed |
+| stash panel, status bar's stash field off | real | Stash (its frame) | admit ×3 (Escape 1 closes it) | closed |
+| after a turn (a title in the bar), stash panel at 100, 120 and 160 columns | real | Stash (its frame; the `▲` mark is clipped at 100 and 120) | admit ×3 | closed |
+| after a turn, palette and model picker at 100 and 160 columns | real | NoStatusBar | closed | closed |
+| secret capture (`🔑`) | injected | NotIdle | admit ×3 | – |
+| connection form (`⚙`) | injected | NotIdle | admit ×3 | – |
+| voice mode, recording (`●`), processing (`◉`) | injected | Below (the voice bar) | Below ×3 | – |
+| vi mode, `INSERT`; after one Escape, `NORMAL`; German `EINFÜGEN` | real | Vi | Vi ×3 | – |
+| vi mode after a turn: the session title trims the label off (160 and 100 columns) | real | **admit** (the host refuses vi mode from config.yaml instead) | admit ×3 | – |
+| vi mode within 0.35 s of a narrowing resize | real | NoLayout (bar and rules hidden) or Below (tmux re-wrapping them), by when the capture lands | Vi ×3 | – |
+| 60-column pane (compact chrome) | real | Below | Below ×3 | – |
+| text typed in the box | real | Text | Text ×3 | – |
+| an image attached | injected | Images | Images ×3 (one earlier run: admit after Escape 2) | – |
+| slash completions menu | real | Below | Below ×3 | – |
+| after a paste: one line, three lines, a 400-character wrapped line, 8 lines (placeholder) | real | the post-paste check **admits** | – | – |
+| after a paste of a 1,599-character line | real | the post-paste check: NotIdle (prompt row scrolled away) | – | – |
+| after a paste behind a typed draft | real | the post-paste check: NotPasted | – | – |
+
+So no measured blocking state is admitted by the check except vi mode with
+its label trimmed — which the host refuses from `config.yaml` before any
+screen is read — and **no paste ever reached an approval, clarify, sudo,
+`/new` or consent screen** in any run. (The table measures three Escapes to
+show what more would do; the gated send sends one.)
+
+**Timings under load** (48 busy loops on 24 CPUs; three runs):
+
+- hook slack, 12 turns each: user row → `pre_llm_call` 45–963 ms; final row
+  → `on_session_end` 16–839 ms. Every gap positive: the false-idle rule's
+  slack 0 holds.
+- the Enter margin, 5 tries each: Enter 0 ms after the paste submitted 0/5,
+  20 ms 0–2/5, 50 ms 5/5, 100 ms 5/5, **150 ms (muster's) 5/5** every run.
+- the queue gap (queue mode: idle written → the queued message's row), 6
+  runs each: 305–1,915 ms, 364–506 ms, 433–543 ms — a residual window up to
+  about 2 s under load, named below.
 
 ### Pane to session resolution
 
@@ -1090,7 +1352,12 @@ So:
 
 🔴 **No passive signal proves those three closed.** The send is therefore off
 until Phase 3 has measured the mitigations below, and then on with the named
-residual cases (operator decision).
+residual cases (operator decision). ⚠ **Superseded at the pin by Phase 3**:
+the status bar renders nothing while the palette or the picker is open, and
+marks an open stash panel; the screen check refuses both (see
+[Phase 3 as built](#phase-3-as-built)). That is the pin's code, not a
+contract — a skin, a turned-off bar or a future commit can remove it — so the
+Escape sequence below stays.
 
 - **muster never opens them itself.** A Hermes send refuses a message that
   starts with `/` or `!` (see [the send path](#the-send-path)), so `/model` and
@@ -1134,7 +1401,9 @@ residual cases (operator decision).
     🔴 **A host whose Hermes uses vi mode (`display.vim_mode`) must not enable
     `-hermes-send`, unconditionally.** muster cannot read `config.yaml` (secret
     hygiene), so this is the operator's responsibility when turning on the
-    per-host switch; the host docs say so.
+    per-host switch; the host docs say so. ⚠ **Superseded by Phase 3**: the
+    host reads `display.vim_mode` alone and refuses itself
+    ([as built](#phase-3-as-built)).
     - **Defence in depth only:** upstream draws a vi label (`_vim_mode_label`,
       `P:hermes_cli/cli_status_bar_mixin.py:82-97`), and the host refuses
       whenever it sees one. The label is **localised**
@@ -1157,7 +1426,8 @@ residual cases (operator decision).
     the image-region check runs **before** any Escape, and refuses if images are
     attached, rather than letting the Escapes silently drop them.
 
-  The sequence length (proposed: 3, enough for picker-with-filter at the
+  ⚠ Phase 3 set it to **one** ([as built](#phase-3-as-built)): every state a
+  second or third Escape was for is refused before any Escape. The sequence length (proposed: 3, enough for picker-with-filter at the
   reasoning stage) is set by Phase 3's measurements, and every Escape in it must
   first be shown, by fixture, to be harmless on an idle, empty line. Two rules
   bind it:
@@ -1190,11 +1460,19 @@ accepted as known risk:
 - a person **opening an overlay at the terminal between the last re-capture and
   muster's Enter** (well under a second);
 - any overlay state Phase 3 measures as **not closed** by the sequence; Phase 3
-  lists them by name in the host docs when it enables the send;
+  lists them by name in the host docs when it enables the send (measured:
+  none; every overlay it reached is refused before any Escape);
+- **measured by Phase 3:** the queue-mode gap, up to about 2 s under load, in
+  which Hermes says idle and is about to submit its own queued message. (Vi
+  mode with a trimmed label and the stash with its bar field off were on this
+  list; the host now refuses vi mode from `config.yaml`, and the stash by its
+  frame.)
 - 🔴 **a draft hidden by the model picker** is destroyed by the Escape that
-  closes the picker (mechanism above), with no way to detect it first. The
-  person loses the draft they had typed; muster's own message is then sent
-  normally.
+  closes the picker (mechanism above, measured in Phase 3). ⚠ At the pin it is
+  **not reached**: the picker blanks the status bar, so the screen check
+  refuses before any Escape. It stays on this list for a Hermes whose status
+  bar is configured off — which the check also refuses — and for a pin that
+  changes the bar.
 
 The worst outcome in the first three is that Enter acts on the overlay and
 nothing is submitted; the database check then reports "may have been
@@ -1274,9 +1552,11 @@ A modal still drawn after the hook or viewer reported it resolved is still a
 modal: a viewer-answered approval leaves it on screen until a key is pressed
 (S1).
 
-Not yet captured (UNVERIFIED until Phase 3 records a fixture for each): the
-command palette, the model picker, the stash panel, secret capture, the
-connection form, and the voice states.
+Phase 3 recorded a fixture for every state, in English and German
+(`internal/hermeshost/testdata/screens/`; the measurements are under
+[Phase 3 as built](#phase-3-as-built)). Secret capture, the connection form,
+voice and an attached image were drawn by the real renderer with their state
+injected; they have no stub-model path at the pin.
 
 **A ledger of overlay states.** Phase 3 keeps a list of every overlay or modal
 state attribute the pinned `cli_tui_mixin.py` and `cli_modal_mixin.py` define,
@@ -1434,7 +1714,12 @@ Questions and approvals live in muster's memory, as Claude Code's do.
   `hermes-gw-<16 hex>/` directory it points to (validated as above);
 - muster's own `~/.muster/hermes-status/*.json`.
 
-**Never** `auth.json`, `.env`, `config.yaml` (it can hold inline keys),
+⚠ **And `config.yaml`, two sections only** (Phase 3): `-list -hermes`
+decodes its `hooks:` section, and the daemon, only when it runs with
+`-hermes-send`, its `display:` section's `vim_mode` — each into a struct
+with no other field, and no error quotes the file.
+
+**Never** `auth.json`, `.env`, the rest of `config.yaml` (it can hold inline keys),
 `profiles/*/.env`, `memories/`, `skills/`, `logs/`, `telemetry/`,
 `pastes/` (Hermes's on-disk copies of large pastes, muster's messages
 included), or
@@ -1915,11 +2200,11 @@ Efforts are rough engineer-days, including tests and docs. Phase 0 is done.
 | ~~0~~ | Spikes S1–S11 | done | — |
 | ~~1~~ | Runtime seam: `mirrorhost.Runtime` for Claude Code and Hermes, Claude behind it, `Window.Runtime`/`AgentSession` with the wider id bound. 🔴 **The host paste guard**, first, with the broad process identity (**done**, 1a). The strict mirroring identity rule moves to Phase 2 and the chrome check to Phase 3 (operator decision); the strict rule was later pulled forward into 1b (coordinator decision, **done**). [Server changes](#server-changes): runtime-aware `AgentState` and waiting set, Send now refusing unknown and busy for Hermes, the `hermesSend` switch, the migration widening the session-key checks of 0020, 0021, 0022 and 0025 (**done**, 1b; see [as built](#phase-1-as-built)). No behaviour change for Claude Code. | done | — |
 | ~~2~~ | (**done**, see [as built](#phase-2-as-built)) Read-only Hermes mirroring: the strict mirroring identity rule (moved from Phase 1; then pulled forward into 1b by coordinator decision, and landed there — Phase 2 builds on it), breadcrumb locator with the end-reason staleness rule (no view, unknown status), SQLite reader (compaction, compression-only lineage), renderer, the `hermes-hook` command and its status files with lease and newest-row checks, the Home Manager declaration and the locking allowlist writer, mismatch diagnostics, listing and kind chip, secret-path ledger, `-list -hermes` | 6–8 | 1 |
-| **3** | Gated pane send **and its live harness**. `make test-livehermes`: the pinned Hermes in a scratch tmux server and home; fixtures for every blocking state, and from them the paste guard's chrome check (moved from Phase 1), including the palette, model picker and stash; the overlay-state ledger; measuring the Escape sequence (with the abort rule and waits above `timeoutlen`) against every overlay at its non-default stages (filtered picker, reasoning stage, palette and stash together, the picker opened over a draft, vi mode); re-measuring under load the false-idle slack, the 150 ms Enter margin and the queue gap. Then the send: per-runtime server gates, host `CheckSend` with the image-region and input-line rules and the bounded Escape sequence, the `hermesSend` switch on both sides, the `/`, `!` and trailing-`\` refusals, collapse-aware post-paste check, database-confirmed submit with "may have been submitted", Queue and Send now for Hermes, host docs. Send stays off until these measurements are done and the harness is green; then the operator enables it per host, with the residual cases named in the host docs. | 10–12 | 2 |
+| ~~3~~ | (**done**, see [as built](#phase-3-as-built)) Gated pane send **and its live harness**. `make test-livehermes`: the pinned Hermes in a scratch tmux server and home; fixtures for every blocking state, and from them the paste guard's chrome check (moved from Phase 1), including the palette, model picker and stash; the overlay-state ledger; measuring the Escape sequence (with the abort rule and waits above `timeoutlen`) against every overlay at its non-default stages (filtered picker, reasoning stage, palette and stash together, the picker opened over a draft, vi mode); re-measuring under load the false-idle slack, the 150 ms Enter margin and the queue gap. Then the send: per-runtime server gates, host `CheckSend` with the image-region and input-line rules and the bounded Escape sequence, the `hermesSend` switch on both sides, the `/`, `!` and trailing-`\` refusals, collapse-aware post-paste check, database-confirmed submit with "may have been submitted", Queue and Send now for Hermes, host docs. Send stays off until these measurements are done and the harness is green; then the operator enables it per host, with the residual cases named in the host docs. | done | 2 |
 | **4** | Questions and approvals: clarify cards from the DB, approval and sudo attention items from the hooks, viewer discovery through `gateway.sock.path`, attach-to-answer, `approval.respond` with the stale-modal card, measuring the viewer's clarify answer (and wiring it if it passes), the hygiene filters; harness cases for each | 5–7 | 2, 3 |
 | ~~5~~ | `hermes` kind: `hermesd` (runs, events, exact approval body, relay timeout, a stable API key on the volume, intent-before-POST with the exact body and `Idempotency-Key`, 409 and retention handling, `resolve-unknown` recovery on every gateway start, SIGTERM handling), the Nix image without ffmpeg, `agentspec`, migration, config, smoke test like `cc-smoke` (**done**; see [as built](#phase-5-as-built)). A first run in a real pod is the release's (muster-ops), not this phase's code. | done | 1 |
 
-Remaining: about 31–39 days. Each phase is released and shipped to the hosts as
+Remaining: about 5–7 days (Phase 4). Each phase is released and shipped to the hosts as
 it merges. Phases 2–4 and 5 are independent after Phase 1. The shortest useful
 slice is Phases 1–2: read-only Hermes windows with status, with the paste
 guard already in place. `make test-livehermes` re-runs on every pin bump.
@@ -1954,22 +2239,24 @@ guard already in place. `make test-livehermes` re-runs on every pin bump.
   - whether an attached viewer keeps an auto-started gateway alive past its
     idle exit;
   - skins or themes changing the input-line glyphs;
-  - the command palette, model picker, prompt-stash panel, secret capture,
-    connection form and voice states (found in source; fixtures in Phase 3);
+  - ~~the command palette, model picker, prompt-stash panel, secret capture,
+    connection form and voice states~~ (fixtures recorded in Phase 3; secret,
+    connection and voice injected);
   - ~~an `Idempotency-Key` replay across a gateway restart~~: **measured** in
     Phase 5's image smoke test: the same key and bytes after a SIGKILL and
     restart answer `202` with the ORIGINAL run id and `replayed: true`; another
     key with the same body admits a new run (the control); the same key with
     another body is `409 idempotency_key_conflict`;
-  - the Escape sequence against the palette, model picker and stash at their
-    non-default stages (Phase 3); Send stays off until it is measured;
+  - ~~the Escape sequence against the palette, model picker and stash at their
+    non-default stages~~ (measured in Phase 3);
   - a Hermes CLI run over `ssh` or `docker exec` in a pane, covered only by the
     best-effort chrome check;
   - in a pod, the agent shares a uid with the gateway and can read its
     environment and the API key file, so approvals there are a policy aid, not a
     boundary against the agent itself (as for `claude-code`);
-  - every timing under load: the false-idle slack, the Enter boundary, the
-    ~0.3 s queue gap;
+  - ~~every timing under load: the false-idle slack, the Enter boundary, the
+    ~0.3 s queue gap~~ (measured in Phase 3: the slack holds, 150 ms submits
+    every time, the queue gap reaches about 2 s);
   - a Kubernetes pod: container detection, the NetworkPolicy and restricted
     admission, a cold image build;
   - `/clarify` end to end on the API server;

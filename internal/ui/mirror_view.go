@@ -64,10 +64,13 @@ type MirrorViewView struct {
 	// (each send is still gated on a fresh sign-in, server-side). False draws
 	// it disabled, saying why.
 	Interactive bool
-	// Hermes: the window runs Hermes (docs/design/hermes.md, Phase 2). The
-	// view is READ-ONLY: its composer is drawn disabled saying why
-	// (MirrorHermesNoSendNote), with no queue, whatever the host allows.
+	// Hermes: the window runs Hermes (docs/design/hermes.md). Its composer
+	// sends only when HermesSend — the host advertised hermesSend and is
+	// -interactive (Phase 3) — and is drawn disabled saying why
+	// (MirrorHermesNoSendNote), with no queue, otherwise.
 	Hermes bool
+	// HermesSend: a Hermes window whose host sends to Hermes.
+	HermesSend bool
 	// StepUp is the "Confirm it's you" wiring (stepup_confirm.go): a send
 	// refused as stale asks there — passkey or password — and retries. Unused
 	// (no dialog is drawn) on a read-only host, which cannot be sent to at all.
@@ -93,9 +96,8 @@ type MirrorViewView struct {
 const MirrorReadOnlyNote = "This host is read-only — its muster-mirror was not started with -interactive, so nothing can be sent from here."
 
 // MirrorHermesNoSendNote is a Hermes window's rendered view's composer, drawn
-// disabled: muster has no send path into Hermes yet, because Enter there can
-// answer a prompt Hermes is showing (docs/design/hermes.md).
-const MirrorHermesNoSendNote = "muster does not send to Hermes yet: Enter there can answer a prompt Hermes is showing, such as a command approval. Type in the terminal."
+// disabled on a host that does not send to Hermes (docs/design/hermes.md).
+const MirrorHermesNoSendNote = "This host does not send to Hermes: its muster-mirror runs without -hermes-send, because Enter there can answer a prompt Hermes is showing, such as a command approval. Type in the terminal."
 
 // MirrorViewPage is the rendered view's document.
 //
@@ -113,10 +115,16 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 		Pinned: true}
 	working := "Claude is working…"
 	switch {
-	case v.Hermes:
+	case v.Hermes && !v.HermesSend:
 		working = "Hermes is working…"
 		composer.Placeholder, composer.Aria = "Message Hermes…", "Message Hermes in this session"
 		composer.Disabled, composer.DisabledPlaceholder, composer.Queue = MirrorHermesNoSendNote, "Sending to Hermes is not available", nil
+	case v.Hermes:
+		working = "Hermes is working…"
+		composer.Placeholder, composer.Aria = "Message Hermes…", "Message Hermes in this session"
+		if !v.Interactive {
+			composer.Disabled = MirrorReadOnlyNote
+		}
 	case !v.Interactive:
 		composer.Disabled = MirrorReadOnlyNote
 	}
@@ -187,8 +195,8 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 					Span(Class("animate-pulse"), g.Text(working)),
 				),
 				mirrorComposer(composer),
-				g.If(v.Interactive && !v.Hermes, confirmDialog(v.StepUp)),
-				g.If(v.Interactive && !v.Hermes, stepUpScript()),
+				g.If(v.Interactive && (!v.Hermes || v.HermesSend), confirmDialog(v.StepUp)),
+				g.If(v.Interactive && (!v.Hermes || v.HermesSend), stepUpScript()),
 				mirrorViewScript(),
 				// The question cards' poll and submit (mirror_ask.go).
 				askScript(),

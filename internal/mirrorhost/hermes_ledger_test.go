@@ -25,7 +25,13 @@ import (
 //     A fourth fails here until it is added on purpose; one fewer fails too;
 //  3. the tmux commands that put bytes into a pane ("paste-buffer") and drive
 //     its copy-mode ("send-keys") are spelled only in the functions listed.
-//     A new one fails here, so a new way to type cannot arrive unguarded.
+//     A new one fails here, so a new way to type cannot arrive unguarded;
+//  4. 🔴 THE ONE DELIBERATE EXCEPTION, ADDED ON PURPOSE (docs/design/hermes.md,
+//     Phase 3): the gated send into a Hermes pane does not go through
+//     typeInto — the guard refuses every Hermes pane — but through its own
+//     checks (hermes_send.go). So its typing primitives (pasteBracketed,
+//     pasteEnter) are called only by PastePane and SendHermes, SendHermes
+//     only by hostSide.hermesPaste, and hermesPaste only by hostSide.paste.
 func TestEveryWayThisHostTypesIntoAPaneGoesThroughTheHermesGuard(t *testing.T) {
 	fset := token.NewFileSet()
 	paths, err := filepath.Glob("*.go")
@@ -34,6 +40,7 @@ func TestEveryWayThisHostTypesIntoAPaneGoesThroughTheHermesGuard(t *testing.T) {
 	}
 	var guarded, unguarded []string
 	literals := map[string][]string{}
+	callers := map[string][]string{}
 	files := 0
 	for _, path := range paths {
 		if strings.HasSuffix(path, "_test.go") {
@@ -89,6 +96,10 @@ func TestEveryWayThisHostTypesIntoAPaneGoesThroughTheHermesGuard(t *testing.T) {
 						return true
 					}
 					switch sel.Sel.Name {
+					case "pasteBracketed", "pasteEnter", "SendHermes", "hermesPaste":
+						callers[sel.Sel.Name] = append(callers[sel.Sel.Name], where)
+					}
+					switch sel.Sel.Name {
 					case "PastePane", "Paste", "AnswerAsk":
 						switch {
 						case inTypeInto[x]:
@@ -123,8 +134,20 @@ func TestEveryWayThisHostTypesIntoAPaneGoesThroughTheHermesGuard(t *testing.T) {
 	if want := []string{"hostSide.answer", "hostSide.paste", "hostSide.paste"}; !slices.Equal(guarded, want) {
 		t.Fatalf("typeInto is called from %q; want exactly %q — update this ledger only for a NEW way of typing that goes through it", guarded, want)
 	}
+	for name, want := range map[string][]string{
+		"pasteBracketed": {"Tmux.PastePane", "Tmux.SendHermes"},
+		"pasteEnter":     {"Tmux.PastePane", "Tmux.SendHermes"},
+		"SendHermes":     {"hostSide.hermesPaste"},
+		"hermesPaste":    {"hostSide.paste"},
+	} {
+		got := slices.Clone(callers[name])
+		slices.Sort(got)
+		if !slices.Equal(got, want) {
+			t.Errorf("%s is called from %q; want exactly %q — the gated send is the one exception to typeInto, and only by these paths", name, got, want)
+		}
+	}
 	for s, want := range map[string][]string{
-		"paste-buffer": {"Tmux.PastePane", "Tmux.PastePane", "Tmux.RawPaste", "tmuxPane.Send"},
+		"paste-buffer": {"Tmux.RawPaste", "Tmux.pasteBracketed", "Tmux.pasteEnter", "tmuxPane.Send"},
 		"send-keys":    {"Tmux.CancelCopyMode", "Tmux.ScrollPane"},
 	} {
 		got := slices.Clone(literals[s])

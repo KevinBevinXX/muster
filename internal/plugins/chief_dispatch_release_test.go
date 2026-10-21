@@ -112,3 +112,51 @@ func deref(p *int64) any {
 	}
 	return *p
 }
+
+// TestChiefStartedAgentIsTheLatestUnreleasedStartsAgent: what a completed task
+// stops (ChiefStartedAgent). None for a task with no start, none for a start
+// that recorded no agent, the agent for a recorded start, none once that start
+// is released — never the older, released start's agent — and the new start's
+// agent once one is recorded. Another owner's start on the same task id is
+// never this owner's.
+func TestChiefStartedAgentIsTheLatestUnreleasedStartsAgent(t *testing.T) {
+	s, _, dsn := pgStore(t)
+	dbtest.OwnerExec(t, dsn, `DELETE FROM audit_log WHERE action LIKE 'task.chief_%'`)
+	const task, first, second, theirs = 680, 990011, 990012, 990013
+	want := func(label string, wantID int64, wantOK bool) {
+		t.Helper()
+		id, ok, err := s.ChiefStartedAgent(session(2), task)
+		if err != nil || ok != wantOK || id != wantID {
+			t.Fatalf("%s: (%d, %v, %v); want (%d, %v, nil)", label, id, ok, err, wantID, wantOK)
+		}
+	}
+	want("no start", 0, false)
+	// Another owner's start on the same task id.
+	if _, err := s.ReserveChiefDispatch(session(3), task, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RecordChiefDispatchAgent(session(3), task, theirs); err != nil {
+		t.Fatal(err)
+	}
+	want("another owner's start", 0, false)
+	if _, err := s.ReserveChiefDispatch(session(2), task, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	want("a start with no agent recorded", 0, false)
+	if err := s.RecordChiefDispatchAgent(session(2), task, first); err != nil {
+		t.Fatal(err)
+	}
+	want("the recorded start", first, true)
+	if wrote, err := s.ReleaseChiefDispatch(session(2), task, first); err != nil || !wrote {
+		t.Fatalf("release: %v %v", wrote, err)
+	}
+	want("after the release", 0, false)
+	if _, err := s.ReserveChiefDispatch(session(2), task, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	want("the new start before its agent", 0, false)
+	if err := s.RecordChiefDispatchAgent(session(2), task, second); err != nil {
+		t.Fatal(err)
+	}
+	want("the new start's agent", second, true)
+}
