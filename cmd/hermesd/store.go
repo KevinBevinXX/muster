@@ -58,8 +58,15 @@ type storeFile struct {
 	Sessions map[string]*session `json:"sessions"`
 }
 
-// store is the session map. Every method that changes it writes the file
-// before it returns, and returns the write's error.
+// store is the session map.
+//
+// 🔴 EVERY CHANGE IS WRITTEN TO DISK BEFORE IT REACHES MEMORY. A change is made
+// to a COPY of the map, the copy is written, and only a write that succeeded
+// replaces the map in memory (commit). A failed write leaves memory exactly as
+// the file is. Mutating memory first and writing second left, on a failed
+// write, an intent in memory that the turn had reported as never sent — and the
+// NEXT successful write (any session's) persisted it, so recovery then POSTed a
+// turn muster had been told was not sent.
 type store struct {
 	path string
 
@@ -89,13 +96,30 @@ func openStore(path string) (*store, error) {
 	return s, nil
 }
 
-// saveLocked writes the map. The caller holds mu.
-func (s *store) saveLocked() error {
-	b, err := json.MarshalIndent(storeFile{Version: 1, Sessions: s.sessions}, "", "  ")
+// commit applies mutate to a copy of the map; when mutate reports a change,
+// the copy is written and, only once the write succeeded, becomes the map. The
+// caller does not hold mu.
+func (s *store) commit(mutate func(next map[string]*session) (changed bool, err error)) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	next := make(map[string]*session, len(s.sessions))
+	for k, v := range s.sessions {
+		c := copySession(v)
+		next[k] = &c
+	}
+	changed, err := mutate(next)
+	if err != nil || !changed {
+		return err
+	}
+	b, err := json.MarshalIndent(storeFile{Version: 1, Sessions: next}, "", "  ")
 	if err != nil {
 		return err
 	}
-	return writeFileAtomic(s.path, b, 0o600)
+	if err := writeFileAtomic(s.path, b, 0o600); err != nil {
+		return err
+	}
+	s.sessions = next
+	return nil
 }
 
 // get returns a copy of the session for key, or ok=false.
@@ -133,94 +157,104 @@ func (s *store) keys() []string {
 // ensure returns the session for key, creating it — a fresh Hermes session id
 // under keyFP — when the map has none.
 func (s *store) ensure(key, keyFP string) (session, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if ss, ok := s.sessions[key]; ok {
-		return copySession(ss), nil
+	if ss, ok := s.get(key); ok {
+		return ss, nil
 	}
-	ss := &session{HermesID: newHermesSessionID(), KeyFP: keyFP}
-	s.sessions[key] = ss
-	return copySession(ss), s.saveLocked()
-}
-
-// beginIntent records in, as key's open intent, durably. It refuses when the
-// session already has one: that turn has not settled.
-func (s *store) beginIntent(key string, in intent) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	ss, ok := s.sessions[key]
-	if !ok {
-		return fmt.Errorf("hermesd: no session %q", key)
+	err := s.commit(func(next map[string]*session) (bool, error) {
+		if _, ok := next[key]; ok {
+			return false, nil
+		}
+		next[key] = &session{HermesID: newHermesSessionID(), KeyFP: keyFP}
+		return true, nil
+	})
+	if err != nil {
+		return session{}, err
 	}
-	if ss.Intent != nil {
-		return errSessionBusy
-	}
-	ss.Intent = &in
-	return s.saveLocked()
+	ss, _ := s.get(key)
+	return ss, nil
 }
 
 // errSessionBusy is beginIntent's refusal: the session's last turn has not
-// settled (it is still running in Hermes, or recovery is following it). It is
-// the ONE place the open-intent rule is checked; the turn answers 409 busy.
+// settled (it is still running in Hermes). It is the ONE place the open-intent
+// rule is checked; the turn answers 409 busy.
 var errSessionBusy = errors.New("a turn on this session has not settled yet (it is still running in Hermes)")
+
+// beginIntent records in as key's open intent, durably — or not at all. It
+// refuses when the session already has one: that turn has not settled.
+func (s *store) beginIntent(key string, in intent) error {
+	return s.commit(func(next map[string]*session) (bool, error) {
+		ss, ok := next[key]
+		if !ok {
+			return false, fmt.Errorf("hermesd: no session %q", key)
+		}
+		if ss.Intent != nil {
+			return false, errSessionBusy
+		}
+		ss.Intent = &in
+		return true, nil
+	})
+}
 
 // setRunID records the run the open intent (idempotency key idem) was admitted
 // as.
 func (s *store) setRunID(key, idem, runID string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	ss, ok := s.sessions[key]
-	if !ok || ss.Intent == nil || ss.Intent.IdempotencyKey != idem {
-		return nil
-	}
-	ss.Intent.RunID = runID
-	return s.saveLocked()
+	return s.commit(func(next map[string]*session) (bool, error) {
+		ss, ok := next[key]
+		if !ok || ss.Intent == nil || ss.Intent.IdempotencyKey != idem {
+			return false, nil
+		}
+		ss.Intent.RunID = runID
+		return true, nil
+	})
 }
 
 // closeIntent ends the open intent (idempotency key idem): its run, if it has
 // one, becomes the session's last run. A notice, when non-empty, is kept for
-// the session's next reply. Closing an intent that is no longer open is a no-op,
-// so a turn and a recovery watcher may both close the same one.
+// the session's next reply. Closing an intent that is no longer open is a no-op.
 func (s *store) closeIntent(key, idem, notice string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	ss, ok := s.sessions[key]
-	if !ok || ss.Intent == nil || ss.Intent.IdempotencyKey != idem {
-		return nil
-	}
-	if ss.Intent.RunID != "" {
-		ss.LastRunID = ss.Intent.RunID
-	}
-	ss.Intent = nil
-	ss.Notice = joinNotice(ss.Notice, notice)
-	return s.saveLocked()
+	return s.commit(func(next map[string]*session) (bool, error) {
+		ss, ok := next[key]
+		if !ok || ss.Intent == nil || ss.Intent.IdempotencyKey != idem {
+			return false, nil
+		}
+		if ss.Intent.RunID != "" {
+			ss.LastRunID = ss.Intent.RunID
+		}
+		ss.Intent = nil
+		ss.Notice = joinNotice(ss.Notice, notice)
+		return true, nil
+	})
 }
 
 // takeNotice returns and clears key's notice.
 func (s *store) takeNotice(key string) (string, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	ss, ok := s.sessions[key]
-	if !ok || ss.Notice == "" {
-		return "", nil
+	var n string
+	err := s.commit(func(next map[string]*session) (bool, error) {
+		ss, ok := next[key]
+		if !ok || ss.Notice == "" {
+			return false, nil
+		}
+		n, ss.Notice = ss.Notice, ""
+		return true, nil
+	})
+	if err != nil {
+		return "", err
 	}
-	n := ss.Notice
-	ss.Notice = ""
-	return n, s.saveLocked()
+	return n, nil
 }
 
 // retire maps key to a fresh Hermes session under keyFP, forgetting its last
-// run, and leaves notice for its next reply.
+// run (and any intent), and leaves notice for its next reply.
 func (s *store) retire(key, keyFP, notice string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	ss, ok := s.sessions[key]
-	if !ok {
-		return nil
-	}
-	ss.HermesID, ss.KeyFP, ss.LastRunID, ss.Intent = newHermesSessionID(), keyFP, "", nil
-	ss.Notice = joinNotice(ss.Notice, notice)
-	return s.saveLocked()
+	return s.commit(func(next map[string]*session) (bool, error) {
+		ss, ok := next[key]
+		if !ok {
+			return false, nil
+		}
+		ss.HermesID, ss.KeyFP, ss.LastRunID, ss.Intent = newHermesSessionID(), keyFP, "", nil
+		ss.Notice = joinNotice(ss.Notice, notice)
+		return true, nil
+	})
 }
 
 func joinNotice(a, b string) string {

@@ -55,6 +55,10 @@ func serve() error {
 		co.Logf = log.Printf
 		srv.checkout = co
 	}
+	if cfg.ModelBaseURL != "" {
+		log.Printf("hermesd: TEST-ONLY HERMESD_MODEL_BASE_URL is set: the model is %s, NOT OpenRouter "+
+			"(muster never sets this; only the image smoke test does)", cfg.ModelBaseURL)
+	}
 	srv.sup = newSupervisor(
 		func() (gatewayProc, error) {
 			return startGateway(cfg.HermesBin, cfg.HermesHome, gatewayEnv(cfg, os.Environ(), apiKey))
@@ -67,6 +71,7 @@ func serve() error {
 		},
 		srv.api.health, srv.recover, log.Printf,
 	)
+	srv.sup.beginRecovery = srv.resetRecovery
 	if cfg.Repo != "" {
 		srv.sup.set(stWaitingCheckout, "")
 	}

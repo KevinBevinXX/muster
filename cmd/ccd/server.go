@@ -18,6 +18,8 @@ import (
 	"sync"
 	"time"
 	"unicode"
+
+	"github.com/ZacxDev/muster/internal/podagent"
 )
 
 // terminal is the input side: how a prompt reaches the interactive session.
@@ -432,46 +434,9 @@ type responsesRequest struct {
 	Stream *bool           `json:"stream"`
 }
 
-type inputItem struct {
-	Type    string          `json:"type"`
-	Role    string          `json:"role"`
-	Content json.RawMessage `json:"content"`
-}
-
-// promptFrom extracts the LAST user message's text from `input`, which may be a
-// bare string or an array of items whose content is a string or an array of
-// {type: input_text|text, text} parts.
-func promptFrom(raw json.RawMessage) (string, error) {
-	var s string
-	if json.Unmarshal(raw, &s) == nil {
-		return s, nil
-	}
-	var items []inputItem
-	if err := json.Unmarshal(raw, &items); err != nil {
-		return "", errors.New("`input` is neither a string nor an array of items")
-	}
-	for i := len(items) - 1; i >= 0; i-- {
-		it := items[i]
-		if it.Role != "user" || (it.Type != "" && it.Type != "message") {
-			continue
-		}
-		if json.Unmarshal(it.Content, &s) == nil {
-			return s, nil
-		}
-		var parts []contentBlock
-		if json.Unmarshal(it.Content, &parts) != nil {
-			return "", errors.New("user message content is neither a string nor an array of parts")
-		}
-		var b strings.Builder
-		for _, p := range parts {
-			if p.Type == "input_text" || p.Type == "text" {
-				b.WriteString(p.Text)
-			}
-		}
-		return b.String(), nil
-	}
-	return "", errors.New("`input` carries no user message")
-}
+// promptFrom extracts the LAST user message's text from `input`
+// (internal/podagent.PromptFrom, shared with hermesd).
+func promptFrom(raw json.RawMessage) (string, error) { return podagent.PromptFrom(raw) }
 
 // sanitizePrompt folds line endings and refuses control characters; handleResponses
 // runs it BEFORE neutralizeInputMode, so the `!` check sees the text that will

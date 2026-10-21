@@ -9,6 +9,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/ZacxDev/muster/internal/podagent"
 )
 
 // The supervisor keeps ONE `hermes gateway run` running, in the pod: an exit is
@@ -47,8 +49,12 @@ const (
 	stReady           = "ready"
 	stRestarting      = "restarting"
 	stCrashLoop       = "crash_loop"
-	stEnvForbidden    = "env_forbidden"
-	stStopped         = "stopped"
+	// stRecoveryStuck: recovery has not finished within recoveryStuckAfter.
+	// /healthz fails, so the liveness probe restarts the pod; recovery keeps
+	// retrying meanwhile and the state returns to ready if it finishes.
+	stRecoveryStuck = "recovery_stuck"
+	stEnvForbidden  = "env_forbidden"
+	stStopped       = "stopped"
 )
 
 // supervisorState is what /healthz reports about the gateway.
@@ -62,7 +68,7 @@ type supervisorState struct {
 
 // failed reports whether the state fails /healthz: the latches only.
 func (s supervisorState) failed() bool {
-	return s.State == stCrashLoop || s.State == stEnvForbidden
+	return s.State == stCrashLoop || s.State == stEnvForbidden || s.State == stRecoveryStuck
 }
 
 type supervisor struct {
@@ -70,10 +76,13 @@ type supervisor struct {
 	prepare func() error                    // before every start: the .env check and the rendered config
 	healthy func(ctx context.Context) error // Hermes's GET /health
 	recover func(ctx context.Context) error // start-up recovery, after every start
+	// beginRecovery, when set, runs once before each gateway life's recovery.
+	beginRecovery func()
 
 	healthTimeout          time.Duration
 	healthPoll             time.Duration
 	recoverRetry           time.Duration
+	recoveryStuckAfter     time.Duration
 	stopGrace              time.Duration
 	backoffMin, backoffMax time.Duration
 	crashExits             int
@@ -95,7 +104,8 @@ func newSupervisor(start func() (gatewayProc, error), prepare func() error,
 	return &supervisor{
 		start: start, prepare: prepare, healthy: healthy, recover: recover, logf: logf,
 		healthTimeout: 2 * time.Minute, healthPoll: 250 * time.Millisecond, recoverRetry: 2 * time.Second,
-		stopGrace: 40 * time.Second, backoffMin: time.Second, backoffMax: 30 * time.Second,
+		recoveryStuckAfter: 5 * time.Minute,
+		stopGrace:          40 * time.Second, backoffMin: time.Second, backoffMax: 30 * time.Second,
 		crashExits: 5, crashWindow: 2 * time.Minute, now: time.Now,
 		st: supervisorState{State: stStarting}, epoch: context.Background(),
 	}
@@ -130,27 +140,16 @@ func (s *supervisor) currentEpoch() context.Context {
 func (s *supervisor) recordExit(status int, what string) (delay time.Duration, crash bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	now := s.now()
-	kept := s.exits[:0]
-	for _, t := range s.exits {
-		if now.Sub(t) < s.crashWindow {
-			kept = append(kept, t)
-		}
-	}
-	s.exits = append(kept, now)
+	var latched bool
+	s.exits, delay, latched = podagent.RecordExit(s.exits, s.now(), s.crashWindow, s.crashExits, s.backoffMin, s.backoffMax)
 	s.st.LastExit = &status
 	k := len(s.exits)
-	if k >= s.crashExits {
+	if latched {
 		s.st.State = stCrashLoop
 		s.st.Detail = fmt.Sprintf("the Hermes gateway exited %d times within %s (last: %s); not restarting it — "+
 			"/healthz now fails so Kubernetes restarts the pod", k, s.crashWindow, what)
 		return 0, true
 	}
-	delay = s.backoffMin
-	for i := 1; i < k && delay < s.backoffMax; i++ {
-		delay *= 2
-	}
-	delay = min(delay, s.backoffMax)
 	s.st.State = stRestarting
 	s.st.Detail = fmt.Sprintf("the Hermes gateway %s; restarting in %s", what, delay)
 	return delay, false
@@ -254,12 +253,20 @@ func (s *supervisor) bringUp(ctx context.Context, p gatewayProc, done <-chan str
 		}
 	}
 	s.set(stRecovering, "resolving runs a previous gateway left unsettled before accepting a turn")
+	if s.beginRecovery != nil {
+		s.beginRecovery()
+	}
+	began := s.now()
 	for {
 		err := s.recover(ctx)
 		if err == nil {
 			break
 		}
 		s.logf("hermesd: start-up recovery: %v; retrying in %s", err, s.recoverRetry)
+		if s.now().Sub(began) > s.recoveryStuckAfter {
+			s.set(stRecoveryStuck, fmt.Sprintf("start-up recovery has not finished in %s (last: %v); /healthz fails so "+
+				"Kubernetes restarts the pod", s.recoveryStuckAfter, err))
+		}
 		select {
 		case <-ctx.Done():
 			return

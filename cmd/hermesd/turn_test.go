@@ -221,7 +221,7 @@ func TestUnknownExecutionIsQueuedNotFailed(t *testing.T) {
 		t.Fatal(err)
 	}
 	prev := fake.admitUnknown(testAPIKey, sess.HermesID, "the turn that was killed")
-	s.store.sessions["sess-a"].LastRunID = prev
+	setLastRun(t, s, "sess-a", prev)
 	code, body := turn(t, s, "sess-a", "after the crash")
 	if code != http.StatusOK {
 		t.Fatalf("AN unknown_execution WAS REPORTED AS A FAILURE: %d %s", code, body)
@@ -297,13 +297,15 @@ func TestTheBearerIsRequired(t *testing.T) {
 	}
 }
 
-// An intent recovery is still following keeps its session busy (a new turn is
-// 409, never posted beside it); the session frees once the run settles.
+// An intent whose run is still going (recovery replayed it) keeps its session
+// busy: a new turn settles it first, finds the run running, and is 409, never
+// posted beside it. Once the run has ended, the next turn settles the intent
+// and runs — nothing follows the run in the background.
 func TestAnUnsettledIntentKeepsTheSessionBusy(t *testing.T) {
 	fake := newFakeHermes(t, testAPIKey)
 	s := newTestServer(t, fake, testAPIKey)
 	seedIntent(t, s, "sess-a", s.keyFP, "SLOW", s.now())
-	if err := s.recover(context.Background()); err != nil { // replays it and watches the slow run
+	if err := s.recover(context.Background()); err != nil { // replays it; the slow run keeps going
 		t.Fatal(err)
 	}
 	if code, body := turn(t, s, "sess-a", "meanwhile"); code != http.StatusConflict || failureType(t, body) != failBusy {
@@ -313,8 +315,11 @@ func TestAnUnsettledIntentKeepsTheSessionBusy(t *testing.T) {
 		t.Fatalf("%d POSTs; the busy turn must not be posted", n)
 	}
 	close(fake.release)
-	eventually(t, "the watched run settles", func() bool { ss, _ := s.store.get("sess-a"); return ss.Intent == nil })
-	if code, body := turn(t, s, "sess-a", "now"); code != http.StatusOK || !strings.Contains(replyText(t, body), "slow done") {
-		t.Fatalf("after it settled: %d %s", code, body)
+	eventually(t, "the slow run ends in Hermes", func() bool {
+		st, _ := fake.api(testAPIKey).getRun(context.Background(), "run_1")
+		return st.Status == "completed"
+	})
+	if code, body := turn(t, s, "sess-a", "now"); code != http.StatusOK || replyText(t, body) != "echo: now" {
+		t.Fatalf("after it ended: %d %s", code, body)
 	}
 }

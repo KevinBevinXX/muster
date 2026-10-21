@@ -24,7 +24,7 @@ func testConfig(t *testing.T) config {
 		HermesHome: filepath.Join(root, "data", "hermes"), StateDir: filepath.Join(root, "data", "hermesd"),
 		Workspace: filepath.Join(root, "data", "workspace"), Instructions: filepath.Join(root, "etc", "instructions.md"),
 		Listen: "127.0.0.1:0", APIPort: 8642, HermesBin: "hermes",
-		TurnTimeout: 10 * time.Second, RelayTimeout: 2 * time.Second,
+		RelayTimeout: 2 * time.Second,
 	}
 }
 
@@ -52,6 +52,7 @@ func newTestServerWith(t *testing.T, cfg config, fake *fakeHermes, key string) *
 	s.logf = t.Logf
 	s.relay.logf = t.Logf
 	s.watchPoll = 20 * time.Millisecond
+	s.turnTimeout = 10 * time.Second
 	return s
 }
 
@@ -77,7 +78,13 @@ func replyText(t *testing.T, body string) string {
 		}
 		_, data, _ := strings.Cut(block, "data: ")
 		var ev struct {
-			Response responseObject `json:"response"`
+			Response struct {
+				Output []struct {
+					Content []struct {
+						Text string `json:"text"`
+					} `json:"content"`
+				} `json:"output"`
+			} `json:"response"`
 		}
 		if err := json.Unmarshal([]byte(data), &ev); err != nil {
 			t.Fatalf("response.completed is not JSON: %v", err)
@@ -160,4 +167,15 @@ func eventually(t *testing.T, what string, ok func() bool) {
 		}
 	}
 	t.Fatalf("never: %s", what)
+}
+
+// setLastRun records runID as key's last run, durably, as a settled turn would.
+func setLastRun(t *testing.T, s *server, key, runID string) {
+	t.Helper()
+	if err := s.store.commit(func(next map[string]*session) (bool, error) {
+		next[key].LastRunID = runID
+		return true, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
 }

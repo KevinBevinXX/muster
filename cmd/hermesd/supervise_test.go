@@ -158,7 +158,7 @@ func TestRecoveryRunsOnEveryGatewayStart(t *testing.T) {
 	eventually(t, "first start ready", func() bool { return sup.state().State == stReady })
 
 	// The gateway is SIGKILLed mid-run: the session's last run is unknown.
-	s.store.sessions["sess-a"].LastRunID = fake.admitUnknown(testAPIKey, sess.HermesID, "in flight at the kill")
+	setLastRun(t, s, "sess-a", fake.admitUnknown(testAPIKey, sess.HermesID, "in flight at the kill"))
 	st.proc(0).exit <- 137
 	eventually(t, "second start ready", func() bool { return st.count() == 2 && sup.state().State == stReady })
 

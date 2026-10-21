@@ -30,8 +30,9 @@ func seedIntent(t *testing.T, s *server, key, keyFP, input string, at time.Time)
 // 🔴 RECOVERY REPLAYS AN UNRECORDED INTENT WITH THE SAME KEY AND THE SAME BYTES.
 // Hermes admitted the POST, then hermesd died before recording the run id. On
 // the next start the intent is re-posted byte for byte under its own key; Hermes
-// answers the run it already admitted, so the turn runs ONCE, and its outcome
-// lands on the session as a notice.
+// answers the run it already admitted, so the turn runs ONCE. Nothing follows
+// it in the background: the intent records the run and stays open, and the
+// session's next turn settles it (closes it once the run has ended) and runs.
 func TestRecoveryReplaysAnIntentWithTheSameKeyAndBytes(t *testing.T) {
 	fake := newFakeHermes(t, testAPIKey)
 	s := newTestServer(t, fake, testAPIKey)
@@ -50,10 +51,18 @@ func TestRecoveryReplaysAnIntentWithTheSameKeyAndBytes(t *testing.T) {
 	if n := fake.runCount(); n != 1 {
 		t.Fatalf("THE INTENT RAN %d TIMES", n)
 	}
-	eventually(t, "the replayed run settles", func() bool {
-		sess, _ := s.store.get("sess-a")
-		return sess.Intent == nil && sess.LastRunID == "run_1" && strings.Contains(sess.Notice, "echo: posted before the crash")
+	if sess, _ := s.store.get("sess-a"); sess.Intent == nil || sess.Intent.RunID != "run_1" {
+		t.Fatalf("after the replay the intent should record run_1 and stay open: %+v", sess.Intent)
+	}
+	eventually(t, "the replayed run ends in Hermes", func() bool {
+		st, _ := fake.api(testAPIKey).getRun(context.Background(), "run_1")
+		return st.Status == "completed"
 	})
+	code, body := turn(t, s, "sess-a", "next")
+	sess, _ := s.store.get("sess-a")
+	if code != http.StatusOK || replyText(t, body) != "echo: next" || sess.LastRunID != "run_2" || fake.runCount() != 2 {
+		t.Fatalf("the next turn did not settle the replayed intent and run: %d %s, last run %q, %d runs", code, body, sess.LastRunID, fake.runCount())
+	}
 }
 
 // An intent Hermes never saw is posted once by the replay (and runs once).
@@ -67,7 +76,9 @@ func TestRecoveryPostsAnIntentHermesNeverSaw(t *testing.T) {
 	if posts := fake.snapshotPosts(); len(posts) != 1 || posts[0].Key != in.IdempotencyKey || !bytes.Equal(posts[0].Body, in.Body) {
 		t.Fatalf("posts %+v", posts)
 	}
-	eventually(t, "it settles", func() bool { s2, _ := s.store.get("sess-a"); return s2.Intent == nil })
+	if s2, _ := s.store.get("sess-a"); s2.Intent == nil || s2.Intent.RunID != "run_1" || fake.runCount() != 1 {
+		t.Fatalf("intent %+v, %d run(s)", s2.Intent, fake.runCount())
+	}
 }
 
 // 🔴 PAST THE 24 h KEY RETENTION AN INTENT IS NEVER RE-POSTED: Hermes may have
@@ -107,7 +118,7 @@ func TestAKeyChangeResolvesThenRetires(t *testing.T) {
 	fake.messages[before.HermesID] = []map[string]any{{"role": "user", "content": "posted under the old key"}}
 	// A second old-key session with no intent, whose last run blocks it.
 	other, _ := s.store.ensure("sess-b", oldFP)
-	s.store.sessions["sess-b"].LastRunID = fake.admitUnknown(oldKey, other.HermesID, "blocked")
+	setLastRun(t, s, "sess-b", fake.admitUnknown(oldKey, other.HermesID, "blocked"))
 	// And one already under the current key, untouched.
 	cur, _ := s.store.ensure("sess-c", s.keyFP)
 
@@ -156,7 +167,7 @@ func TestRecoveryResolvesAnUnknownLastRun(t *testing.T) {
 	s := newTestServer(t, fake, testAPIKey)
 	sess, _ := s.store.ensure("sess-a", s.keyFP)
 	prev := fake.admitUnknown(testAPIKey, sess.HermesID, "killed")
-	s.store.sessions["sess-a"].LastRunID = prev
+	setLastRun(t, s, "sess-a", prev)
 	if err := s.recover(context.Background()); err != nil {
 		t.Fatal(err)
 	}

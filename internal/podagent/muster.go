@@ -34,51 +34,64 @@ const (
 // redirect, so a redirect here is something to refuse, not to follow.
 var NoRedirects = &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 
-// MusterGET reads one of muster's agent JSON routes into out. It is a GET and
-// files nothing.
-func MusterGET(ctx context.Context, base, token, path string, out any) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+path, nil)
+// MusterCall sends one request to muster's agent routes with the agent's own
+// token, decoding a 2xx JSON answer into out (when non-nil), and reports the
+// status. A non-2xx is NOT an error here: callers that branch on the status
+// (the approval relay) read it; MusterGET and MusterPOST turn it into one.
+// client nil is NoRedirects.
+func MusterCall(ctx context.Context, client *http.Client, method, base, token, path string, in, out any) (int, []byte, error) {
+	if client == nil {
+		client = NoRedirects
+	}
+	var rd io.Reader
+	if in != nil {
+		b, err := json.Marshal(in)
+		if err != nil {
+			return 0, nil, err
+		}
+		rd = bytes.NewReader(b)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, base+path, rd)
 	if err != nil {
-		return err
+		return 0, nil, err
 	}
 	req.Header.Set("X-Muster-Token", token)
-	resp, err := NoRedirects.Do(req)
+	if in != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	resp, err := client.Do(req)
 	if err != nil {
-		return fmt.Errorf("reaching muster: %w", err)
+		return 0, nil, fmt.Errorf("reaching muster: %w", err)
 	}
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if resp.StatusCode/100 != 2 {
-		return fmt.Errorf("muster answered %d: %s", resp.StatusCode, strings.TrimSpace(string(raw)))
+	if out != nil && resp.StatusCode/100 == 2 {
+		if err := json.Unmarshal(raw, out); err != nil {
+			return resp.StatusCode, raw, fmt.Errorf("muster's answer is not JSON: %w", err)
+		}
 	}
-	if err := json.Unmarshal(raw, out); err != nil {
-		return fmt.Errorf("muster's answer is not JSON: %w", err)
-	}
-	return nil
+	return resp.StatusCode, raw, nil
+}
+
+// MusterGET reads one of muster's agent JSON routes into out. It is a GET and
+// files nothing.
+func MusterGET(ctx context.Context, base, token, path string, out any) error {
+	return musterExpect2xx(MusterCall(ctx, nil, http.MethodGet, base, token, path, nil, out))
 }
 
 // MusterPOST sends a JSON body to one of muster's agent routes.
 func MusterPOST(ctx context.Context, base, token, path string, body any) error {
-	b, err := json.Marshal(body)
-	if err != nil {
+	return musterExpect2xx(MusterCall(ctx, nil, http.MethodPost, base, token, path, body, nil))
+}
+
+func musterExpect2xx(status int, raw []byte, err error) error {
+	if err != nil && status == 0 {
 		return err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+path, bytes.NewReader(b))
-	if err != nil {
-		return err
+	if status/100 != 2 {
+		return fmt.Errorf("muster answered %d: %s", status, strings.TrimSpace(string(raw)))
 	}
-	req.Header.Set("X-Muster-Token", token)
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := NoRedirects.Do(req)
-	if err != nil {
-		return fmt.Errorf("reaching muster: %w", err)
-	}
-	defer resp.Body.Close()
-	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
-	if resp.StatusCode/100 != 2 {
-		return fmt.Errorf("muster answered %d: %s", resp.StatusCode, strings.TrimSpace(string(raw)))
-	}
-	return nil
+	return err
 }
 
 // LastLines is the last n non-empty lines of s, joined with "; ", control

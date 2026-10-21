@@ -21,32 +21,52 @@ import (
 //     scoped by the key, so under a new key a re-post admits a SECOND run.
 //  2. Every session whose runs were posted under a different key is RETIRED:
 //     mapped to a fresh Hermes session. 🔴 RESOLVE FIRST, THEN RETIRE, so step
-//     1 reads the session the intent went to, not the fresh one. Under the new
-//     key hermesd cannot see whether an old run is `unknown` and blocking its
-//     session (GET and resolve-unknown answer only the owner, 404 otherwise),
-//     so it cannot retire only the blocked ones; a session that might be
-//     blocked for ever is worse than one that loses its history.
+//     1 reads the session the intent went to, not the fresh one.
 //  3. For every other session: its last run, when Hermes reports it `unknown`,
-//     is resolved (POST /v1/runs/{id}/resolve-unknown, outcome interrupted);
-//     an intent with a run id is followed (or closed, when it has ended); an
-//     intent still `posting` — a crash between the POST and recording its run
-//     id — is RE-POSTED with the SAME idempotency key and the SAME bytes, which
-//     Hermes answers with the run it already admitted (or admits it, when it
-//     never was). Never past the key retention (intentRetention): there a
-//     replay could start a second run, so it is resolved from the messages.
-//     A 409 idempotency_key_conflict is "may have run", and the intent closes.
+//     is resolved (resolve-unknown, outcome interrupted); an intent is settled
+//     (settleIntent): one whose run has ended is closed; one still `posting` —
+//     a crash between the POST and recording its run id — is RE-POSTED with
+//     the SAME idempotency key and the SAME bytes, which Hermes answers with
+//     the run it already admitted (or admits it, when it never was). Never past
+//     the key retention (intentRetention): there a replay could start a second
+//     run, so it is resolved from the messages instead. A 409
+//     idempotency_key_conflict is "may have run", and the intent closes.
 //
-// A run nobody is waiting for any more ends with a NOTICE on its session, said
-// at the start of the next reply there.
+// 🔴 NOTHING IS FOLLOWED IN THE BACKGROUND. A run recovery finds still going (a
+// replayed intent's) keeps its intent open, so its session answers busy; the
+// session's next turn settles it again (settleIntent, the same rules), and a
+// run that has ended then closes. Such a run's approvals are not relayed — no
+// person is waiting on that turn — so Hermes denies them at its own
+// approvals.timeout. (The earlier background watcher re-relayed approvals with
+// a fresh window and re-posted with no retention check; both are gone with it.)
+//
+// 🔴 RECOVERY IS BOUNDED. Every call has a deadline (recoveryCallTimeout). A
+// session whose recovery fails maxSessionRecoveryFailures times in one gateway
+// life is RETIRED with the reason, rather than retried for ever; and a gateway
+// whose recovery as a whole has not finished within recoveryStuckAfter turns
+// /healthz non-200 (supervise.go), so the liveness probe can act.
+//
+// A recovery decision about a turn nobody waits for any more (an old-key
+// intent, an intent past retention, a key conflict, a retired session) is a
+// NOTICE on its session, said at the start of the next reply there.
 
 // intentRetention is how long Hermes keeps an idempotency key (24 h). An
 // intent older than this is never re-posted.
 const intentRetention = 24 * time.Hour
 
+// recoveryCallTimeout bounds one recovery call to Hermes's API (a variable so a
+// test can shorten it).
+var recoveryCallTimeout = 15 * time.Second
+
+// maxSessionRecoveryFailures is how many failed recovery attempts one session
+// gets in one gateway life before it is retired.
+const maxSessionRecoveryFailures = 3
+
 const retiredNotice = "The previous Hermes session could not be recovered after the agent's API key changed; " +
 	"this turn starts a new session without its history."
 
 func (s *server) recover(ctx context.Context) error {
+	var failed []string
 	// 1. Intents under another key: resolved from the messages, never re-posted.
 	for _, key := range s.store.keys() {
 		sess, ok := s.store.get(key)
@@ -54,24 +74,25 @@ func (s *server) recover(ctx context.Context) error {
 			continue
 		}
 		notice, err := s.resolveFromMessages(ctx, sess)
-		if err != nil {
-			return err
+		if err == nil {
+			s.logf("hermesd: recovery: an intent on session %s was posted under another API key; not re-posted (%s)",
+				sess.HermesID, firstLine(notice))
+			err = s.store.closeIntent(key, sess.Intent.IdempotencyKey, notice)
 		}
-		s.logf("hermesd: recovery: an intent on session %s was posted under another API key; not re-posted (%s)",
-			sess.HermesID, firstLine(notice))
-		if err := s.store.closeIntent(key, sess.Intent.IdempotencyKey, notice); err != nil {
-			return err
+		if err != nil {
+			failed = append(failed, s.sessionFailed(key, err))
 		}
 	}
 	// 2. Sessions posted under another key are retired.
 	retired := 0
 	for _, key := range s.store.keys() {
 		sess, ok := s.store.get(key)
-		if !ok || sess.KeyFP == s.keyFP {
-			continue
+		if !ok || sess.KeyFP == s.keyFP || sess.Intent != nil {
+			continue // an old-key intent still open failed step 1, and is retried
 		}
 		if err := s.store.retire(key, s.keyFP, retiredNotice); err != nil {
-			return err
+			failed = append(failed, s.sessionFailed(key, err))
+			continue
 		}
 		retired++
 		s.logf("hermesd: recovery: retired session %s (posted under API key %s, now %s)", sess.HermesID, sess.KeyFP, s.keyFP)
@@ -79,63 +100,127 @@ func (s *server) recover(ctx context.Context) error {
 	if retired > 0 {
 		s.logf("hermesd: recovery: %d session(s) retired after an API key change", retired)
 	}
-	// 3. This key's sessions: unknown runs resolved, intents settled or replayed.
+	// 3. This key's sessions: unknown runs resolved, intents settled.
 	for _, key := range s.store.keys() {
-		if err := s.recoverSession(ctx, key); err != nil {
-			return err
+		if sess, ok := s.store.get(key); !ok || sess.KeyFP != s.keyFP {
+			continue
 		}
+		if err := s.recoverSession(ctx, key); err != nil {
+			failed = append(failed, s.sessionFailed(key, err))
+		}
+	}
+	var pending []string
+	for _, f := range failed {
+		if f != "" {
+			pending = append(pending, f)
+		}
+	}
+	if len(pending) > 0 {
+		return fmt.Errorf("%d session(s) not recovered yet: %s", len(pending), strings.Join(pending, "; "))
 	}
 	return nil
 }
 
+// sessionFailed counts one failed recovery of key. Past
+// maxSessionRecoveryFailures the session is retired with the reason, and ""
+// is returned (nothing left to retry); otherwise the reason, for the retry.
+func (s *server) sessionFailed(key string, cause error) string {
+	s.mu.Lock()
+	s.recoveryFailures[key]++
+	n := s.recoveryFailures[key]
+	s.mu.Unlock()
+	reason := fmt.Sprintf("%q: %v", key, cause)
+	if n < maxSessionRecoveryFailures {
+		return reason
+	}
+	notice := fmt.Sprintf("The previous Hermes session could not be recovered (%v); this turn starts a new session "+
+		"without its history, and your previous message %s.", cause, mayHaveRunText)
+	if err := s.store.retire(key, s.keyFP, notice); err != nil {
+		return reason + " (retiring it also failed: " + err.Error() + ")"
+	}
+	s.logf("hermesd: recovery: RETIRED session %q after %d failed recoveries: %v", key, n, cause)
+	s.mu.Lock()
+	delete(s.recoveryFailures, key)
+	s.mu.Unlock()
+	return ""
+}
+
+// recoverSession resolves key's unknown last run and settles its intent,
+// unless a turn is serving the session now.
 func (s *server) recoverSession(ctx context.Context, key string) error {
 	sess, ok := s.store.get(key)
 	if !ok {
 		return nil
 	}
 	if sess.LastRunID != "" {
-		if _, err := s.resolveIfUnknown(ctx, sess.LastRunID); err != nil && !isAPIError(err, http.StatusNotFound, "") {
+		cctx, cancel := context.WithTimeout(ctx, recoveryCallTimeout)
+		_, err := s.resolveIfUnknown(cctx, sess.LastRunID)
+		cancel()
+		if err != nil && !isAPIError(err, http.StatusNotFound, "") {
 			return fmt.Errorf("session %s: last run %s: %w", sess.HermesID, sess.LastRunID, err)
 		}
 	}
-	in := sess.Intent
-	if in == nil {
+	if sess.Intent == nil {
 		return nil
 	}
-	live := s.isLive(key)
+	if s.isLive(key) {
+		// The turn serving it closes it; a run it follows that was left unknown
+		// is resolved here, so the turn's poll sees it end.
+		if sess.Intent.RunID != "" {
+			cctx, cancel := context.WithTimeout(ctx, recoveryCallTimeout)
+			defer cancel()
+			if _, err := s.resolveIfUnknown(cctx, sess.Intent.RunID); err != nil && !isAPIError(err, http.StatusNotFound, "") {
+				return fmt.Errorf("session %s: run %s: %w", sess.HermesID, sess.Intent.RunID, err)
+			}
+		}
+		return nil
+	}
+	return s.recoverIntent(ctx, key, sess)
+}
+
+// settleIntent settles key's open intent for a turn that found one on its
+// session, by recovery's rules. Its errors are logged: the turn then answers
+// busy.
+func (s *server) settleIntent(ctx context.Context, key string) {
+	sess, ok := s.store.get(key)
+	if !ok || sess.Intent == nil || sess.Intent.KeyFP != s.keyFP {
+		return
+	}
+	if err := s.recoverIntent(ctx, key, sess); err != nil {
+		s.logf("hermesd: settle the open intent on %q: %v", key, err)
+	}
+}
+
+// recoverIntent settles sess's open intent (posted under the current key).
+func (s *server) recoverIntent(ctx context.Context, key string, sess session) error {
+	in := sess.Intent
+	cctx, cancel := context.WithTimeout(ctx, recoveryCallTimeout)
+	defer cancel()
 	if in.RunID != "" {
-		st, err := s.resolveIfUnknown(ctx, in.RunID)
+		st, err := s.resolveIfUnknown(cctx, in.RunID)
 		switch {
 		case isAPIError(err, http.StatusNotFound, ""):
-			if live {
-				return nil
-			}
 			return s.store.closeIntent(key, in.IdempotencyKey, "Your previous message's run ("+in.RunID+") is no longer known to Hermes; "+mayHaveRunText+".")
 		case err != nil:
 			return fmt.Errorf("session %s: run %s: %w", sess.HermesID, in.RunID, err)
-		case live:
-			return nil // the turn serving it closes it
 		case terminalStatus(st.Status):
-			return s.store.closeIntent(key, in.IdempotencyKey, outcomeNotice(in.RunID, st))
+			return s.store.closeIntent(key, in.IdempotencyKey, "")
 		}
-		go s.watch(s.watchContext(), key, in.IdempotencyKey, in.RunID)
-		return nil
-	}
-	if live {
-		return nil // the turn serving it is still posting; it replays itself
+		return nil // still running: the intent stays open
 	}
 	if s.now().Sub(in.At) > intentRetention {
-		notice, err := s.resolveFromMessages(ctx, sess)
+		notice, err := s.resolveFromMessages(cctx, sess)
 		if err != nil {
 			return err
 		}
 		s.logf("hermesd: recovery: an intent on session %s is older than %s; not re-posted", sess.HermesID, intentRetention)
 		return s.store.closeIntent(key, in.IdempotencyKey, notice)
 	}
-	return s.replay(ctx, key, *in)
+	return s.replay(cctx, key, *in)
 }
 
-// replay re-posts an intent exactly as it was first posted.
+// replay re-posts an intent exactly as it was first posted, and records the
+// run it was admitted as (whose intent then stays open until it ends).
 func (s *server) replay(ctx context.Context, key string, in intent) error {
 	runID, replayed, err := s.api.postRun(ctx, in.IdempotencyKey, in.Body)
 	switch {
@@ -151,11 +236,7 @@ func (s *server) replay(ctx context.Context, key string, in intent) error {
 		return fmt.Errorf("replay the intent on %s: %w", key, err)
 	}
 	s.logf("hermesd: recovery: re-posted an unrecorded intent as run %s (replayed=%t)", runID, replayed)
-	if err := s.store.setRunID(key, in.IdempotencyKey, runID); err != nil {
-		return err
-	}
-	go s.watch(s.watchContext(), key, in.IdempotencyKey, runID)
-	return nil
+	return s.store.setRunID(key, in.IdempotencyKey, runID)
 }
 
 // resolveFromMessages decides what to say about an intent that cannot be
@@ -164,7 +245,9 @@ func (s *server) replay(ctx context.Context, key string, in intent) error {
 func (s *server) resolveFromMessages(ctx context.Context, sess session) (string, error) {
 	var req runRequest
 	_ = json.Unmarshal(sess.Intent.Body, &req)
-	msgs, err := s.api.sessionMessages(ctx, sess.HermesID)
+	cctx, cancel := context.WithTimeout(ctx, recoveryCallTimeout)
+	defer cancel()
+	msgs, err := s.api.sessionMessages(cctx, sess.HermesID)
 	if err != nil && !isAPIError(err, http.StatusNotFound, "") {
 		return "", fmt.Errorf("session %s: read its messages: %w", sess.HermesID, err)
 	}
@@ -196,64 +279,6 @@ func messageText(c any) string {
 		return b.String()
 	}
 	return ""
-}
-
-// outcomeNotice says how a run nobody was waiting for ended.
-func outcomeNotice(runID string, st runStatus) string {
-	switch st.Status {
-	case "completed":
-		if st.Output == "" {
-			return "Your previous message's run (" + runID + ") completed while hermesd could not deliver it, with no answer text."
-		}
-		return "Your previous message's run (" + runID + ") completed while hermesd could not deliver it. Its reply:\n\n" + st.Output
-	case "failed":
-		return "Your previous message's run (" + runID + ") failed: " + st.Error
-	default:
-		return "Your previous message's run (" + runID + ") was interrupted (the Hermes gateway restarted) and did not finish."
-	}
-}
-
-// watch follows a run nobody is streaming until it ends, then closes its
-// intent with a notice. It stops with the gateway's epoch: the next start's
-// recovery picks the intent up again.
-func (s *server) watch(ctx context.Context, key, idem, runID string) {
-	sess, _ := s.store.get(key)
-	ap := newApprovals(s, runID, sess.HermesID)
-	defer ap.stop()
-	st, err := s.pollRun(ctx, runID, ap)
-	if err != nil {
-		return
-	}
-	if err := s.store.closeIntent(key, idem, outcomeNotice(runID, st)); err != nil {
-		s.logf("hermesd: close the intent of %s: %v", runID, err)
-	}
-}
-
-// watchIntent replays an intent whose POST could not be confirmed until it is
-// admitted (then watches its run) or refused.
-func (s *server) watchIntent(ctx context.Context, key, idem string) {
-	for {
-		sess, ok := s.store.get(key)
-		if !ok || sess.Intent == nil || sess.Intent.IdempotencyKey != idem || sess.Intent.RunID != "" {
-			return
-		}
-		if s.gatewayState().State == stReady {
-			if err := s.replay(ctx, key, *sess.Intent); err == nil {
-				return
-			}
-		}
-		if !sleepCtx(ctx, s.watchPoll) {
-			return
-		}
-	}
-}
-
-// watchContext is the context a watcher runs under: the current gateway's.
-func (s *server) watchContext() context.Context {
-	if s.sup == nil {
-		return context.Background()
-	}
-	return s.sup.currentEpoch()
 }
 
 func firstLine(s string) string {

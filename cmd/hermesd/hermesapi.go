@@ -11,15 +11,34 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 )
 
 // hermesAPI is Hermes's API server as hermesd uses it, at the pin (S6;
 // docs/design/hermes.md, "Mode: API server, driven by a supervisor"). It is on
 // 127.0.0.1 and every call carries the API key.
 type hermesAPI struct {
-	base   string
-	key    string
+	base string
+	key  string
+	// client carries every request/response call, bounded whole
+	// (apiCallTimeout): a gateway that accepts a connection and never answers
+	// cannot hang a turn, recovery or a health probe.
 	client *http.Client
+	// stream carries the SSE events stream, which lives as long as the run: it
+	// bounds the wait for the response HEADERS only; the turn's own deadline
+	// bounds the rest.
+	stream *http.Client
+}
+
+// apiCallTimeout bounds one non-streaming call to Hermes's API server.
+const apiCallTimeout = 30 * time.Second
+
+func newHermesAPI(base, key string) *hermesAPI {
+	return &hermesAPI{
+		base: base, key: key,
+		client: &http.Client{Timeout: apiCallTimeout},
+		stream: &http.Client{Transport: &http.Transport{ResponseHeaderTimeout: apiCallTimeout}},
+	}
 }
 
 // apiError is a non-2xx answer: Hermes's OpenAI-style error envelope
@@ -189,6 +208,12 @@ func (h *hermesAPI) answerApproval(ctx context.Context, runID string, a approval
 	return h.do(ctx, http.MethodPost, "/v1/runs/"+url.PathEscape(runID)+"/approval", body, nil, nil)
 }
 
+// stopRun is POST /v1/runs/{id}/stop: interrupt the run (the session
+// authority's stop, P:gateway/platforms/api_server_runs.py _handle_stop_run).
+func (h *hermesAPI) stopRun(ctx context.Context, runID string) error {
+	return h.do(ctx, http.MethodPost, "/v1/runs/"+url.PathEscape(runID)+"/stop", []byte("{}"), nil, nil)
+}
+
 // sessionMessage is one row of GET /api/sessions/{id}/messages.
 type sessionMessage struct {
 	Role    string `json:"role"`
@@ -222,7 +247,7 @@ func (h *hermesAPI) streamEvents(ctx context.Context, runID string, fn func(runE
 	}
 	req.Header.Set("Authorization", "Bearer "+h.key)
 	req.Header.Set("Accept", "text/event-stream")
-	resp, err := h.client.Do(req)
+	resp, err := h.stream.Do(req)
 	if err != nil {
 		return err
 	}

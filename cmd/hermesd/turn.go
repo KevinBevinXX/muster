@@ -19,10 +19,19 @@ import (
 //     EXACT body bytes, the API key's fingerprint — BEFORE the POST (store.go).
 //  2. POST /v1/runs with those bytes and the Idempotency-Key header.
 //  3. The run's events are read from its SSE stream: message.delta (text),
-//     tool.started / tool.completed (drawn in muster as native tool rows),
-//     approval.request (relayed to muster, answered with the exact body) and
-//     approval.settled, until a terminal event.
+//     tool.started / tool.completed / tool.failed (drawn in muster as native
+//     tool rows), approval.request (relayed to muster, answered with the exact
+//     body) and approval.settled, until a terminal event.
 //  4. The intent is closed; its run becomes the session's last run.
+//
+// 🔴 THE TURN BUDGET ENDS THE RUN. A run still going at turnTimeout is stopped
+// (POST /v1/runs/{id}/stop) and the turn answers a typed `turn_timeout` — never
+// left running with nobody following it (docs/design/hermes.md, the hermesd
+// table). The budget is the turn's own: it is NOT the muster request's. If
+// muster's request goes away (muster redeployed mid-turn) hermesd keeps
+// following the run in the same goroutine, with the same approval relays and
+// their original windows, until it ends or the budget stops it, and closes its
+// intent; only the reply has nowhere to go.
 //
 // 🔴 `run.failed {error: unknown_execution}` IS NOT A FAILURE. Measured at the
 // pin (S6): after a SIGKILL a run is left `unknown` and every later run on its
@@ -31,6 +40,13 @@ import (
 // unknown one is resolved. Reporting it as a failure would let the person resend
 // and run the turn twice; so hermesd resolves the predecessor and follows the
 // queued run to its real end.
+
+// turnTimeout is one turn's budget (muster's own client gives up five minutes
+// later: agents.HermesTurnTimeout).
+const turnTimeout = 30 * time.Minute
+
+// stopWait bounds how long a stopped run is followed to its terminal status.
+const stopWait = time.Minute
 
 // runRequest is the body of POST /v1/runs.
 type runRequest struct {
@@ -53,7 +69,7 @@ func (s *server) handleResponses(w http.ResponseWriter, r *http.Request) {
 		writeFailure(w, &failure{Status: http.StatusBadRequest, Type: failBadRequest, Message: "body: " + err.Error()})
 		return
 	}
-	prompt, err := promptFrom(req.Input)
+	prompt, err := podagent.PromptFrom(req.Input)
 	if err != nil {
 		writeFailure(w, &failure{Status: http.StatusBadRequest, Type: failBadRequest, Message: err.Error()})
 		return
@@ -78,14 +94,20 @@ func (s *server) handleResponses(w http.ResponseWriter, r *http.Request) {
 		writeFailure(w, f)
 		return
 	}
-	writeResponse(w, id, items, req.Stream == nil || *req.Stream)
+	podagent.WriteResponse(w, id, items, req.Stream == nil || *req.Stream)
 }
 
 // runTurn records the intent, posts it and follows the run to its end.
-func (s *server) runTurn(ctx context.Context, key, prompt string) ([]turnItem, string, *failure) {
+func (s *server) runTurn(reqCtx context.Context, key, prompt string) ([]podagent.ReplyItem, string, *failure) {
 	sess, err := s.store.ensure(key, s.keyFP)
 	if err != nil {
 		return nil, "", notReady("hermesd could not record the session: " + err.Error())
+	}
+	if sess.Intent != nil {
+		// An intent no turn is serving (its request went away before it could be
+		// closed, or its POST's answer was lost): settle it now, by the rules
+		// recovery uses, before refusing the turn as busy.
+		s.settleIntent(reqCtx, key)
 	}
 	if sess.KeyFP != s.keyFP {
 		// Recovery retires such a session before the gateway is ready; reaching
@@ -105,40 +127,36 @@ func (s *server) runTurn(ctx context.Context, key, prompt string) ([]turnItem, s
 		if errors.Is(err, errSessionBusy) {
 			return nil, "", &failure{Status: http.StatusConflict, Type: failBusy, Message: err.Error()}
 		}
-		// Nothing was posted: without the intent on the volume a crash could
-		// not be recovered, so the turn is not sent at all.
+		// Nothing was posted, and — the store writes before it changes memory —
+		// nothing of this turn remains: without the intent on the volume a crash
+		// could not be recovered, so the turn is not sent at all.
 		return nil, "", notReady("hermesd could not record the turn before sending it: " + err.Error())
 	}
 
-	tctx, cancel := context.WithTimeout(ctx, s.cfg.TurnTimeout)
+	// The turn's own budget, NOT bounded by the muster request: the run is
+	// followed to its end even when the caller has gone (see the file comment).
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(reqCtx), s.turnTimeout)
 	defer cancel()
-	runID, f := s.post(tctx, key, in)
+	runID, f := s.post(ctx, key, in)
 	if f != nil {
 		return nil, "", f
 	}
 	notice, _ := s.store.takeNotice(key)
-	res := s.follow(tctx, key, sess, runID)
-	if res.lost {
-		// The run outlived this request (the turn budget, or the caller went
-		// away): it keeps running in Hermes, the session stays busy, and a
-		// watcher closes the intent with what happened, for the next reply.
-		go s.watch(s.watchContext(), key, in.IdempotencyKey, runID)
-		if ctx.Err() == nil {
-			return nil, "", &failure{Status: http.StatusGatewayTimeout, Type: failTurnTimeout,
-				Message: fmt.Sprintf("the Hermes run %s did not finish within %s; it is still running, and its outcome "+
-					"will be reported on this session's next reply", runID, s.cfg.TurnTimeout)}
-		}
-		return nil, "", &failure{Status: http.StatusBadGateway, Type: failMayHaveRun, Message: "the request ended: " + mayHaveRunText}
+	res := s.follow(ctx, key, runID)
+	if res.timedOut {
+		res = s.stop(key, runID)
 	}
-	if err := s.store.closeIntent(key, in.IdempotencyKey, ""); err != nil {
-		s.logf("hermesd: close the intent of %s: %v", runID, err)
+	if res.settled {
+		if err := s.store.closeIntent(key, in.IdempotencyKey, ""); err != nil {
+			s.logf("hermesd: close the intent of %s: %v", runID, err)
+		}
 	}
 	if res.fail != nil {
 		return nil, "", res.fail
 	}
 	items := res.items
 	if notice != "" {
-		items = append([]turnItem{{Text: notice}}, items...)
+		items = append([]podagent.ReplyItem{{Text: notice}}, items...)
 	}
 	return items, runID, nil
 }
@@ -178,30 +196,33 @@ func (s *server) post(ctx context.Context, key string, in intent) (string, *fail
 		return "", &failure{Status: http.StatusBadGateway, Type: failRuntime, Code: ae.Code, Message: "Hermes refused the run: " + ae.Error()}
 	}
 	// Ambiguous to the end. The intent stays open, so the run is never posted
-	// under another key; a background replay settles it.
-	go s.watchIntent(s.watchContext(), key, in.IdempotencyKey)
+	// under another key; the session's next turn, or recovery at the next
+	// gateway start, settles it (settleIntent, with the retention check).
 	return "", &failure{Status: http.StatusBadGateway, Type: failMayHaveRun,
 		Message: fmt.Sprintf("%s (posting the run failed: %v)", mayHaveRunText, lastErr)}
 }
 
 // runResult is how a followed run ended.
 type runResult struct {
-	items []turnItem
+	items []podagent.ReplyItem
 	fail  *failure
-	// lost: the run had not ended when ctx did.
-	lost bool
+	// settled: the run reached a terminal status (its intent may be closed).
+	settled bool
+	// timedOut: the turn budget ran out first.
+	timedOut bool
 }
 
 // follow reads the run's events to its end, falling back to polling its status
 // when the stream ends without a terminal event or the run is parked behind an
 // unknown one.
-func (s *server) follow(ctx context.Context, key string, sess session, runID string) runResult {
+func (s *server) follow(ctx context.Context, key, runID string) runResult {
+	sess, _ := s.store.get(key)
 	ap := newApprovals(s, runID, sess.HermesID)
 	defer ap.stop()
 	var (
-		items    []turnItem
+		items    []podagent.ReplyItem
 		text     strings.Builder
-		tools    = map[string]*toolCall{}
+		tools    = map[string]*podagent.NativeToolItem{}
 		terminal string
 		final    struct {
 			Output string `json:"output"`
@@ -210,7 +231,7 @@ func (s *server) follow(ctx context.Context, key string, sess session, runID str
 	)
 	flushText := func() {
 		if strings.TrimSpace(text.String()) != "" {
-			items = append(items, turnItem{Text: text.String()})
+			items = append(items, podagent.ReplyItem{Text: text.String()})
 		}
 		text.Reset()
 	}
@@ -233,10 +254,10 @@ func (s *server) follow(ctx context.Context, key string, sess session, runID str
 			if id == "" {
 				id = fmt.Sprintf("%s_%d", runID, len(items))
 			}
-			tc := &toolCall{ID: id, Name: t.Tool, Input: t.Preview, Status: "in_progress"}
-			tools[id] = tc
-			items = append(items, turnItem{Tool: tc})
-		case "tool.completed":
+			tc := podagent.NewNativeToolItem(id, t.Tool, t.Preview, "in_progress", "")
+			tools[id] = &tc
+			items = append(items, podagent.ReplyItem{Tool: &tc})
+		case "tool.completed", "tool.failed":
 			var t struct {
 				ToolCallID string `json:"tool_call_id"`
 				Error      bool   `json:"error"`
@@ -244,7 +265,7 @@ func (s *server) follow(ctx context.Context, key string, sess session, runID str
 			_ = json.Unmarshal(ev.Raw, &t)
 			if tc := tools[t.ToolCallID]; tc != nil {
 				tc.Status = "completed"
-				if t.Error {
+				if t.Error || ev.Event == "tool.failed" {
 					tc.Status = "failed"
 				}
 			}
@@ -266,18 +287,18 @@ func (s *server) follow(ctx context.Context, key string, sess session, runID str
 		}
 		return true
 	})
-	if err != nil {
+	if err != nil && ctx.Err() == nil {
 		s.logf("hermesd: the event stream of %s ended: %v; following its status instead", runID, err)
 	}
 	if terminal == "failed" && strings.Contains(final.Error, "unknown_execution") {
-		s.logf("hermesd: run %s is queued behind an unknown execution on session %s; resolving it", runID, sess.HermesID)
+		s.logf("hermesd: run %s is queued behind an unknown execution; resolving it", runID)
 		s.resolvePredecessor(ctx, key)
 		terminal = ""
 	}
 	if terminal == "" {
 		st, err := s.pollRun(ctx, runID, ap)
 		if err != nil {
-			return runResult{lost: true}
+			return runResult{timedOut: true}
 		}
 		terminal, final.Output, final.Error = st.Status, st.Output, st.Error
 		text.Reset() // the polled status carries the final output
@@ -289,31 +310,46 @@ func (s *server) follow(ctx context.Context, key string, sess session, runID str
 			text.WriteString(final.Output)
 		}
 		flushText()
-		hasText := false
 		for _, it := range items {
 			if it.Tool == nil {
-				hasText = true
+				return runResult{items: items, settled: true}
 			}
 		}
-		if !hasText {
-			return runResult{fail: &failure{Status: http.StatusBadGateway, Type: failEmptyReply,
-				Message: "the Hermes run completed with no answer text"}}
-		}
-		return runResult{items: items}
+		return runResult{settled: true, fail: &failure{Status: http.StatusBadGateway, Type: failEmptyReply,
+			Message: "the Hermes run completed with no answer text"}}
 	case "failed":
-		return runResult{fail: classifyRunFailure(final.Error)}
+		return runResult{settled: true, fail: classifyRunFailure(final.Error)}
 	default: // cancelled, interrupted
 		msg := "the Hermes run was interrupted"
 		if final.Error != "" {
 			msg += ": " + final.Error
 		}
-		return runResult{fail: &failure{Status: http.StatusBadGateway, Type: failInterrupted, Message: msg}}
+		return runResult{settled: true, fail: &failure{Status: http.StatusBadGateway, Type: failInterrupted, Message: msg}}
 	}
 }
 
+// stop ends a run that outlasted the turn budget: POST /v1/runs/{id}/stop, then
+// its status followed (for stopWait) to the terminal one, so the intent closes.
+// The turn answers turn_timeout either way; a run that would not settle keeps
+// its intent open, and the session's next turn (or recovery) settles it.
+func (s *server) stop(key, runID string) runResult {
+	ctx, cancel := context.WithTimeout(context.Background(), stopWait)
+	defer cancel()
+	timeout := &failure{Status: http.StatusGatewayTimeout, Type: failTurnTimeout,
+		Message: fmt.Sprintf("the Hermes run %s did not finish within %s and was stopped", runID, s.turnTimeout)}
+	if err := s.api.stopRun(ctx, runID); err != nil {
+		s.logf("hermesd: stop run %s at the turn budget: %v", runID, err)
+	}
+	if _, err := s.pollRun(ctx, runID, nil); err != nil {
+		s.logf("hermesd: run %s did not settle within %s of its stop; its intent stays open", runID, stopWait)
+		return runResult{fail: timeout}
+	}
+	return runResult{settled: true, fail: timeout}
+}
+
 // pollRun reads the run's status until it is terminal or ctx ends, relaying the
-// approvals it is waiting on. Errors reading it (the gateway restarting) are
-// waited out.
+// approvals it is waiting on (ap nil relays none). Errors reading it (the
+// gateway restarting) are waited out.
 func (s *server) pollRun(ctx context.Context, runID string, ap *approvals) (runStatus, error) {
 	for {
 		var st struct {
@@ -329,7 +365,7 @@ func (s *server) pollRun(ctx context.Context, runID string, ap *approvals) (runS
 				return st.runStatus, nil
 			}
 			for _, p := range st.Pending {
-				if p.Kind == "approval" {
+				if p.Kind == "approval" && ap != nil {
 					if p.ExecutionGeneration == "" {
 						p.ExecutionGeneration = st.ExecutionGeneration
 					}
@@ -375,7 +411,8 @@ func (s *server) resolveIfUnknown(ctx context.Context, runID string) (runStatus,
 	return st, nil
 }
 
-// approvals relays one run's approval requests, each at most once.
+// approvals relays one run's approval requests, each at most once, each with
+// the relay window counted from when hermesd first saw it.
 type approvals struct {
 	s                *server
 	runID, sessionID string
@@ -389,8 +426,8 @@ func newApprovals(s *server, runID, sessionID string) *approvals {
 	return &approvals{s: s, runID: runID, sessionID: sessionID, started: map[string]context.CancelFunc{}}
 }
 
-// start relays a, unless it already is: muster's answer (or hermesd's own deny)
-// is sent with the exact body the pin accepts.
+// start relays req, unless it already is: muster's answer (or hermesd's own
+// deny) is sent with the exact body the pin accepts.
 func (a *approvals) start(req approvalRequest) {
 	if req.PromptID == "" {
 		return
@@ -403,11 +440,12 @@ func (a *approvals) start(req approvalRequest) {
 	ctx, cancel := context.WithCancel(context.Background())
 	a.started[req.PromptID] = cancel
 	a.mu.Unlock()
+	seen := a.s.now()
 	a.wg.Add(1)
 	go func() {
 		defer a.wg.Done()
 		choice := "deny"
-		if a.s.relay.decide(ctx, req, a.s.cfg.Workspace, a.sessionID) == relayApprove {
+		if a.s.relay.decide(ctx, req, seen, a.s.cfg.Workspace, a.sessionID) == relayApprove {
 			choice = "once"
 		}
 		if ctx.Err() != nil {

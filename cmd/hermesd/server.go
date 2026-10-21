@@ -41,11 +41,16 @@ type server struct {
 	// checkout is the agent's repository; nil when it was given none.
 	checkout *podagent.Checkout
 
-	// watchPoll is how often a run nobody is streaming is read.
+	// watchPoll is how often a run's status is read when its stream cannot be.
 	watchPoll time.Duration
+	// turnTimeout is one turn's budget (turnTimeout; shorter in tests).
+	turnTimeout time.Duration
 
 	mu   sync.Mutex
 	live map[string]bool // muster session keys with a turn being served now
+	// recoveryFailures counts failed recoveries per session in this gateway
+	// life (sessionFailed); reset at every gateway start.
+	recoveryFailures map[string]int
 	// closing is set when hermesd is shutting down: turns are refused.
 	closing bool
 }
@@ -53,9 +58,9 @@ type server struct {
 func newServer(cfg config, bearer, apiKey string, st *store) *server {
 	return &server{
 		cfg: cfg, bearer: bearer, store: st, keyFP: keyFingerprint(apiKey),
-		api:   &hermesAPI{base: cfg.apiBase(), key: apiKey, client: &http.Client{}},
-		relay: newRelay(cfg), logf: log.Printf, now: time.Now, watchPoll: 2 * time.Second,
-		live: map[string]bool{},
+		api:   newHermesAPI(cfg.apiBase(), apiKey),
+		relay: newRelay(cfg), logf: log.Printf, now: time.Now, watchPoll: 2 * time.Second, turnTimeout: turnTimeout,
+		live: map[string]bool{}, recoveryFailures: map[string]int{},
 	}
 }
 
@@ -90,7 +95,7 @@ func (s *server) readiness() string {
 	switch st := s.gatewayState(); st.State {
 	case stReady:
 		return ""
-	case stRecovering:
+	case stRecovering, stRecoveryStuck:
 		return "the Hermes gateway is recovering: runs a previous gateway left unsettled are being resolved " +
 			"before any turn is accepted"
 	default:
@@ -153,51 +158,6 @@ type responsesRequest struct {
 	Stream *bool           `json:"stream"`
 }
 
-type inputItem struct {
-	Type    string          `json:"type"`
-	Role    string          `json:"role"`
-	Content json.RawMessage `json:"content"`
-}
-
-type contentBlock struct {
-	Type string `json:"type"`
-	Text string `json:"text"`
-}
-
-// promptFrom extracts the LAST user message's text from `input`: a bare string,
-// or items whose content is a string or {type: input_text|text, text} parts.
-func promptFrom(raw json.RawMessage) (string, error) {
-	var str string
-	if json.Unmarshal(raw, &str) == nil {
-		return str, nil
-	}
-	var items []inputItem
-	if err := json.Unmarshal(raw, &items); err != nil {
-		return "", errors.New("`input` is neither a string nor an array of items")
-	}
-	for i := len(items) - 1; i >= 0; i-- {
-		it := items[i]
-		if it.Role != "user" || (it.Type != "" && it.Type != "message") {
-			continue
-		}
-		if json.Unmarshal(it.Content, &str) == nil {
-			return str, nil
-		}
-		var parts []contentBlock
-		if json.Unmarshal(it.Content, &parts) != nil {
-			return "", errors.New("user message content is neither a string nor an array of parts")
-		}
-		var b strings.Builder
-		for _, p := range parts {
-			if p.Type == "input_text" || p.Type == "text" {
-				b.WriteString(p.Text)
-			}
-		}
-		return b.String(), nil
-	}
-	return "", errors.New("`input` carries no user message")
-}
-
 // claim marks key's session as served by this process; false when it already
 // is (a second muster request on the same session).
 func (s *server) claim(key string) bool {
@@ -220,6 +180,14 @@ func (s *server) isLive(key string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.live[key]
+}
+
+// resetRecovery starts a gateway life's recovery afresh: every session gets
+// its maxSessionRecoveryFailures again.
+func (s *server) resetRecovery() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.recoveryFailures = map[string]int{}
 }
 
 func (s *server) shutdown() {

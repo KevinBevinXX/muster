@@ -55,7 +55,11 @@ type fakeHermes struct {
 	messages  map[string][]map[string]any
 	gets      []string // run ids read with GET /v1/runs/{id}
 	healthy   bool
-	release   chan struct{}
+	stops     []string // run ids POSTed to /stop
+	// hangGets makes GET /v1/runs/{id} hang (a gateway that accepted the
+	// connection and never answers); failGets answers it 500.
+	hangGets, failGets bool
+	release            chan struct{}
 	// onPost runs for every POST /v1/runs before it is admitted.
 	onPost func(fakePost)
 	// dropAnswers drops the HTTP answer of the next N admitted POSTs (the run IS
@@ -82,8 +86,13 @@ type fakeRun struct {
 	admission                 string
 	gen                       int
 
-	mu       sync.Mutex
-	status   string
+	mu     sync.Mutex
+	status string
+	// pending is the run's pending_controls while it waits on an approval, in
+	// the pin's shape (P:gateway/session_pending_controls.py register):
+	// {kind, prompt_id, execution_generation, command, description, choices}.
+	pending  []map[string]any
+	stopped  chan struct{} // closed by POST /v1/runs/{id}/stop
 	output   string
 	errText  string
 	events   []map[string]any
@@ -104,7 +113,7 @@ func newFakeHermes(t *testing.T, key string) *fakeHermes {
 }
 
 func (f *fakeHermes) api(key string) *hermesAPI {
-	return &hermesAPI{base: f.srv.URL, key: key, client: &http.Client{}}
+	return newHermesAPI(f.srv.URL, key)
 }
 
 func (r *fakeRun) emit(ev map[string]any) {
@@ -190,11 +199,28 @@ func (f *fakeHermes) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodPost && r.URL.Path == "/v1/runs":
 		f.handlePost(w, r, scope)
 	case r.Method == http.MethodGet && len(parts) == 3 && parts[1] == "runs":
-		f.handleGet(w, parts[2], scope)
+		f.handleGet(w, r, parts[2], scope)
 	case r.Method == http.MethodGet && len(parts) == 4 && parts[3] == "events":
 		f.handleEvents(w, r, parts[2], scope)
 	case r.Method == http.MethodPost && len(parts) == 4 && parts[3] == "approval":
 		f.handleApproval(w, r, parts[2], scope)
+	case r.Method == http.MethodPost && len(parts) == 4 && parts[3] == "stop":
+		f.mu.Lock()
+		f.stops = append(f.stops, parts[2])
+		f.mu.Unlock()
+		run, ok := f.owned(parts[2], scope)
+		if !ok {
+			f.jsonErr(w, http.StatusNotFound, "not_found", "not_found")
+			return
+		}
+		run.mu.Lock()
+		select {
+		case <-run.stopped:
+		default:
+			close(run.stopped)
+		}
+		run.mu.Unlock()
+		_ = json.NewEncoder(w).Encode(map[string]any{"run_id": parts[2], "status": "stopping"})
 	case r.Method == http.MethodPost && len(parts) == 4 && parts[3] == "resolve-unknown":
 		f.handleResolve(w, r, parts[2], scope)
 	case r.Method == http.MethodGet && len(parts) == 4 && parts[0] == "api" && parts[3] == "messages":
@@ -261,7 +287,7 @@ func (f *fakeHermes) handlePost(w http.ResponseWriter, r *http.Request, scope st
 	}
 	id := fmt.Sprintf("run_%d", len(f.order)+1)
 	run := &fakeRun{id: id, scope: scope, session: req.SessionID, input: req.Input, admission: "adm_" + id, gen: 1,
-		status: "running", notify: make(chan struct{}), approval: make(chan string, 1), resolved: make(chan struct{})}
+		status: "running", notify: make(chan struct{}), approval: make(chan string, 1), resolved: make(chan struct{}), stopped: make(chan struct{})}
 	// The run a new one on this session would park behind.
 	var blocker *fakeRun
 	for i := len(f.order) - 1; i >= 0; i-- {
@@ -325,6 +351,28 @@ func (f *fakeHermes) script(run *fakeRun, blocker *fakeRun) {
 		run.emit(map[string]any{"event": "tool.completed", "tool": "terminal", "duration": 0.1, "error": choice != "once", "tool_call_id": "call_1"})
 		run.emit(map[string]any{"event": "message.delta", "delta": "choice was " + choice})
 		run.finish("completed", map[string]any{"output": "choice was " + choice})
+	case strings.HasPrefix(in, "POLLAPPROVE "):
+		// The stream drops before the approval is announced on it; the approval
+		// is visible only in the run's pending_controls.
+		run.mu.Lock()
+		run.closed, run.status = true, "waiting_for_approval"
+		run.pending = []map[string]any{{"kind": "approval", "prompt_id": "prompt-" + run.id, "execution_generation": run.gen,
+			"command": strings.TrimPrefix(in, "POLLAPPROVE "), "description": "recursive delete", "choices": []string{"once", "deny", "session", "always"}}}
+		close(run.notify)
+		run.notify = make(chan struct{})
+		run.mu.Unlock()
+		choice := <-run.approval
+		run.mu.Lock()
+		run.pending, run.status, run.output = nil, "completed", "polled choice was "+choice
+		run.mu.Unlock()
+	case in == "HANG":
+		run.emit(map[string]any{"event": "message.delta", "delta": "working for ever"})
+		<-run.stopped
+		run.finish("cancelled", map[string]any{"error": "Stop requested via API"})
+	case strings.HasPrefix(in, "TOOLFAIL"):
+		run.emit(map[string]any{"event": "tool.started", "tool": "terminal", "preview": "false", "tool_call_id": "call_tf"})
+		run.emit(map[string]any{"event": "tool.failed", "tool": "terminal", "tool_call_id": "call_tf"})
+		run.finish("completed", map[string]any{"output": "the tool failed"})
 	case in == "SLOW":
 		run.emit(map[string]any{"event": "message.delta", "delta": "working"})
 		<-f.release
@@ -352,10 +400,21 @@ func (r *fakeRun) finish0(status string, fields map[string]any) {
 	r.mu.Unlock()
 }
 
-func (f *fakeHermes) handleGet(w http.ResponseWriter, id, scope string) {
+func (f *fakeHermes) handleGet(w http.ResponseWriter, r *http.Request, id, scope string) {
 	f.mu.Lock()
 	f.gets = append(f.gets, id)
 	f.mu.Unlock()
+	f.mu.Lock()
+	hang, fail := f.hangGets, f.failGets
+	f.mu.Unlock()
+	if hang {
+		<-r.Context().Done() // until the caller gives up
+		return
+	}
+	if fail {
+		f.jsonErr(w, http.StatusInternalServerError, "storage_unavailable", "storage_unavailable")
+		return
+	}
 	run, ok := f.owned(id, scope)
 	if !ok {
 		f.jsonErr(w, http.StatusNotFound, "run_not_found", "Run not found: "+id)
@@ -363,9 +422,13 @@ func (f *fakeHermes) handleGet(w http.ResponseWriter, id, scope string) {
 	}
 	run.mu.Lock()
 	defer run.mu.Unlock()
+	pending := []any{}
+	for _, p := range run.pending {
+		pending = append(pending, p)
+	}
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"run_id": id, "status": run.status, "session_id": run.session, "admission_id": run.admission,
-		"execution_generation": run.gen, "output": run.output, "error": run.errText, "pending_controls": []any{},
+		"execution_generation": run.gen, "output": run.output, "error": run.errText, "pending_controls": pending,
 	})
 }
 
@@ -478,7 +541,7 @@ func (f *fakeHermes) admitUnknown(scope, session, input string) string {
 	defer f.mu.Unlock()
 	id := fmt.Sprintf("run_%d", len(f.order)+1)
 	f.runs[id] = &fakeRun{id: id, scope: scope, session: session, input: input, admission: "adm_" + id, gen: 1,
-		status: "unknown", notify: make(chan struct{}), approval: make(chan string, 1), resolved: make(chan struct{}), closed: true}
+		status: "unknown", notify: make(chan struct{}), approval: make(chan string, 1), resolved: make(chan struct{}), stopped: make(chan struct{}), closed: true}
 	f.order = append(f.order, id)
 	return id
 }

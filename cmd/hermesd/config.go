@@ -20,17 +20,20 @@ import (
 // config is hermesd's environment, read once.
 type config struct {
 	HermesHome   string // HERMES_HOME
-	StateDir     string // hermesd's own state: the session map and the API key
+	StateDir     string // hermesd's own state: the session map and the API key (defaultStateDir; tests set it)
 	Workspace    string // terminal.cwd: the checkout when there is a repository
 	Instructions string // the instructions file, outside every volume
 	Repo         string
 	RepoBranch   string
 	Model        string
+	// ModelBaseURL replaces OpenRouter with an OpenAI-compatible base URL.
+	// 🔴 TEST-ONLY: it exists so the image smoke test runs the PRODUCTION image
+	// against a stub model. agentspec never sets it (a test pins that), and
+	// hermesd logs it at boot whenever it is set.
 	ModelBaseURL string
 	Listen       string
 	APIPort      int
-	HermesBin    string
-	TurnTimeout  time.Duration
+	HermesBin    string // the hermes binary on the image's PATH (tests set another)
 	RelayTimeout time.Duration
 	ConnectURL   string // muster's connector surface, "" when not offered
 	AgentToken   string
@@ -66,7 +69,7 @@ var hermesdVoice = podagent.Voice{Who: "hermesd", Agent: "the Hermes agent", Age
 func configFromEnv() (config, error) {
 	c := config{
 		HermesHome:   envOr("HERMES_HOME", defaultHermesHome),
-		StateDir:     envOr("HERMESD_STATE_DIR", defaultStateDir),
+		StateDir:     defaultStateDir,
 		Workspace:    envOr("HERMESD_WORKSPACE", defaultWorkspace),
 		Instructions: envOr("HERMESD_INSTRUCTIONS", defaultInstructions),
 		Repo:         strings.TrimSpace(os.Getenv("HERMESD_REPO")),
@@ -74,13 +77,10 @@ func configFromEnv() (config, error) {
 		Model:        strings.TrimSpace(os.Getenv("HERMESD_MODEL")),
 		ModelBaseURL: strings.TrimSpace(os.Getenv("HERMESD_MODEL_BASE_URL")),
 		Listen:       envOr("HERMESD_LISTEN", defaultListen),
-		HermesBin:    envOr("HERMESD_HERMES_BIN", "hermes"),
+		HermesBin:    "hermes",
 	}
 	var err error
 	if c.APIPort, err = envPort("HERMESD_API_PORT", defaultAPIPort); err != nil {
-		return c, err
-	}
-	if c.TurnTimeout, err = envDuration("HERMESD_TURN_TIMEOUT", 30*time.Minute); err != nil {
 		return c, err
 	}
 	if c.RelayTimeout, err = envDuration("HERMESD_RELAY_TIMEOUT", defaultRelayTimeout); err != nil {
@@ -93,7 +93,7 @@ func configFromEnv() (config, error) {
 }
 
 func (c config) validate() error {
-	for name, p := range map[string]string{"HERMES_HOME": c.HermesHome, "HERMESD_STATE_DIR": c.StateDir,
+	for name, p := range map[string]string{"HERMES_HOME": c.HermesHome, "the state directory": c.StateDir,
 		"HERMESD_WORKSPACE": c.Workspace, "HERMESD_INSTRUCTIONS": c.Instructions} {
 		if !filepath.IsAbs(p) {
 			return fmt.Errorf("hermesd: %s=%q must be an absolute path", name, p)
@@ -308,11 +308,15 @@ func writeFileAtomic(path string, b []byte, mode os.FileMode) error {
 	if err := os.Rename(name, path); err != nil {
 		return err
 	}
-	if d, err := os.Open(filepath.Dir(path)); err == nil {
-		_ = d.Sync()
-		d.Close()
+	// The rename is durable only once the directory is: a crash after a
+	// rename that only reached the page cache could bring the OLD map back,
+	// intent and all.
+	d, err := os.Open(filepath.Dir(path))
+	if err != nil {
+		return err
 	}
-	return nil
+	defer d.Close()
+	return d.Sync()
 }
 
 // gatewayEnv is the environment the gateway is started with: hermesd's own,

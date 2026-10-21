@@ -257,18 +257,20 @@ them (above), and are not passed on to Hermes.
 | variable | default | required | what it does |
 |---|---|---|---|
 | `HERMES_HOME` | `/data/hermes` | no | Hermes's home on the volume. `hermesd` creates it, the agent shell's HOME (`$HERMES_HOME/home`) and `TMPDIR` (`$HERMES_HOME/cache/tmp`), renders `config.yaml` there on every start, and refuses to start Hermes while a `.env` exists there. |
-| `HERMESD_STATE_DIR` | `/data/hermesd` | no | `hermesd`'s own state: the API server key (`api-server-key`, mode 0600, generated once) and the session map with its intents (`sessions.json`). |
 | `HERMESD_WORKSPACE` | `/data/workspace` | no | The agent's working directory: the rendered `terminal.cwd`. muster sets it to the checkout (`/data/workspace/<name>`) for an agent dispatched with a repository. |
 | `HERMESD_REPO` | none | no | `owner/name`. `hermesd` clones `https://github.com/<it>` into `HERMESD_WORKSPACE` before it starts Hermes, as `ccd` does with `CCD_REPO`. |
 | `HERMESD_REPO_BRANCH` | the remote's default | no | The branch `hermesd` clones. |
 | `HERMESD_INSTRUCTIONS` | `/etc/hermesd/instructions.md` | no | muster's instructions, sent as `instructions` on every Hermes run. muster places the file outside every volume. An absent file is no instructions. |
 | `HERMESD_MODEL` | none | no | The OpenRouter model slug Hermes runs. muster sets it from the agent's model or `MUSTER_AGENT_MODEL`. |
-| `HERMESD_MODEL_BASE_URL` | none | no | An OpenAI-compatible base URL used instead of OpenRouter, for the image smoke test's stub model. Its key is still `${OPENROUTER_API_KEY}`, expanded by Hermes. |
+| `HERMESD_MODEL_BASE_URL` | none | no | **Test-only.** An OpenAI-compatible base URL used instead of OpenRouter, so the image smoke test runs the production image against a stub model. Its key is still `${OPENROUTER_API_KEY}`, expanded by Hermes. muster never sets it, and `hermesd` logs it at boot whenever it is set. |
 | `HERMESD_LISTEN` | `:18789` | no | muster's agent wire. |
 | `HERMESD_API_PORT` | `8642` | no | Hermes's API server, bound to `127.0.0.1` only. |
-| `HERMESD_HERMES_BIN` | `hermes` | no | The Hermes binary. |
-| `HERMESD_TURN_TIMEOUT` | `30m` | no | The deadline for a whole turn. A run still going after it keeps running; its outcome is reported on the session's next reply. |
 | `HERMESD_RELAY_TIMEOUT` | `240s` | no | How long an approval waits for muster's relay before `hermesd` answers `deny` itself. It must be shorter than the rendered `approvals.timeout` (300 s); `hermesd` refuses to start otherwise. |
+
+Fixed, not configurable: `hermesd`'s own state is `/data/hermesd` (the API server
+key, generated once, mode 0600, and the session map with its intents); the
+gateway is the image's `hermes`; a turn's budget is 30 minutes, after which
+`hermesd` stops the run (`POST /v1/runs/{id}/stop`) and answers `turn_timeout`.
 
 ## Test and e2e harness
 

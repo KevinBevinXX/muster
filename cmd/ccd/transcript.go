@@ -101,14 +101,6 @@ func (r turnResult) Text() string {
 	return b.String()
 }
 
-// contentBlock is one part of a REQUEST's user message (promptFrom). The
-// transcript's own records are decoded by internal/cctranscript, the one
-// decoder of that format in muster.
-type contentBlock struct {
-	Type string `json:"type"`
-	Text string `json:"text"`
-}
-
 // maxTranscriptLine bounds one JSONL record. A tool result can be large; a record
 // past this is skipped rather than failing the whole read.
 const maxTranscriptLine = 32 << 20
