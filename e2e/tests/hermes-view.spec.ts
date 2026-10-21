@@ -26,6 +26,8 @@ function row(r: Record<string, string>) {
   fs.appendFileSync(rows, JSON.stringify({ session: sid, ...r }) + '\n');
 }
 
+let hostEnv: NodeJS.ProcessEnv = {};
+
 test.beforeAll(async () => {
   test.setTimeout(180_000);
   await rig.start();
@@ -43,12 +45,13 @@ test.beforeAll(async () => {
   const hermesWindows = path.join(rig.dir, 'hermes-windows');
   // sess|id|index|active|activity|hermes session (empty: a stale breadcrumb)|status
   fs.writeFileSync(hermesWindows, `herm|@2|0|1|${t0 - 10}|${sid}|idle\nherm|@3|1|0|${t0 - 20}||\n`);
-  await rig.startHost({
+  hostEnv = {
     MUSTER_MIRROR_E2E_WINDOWS_FILE: windows,
     MUSTER_MIRROR_E2E_HERMES_WINDOWS_FILE: hermesWindows,
     MUSTER_MIRROR_E2E_HERMES_HOME: home,
     MUSTER_MIRROR_E2E_REFRESH: '200ms',
-  });
+  };
+  await rig.startHost(hostEnv);
 });
 
 test.afterAll(async () => {
@@ -91,7 +94,7 @@ test('a Hermes window opens a read-only rendered view of its conversation, live'
 
   // 🔴 Read-only: the composer is disabled and says why; there is no queue.
   await expect(page.locator('#mv-input')).toBeDisabled();
-  await expect(page.locator('#mv-readonly')).toContainText('muster does not send to Hermes yet');
+  await expect(page.locator('#mv-readonly')).toContainText('This host does not send to Hermes');
   await expect(page.locator('#mv-queue, #mv-queue-send')).toHaveCount(0);
 
   // A turn written while the view is open arrives without a reload.
@@ -103,4 +106,55 @@ test('a Hermes window opens a read-only rendered view of its conversation, live'
   // The stale window has no view: its address goes to the Terminal.
   await page.goto(rig.origin + viewOf('@3'));
   await expect(page).toHaveURL(/\/mirror\/terminal\?/);
+});
+
+// HERMES PHASE 3: the same window on a host that runs with -hermes-send (and
+// -interactive). The host's REAL side runs — the switch, the window
+// re-resolved, the server's since — and the fake plays Hermes's gated send
+// (cmd/muster-mirror/e2ehermes.go: idle at that since, then the user row).
+//
+// 🔴 REGRESSION TEST. On origin/main the composer stays disabled whatever the
+// host runs, and the hub refuses every paste into a Hermes window.
+test('on a host with -hermes-send, a Hermes window sends from its rendered view, and is refused while busy', async ({ page }) => {
+  // A fresh Hermes home: the fake creates state.db once per home.
+  home = fs.mkdtempSync(path.join(rig.dir, 'hermes-send-'));
+  rows = path.join(home, 'rows.jsonl');
+  row({ role: 'user', content: 'an earlier prompt' });
+  row({ role: 'assistant', content: 'An earlier reply.' });
+  await rig.startHost({ ...hostEnv, MUSTER_MIRROR_E2E_HERMES_HOME: home, MUSTER_MIRROR_INTERACTIVE: '1', MUSTER_MIRROR_HERMES_SEND: '1' });
+  await rig.login(page);
+  // The stopped host's listing outlives it for a while (offline retention),
+  // so "listed" is not "the new host is connected": wait for the view itself.
+  await expect
+    .poll(async () => {
+      await page.goto(rig.origin + viewOf('@2'));
+      return page.locator('#mv-input').count();
+    }, { message: `the Hermes view (mirror log:\n${rig.log})`, timeout: 30_000 })
+    .toBe(1);
+  const input = page.locator('#mv-input');
+  await expect(input, `the composer (mirror log:\n${rig.log})`).toBeEnabled({ timeout: 20_000 });
+  await expect(page.locator('#mv-readonly')).toHaveCount(0);
+  await expect(input).toHaveAttribute('placeholder', 'Message Hermes…');
+
+  const sends: number[] = [];
+  page.on('response', (r) => {
+    if (new URL(r.url()).pathname === '/mirror/view/send') sends.push(r.status());
+  });
+  await input.fill('hello Hermes, from muster');
+  await page.locator('#mv-send').click();
+  await expect(input).toHaveValue('');
+  const log = page.locator('#mv-log');
+  await expect(log.locator('[data-bubble="user"]').last()).toContainText('hello Hermes, from muster', { timeout: 20_000 });
+  expect(sends).toEqual([204]);
+
+  // Busy: refused at the hub, saying why; nothing reaches Hermes.
+  const hermesWindows = path.join(rig.dir, 'hermes-windows');
+  fs.writeFileSync(hermesWindows, `herm|@2|0|1|${t0 - 10}|${sid}|busy\nherm|@3|1|0|${t0 - 20}||\n`);
+  await expect.poll(async () => {
+    await input.fill('while Hermes works');
+    await page.locator('#mv-send').click();
+    return (await page.locator('#mv-note').textContent()) ?? '';
+  }, { timeout: 15_000 }).toContain('Hermes is working');
+  expect(fs.readFileSync(path.join(home, 'rows.jsonl'), 'utf8')).not.toContain('while Hermes works');
+  fs.writeFileSync(hermesWindows, `herm|@2|0|1|${t0 - 10}|${sid}|idle\nherm|@3|1|0|${t0 - 20}||\n`);
 });

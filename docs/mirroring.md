@@ -244,18 +244,19 @@ read-only viewer can see. It does not limit an attached interactive client.
 With `-interactive`, both views get a message box. Typing into one requires a
 recent sign-in. See [sending-and-step-up.md](sending-and-step-up.md).
 
-### muster never pastes into Hermes
+### muster pastes into Hermes only through its gated send
 
 🔴 The host refuses to type into a pane that runs
-[Hermes](design/hermes.md). On Hermes's approval prompt, a pasted message
-followed by Enter **approves the command**, whatever the message says. This
-covers every way muster types into a pane: the Terminal view's message box,
-the Rendered view's send, and an answer typed into Claude Code's question
-picker. Nothing reaches the pane, and the page says why, whether or not script
-ran: "Not sent: Hermes runs in this pane…". Type into Hermes in the terminal
-itself (Live keys, or the terminal on the host). Sending to Hermes from its
-own rendered view is planned for a later release, with its own checks; until
-then, muster has no send path into Hermes.
+[Hermes](design/hermes.md), except through the one gated send described in
+[Sending to a Hermes window](#sending-to-a-hermes-window--hermes-send). On
+Hermes's approval prompt, a pasted message followed by Enter **approves the
+command**, whatever the message says. This covers every other way muster types
+into a pane: the Terminal view's message box, a Claude Code send, and an
+answer typed into Claude Code's question picker. Nothing reaches the pane, and
+the page says why, whether or not script ran: "Not sent: Hermes runs in this
+pane…". Type into Hermes in the terminal itself (Live keys, or the terminal on
+the host), or send from its window's rendered view on a host that runs with
+`-hermes-send`.
 
 The host decides this itself, by what runs in the pane at the moment it
 types. It does not depend on the server's version. It walks the pane's process
@@ -273,6 +274,13 @@ these:
   server, whose programs the host cannot see from this pane, so the host
   refuses rather than guess. The message says so.
 
+When no process matches, the host also looks at the pane's **screen**: one
+showing Hermes's input area (its status bar's `☤`, two rules around a `❯`
+line) is refused too. That catches a Hermes run over `ssh` or `docker exec`
+while its chrome is drawn. It is a best-effort extra and misses a Hermes whose
+chrome is not drawn (for a moment after a resize, in a pane under 64 columns,
+or with its status bar turned off).
+
 The gateway counts, so a pane running `hermes gateway run` is refused too. So
 is a Claude Code pane whose tree holds Hermes: one where Hermes was started in
 the foreground after Claude Code (`claude &`, then `hermes chat`), or one where
@@ -286,7 +294,8 @@ whose Claude started a Hermes subprocess.
 
 Known gaps:
 
-- a Hermes run over `ssh` or `docker exec` inside the pane;
+- a Hermes run over `ssh` or `docker exec` inside the pane, whose chrome the
+  screen check above does not see;
 - a Hermes started under a renamed interpreter or from a copied tree;
 - a host with no `/proc`, which means macOS. There the host cannot see
   processes, and it types as before. Refusing every message there would take
@@ -301,17 +310,17 @@ listed as a **Hermes window**: a process named `hermes`, a Python running a
 (`#{pane_tty}`). A profile-launched `hermes -p <name> chat` is not recognised
 as one; the paste refusal above still covers it. Its card carries the kind
 chip **Hermes** (`kind:hermes` in the filter), whatever its pane's command
-reads. muster never sends into it:
-Send, Queue and Send now all refuse a Hermes window in this release.
+reads. muster sends into it only from its rendered view, and only on a host
+that runs with `-hermes-send` (below); elsewhere Send, Queue and Send now all
+refuse it.
 
-**Rendered view, read-only.** A Hermes window whose session the host can name
+**Rendered view.** A Hermes window whose session the host can name
 (below) opens in a Rendered view of its conversation, read from Hermes's
 session store as it is written: the prompts, the replies, the tool calls and
 their results, and a compact row for what Hermes adds itself (a process
-finishing, a model switch). Thinking is never shown. Its message box is drawn
-disabled and says why: muster does not send to Hermes yet, because Enter there
-can answer a prompt Hermes is showing, such as a command approval. There is no
-send queue. Terminal is one tap away, as for Claude Code. A compression that
+finishing, a model switch). Thinking is never shown. On a host without
+`-hermes-send` its message box is drawn disabled and says why, with no send
+queue. Terminal is one tap away, as for Claude Code. A compression that
 rewrites the conversation redraws the view from the start.
 
 **Which session.** The host finds the window's Hermes session from the
@@ -339,6 +348,63 @@ The host reads only these Hermes files: `state.db` (and its `-wal` and `-shm`),
 `auth.json`, `.env`, `config.yaml`, `pastes/`, `memories/`, `logs/` or
 `runtime/active_sessions.json`. The Hermes home is `$HERMES_HOME`, else
 `~/.hermes` (`-hermes-home` overrides it).
+
+#### Sending to a Hermes window (`-hermes-send`)
+
+Sending to Hermes is **off** unless the host's `muster-mirror` runs with
+`-interactive` **and** `-hermes-send` (`MUSTER_MIRROR_HERMES_SEND`). It needs
+the status hook (below). Turn it on per host, and only:
+
+- after `make test-livehermes` has ended with `HERMES HARNESS VERDICT: GREEN`
+  against the Hermes commit that host runs;
+- 🔴 **never on a host whose Hermes uses vi mode** (`display.vim_mode`). One
+  Escape there enters vi navigation, where the message's characters would be
+  read as commands. muster cannot read Hermes's `config.yaml`, so this is yours
+  to check. The host refuses when it sees a vi label in the status bar, but the
+  label is trimmed off once a session title fills the bar, so that is no gate.
+
+With it on, the window's rendered view offers Send, Queue and Send now. Every
+send goes through the host's **gated send**, in this order:
+
+1. muster refuses unless the window is **idle** (busy, waiting and unknown are
+   refused, saying why), and sends the status time it decided on;
+2. the host refuses a message whose text starts with `/` or `!` (Hermes would
+   run it as a command) or ends with `\` (Enter would continue the line), and
+   one so long, on one line, that Hermes's input box could not show it whole
+   (about 8 rows: shorten it, or send six or more lines, which Hermes collapses);
+3. the host checks again that Hermes is idle at exactly that time;
+4. it checks the screen: Hermes's status bar is there (it is blank while the
+   command palette or the model picker is open), no stash panel, no vi label,
+   no images attached, the idle prompt `❯ ` with an empty box, nothing below
+   it. Any approval, question, password prompt, confirm or running turn
+   changes that prompt, so it is refused here;
+5. it types three Escapes, 1.5 s apart, checking the screen after each, and
+   stops at the first that does not pass;
+6. it pastes the message, waits 150 ms, checks the status again and that the
+   box shows exactly the message (or Hermes's `[Pasted text #N: L lines → …]`
+   placeholder), then presses Enter;
+7. it waits up to 8 s for the message to appear in Hermes's session store.
+
+What you see: **Sent** (the message is in the conversation); **Not sent…
+Nothing was pasted** (refused at steps 1–5, possibly after some Escapes);
+**Pasted, not submitted** (the text is in Hermes's input box and Enter was not
+pressed: check the terminal); or **May have been submitted: check the
+conversation before sending again** (Enter was pressed and Hermes recorded no
+message in time). A send takes about five seconds. Right after a turn ends,
+Hermes can say it is idle while its screen still shows the turn finishing; a
+send in that moment is refused, and a queued message waits its idle time
+anyway.
+
+⚠ **Accepted residual risk** ([design](design/hermes.md#residual-cases-accepted)):
+a person opening an overlay at the terminal in the second before muster's
+Enter; an overlay a future Hermes adds before the harness is re-run; the stash
+panel with the status bar's stash field turned off or trimmed (the Escapes
+close it); and a turn Hermes starts on its own between the last check and
+Enter. Hermes's `/busy queue` (it saves `display.busy_input_mode: queue`)
+turns the last one into a queued message instead of an interrupted turn; with
+it, Hermes can still submit a queued message up to about 2 s after it says
+idle, under load. A pasted message of 2,000 characters or more is saved by
+Hermes in `~/.hermes/pastes/`; muster never reads that directory.
 
 #### Installing the Hermes status hook
 

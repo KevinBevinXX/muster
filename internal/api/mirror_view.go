@@ -78,12 +78,14 @@ func (s *Server) handleMirrorViewPage(w http.ResponseWriter, r *http.Request) {
 	v := ui.MirrorViewView{Host: h.Host, Session: e.Session, Window: e.Window, Title: mirrorTitle(e), Label: e.Label, Qualifier: e.Qualifier, Interactive: h.Interactive,
 		StepUp: s.stepUpView(r, ""), Nonce: newSendNonce(), Dictate: s.dictatePath(), Upload: s.uploadPath(),
 		FocusHistory: s.mirrorFocusHistoryPath(e.SessionKey()), DraftUser: draftUser(r.Context())}
-	// 🔴 A HERMES WINDOW's VIEW IS READ-ONLY (Phase 2): no queue, and the
-	// composer is drawn disabled. Every send path is refused again at the hub
-	// (the hermesSend switch) and on the host (the paste guard).
+	// 🔴 A HERMES WINDOW SENDS ONLY WHEN ITS HOST ADVERTISED hermesSend
+	// (Phase 3): otherwise its composer is drawn disabled, with no queue, and
+	// every send is refused again at the hub (the hermesSend switch) and on
+	// the host (its own switch, and the paste guard).
 	if e.HermesView() {
-		v.Hermes = true
-	} else {
+		v.Hermes, v.HermesSend = true, h.HermesSend && h.Interactive
+	}
+	if !v.Hermes || v.HermesSend {
 		v.Queue = s.mirrorComposerQueue(r.Context(), h, e, sendQueueEditing(r))
 	}
 	v.Notice, v.NoticeOK = composerNotice(r)
@@ -206,7 +208,9 @@ func refuseStale(w http.ResponseWriter) {
 }
 
 // mirrorSendTimeout bounds one send end to end (the host confirms the paste).
-const mirrorSendTimeout = 20 * time.Second
+// It is above the hub's wait for a Hermes window's gated send (three Escapes
+// at 1.5 s, the paste and its checks, up to 8 s for the confirming row).
+const mirrorSendTimeout = 50 * time.Second
 
 // handleMirrorViewSend is POST /mirror/view/send (host, session, window,
 // text): paste the text into the window's CLAUDE pane, the way ccd hands an
@@ -456,7 +460,17 @@ func (s *Server) mirrorDeliver(ctx context.Context, w http.ResponseWriter, r *ht
 			return
 		}
 		status, notice, msg := http.StatusBadGateway, noticeFailed, err.Error()
+		var notIdle *mirror.HermesNotIdleError
+		var pr *mirror.PasteRefusedError
 		switch {
+		case errors.As(err, &notIdle):
+			// The hub's idle gate for a Hermes window: nothing was sent.
+			status, notice, msg = http.StatusConflict, hermesNotIdleNotices[notIdle.Status], notIdle.Error()
+		case errors.As(err, &pr) && hermesSendNotices[pr.Refusal] != "":
+			// The host's gated send: its own words, and a notice that says the
+			// same when the browser posted the form. Pasted-not-submitted and
+			// may-have-been-submitted are said as such, never as "not sent".
+			status, notice, msg = http.StatusConflict, hermesSendNotices[pr.Refusal], pr.Why
 		case mirror.PasteGuardRefusal(err) != "":
 			// The host's Hermes paste guard: its own words, without this
 			// side's "the host refused the message:" in front, and a notice

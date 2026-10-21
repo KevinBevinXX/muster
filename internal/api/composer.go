@@ -80,6 +80,14 @@ const (
 	noticeHermesWaitingNow = "hermes-waiting-now"
 	noticeHermesBusyNow    = "hermes-busy-now"
 	noticeHermesUnknownNow = "hermes-unknown-now"
+	// A Hermes window's Send (Phase 3): the hub's idle gate, and the host's
+	// gated send by how it ended.
+	noticeHermesBusy        = "hermes-busy"
+	noticeHermesWaiting     = "hermes-waiting"
+	noticeHermesUnknown     = "hermes-unknown"
+	noticeHermesNotSent     = "hermes-not-sent"
+	noticeHermesPasted      = "hermes-pasted"
+	noticeHermesUnconfirmed = "hermes-unconfirmed"
 	// The host's Hermes paste guard (mirror.PasteRefusal*).
 	noticeHermes      = "hermes"
 	noticeMultiplexer = "multiplexer"
@@ -108,6 +116,23 @@ var pasteGuardNotices = map[string]string{
 	mirror.PasteRefusalUnchecked:   noticeUnchecked,
 }
 
+// hermesNotIdleNotices is the notice for each status the hub's idle gate
+// refuses a Hermes send in ("" unknown).
+var hermesNotIdleNotices = map[string]string{
+	mirror.StatusBusy:    noticeHermesBusy,
+	mirror.StatusWaiting: noticeHermesWaiting,
+	"":                   noticeHermesUnknown,
+}
+
+// hermesSendNotices is the notice for each way the host's gated send into
+// Hermes can end short of "sent" (mirror.PasteRefusalHermes*).
+var hermesSendNotices = map[string]string{
+	mirror.PasteRefusalHermesNotSubmitted: noticeHermesNotSent,
+	mirror.PasteRefusalHermesSuperseded:   noticeHermesNotSent,
+	mirror.PasteRefusalHermesPasted:       noticeHermesPasted,
+	mirror.PasteRefusalHermesUnconfirmed:  noticeHermesUnconfirmed,
+}
+
 // ComposerNoticeAgain is what a send that came back as a GET is told: it was
 // not delivered (its body did not survive the sign-in it was sent through).
 const ComposerNoticeAgain = "You were signed in again on the way, so that message was not sent. Send it again."
@@ -134,7 +159,7 @@ var composerNotices = map[string]struct {
 	noticeFailed:            {"Not sent: the message could not be delivered.", false},
 	noticeNotRunning:        {AgentNotRunningNotice, false},
 	noticeNoGateway:         {"Not sent: this server has no agent gateway to deliver a message through.", false},
-	noticeQueued:            {"Queued: it is sent when Claude Code has been idle for a while, even if you close this page.", true},
+	noticeQueued:            {"Queued: it is sent when the session has been idle for a while, even if you close this page.", true},
 	noticeQueueOff:          {"Not queued: muster cannot tell when this Claude Code session is idle, so it cannot queue for it. Send it now, or upgrade muster-mirror.", false},
 	noticeQueueFull:         {"Not queued: " + strings.TrimPrefix(sendqueue.ErrFull.Error(), "sendqueue: ") + ".", false},
 	noticeCancelled:         {"Cancelled: that queued message will not be sent.", true},
@@ -151,6 +176,12 @@ var composerNotices = map[string]struct {
 	noticeHermesBusyNow:     {SendQueueHermesBusyNow, false},
 	noticeHermesUnknownNow:  {SendQueueHermesUnknownNow, false},
 	noticeSendNowFailed:     {"Not sent: the message could not be delivered. Its row in the queue says why.", false},
+	noticeHermesBusy:        {mirror.HermesBusyText, false},
+	noticeHermesWaiting:     {mirror.HermesWaitingText, false},
+	noticeHermesUnknown:     {mirror.HermesUnknownText, false},
+	noticeHermesNotSent:     {"Not sent: Hermes's screen or status was not safe to send into. Nothing was pasted.", false},
+	noticeHermesPasted:      {"Pasted, not submitted: the text is in Hermes's input box, and Enter was not pressed. Check the terminal.", false},
+	noticeHermesUnconfirmed: {"May have been submitted: check the conversation before sending again.", false},
 	noticeHermes:            {mirror.PasteRefusedHermesText, false},
 	noticeMultiplexer:       {mirror.PasteRefusedMultiplexerText, false},
 	noticeUnchecked:         {mirror.PasteRefusedUncheckedText, false},

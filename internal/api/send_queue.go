@@ -129,13 +129,20 @@ func (s *Server) resolveSendQueueTarget(w http.ResponseWriter, r *http.Request, 
 }
 
 // mirrorQueueOff is why a mirrored entry cannot be queued for, "" when it can:
-// the host must report Claude Code's status, and the window must run it.
+// the host must report the agent's status, and the window must run Claude
+// Code — or Hermes, on a host that advertised hermesSend (Hermes Phase 3;
+// the delivery then goes through the hub's idle gate and the host's gated
+// send).
 func mirrorQueueOff(h mirror.HostView, e mirror.SessionView) string {
 	switch {
 	case !h.Online:
 		return unprefixed(mirror.ErrHostOffline)
 	case !h.StatusReport || h.Windows == nil:
 		return unprefixed(mirror.ErrNoStatusReport)
+	case e.HermesView() && h.HermesSend:
+		return ""
+	case e.HermesView():
+		return unprefixed(mirror.ErrHermesSendOff)
 	case !e.Claude:
 		return SendQueueNotClaude
 	}
@@ -764,6 +771,10 @@ func (s *Server) sendQueueProbe(ctx context.Context, h sendqueue.Head) sendqueue
 		return sendqueue.AgentState{Why: unprefixed(st.Unknown)}
 	case st.Status == mirror.StatusIdle:
 		return sendqueue.AgentState{Idle: true, Since: st.Since, Observed: st.Observed, Pasted: st.Pasted}
+	case st.Runtime == mirror.RuntimeHermes && st.Status == mirror.StatusWaiting:
+		return sendqueue.AgentState{Why: "Hermes is waiting for you (an approval or a question)."}
+	case st.Runtime == mirror.RuntimeHermes:
+		return sendqueue.AgentState{Why: "Hermes is working."}
 	case st.Status == mirror.StatusWaiting:
 		return sendqueue.AgentState{Why: "Claude Code is waiting for you (a prompt or a question)."}
 	}

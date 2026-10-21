@@ -150,3 +150,33 @@ func hermesWindowsE2E(context.Context) []mirrorhost.WindowInfo {
 	}
 	return out
 }
+
+// SendHermes implements mirrorhost.HermesSender for the browser suite: the
+// host's gated send with the fake playing Hermes. The REAL host side runs
+// first (the -hermes-send switch, the window re-resolved through the real
+// listing, the request's since); here the status is re-checked as the real
+// send does — idle at exactly the server's since, else superseded — and a
+// message that passes is written as the user row Hermes would write
+// (rows.jsonl), which the real reader then shows. The screen, the Escapes
+// and the database confirm are the live harness's (`make test-livehermes`).
+func (w windowFake) SendHermes(ctx context.Context, req mirrorhost.HermesSendRequest) error {
+	ap, err := req.Status(ctx)
+	if err != nil || ap.Pane != req.Pane {
+		return &mirrorhost.HermesSendError{Kind: mirrorhost.HermesSuperseded, Why: "the window is gone or no longer runs Hermes"}
+	}
+	if ap.Status != mirror.StatusIdle || ap.StatusSince != req.Since {
+		return &mirrorhost.HermesSendError{Kind: mirrorhost.HermesSuperseded, Why: "Hermes's status changed after muster decided to send"}
+	}
+	if why := mirrorhost.HermesTextRefusal(req.Text); why != "" {
+		return &mirrorhost.HermesSendError{Kind: mirrorhost.HermesNotSubmitted, Why: why}
+	}
+	home := os.Getenv("MUSTER_MIRROR_E2E_HERMES_HOME")
+	b, _ := json.Marshal(map[string]string{"session": ap.Gen, "role": "user", "content": strings.TrimSpace(req.Text)})
+	f, err := os.OpenFile(filepath.Join(home, "rows.jsonl"), os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		return &mirrorhost.HermesSendError{Kind: mirrorhost.HermesNotSubmitted, Why: "the fake could not write the row"}
+	}
+	defer f.Close()
+	_, _ = f.Write(append(b, '\n'))
+	return nil
+}
