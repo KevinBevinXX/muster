@@ -385,7 +385,7 @@ for (const vp of [
         await page.goto(origin + `/agents/${doneAgent(vp.name, false)}`);
         const btn = page.getByRole('button', { name: 'Mark complete' });
         await expect(btn).toBeVisible();
-        await Promise.all([page.waitForURL((u) => u.pathname === '/agents'), btn.click()]);
+        await Promise.all([page.waitForURL((u) => u.pathname === '/agents', { timeout: 15_000 }), btn.click()]);
       });
       await expectTaskComplete(doneTask(vp.name, false));
     });

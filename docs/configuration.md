@@ -262,6 +262,8 @@ build tag, which the Playwright suite uses. The shipped binaries do not read the
 | `MUSTER_E2E_DELETE` | off | no | (`e2e/mkchat`) `1` deletes that agent instead of creating it. |
 | `MUSTER_E2E_FOCUS` | none | no | (`e2e/mkchat`) A JSON array of `{subject, title, description, history}` (or `{subject, error}`, a failed refresh's reason; `history` writes that many earlier focuses first, for the focus history): session focus to write for the agent it creates (`"self"`) or for a mirrored session (`"mirror:<claude session id>"`), used by the focus spec. Deleting also deletes the mirrored ones it names. |
 | `MUSTER_E2E_DISPLAY_NAME` | none | no | (`e2e/mkchat`) The agent's display name; `chief` makes it the chief panel's agent. |
+| `MUSTER_E2E_ACTIVE_MINUTES_AGO` | none | no | (`e2e/mkchat`) Backdates the agent's activity (its row's `created_at`/`updated_at` and every message) to that many minutes ago, so a spec knows where it sorts on the Agents list. |
+| `MUSTER_E2E_TASK` | none | no | (`e2e/mkchat`) Also creates a `ready_for_review` task with this title as the agent's source task (its page then shows Mark complete). Deleting with it set deletes that task too. |
 | `MUSTER_E2E_THREADS` | off | no | (`e2e/mkchat`) `1` reads several threads (title, age, messages) from stdin instead of one message list. |
 | `MUSTER_E2E_KIND` | the default kind | no | (`e2e/mkchat`) The agent's kind, e.g. `claude-code`. |
 | `MUSTER_E2E_CC_ACCOUNT` | none | no | (`e2e/mkchat`) The Claude account a `claude-code` agent names. Only a name: nothing is provisioned. |
