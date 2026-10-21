@@ -58,6 +58,27 @@ func TestCheckoutReadsTheRepoStateFromHealthz(t *testing.T) {
 			}
 		})
 	}
+	// 🔴 A redirect is answered as what it is, never followed: the target of it
+	// says "ready" and must not be read.
+	var followed bool
+	elsewhere := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		followed = true
+		_, _ = w.Write([]byte(`{"ok":true,"repo":{"state":"ready"}}`))
+	}))
+	defer elsewhere.Close()
+	redirecting := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, elsewhere.URL+"/healthz", http.StatusFound)
+	}))
+	defer redirecting.Close()
+	gw := newGateway(t, redirecting)
+	target, err := gw.Resolve(context.Background(), agents.Agent{ID: 4, Name: "shoal-agent", HooksToken: "tok-shoal"})
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if got, err := gw.Checkout(context.Background(), target); err == nil || !strings.Contains(err.Error(), "answered 302") || followed {
+		t.Fatalf("a redirecting /healthz: Checkout = %+v, %v (followed=%t); want an error naming the 302, not followed", got, err, followed)
+	}
+
 	// A Target that was never resolved names nothing and is refused, not dialled.
 	if _, err := (&Gateway{client: http.DefaultClient}).Checkout(context.Background(), Target{}); err == nil {
 		t.Fatal("a zero Target was read")

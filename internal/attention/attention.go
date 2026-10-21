@@ -216,8 +216,9 @@ const (
 	// DeliveryDelivered: the turn completed in DeliveredSession.
 	DeliveryDelivered Delivery = "delivered"
 	// DeliveryUnconfirmed: the turn failed after the text may have reached the
-	// agent, or its lease lapsed mid-turn. Never resent unless the operator
-	// retries it (RetryDelivery).
+	// agent, its lease lapsed mid-turn, or it was still queued a day on. Never
+	// resent unless the operator retries it (RetryDelivery) — and not even
+	// then once the asker has read it (MarkWaited moves it to waited).
 	DeliveryUnconfirmed Delivery = "unconfirmed"
 	// DeliveryWaited: the asker read the answer through attention_wait.
 	DeliveryWaited Delivery = "waited"
@@ -349,8 +350,9 @@ type Store interface {
 	// --- the answer's delivery (migration 0031) ---
 
 	// MarkWaited records that the asker read ask id's answer through
-	// attention_wait: a queued, pull or in-flight delivery becomes
-	// DeliveryWaited (an in-flight one loses its lease), so no turn is pushed.
+	// attention_wait: a queued, pull, in-flight or unconfirmed delivery becomes
+	// DeliveryWaited (an in-flight one loses its lease), so no turn is pushed
+	// and no Retry can queue one.
 	// It reports whether it moved the row.
 	MarkWaited(ctx context.Context, id int64) (bool, error)
 	// ClaimDelivery takes ask id's delivery lease for by, for lease: one
@@ -620,6 +622,11 @@ func cutDetail(s string) string { return truncateRunes(strings.TrimSpace(s), Max
 
 // MarkWaited runs under the caller's principal (the asker's tool call).
 //
+// 🔴 IT ALSO TAKES AN UNCONFIRMED ONE (#152 r2). A delivery that gave up (a day
+// queued, a failed turn, a lapsed lease) and whose asker then read the answer
+// here is the asker's: left unconfirmed, the owner's Retry would queue it and
+// the sweep push a copy of an answer the agent already has.
+//
 // 🔴 IT ALSO TAKES A DELIVERY IN FLIGHT. A wait that reads the answer while an
 // attempt holds the lease wins it: the lease is dropped, so the attempt's
 // give-up (ReleaseDelivery) or outcome (FinishDelivery), both conditional on
@@ -628,7 +635,7 @@ func cutDetail(s string) string { return truncateRunes(strings.TrimSpace(s), Max
 func (s *PGStore) MarkWaited(ctx context.Context, id int64) (bool, error) {
 	tag, err := s.pool.Exec(ctx, `UPDATE attention_asks SET delivery = 'waited', delivery_detail = '',
 		  delivery_claimed_by = NULL, delivery_lease_until = NULL
-		WHERE id = $1 AND delivery IN ('queued', 'pull', 'delivering')`, id)
+		WHERE id = $1 AND delivery IN ('queued', 'pull', 'delivering', 'unconfirmed')`, id)
 	if err != nil {
 		return false, err
 	}

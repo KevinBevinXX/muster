@@ -21,6 +21,13 @@ import (
 // host whose windows sit in the same directories costs nothing between
 // expiries, however many windows and ticks. TestTheRepoLookupIsCachedPerCwd
 // counts the stats.
+//
+// 🔴 A HUNG FILESYSTEM MUST NOT FREEZE THE WINDOW LIST (#151). A stat on a dead
+// NFS or sshfs mount blocks in the kernel, and this lookup runs in the listing
+// path. So a walk gets repoWalkTimeout; past it the window is named by its cwd
+// alone (cached like any answer), and the walk — which cannot be cancelled —
+// is left to finish in the background, ONE per cwd at a time, its answer
+// replacing the fallback if it ever returns.
 
 // repoCacheTTL is how long a cwd's answer is kept: a `git init` (or a deleted
 // .git) shows within this long.
@@ -32,6 +39,9 @@ const repoCacheMax = 1024
 // repoWalkMax bounds the walk up from a cwd.
 const repoWalkMax = 64
 
+// repoWalkTimeout bounds one cwd's walk in the listing path.
+const repoWalkTimeout = 300 * time.Millisecond
+
 // deletedSuffix is what Linux appends to a /proc/<pid>/cwd link whose directory
 // was removed.
 const deletedSuffix = " (deleted)"
@@ -42,9 +52,13 @@ type repoNamer struct {
 	stat func(string) (os.FileInfo, error)
 	// now is time.Now; a test moves it.
 	now func() time.Time
+	// timeout is repoWalkTimeout when 0; a test shortens it.
+	timeout time.Duration
 
 	mu    sync.Mutex
 	cache map[string]repoEntry
+	// walking is the cwds whose walk outlived its timeout and still runs.
+	walking map[string]bool
 }
 
 type repoEntry struct {
@@ -67,19 +81,69 @@ func (r *repoNamer) name(cwd string) string {
 		r.mu.Unlock()
 		return e.name
 	}
+	if r.walking[cwd] {
+		// A walk of this cwd is still stuck: start no second one.
+		r.mu.Unlock()
+		return cwdName(cwd)
+	}
 	r.mu.Unlock()
 	stat := os.Stat
 	if r.stat != nil {
 		stat = r.stat
 	}
-	n := repoName(cwd, stat)
+	timeout := r.timeout
+	if timeout <= 0 {
+		timeout = repoWalkTimeout
+	}
+	done := make(chan string, 1)
+	go func() { done <- repoName(cwd, stat) }()
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case n := <-done:
+		r.store(cwd, n, t)
+		return n
+	case <-timer.C:
+	}
+	n := cwdName(cwd)
 	r.mu.Lock()
+	if r.walking == nil {
+		r.walking = map[string]bool{}
+	}
+	r.walking[cwd] = true
+	r.mu.Unlock()
+	r.store(cwd, n, t)
+	go func() {
+		late := <-done
+		r.mu.Lock()
+		delete(r.walking, cwd)
+		r.mu.Unlock()
+		r.store(cwd, late, now())
+	}()
+	return n
+}
+
+func (r *repoNamer) store(cwd, n string, at time.Time) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	if r.cache == nil || len(r.cache) >= repoCacheMax {
 		r.cache = map[string]repoEntry{}
 	}
-	r.cache[cwd] = repoEntry{name: n, at: t}
-	r.mu.Unlock()
-	return n
+	r.cache[cwd] = repoEntry{name: n, at: at}
+}
+
+// cwdName is the name for cwd itself, with no filesystem access: what
+// repoName answers when no .git is found.
+func cwdName(cwd string) string {
+	cwd = strings.TrimSuffix(cwd, deletedSuffix)
+	if cwd == "" || !filepath.IsAbs(cwd) {
+		return ""
+	}
+	start := filepath.Clean(cwd)
+	if start == filepath.Dir(start) {
+		return ""
+	}
+	return mirror.CleanRepoName(filepath.Base(start))
 }
 
 // repoName is the name muster shows for a window working in cwd: the basename
@@ -108,10 +172,7 @@ func repoName(cwd string, stat func(string) (os.FileInfo, error)) string {
 		}
 		d = filepath.Dir(d)
 	}
-	if start == filepath.Dir(start) {
-		return ""
-	}
-	return mirror.CleanRepoName(filepath.Base(start))
+	return cwdName(start)
 }
 
 // windowRepos is EVERY window's repo name, by window id — a shell's as much as

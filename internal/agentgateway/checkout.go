@@ -38,7 +38,13 @@ func (g *Gateway) Checkout(ctx context.Context, t Target) (agents.CheckoutStatus
 	if err != nil {
 		return agents.CheckoutStatus{}, err
 	}
-	resp, err := g.client.Do(req)
+	// 🔴 A REDIRECT IS NOT FOLLOWED. /healthz is the agent's own; a 3xx is not
+	// it, and following one would read another host's body as this agent's
+	// checkout (and dial wherever it points). A copy: the shared client's
+	// turns are untouched.
+	client := *g.client
+	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	resp, err := client.Do(req)
 	if err != nil {
 		return agents.CheckoutStatus{}, fmt.Errorf("read checkout: %w", err)
 	}

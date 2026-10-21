@@ -199,10 +199,20 @@ func (c *Checkout) Run(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
-		detail, awaiting := c.Explain(ctx, err)
 		state := CheckoutFailed
-		if awaiting {
-			state = CheckoutAwaitingGrant
+		var detail string
+		var local *localError
+		if errors.As(err, &local) {
+			// Not git failing to reach GitHub: nothing the github connector can
+			// change, so it is neither explained as a clone failure nor answered
+			// with a request for the connector.
+			detail = fmt.Sprintf("the checkout in %s could not be made: %v; %s retries every %s", c.dir, local.err, c.voice.Who, c.Retry)
+		} else {
+			var awaiting bool
+			detail, awaiting = c.Explain(ctx, err)
+			if awaiting {
+				state = CheckoutAwaitingGrant
+			}
 		}
 		c.mu.Lock()
 		c.st.State, c.st.Detail = state, detail
@@ -216,9 +226,29 @@ func (c *Checkout) Run(ctx context.Context) {
 	}
 }
 
+// localError is a failure of the checkout's own files — not of git reaching
+// GitHub — so Run neither explains it as a clone failure nor files a github
+// connector request for it: no grant changes a full disk or a refused directory.
+type localError struct{ err error }
+
+func (e *localError) Error() string { return e.err.Error() }
+func (e *localError) Unwrap() error { return e.err }
+
+func local(err error) error { return &localError{err} }
+
+// The git config key marking a clone of an EMPTY repository (no commit, so no
+// HEAD to verify). It is set in the scratch clone before the move, so it is in
+// <dir>/.git iff the whole clone was verified and moved — what tells an empty
+// repository's checkout from a .git an interrupted clone left.
+const emptyCloneKey = "muster.emptyclone"
+
 // Attempt makes the checkout exist: an existing one is used as it is; an empty
 // (or absent) directory is cloned into; a directory holding anything else is
 // refused rather than cloned over.
+//
+// A failure of anything but git reaching GitHub is a *localError: the
+// checkout's own files, and a clone command that failed on THIS side
+// (localCloneFailure).
 //
 // 🔴 A CHECKOUT IS A .git WITH A COMMIT CHECKED OUT, NOT A .git. A clone that is
 // killed (the timeout, the supervisor shutting down, the pod evicted) leaves a
@@ -229,60 +259,137 @@ func (c *Checkout) Run(ctx context.Context) {
 // directory is replaced on the next attempt) — and an existing .git counts only
 // when HEAD verifies too. One with no HEAD (an interrupted clone by an older
 // supervisor) is refused, not deleted: it never removes what it did not just
-// create.
+// create. The one exception is an EMPTY repository (emptyCloneKey).
 func (c *Checkout) Attempt(ctx context.Context) error {
 	who := c.voice.Who
 	if _, err := os.Lstat(filepath.Join(c.dir, ".git")); err == nil {
-		if err := verifyHEAD(ctx, c.dir); err != nil {
-			return fmt.Errorf("%s holds a .git with no commit checked out (an interrupted clone?); %s does not "+
-				"clone over it — remove %s to let it clone again", c.dir, who, filepath.Join(c.dir, ".git"))
+		if err := verifyCheckout(ctx, c.dir); err != nil {
+			return local(fmt.Errorf("%s holds a .git with no commit checked out (an interrupted clone?); %s does not "+
+				"clone over it — remove %s to let it clone again", c.dir, who, filepath.Join(c.dir, ".git")))
 		}
 		c.Logf("%s: checkout: using the existing checkout of %s in %s", who, c.repo, c.dir)
 		return nil
 	}
+	scratch := filepath.Join(filepath.Dir(c.dir), "."+filepath.Base(c.dir)+"."+who+"-clone")
 	entries, err := os.ReadDir(c.dir)
 	switch {
 	case errors.Is(err, os.ErrNotExist):
 	case err != nil:
-		return err
+		return local(err)
 	case len(entries) > 0:
-		return fmt.Errorf("%s holds files but is not a git checkout; %s does not clone over them", c.dir, who)
+		// An interrupted move (moveCheckout) leaves files here and the clone's
+		// .git in scratch. It is not finished automatically: the refusal names
+		// both, so the operator removes them and the next attempt clones afresh.
+		if _, serr := os.Lstat(filepath.Join(scratch, ".git")); serr == nil {
+			return local(fmt.Errorf("%s holds files but is not a git checkout, and %s holds a clone: a move of the clone "+
+				"into place was interrupted; %s does not clone over them — remove %s's files and %s to let it clone again",
+				c.dir, scratch, who, c.dir, scratch))
+		}
+		return local(fmt.Errorf("%s holds files but is not a git checkout; %s does not clone over them", c.dir, who))
 	}
-	scratch := filepath.Join(filepath.Dir(c.dir), "."+filepath.Base(c.dir)+"."+who+"-clone")
-	if err := os.RemoveAll(scratch); err != nil {
-		return err
-	}
-	args := []string{"clone", "--quiet"}
-	if c.branch != "" {
-		args = append(args, "--branch="+c.branch)
-	}
-	args = append(args, "--", GithubCloneBase+c.repo+".git", scratch)
 	timeout := c.Timeout
 	if timeout <= 0 {
 		timeout = CheckoutTimeout
 	}
 	cctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	cmd := exec.CommandContext(cctx, "git", args...)
+	err = c.clone(cctx, scratch, c.branch)
+	if err != nil && c.branch != "" && c.remoteHasNoRefs(cctx) {
+		// 🔴 AN EMPTY REPOSITORY HAS NO BRANCH TO NAME. muster always sends one
+		// (the repo's default, else "main"), and `git clone --branch=X` of an
+		// empty repository fails "Remote branch X not found". So, when the remote
+		// has no refs at all, it is cloned without --branch and its unborn HEAD
+		// pointed at the branch asked for, where the agent's first commit lands.
+		c.Logf("%s: checkout: %s has no refs: an empty repository; cloning it without --branch", who, c.repo)
+		err = c.clone(cctx, scratch, "")
+		if err == nil {
+			if out, serr := exec.CommandContext(ctx, "git", "-C", scratch, "symbolic-ref", "HEAD", "refs/heads/"+c.branch).CombinedOutput(); serr != nil {
+				return local(fmt.Errorf("pointing the empty clone of %s at %s: %v %s", c.repo, c.branch, serr, strings.TrimSpace(string(out))))
+			}
+		}
+	}
+	if err != nil {
+		return err
+	}
+	if err := verifyHEAD(ctx, scratch); err != nil {
+		// git exited 0, so the clone is complete; one with no commit at all is an
+		// EMPTY repository, which is a checkout (the agent makes the first commit).
+		if !emptyRepo(ctx, scratch) {
+			return local(fmt.Errorf("the clone of %s finished with no commit checked out: %v", c.repo, err))
+		}
+		if out, err := exec.CommandContext(ctx, "git", "-C", scratch, "config", emptyCloneKey, "true").CombinedOutput(); err != nil {
+			return local(fmt.Errorf("marking the empty clone of %s: %v %s", c.repo, err, strings.TrimSpace(string(out))))
+		}
+		c.Logf("%s: checkout: %s is an empty repository", who, c.repo)
+	}
+	if err := moveCheckout(scratch, c.dir); err != nil {
+		return local(fmt.Errorf("moving the clone into %s: %w", c.dir, err))
+	}
+	c.Logf("%s: checkout: cloned %s into %s", who, c.repo, c.dir)
+	return nil
+}
+
+// clone runs `git clone` of the repository into scratch (replaced first), on
+// branch when it is not "". A failure on this side (localCloneFailure) is a
+// *localError; any other is git's own last lines.
+func (c *Checkout) clone(ctx context.Context, scratch, branch string) error {
+	if err := os.RemoveAll(scratch); err != nil {
+		return local(err)
+	}
+	args := []string{"clone", "--quiet"}
+	if branch != "" {
+		args = append(args, "--branch="+branch)
+	}
+	args = append(args, "--", GithubCloneBase+c.repo+".git", scratch)
+	cmd := exec.CommandContext(ctx, "git", args...)
 	// The hang guard muster also sets on the pod: with nobody to answer, a
 	// credential prompt must fail the clone, not block it.
 	cmd.Env = append(cmd.Environ(), "GIT_TERMINAL_PROMPT=0")
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		if msg := LastLines(stderr.String(), 2, 300); msg != "" {
-			return errors.New(msg)
+		msg := LastLines(stderr.String(), 2, 300)
+		if msg == "" {
+			msg = err.Error()
 		}
-		return err
+		if localCloneFailure(stderr.String()) {
+			return local(fmt.Errorf("the clone of %s failed on this pod: %s", c.repo, msg))
+		}
+		return errors.New(msg)
 	}
-	if err := verifyHEAD(ctx, scratch); err != nil {
-		return fmt.Errorf("the clone of %s finished with no commit checked out: %v", c.repo, err)
-	}
-	if err := moveCheckout(scratch, c.dir); err != nil {
-		return fmt.Errorf("moving the clone into %s: %w", c.dir, err)
-	}
-	c.Logf("%s: checkout: cloned %s into %s", who, c.repo, c.dir)
 	return nil
+}
+
+// remoteHasNoRefs reports whether the repository answers `git ls-remote` with
+// no refs at all: an empty repository. False when ls-remote fails (unreadable
+// is not empty).
+func (c *Checkout) remoteHasNoRefs(ctx context.Context) bool {
+	cmd := exec.CommandContext(ctx, "git", "ls-remote", "--", GithubCloneBase+c.repo+".git")
+	cmd.Env = append(cmd.Environ(), "GIT_TERMINAL_PROMPT=0")
+	out, err := cmd.Output()
+	return err == nil && len(bytes.TrimSpace(out)) == 0
+}
+
+// localCloneMarkers are what git's stderr says when a clone failed on THIS
+// side — the disk, the directory it writes into — rather than reaching GitHub.
+// No github grant fixes any of them.
+var localCloneMarkers = []string{
+	"No space left on device",
+	"Disk quota exceeded",
+	"Read-only file system",
+	"could not create work tree dir",
+	"could not create leading directories",
+	"unable to create temporary file",
+}
+
+// localCloneFailure reports whether a clone's stderr names a local failure.
+func localCloneFailure(stderr string) bool {
+	for _, m := range localCloneMarkers {
+		if strings.Contains(stderr, m) {
+			return true
+		}
+	}
+	return false
 }
 
 // moveCheckout moves a verified clone's entries from scratch into dir, its
@@ -292,7 +399,8 @@ func (c *Checkout) Attempt(ctx context.Context) error {
 // supervisor's own working directory, and replacing it would leave it — and
 // every git it runs — in a deleted directory. Each entry's rename is atomic,
 // and because .git moves last, an interruption leaves files with no .git:
-// refused as "not a git checkout", never mistaken for one.
+// refused as "not a git checkout", never mistaken for one, and the refusal
+// names the scratch clone left beside it (Attempt).
 func moveCheckout(scratch, dir string) error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
@@ -313,6 +421,45 @@ func moveCheckout(scratch, dir string) error {
 		return err
 	}
 	return os.Remove(scratch)
+}
+
+// verifyCheckout reports whether dir is a checkout: its HEAD names a commit,
+// or it is a marked clone of an empty repository (emptyCloneKey) whose HEAD is
+// still a genuinely UNBORN branch — a symbolic ref to a branch that does not
+// exist yet. Other refs may exist by then (the agent fetched), and it is still
+// the checkout this supervisor made: refusing it would tell the operator to
+// delete a .git holding the agent's staged work. A HEAD whose branch EXISTS but
+// names no readable commit (a missing object: corruption) is refused.
+func verifyCheckout(ctx context.Context, dir string) error {
+	err := verifyHEAD(ctx, dir)
+	if err == nil {
+		return nil
+	}
+	out, cerr := exec.CommandContext(ctx, "git", "-C", dir, "config", "--local", "--get", emptyCloneKey).Output()
+	if cerr != nil || strings.TrimSpace(string(out)) != "true" {
+		return err
+	}
+	ref, serr := exec.CommandContext(ctx, "git", "-C", dir, "symbolic-ref", "-q", "HEAD").Output()
+	if serr != nil {
+		return err
+	}
+	// The branch must not exist: `rev-parse --verify <ref>` reads the ref
+	// without checking its object, so it succeeds for a branch pointing at a
+	// missing commit — which is not unborn.
+	if exec.CommandContext(ctx, "git", "-C", dir, "rev-parse", "-q", "--verify", strings.TrimSpace(string(ref))).Run() == nil {
+		return err
+	}
+	return nil
+}
+
+// emptyRepo reports whether dir is a repository with no refs at all whose HEAD
+// names an unborn branch: what a complete clone of an empty repository is.
+func emptyRepo(ctx context.Context, dir string) bool {
+	if exec.CommandContext(ctx, "git", "-C", dir, "symbolic-ref", "-q", "HEAD").Run() != nil {
+		return false
+	}
+	out, err := exec.CommandContext(ctx, "git", "-C", dir, "for-each-ref", "--count=1").Output()
+	return err == nil && len(bytes.TrimSpace(out)) == 0
 }
 
 // verifyHEAD reports whether dir's HEAD names a commit.

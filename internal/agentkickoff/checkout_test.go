@@ -38,7 +38,7 @@ var awaitingGrant = agents.CheckoutStatus{State: agents.CheckoutAwaitingGrant,
 // through its whole life against the deliverer: held while ccd says the grant is
 // pending (no stamp, no turn, the card's marker written once), still held well
 // past the 15-minute bound that would have failed it, then — once ccd reads
-// ready — delivered exactly once, with the marker off the row BEFORE the stamp.
+// ready — delivered exactly once, with the marker taken off by the stamp.
 func TestAFirstTurnWaitsUnstampedForTheGrantThenGoesOnce(t *testing.T) {
 	h, changed := repoHarness(t, 3*time.Minute)
 	h.gw.setCheckout(awaitingGrant, nil)
@@ -77,11 +77,6 @@ func TestAFirstTurnWaitsUnstampedForTheGrantThenGoesOnce(t *testing.T) {
 		t.Fatalf("after the grant: kicked_off=%t turns=%d kickoff_error=%q; want true/1/\"\":%s",
 			r.KickedOff, h.gw.callCount(), r.KickoffError, transcript(log))
 	}
-	clear, stamp := indexOf(log, "SetKickoffError(7417,)"), indexOf(log, "SetKickedOff(7417,true)")
-	if clear < 0 || clear > stamp {
-		t.Fatalf("the wait marker was not cleared before the stamp (clear at %d, stamp at %d):%s",
-			clear, stamp, transcript(log))
-	}
 	if agents.KickoffAwaitingGrant(r) || agents.KickoffFailed(r) {
 		t.Fatalf("a delivered row still reads awaiting=%t failed=%t", agents.KickoffAwaitingGrant(r), agents.KickoffFailed(r))
 	}
@@ -91,6 +86,31 @@ func TestAFirstTurnWaitsUnstampedForTheGrantThenGoesOnce(t *testing.T) {
 	h.tick(t)
 	if h.gw.callCount() != 1 {
 		t.Fatalf("the first turn ran %d times", h.gw.callCount())
+	}
+}
+
+// TestAFailedStampAfterAWaitKeepsTheTurnHeld (#153): the checkout reads ready
+// on a row that waited two hours, and the stamp write fails. The wait marker
+// must survive it — cleared before the stamp, or overwritten by the stamp's
+// error, the row no longer reads as waited and the next tick, past the
+// 15-minute ProvisioningStuckTimeout, errors a turn it could deliver. Instead
+// the next tick delivers it, once.
+func TestAFailedStampAfterAWaitKeepsTheTurnHeld(t *testing.T) {
+	h, _ := repoHarness(t, 2*time.Hour)
+	h.store.rows[7417].KickoffError = agents.KickoffAwaitingGrantReason + ": earlier detail"
+	h.gw.setCheckout(agents.CheckoutStatus{State: agents.CheckoutReady}, nil)
+	h.store.stampErrs = 1
+	log := h.tick(t)
+	r := h.store.row(7417)
+	if r.KickedOff || h.gw.callCount() != 0 || r.Status == agents.StatusError || !agents.WaitedForCheckout(r) {
+		t.Fatalf("after a failed stamp: kicked_off=%t turns=%d status=%q waited=%t kickoff_error=%q:%s",
+			r.KickedOff, h.gw.callCount(), r.Status, agents.WaitedForCheckout(r), r.KickoffError, transcript(log))
+	}
+	log = h.tick(t)
+	r = h.store.row(7417)
+	if !r.KickedOff || h.gw.callCount() != 1 || r.Status == agents.StatusError || r.KickoffError != "" {
+		t.Fatalf("the tick after: kicked_off=%t turns=%d status=%q kickoff_error=%q; want true/1/not error/\"\":%s",
+			r.KickedOff, h.gw.callCount(), r.Status, r.KickoffError, transcript(log))
 	}
 }
 

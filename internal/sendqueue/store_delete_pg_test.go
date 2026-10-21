@@ -130,3 +130,40 @@ func TestDeleteCarriesATurnOnlyToTheOwnersOpenRowsOfTheTarget(t *testing.T) {
 		t.Fatalf("a failed, never-delivered message carried its turn: %d", got)
 	}
 }
+
+// TestDeleteNeverLowersANewerTurn (#168): the carry raises an open row's
+// after_since to the deleted message's, never lowers it — a row already waiting
+// behind a NEWER paste keeps that turn (the statement's `after_since < $1`).
+// An older one is raised, in the same delete.
+func TestDeleteNeverLowersANewerTurn(t *testing.T) {
+	s, _ := pgStore(t)
+	ctx := context.Background()
+	sent := mustEnqueue(t, s, 2, mirrorItem("sent"))
+	if _, ok, err := s.Claim(ctx, sent.ID, time.Now(), Claim{By: "t", Lease: time.Minute, Since: 5000}); err != nil || !ok {
+		t.Fatal(ok, err)
+	}
+	if err := s.Finish(ctx, sent.ID, "t", Outcome{Sent: true}, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	newer := mustEnqueue(t, s, 2, mirrorItem("behind a newer paste"))
+	older := mustEnqueue(t, s, 2, mirrorItem("behind an older paste"))
+	if _, err := s.pool.Exec(sys(ctx), `UPDATE send_queue SET after_since = CASE id WHEN $1 THEN 8000 ELSE 3000 END
+		WHERE id IN ($1, $2)`, newer.ID, older.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Delete(as(2), sent.ID); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		id   int64
+		want int64
+	}{{newer.ID, 8000}, {older.ID, 5000}} {
+		it, err := s.Get(as(2), c.id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if it.AfterSince != c.want {
+			t.Errorf("row %d waits behind %d after the delete; want %d", c.id, it.AfterSince, c.want)
+		}
+	}
+}

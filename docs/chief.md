@@ -70,7 +70,10 @@ Instructions from an MCP answer say so: the agent's first message names them
 as your answer given over MCP from `<host>`/`<session>`, and the audit row
 records `instructions_via` / `instructions_from`. Anything else is refused, and the chief is told to ask you with
 `task_route_attention`. The `task.chief_dispatch` audit row records the kind,
-the instructions and the ask they came from (and, for an MCP answer, where). Guards: [plugins.md](plugins.md#task_dispatch-the-guards).
+the instructions and the ask they came from (and, for an MCP answer, where).
+No muster page reads that row back yet: query it
+(`SELECT detail FROM audit_log WHERE action = 'task.chief_dispatch' AND object = 'note:<task id>'`).
+What the agent was told is also its first message, on its transcript. Guards: [plugins.md](plugins.md#task_dispatch-the-guards).
 
 `tasks_list` and its siblings are offered to every agent. The chief's
 `tasks_list` covers your whole board, where a worker's covers only its own

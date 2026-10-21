@@ -308,6 +308,11 @@ type Store interface {
 	// name falls back to the slug Name so the card is never label-less.
 	SetDisplayName(ctx context.Context, id int64, name string) (Agent, error)
 	SetHooksToken(ctx context.Context, id int64, token string) error
+	// SetKickedOff stamps (or un-stamps) the first turn. Stamping also clears a
+	// checkout-wait marker (WaitedForCheckout's kickoff_error) in the SAME write:
+	// on a kicked-off row the marker would read as a failed kickoff, and cleared
+	// in a separate earlier write, a failed stamp would leave a row that no longer
+	// reads as waited, which the next tick errors past ProvisioningStuckTimeout.
 	SetKickedOff(ctx context.Context, id int64, v bool) error
 	// RecordKickoffDelivery stamps WHICH pod received the kickoff (name +
 	// container restart count at that instant), increments the attempt counter,

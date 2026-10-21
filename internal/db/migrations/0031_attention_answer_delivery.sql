@@ -20,13 +20,16 @@
 --                lease lapsed mid-turn (a crash), or it was still queued a day
 --                after delivery_queued_at (the agent never took it): NEVER sent
 --                again automatically — the operator's Retry moves it back to queued
+--                (unless the asker read it first: → waited)
 --   waited       the asker read the answer through attention_wait: nothing to push
 --   pull         a mirrored session's answer: muster cannot type into its window
 --                unasked, so it waits for the session's attention_wait (→ waited)
 --
 -- 🔴 EXACTLY ONCE IS A PROPERTY OF THE TRANSITIONS: every move is one UPDATE
 -- conditional on the state it leaves (queued → delivering by one claimer;
--- queued/pull → waited by the reader; delivering → done only by the lease holder),
+-- queued/pull/delivering/unconfirmed → waited by the reader (internal/attention
+-- MarkWaited; this header said queued/pull only, which the code outgrew);
+-- delivering → done only by the lease holder),
 -- so a reader and a pusher, or two pushers, cannot both win.
 --
 -- Not re-applied by db.RLSOn (it changes no policy, grant or default) and

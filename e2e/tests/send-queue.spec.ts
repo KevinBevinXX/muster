@@ -515,6 +515,65 @@ test.describe('desktop 1280×800', () => {
     await busyAndSeen();
   });
 
+  // 🔴 A LIST READ IN FLIGHT WHEN A DELETE LANDS DOES NOT PUT THE ROW BACK
+  // (#168). The page's periodic re-read can start before the Delete's post and
+  // answer after the page removed the row: drawn, that answer redraws the
+  // deleted row (until the next re-read, up to 15 s later). The re-read is held
+  // here until the delete has answered, then released with the list it read —
+  // the row still in it. On origin/main the row comes back.
+  test('a list read in flight during a Delete does not redraw the deleted row', async ({ page }) => {
+    await busyAndSeen();
+    fs.rmSync(tr + '.pasted', { force: true });
+    await openView(page, newHost);
+    const text = 'deleted mid-read ' + stamp;
+    await queue(page, text, false);
+    await expect(rowIn(page, text, 'queued')).toHaveCount(1);
+    sqfix('route', newHost, text);
+    busy(false);
+    const failed = rowIn(page, text, 'failed');
+    await expect(failed, `the route gate fails it (log:\n${mirrorLog})`).toContainText('its route could not be read', { timeout: 30_000 });
+
+    // Hold the NEXT list read: read the real list now (the row in it), answer
+    // only once released.
+    let release!: () => void;
+    const released = new Promise<void>((r) => (release = r));
+    let held = 0;
+    let after = 0;
+    await page.route(
+      (u) => u.pathname === '/send-queue' && u.search.length > 0,
+      async (route) => {
+        if (route.request().method() !== 'GET') return route.fallback();
+        if (held > 0) {
+          after++;
+          return route.fallback();
+        }
+        held++;
+        const stale = await route.fetch();
+        const body = await stale.text();
+        expect(body, 'instrument: the held read has the row').toContain(text);
+        await released;
+        await route.fulfill({ response: stale, body });
+      },
+    );
+    await page.evaluate(() => document.dispatchEvent(new Event('mv-queued')));
+    await expect.poll(() => held, { message: 'instrument: a list read is held' }).toBe(1);
+
+    const posted = page.waitForResponse((r) => r.request().method() === 'POST' && r.url().includes('/delete'));
+    await failed.getByRole('button', { name: 'Delete this message' }).click();
+    expect((await posted).status(), 'the delete succeeded').toBeLessThan(300);
+    await expect(row(page, text), 'the row is removed at once').toHaveCount(0);
+    release();
+    // The held answer arrives now. Checked BEFORE any later re-read could
+    // repair it (the next scheduled one is 3 s away at the soonest): the page
+    // must not draw it.
+    await page.waitForTimeout(700);
+    await expect(row(page, text), 'the stale read did not redraw the deleted row').toHaveCount(0);
+    // It read the list again instead.
+    await expect.poll(() => after, { message: 'the stale read is followed by a fresh one', timeout: 10_000 }).toBeGreaterThan(0);
+    await page.unrouteAll({ behavior: 'ignoreErrors' });
+    await busyAndSeen();
+  });
+
   // 🔴 A MESSAGE THAT MAY ALREADY HAVE BEEN SENT (muster stopped mid-send) says so,
   // and its Retry asks once: dismissed, nothing is queued; accepted, it is.
   test('Retry of a message that may already have been sent asks first', async ({ page }) => {

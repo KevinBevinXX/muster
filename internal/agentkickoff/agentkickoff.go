@@ -581,18 +581,21 @@ func (d *Deliverer) deliver(parent context.Context, a agents.Agent, inst provisi
 		default:
 			return
 		}
-		// A held turn's marker comes off BEFORE the stamp: on a kicked-off row it
-		// would read as a failed kickoff (agents.KickoffFailed) for the whole turn.
-		if agents.WaitedForCheckout(fresh) {
-			if err := d.store.SetKickoffError(ctx, fresh.ID, ""); err != nil {
-				d.log.Printf("agentkickoff: agent %d (%s): clear the checkout wait: %v", fresh.ID, fresh.Name, err)
-				return
-			}
-		}
+		// A held turn's marker comes off WITH the stamp (agents.Store.SetKickedOff,
+		// one write): on a kicked-off row it would read as a failed kickoff
+		// (agents.KickoffFailed) for the whole turn.
 	}
 
 	// ---- the point of no return: from here the turn is never re-run. ----
 	if err := d.store.SetKickedOff(ctx, fresh.ID, true); err != nil {
+		if agents.WaitedForCheckout(fresh) {
+			// 🔴 THE WAIT MARKER STAYS. Overwritten with this error, the row would
+			// no longer read as waited, and the next tick — hours past
+			// ProvisioningStuckTimeout — would error a turn it can still deliver.
+			d.log.Printf("agentkickoff: agent %d (%s): kickoff not sent: could not stamp kicked_off "+
+				"(the checkout wait is kept; the next tick retries): %v", fresh.ID, fresh.Name, err)
+			return
+		}
 		d.recordError(parent, fresh, "kickoff not sent: could not stamp kicked_off: "+err.Error())
 		return
 	}
