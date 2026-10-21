@@ -131,7 +131,7 @@ func write(t *testing.T, dir string, files map[string]string) {
 }
 
 // Git runs git in dir ("" = the current directory) with a fixed identity and
-// no user configuration, and returns its trimmed output.
+// commit signing off, and returns its trimmed output.
 func Git(t *testing.T, dir string, args ...string) string {
 	t.Helper()
 	full := []string{"-c", "user.name=t", "-c", "user.email=t@example.test", "-c", "commit.gpgsign=false"}
@@ -140,7 +140,6 @@ func Git(t *testing.T, dir string, args ...string) string {
 	}
 	var out bytes.Buffer
 	c := exec.Command("git", append(full, args...)...)
-	c.Env = append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null")
 	c.Stdout, c.Stderr = &out, &out
 	if err := c.Run(); err != nil {
 		t.Fatalf("git %v: %v: %s", args, err, out.String())
