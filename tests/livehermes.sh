@@ -19,7 +19,7 @@
 #     is a measurement for the design's numbers, not a gate on each run;
 #     with it set it is REQUIRED, so a failure is still RED;
 #   - internal/mirrorhost TestLiveHermesSend: the gated send end to end, and
-#     every blocking state refused with nothing pasted (when present);
+#     every blocking state refused with nothing pasted;
 #   - internal/hermeshost TestOverlayLedgerMatchesThePinnedSource,
 #     TestScreenConditionsMatchThePinnedSource and
 #     TestViLabelsMatchThePinnedLocales: the ledgers held against the pin.
@@ -40,10 +40,7 @@ command -v hermes >/dev/null || { echo "livehermes: no hermes on PATH" >&2; exit
 command -v tmux >/dev/null || { echo "livehermes: no tmux on PATH" >&2; exit 2; }
 rev="$(grep -o "HERMES_REVISION='[0-9a-f]*'" "$(readlink -f "$(command -v hermes)")" | cut -d"'" -f2 || true)"
 
-required=(TestLiveHermesScreens TestOverlayLedgerMatchesThePinnedSource TestScreenConditionsMatchThePinnedSource TestViLabelsMatchThePinnedLocales)
-if grep -q 'func TestLiveHermesSend' internal/mirrorhost/*_test.go 2>/dev/null; then
-  required+=(TestLiveHermesSend)
-fi
+required=(TestLiveHermesScreens TestLiveHermesSend TestOverlayLedgerMatchesThePinnedSource TestScreenConditionsMatchThePinnedSource TestViLabelsMatchThePinnedLocales)
 live='TestLiveHermesScreens|TestLiveHermesSend'
 if [[ "${MUSTER_LIVEHERMES_TIMINGS:-}" == 1 ]]; then
   required+=(TestLiveHermesTimings)

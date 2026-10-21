@@ -2,6 +2,7 @@ package mirrorhost
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log"
 	"slices"
@@ -151,5 +152,50 @@ func TestAHermesPasteGoesOnlyToAHermesWindow(t *testing.T) {
 	plain.runHost(t, &windowsBackend{windows: hermesWindows}, true, true)
 	if plain.of(mirror.TypeHello)[0].HermesSend {
 		t.Fatal("a backend with no gated send advertised hermesSend")
+	}
+}
+
+// viBackend is a hermesSendBackend whose Hermes is, or is not, in vi mode.
+type viBackend struct {
+	*hermesSendBackend
+	on  bool
+	err error
+}
+
+func (b *viBackend) HermesViMode() (bool, error) { return b.on, b.err }
+
+// TestAViModeHermesIsNeverSentTo: the host reads display.vim_mode
+// (HermesViMode) and, when it is on — or cannot be read — neither
+// advertises hermesSend nor runs the gated send, whatever muster sent, with
+// -hermes-send on. Off, both work (the control).
+func TestAViModeHermesIsNeverSentTo(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		on    bool
+		err   error
+		sends bool
+	}{
+		{"vi mode off", false, nil, true},
+		{"vi mode on", true, nil, false},
+		{"config unreadable", false, errors.New("config.yaml's display section could not be read"), false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			b := &viBackend{hermesSendBackend: &hermesSendBackend{windowsBackend: &windowsBackend{windows: hermesWindows}}, on: c.on, err: c.err}
+			d := newDrivenMuster(t)
+			d.runHost(t, b, true, true)
+			if got := d.of(mirror.TypeHello)[0].HermesSend; got != c.sends {
+				t.Fatalf("hello.HermesSend = %t, want %t", got, c.sends)
+			}
+			a := pasteReply(t, d, mirror.Msg{Type: mirror.TypePaste, ID: 1, Session: "solo", Window: "@9", Text: "hello", Runtime: mirror.RuntimeHermes, Since: fakeSince})
+			if c.sends {
+				if a.Error != "" || len(b.sent()) != 1 {
+					t.Fatalf("off: %q, sent %q", a.Error, b.sent())
+				}
+				return
+			}
+			if a.Refusal != mirror.PasteRefusalHermesNotSubmitted || !strings.Contains(a.Error, "vi mode") || len(b.sent()) != 0 {
+				t.Fatalf("refusal %q %q, sent %q", a.Refusal, a.Error, b.sent())
+			}
+		})
 	}
 }

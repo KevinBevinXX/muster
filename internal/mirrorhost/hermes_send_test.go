@@ -100,18 +100,18 @@ func kindOf(err error) string {
 	return se.Refusal()
 }
 
-// TestHermesSendInOrder: on an idle pane the send is status → screen → three
-// Escapes each followed by a 1.5 s wait and a re-capture → status → paste →
+// TestHermesSendInOrder: on an idle pane the send is status → screen → ONE
+// Escape followed by a 1.5 s wait and a re-capture → status → paste →
 // enterDelay → status and the box → Enter → the database.
 func TestHermesSendInOrder(t *testing.T) {
 	f := &fakeHermesPane{statuses: []AgentPane{idleHermes()},
-		screens:   []string{hermesScreen(t, "idle"), hermesScreen(t, "idle"), hermesScreen(t, "idle"), hermesScreen(t, "idle"), hermesScreen(t, "pasted-short")},
+		screens:   []string{hermesScreen(t, "idle"), hermesScreen(t, "idle"), hermesScreen(t, "pasted-short")},
 		submitted: true}
 	if err := runHermesSend(context.Background(), f.steps(), fakeSince, "hello from muster"); err != nil {
 		t.Fatalf("sent: %v", err)
 	}
 	want := []string{"status", "capture",
-		"ESCAPE", "sleep 1.5s", "capture", "ESCAPE", "sleep 1.5s", "capture", "ESCAPE", "sleep 1.5s", "capture",
+		"ESCAPE", "sleep 1.5s", "capture",
 		"status", "PASTE:hello from muster", "sleep 150ms", "status", "capture", "ENTER"}
 	if !slices.Equal(f.actions, want) {
 		t.Fatalf("actions\n  %q\nwant\n  %q", f.actions, want)
@@ -141,29 +141,16 @@ func TestHermesSendNeverPastesIntoABlockingScreen(t *testing.T) {
 }
 
 // TestHermesSendAbortsAtTheFirstBadRecapture: a screen that turns non-idle
-// after Escape n ends the sequence there — exactly n Escapes, no paste.
+// after the Escape ends the send there — one Escape, no paste.
 func TestHermesSendAbortsAtTheFirstBadRecapture(t *testing.T) {
-	for n := 1; n <= 3; n++ {
-		screens := []string{hermesScreen(t, "idle")}
-		for i := 1; i < n; i++ {
-			screens = append(screens, hermesScreen(t, "idle"))
-		}
-		screens = append(screens, hermesScreen(t, "text-in-box")) // a palette's restored draft
-		f := &fakeHermesPane{statuses: []AgentPane{idleHermes()}, screens: screens, submitted: true}
-		err := runHermesSend(context.Background(), f.steps(), fakeSince, "hello from muster")
-		if kindOf(err) != mirror.PasteRefusalHermesNotSubmitted || !strings.Contains(err.Error(), fmt.Sprintf("after Escape %d of 3", n)) {
-			t.Errorf("abort at %d: %v", n, err)
-		}
-		esc := 0
-		for _, k := range f.keys() {
-			if k != "ESCAPE" {
-				t.Errorf("abort at %d: %q reached the pane", n, k)
-			}
-			esc++
-		}
-		if esc != n {
-			t.Errorf("abort at %d: %d Escapes sent", n, esc)
-		}
+	f := &fakeHermesPane{statuses: []AgentPane{idleHermes()},
+		screens: []string{hermesScreen(t, "idle"), hermesScreen(t, "text-in-box")}, submitted: true} // a palette's restored draft
+	err := runHermesSend(context.Background(), f.steps(), fakeSince, "hello from muster")
+	if kindOf(err) != mirror.PasteRefusalHermesNotSubmitted || !strings.Contains(err.Error(), "after the Escape") {
+		t.Fatalf("abort: %v", err)
+	}
+	if k := f.keys(); !slices.Equal(k, []string{"ESCAPE"}) {
+		t.Fatalf("keys %q; want exactly one Escape", k)
 	}
 }
 
@@ -209,7 +196,7 @@ func TestHermesSendStatusGates(t *testing.T) {
 		// Changed after the paste: pasted, no Enter — with the box showing
 		// exactly the message, so the status is the ONLY thing that refuses.
 		f = &fakeHermesPane{statuses: []AgentPane{idleHermes(), idleHermes(), c.ap},
-			screens: []string{hermesScreen(t, "idle"), hermesScreen(t, "idle"), hermesScreen(t, "idle"), hermesScreen(t, "idle"), hermesScreen(t, "pasted-short")}, submitted: true}
+			screens: []string{hermesScreen(t, "idle"), hermesScreen(t, "idle"), hermesScreen(t, "pasted-short")}, submitted: true}
 		err = runHermesSend(context.Background(), f.steps(), fakeSince, "hello from muster")
 		if kindOf(err) != mirror.PasteRefusalHermesPasted || slices.Contains(f.keys(), "ENTER") {
 			t.Errorf("%s after the paste: %v %q", c.name, err, f.keys())
@@ -228,7 +215,7 @@ func TestHermesSendStatusGates(t *testing.T) {
 func TestHermesSendChecksTheBoxBeforeEnter(t *testing.T) {
 	for _, after := range []string{"pasted-after-draft", "text-in-box", "approval", "idle", "palette"} {
 		f := &fakeHermesPane{statuses: []AgentPane{idleHermes()},
-			screens: []string{hermesScreen(t, "idle"), hermesScreen(t, "idle"), hermesScreen(t, "idle"), hermesScreen(t, "idle"), hermesScreen(t, after)}, submitted: true}
+			screens: []string{hermesScreen(t, "idle"), hermesScreen(t, "idle"), hermesScreen(t, after)}, submitted: true}
 		err := runHermesSend(context.Background(), f.steps(), fakeSince, "hello from muster")
 		if kindOf(err) != mirror.PasteRefusalHermesPasted {
 			t.Errorf("%s: %v", after, err)
@@ -240,7 +227,7 @@ func TestHermesSendChecksTheBoxBeforeEnter(t *testing.T) {
 	// The collapsed placeholder for an 8-line message is the message.
 	text := "collapsed line 1\ncollapsed line 2\ncollapsed line 3\ncollapsed line 4\ncollapsed line 5\ncollapsed line 6\ncollapsed line 7\ncollapsed line 8"
 	f := &fakeHermesPane{statuses: []AgentPane{idleHermes()},
-		screens: []string{hermesScreen(t, "idle"), hermesScreen(t, "idle"), hermesScreen(t, "idle"), hermesScreen(t, "idle"), hermesScreen(t, "pasted-collapsed")}, submitted: true}
+		screens: []string{hermesScreen(t, "idle"), hermesScreen(t, "idle"), hermesScreen(t, "pasted-collapsed")}, submitted: true}
 	if err := runHermesSend(context.Background(), f.steps(), fakeSince, text); err != nil {
 		t.Errorf("collapsed: %v", err)
 	}
@@ -250,7 +237,7 @@ func TestHermesSendChecksTheBoxBeforeEnter(t *testing.T) {
 // been submitted" — never "not submitted" — after polling for the whole wait.
 func TestHermesSendConfirmsByTheDatabase(t *testing.T) {
 	f := &fakeHermesPane{statuses: []AgentPane{idleHermes()},
-		screens: []string{hermesScreen(t, "idle"), hermesScreen(t, "idle"), hermesScreen(t, "idle"), hermesScreen(t, "idle"), hermesScreen(t, "pasted-short")}}
+		screens: []string{hermesScreen(t, "idle"), hermesScreen(t, "idle"), hermesScreen(t, "pasted-short")}}
 	err := runHermesSend(context.Background(), f.steps(), fakeSince, "hello from muster")
 	if kindOf(err) != mirror.PasteRefusalHermesUnconfirmed || !strings.Contains(err.Error(), "May have been submitted") {
 		t.Fatalf("no row: %v", err)
@@ -266,14 +253,16 @@ func TestHermesSendConfirmsByTheDatabase(t *testing.T) {
 // TestHermesTextRules: a leading / or !, a trailing \ (stripped) and an
 // empty message are refused before anything — no status read, no capture.
 func TestHermesTextRules(t *testing.T) {
-	for _, text := range []string{"/model", "!ls", "  /tmp/notes.txt please", "\t!x", `continue \`, "end with \\  \n", "   ", ""} {
+	// All digits: after a person's bare /resume, Hermes reads a number as the
+	// session to switch to (_consume_pending_resume_selection).
+	for _, text := range []string{"/model", "!ls", "  /tmp/notes.txt please", "\t!x", `continue \`, "end with \\  \n", "   ", "", "4", " 42 ", "123\n"} {
 		f := &fakeHermesPane{statuses: []AgentPane{idleHermes()}, screens: []string{hermesScreen(t, "idle")}, submitted: true}
 		err := runHermesSend(context.Background(), f.steps(), fakeSince, text)
 		if kindOf(err) != mirror.PasteRefusalHermesNotSubmitted || len(f.actions) != 0 {
 			t.Errorf("%q: %v, actions %q", text, err, f.actions)
 		}
 	}
-	for _, text := range []string{"use a/b", "path /x in the middle", `a \ b`, "wow!"} {
+	for _, text := range []string{"use a/b", "path /x in the middle", `a \ b`, "wow!", "4 apples", "-1", "1.5"} {
 		if why := HermesTextRefusal(text); why != "" {
 			t.Errorf("%q refused: %s", text, why)
 		}

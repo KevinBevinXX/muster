@@ -114,3 +114,49 @@ func TestTmuxTheGatedSendRefusesAPaneWithANestedMultiplexer(t *testing.T) {
 		t.Fatalf("control, a plain pane: %v (status read %d times)", err, statusRead)
 	}
 }
+
+// TestTmuxTheGatedSendRechecksThePaneAndTakesTheDriveLock: SendHermes into a
+// real pane refuses (1) while another drive holds the pane's lock — before
+// any status read — and (2) when the window's pane, re-resolved, is no
+// longer the one the send was for (superseded). Nothing is typed either way.
+func TestTmuxTheGatedSendRechecksThePaneAndTakesTheDriveLock(t *testing.T) {
+	r := newTmuxRig(t)
+	got := filepath.Join(t.TempDir(), "got")
+	r.run("new-session", "-d", "-s", "plain", "-x", "120", "-y", "40", "sh", "-c", "stty -echo; exec cat > '"+got+"'")
+	pane := strings.TrimSpace(r.run("display-message", "-p", "-t", "=plain:", "#{pane_id}"))
+	// Settled: until `stty` has exited, its half-gone process makes the
+	// guard's walk refuse (fail closed) before the checks under test.
+	waitFor(t, "the pane to settle in cat", func() bool {
+		return strings.TrimSpace(r.run("display-message", "-p", "-t", pane, "#{pane_current_command}")) == "cat"
+	})
+	time.Sleep(200 * time.Millisecond)
+	b := Tmux{Socket: r.sock, Hermes: NewHermesSource(t.TempDir(), t.TempDir())}
+	reads := 0
+	send := func(status AgentPane) error {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		return b.SendHermes(ctx, HermesSendRequest{Pane: pane, Since: fakeSince, Text: "hello",
+			Status: func(context.Context) (AgentPane, error) { reads++; return status, nil }, Logf: t.Logf})
+	}
+	moved := idleHermes()
+	moved.Pane = "%99999"
+	// (1) the drive lock.
+	release, ok := lockPane(strings.Join(append(b.server(), pane), " "))
+	if !ok {
+		t.Fatal("instrument check: the lock was already held")
+	}
+	err := send(moved)
+	release()
+	if kindOf(err) != mirror.PasteRefusalHermesNotSubmitted || !strings.Contains(err.Error(), "already typing") || reads != 0 {
+		t.Fatalf("with the lock held: %v (status read %d times)", err, reads)
+	}
+	// (2) the pane moved.
+	err = send(moved)
+	if kindOf(err) != mirror.PasteRefusalHermesSuperseded || reads == 0 {
+		t.Fatalf("a moved pane: %v (status read %d times)", err, reads)
+	}
+	time.Sleep(300 * time.Millisecond)
+	if b, _ := os.ReadFile(got); len(b) != 0 {
+		t.Fatalf("the pane received %q", b)
+	}
+}

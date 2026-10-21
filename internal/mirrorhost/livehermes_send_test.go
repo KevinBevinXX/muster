@@ -109,10 +109,24 @@ func TestLiveHermesSend(t *testing.T) {
 		}
 	})
 
+	t.Run("a tab: sent and confirmed", func(t *testing.T) {
+		p := fresh()
+		defer r.killWindow(p)
+		text := "a tab\there, and another\tthere"
+		err, _ := send(p, text)
+		report("  a message with tabs:         %v", errText(err))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if n := countUserRows(t, home, text); n != 1 {
+			t.Fatalf("the message with tabs is in state.db %d times", n)
+		}
+	})
+
 	t.Run("text rules", func(t *testing.T) {
 		p := fresh()
 		defer r.killWindow(p)
-		for _, text := range []string{"/model", "!ls", `trailing \`} {
+		for _, text := range []string{"/model", "!ls", `trailing \`, "42"} {
 			err, _ := send(p, text)
 			report("  %-28q %s", text, errText(err))
 			if kindOf(err) != mirror.PasteRefusalHermesNotSubmitted {

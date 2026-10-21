@@ -489,6 +489,8 @@ func CheckPasted(s Screen, text string) error {
 	if err != nil {
 		return err
 	}
+	// A tab is drawn as `^I` (two cells), so the message is compared as drawn.
+	text = strings.ReplaceAll(text, "\t", "^I")
 	var got strings.Builder
 	for _, c := range rest {
 		if !unicode.IsSpace(c.R) {
@@ -570,6 +572,8 @@ func cellWidth(s string) int {
 	n := 0
 	for _, r := range s {
 		switch {
+		case r == '\t':
+			n += 2 // drawn as ^I
 		case unicode.Is(unicode.Mn, r) || unicode.Is(unicode.Me, r):
 		case r >= 0x1F000:
 			n += 2

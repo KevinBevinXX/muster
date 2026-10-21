@@ -28,10 +28,12 @@ import (
 //     any key: the status bar, the stash mark, a vi label, an image bar, the
 //     idle prompt, every input row empty, nothing below; and a message the
 //     box could not show whole is refused here too;
-//  4. the bounded Escape sequence: hermesEscapes Escapes, each followed by a
-//     wait above prompt_toolkit's timeoutlen and a re-capture that must pass
-//     the check again — 🔴 ABORTING AT THE FIRST that does not, so no two
-//     Escapes ever reach a restored draft or attached images;
+//  4. ONE Escape, then a wait above prompt_toolkit's timeoutlen and a
+//     re-capture that must pass the check again, else refused. Measured
+//     (`make test-livehermes`): every overlay a second or third Escape
+//     closed is refused by the screen check before any Escape, and the one
+//     overlay an Escape is for — the stash panel when the bar cannot show
+//     it — closes on the first;
 //  5. the status again, then the paste, bracketed, with no Enter;
 //  6. enterDelay later: the status again, and the screen must show EXACTLY
 //     the message (or its one collapse placeholder) under the idle prompt —
@@ -44,14 +46,9 @@ import (
 //
 // Only the refusals of 1–5 say "not submitted": no Enter was sent there.
 
-// hermesEscapes is how many Escapes the sequence sends: enough for the
-// model picker with a typed filter at its reasoning stage (measured by `make
-// test-livehermes`; docs/design/hermes.md).
-const hermesEscapes = 3
-
-// hermesEscapeWait is the wait after each Escape: above prompt_toolkit's
-// timeoutlen (1 s; Hermes does not override it), so two Escapes are never
-// read as one double-Escape.
+// hermesEscapeWait is the wait after the Escape: above prompt_toolkit's
+// timeoutlen (1 s; Hermes does not override it), so the Escape is never read
+// as the first half of a double-Escape with a key that follows it.
 const hermesEscapeWait = 1500 * time.Millisecond
 
 // hermesConfirmWait bounds the wait for the submitted message's row after
@@ -126,8 +123,22 @@ func HermesTextRefusal(text string) string {
 		return "the message starts with " + s[:1] + ", which Hermes would run as a command instead of sending it (reword it, or type it in the terminal)"
 	case strings.HasSuffix(s, `\`):
 		return `the message ends with \, after which Enter continues the line in Hermes instead of submitting it`
+	case allDigits(s):
+		return "the message is only a number, which Hermes takes as a choice of session after /resume instead of sending it (add a word to it)"
 	}
 	return ""
+}
+
+// allDigits reports whether s is one or more ASCII digits and nothing else:
+// what Hermes's _consume_pending_resume_selection reads as a session to
+// switch to, after a person's bare /resume.
+func allDigits(s string) bool {
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return s != ""
 }
 
 // hermesSendSteps is what the gated send does to the pane and reads from
@@ -186,23 +197,21 @@ func runHermesSend(ctx context.Context, s hermesSendSteps, since int64, text str
 			return notSubmitted(fmt.Sprintf("the message would fill %d rows of Hermes's input box, which shows %d, so muster could not check it on screen before Enter (shorten it, or send it as six or more lines, which Hermes collapses)", rows, hermeshost.MaxInputRows))
 		}
 	}
-	// Step 4: the bounded Escape sequence, aborting at the first bad capture.
-	for i := 1; i <= hermesEscapes; i++ {
-		if err := s.escape(ctx); err != nil {
-			s.logf("muster-mirror: Escape %d into a Hermes pane: %v", i, err)
-			return notSubmitted("muster-mirror could not type into the pane")
-		}
-		if err := s.sleep(ctx, hermesEscapeWait); err != nil {
-			return notSubmitted("the send was cancelled")
-		}
-		raw, err := s.capture(ctx)
-		if err != nil {
-			s.logf("muster-mirror: capture a Hermes pane: %v", err)
-			return notSubmitted("muster-mirror could not read the pane's screen")
-		}
-		if err := hermeshost.CheckIdle(hermeshost.ParseScreen(raw)); err != nil {
-			return notSubmitted(fmt.Sprintf("after Escape %d of %d, %s", i, hermesEscapes, err.Error()))
-		}
+	// Step 4: one Escape, and the screen again.
+	if err := s.escape(ctx); err != nil {
+		s.logf("muster-mirror: Escape into a Hermes pane: %v", err)
+		return notSubmitted("muster-mirror could not type into the pane")
+	}
+	if err := s.sleep(ctx, hermesEscapeWait); err != nil {
+		return notSubmitted("the send was cancelled")
+	}
+	raw, err = s.capture(ctx)
+	if err != nil {
+		s.logf("muster-mirror: capture a Hermes pane: %v", err)
+		return notSubmitted("muster-mirror could not read the pane's screen")
+	}
+	if err := hermeshost.CheckIdle(hermeshost.ParseScreen(raw)); err != nil {
+		return notSubmitted("after the Escape, " + err.Error())
 	}
 	// Step 5: the status again, then the paste.
 	if _, err := hermesStillIdle(ctx, s, since); err != nil {
@@ -439,13 +448,55 @@ func userRowAfter(ctx context.Context, state *hermeshost.State, root string, aft
 
 // hermesSend is what this host advertises as Msg.HermesSend: an
 // -interactive v2 host started with -hermes-send whose backend can make the
-// gated send.
+// gated send, and whose Hermes is NOT in vi mode (hermesViRefusal).
 func (h *hostSide) hermesSend() bool {
 	if h.version < 2 || !h.c.cfg.Interactive || !h.c.cfg.HermesSend {
 		return false
 	}
-	_, ok := HermesSenderOf(h.c.cfg.Backend)
-	return ok
+	if _, ok := HermesSenderOf(h.c.cfg.Backend); !ok {
+		return false
+	}
+	if why := h.hermesViRefusal(); why != "" {
+		h.c.log.Printf("muster-mirror: not sending to Hermes, though -hermes-send is on: %s", why)
+		return false
+	}
+	return true
+}
+
+// HermesViModer is a backend that can read whether its Hermes runs in vi mode
+// (display.vim_mode in config.yaml, hermeshost.Home.ViMode).
+type HermesViModer interface {
+	HermesViMode() (bool, error)
+}
+
+// HermesViMode implements HermesViModer for the host's Hermes home.
+func (t Tmux) HermesViMode() (bool, error) {
+	if t.Hermes == nil {
+		return false, nil
+	}
+	return t.Hermes.Home.ViMode()
+}
+
+// hermesViRefusal is why this host never sends to its Hermes because of vi
+// mode, "" when it may. 🔴 STRUCTURAL, NOT THE SCREEN: in vi mode one Escape
+// on an idle line enters navigation, where the message's characters would
+// be read as commands, and the status bar's vi label (the screen check's
+// second layer) is trimmed off once a title fills the bar. Read on every
+// hello and every send, so a config changed under a running host counts. A
+// config.yaml that cannot be read is refused too (fail closed).
+func (h *hostSide) hermesViRefusal() string {
+	vm, ok := capabilityOf[HermesViModer](h.c.cfg.Backend)
+	if !ok {
+		return ""
+	}
+	on, err := vm.HermesViMode()
+	switch {
+	case err != nil:
+		return "its Hermes's config.yaml could not be read to rule out vi mode (" + err.Error() + ")"
+	case on:
+		return "its Hermes runs in vi mode (display.vim_mode), and muster never sends to Hermes in vi mode"
+	}
+	return ""
 }
 
 // hermesPaste is a paste for a Hermes window (Msg.Runtime "hermes"): the
@@ -478,6 +529,10 @@ func (h *hostSide) hermesPaste(m mirror.Msg) {
 		return
 	case m.Window == "":
 		reply(notSubmitted("muster named no window"))
+		return
+	}
+	if why := h.hermesViRefusal(); why != "" {
+		reply(notSubmitted("this host does not send to Hermes: " + why))
 		return
 	}
 	if err := h.allowed(m); err != nil {
