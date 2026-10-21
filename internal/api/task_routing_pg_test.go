@@ -245,8 +245,8 @@ func TestTaskDispatchRefusesAnotherOwnersTask(t *testing.T) {
 	}
 }
 
-// TestTaskDispatchRefusesAtTheLiveCap: two live agents the chief started → the
-// live cap's own refusal, nothing reserved for the third task.
+// TestTaskDispatchRefusesAtTheLiveCap: a full cap of live agents the chief
+// started → the live cap's own refusal, nothing reserved for the next task.
 func TestTaskDispatchRefusesAtTheLiveCap(t *testing.T) {
 	f := newTaskRouteFixture(t, true, true)
 	store := agents.NewPG(f.pool)
