@@ -326,7 +326,7 @@ it. The flow:
 
 | tool | does | refused when |
 |---|---|---|
-| `task_route_attention {task_id, note}` | Puts the task in front of you: an ask on `/attention` and a notification, with the chief's note — and, as its buttons, the actions the chief can take on the task right now (`task_forward` when a running agent works it; `task_dispatch` when the tool would start an agent: you opted in, the deployment can start one, and the task is open, ungated and has no live agent), returned to the chief as `actions_offered`. `route_to_session` is never offered: a task event is no_reply, so it refuses one. The offer and each tool's gate are the same predicate (`internal/api/task_actions.go`). Your answer is [delivered to the chief](attention.md#delivery) as a new message in its default session. | the task is not yours |
+| `task_route_attention {task_id, note}` | Puts the task in front of you: an ask on `/attention` and a notification, with the chief's note — and, as its buttons, the actions the chief can take on the task right now (`task_forward` when a running agent works it; `task_dispatch` when the tool would start an agent: you opted in, the deployment can start one, and the task is open, ungated and has no live agent), returned to the chief as `actions_offered`. `route_to_session` is never offered: a task event is no_reply, so it refuses one. `task_dispatch` is also withheld while the chief's [dispatch budget](#the-chiefs-dispatch-budget) is full, and the result carries that `budget` when you opted in. The offer and each tool's gate are the same predicate (`internal/api/task_actions.go`). Your answer is [delivered to the chief](attention.md#delivery) as a new message in its default session. | the task is not yours |
 | `task_forward {task_id, note}` | Sends the agent already working the task (the newest running one) a message from muster naming the task, with the chief's note fenced as data. The agent re-reads the task itself. | the task is not yours; no running agent works it |
 | `task_dispatch {task_id, repo?, kind?, instructions?}` | Starts a new agent on the task. `kind` is `claude-code` (the default when the deployment enables it, else `gateway`) or `gateway`. Either kind gets the task's repository and branch; a task with no repository (a plugin's task has none) can be given one with `repo`, which must be one of your connected GitHub repositories; without one the agent cannot open a pull request. A claude-code agent runs on an account from your Claude account pool, with no per-agent model, and its Claude Code session starts inside a checkout of the repository, so the repository's `CLAUDE.md` and project skills (`.claude/skills`) load ([provisioner.md](provisioner.md#a-claude-code-agents-repository)). A gateway agent also gets the task's model. `instructions` (optional, at most 1 KiB) opens the agent's first message, and is accepted **only** when it is, verbatim, your answer to an attention ask about this task (see guard 5). Offered only when `MUSTER_CHIEF_DISPATCH_OWNERS` lists at least one user. | see below |
 
@@ -403,6 +403,49 @@ Each refusal has its own sentence, in this order:
    stopped agent does not count, and completing a task stops the chief's
    agent on it ([below](#completing-a-task-stops-the-chiefs-agent)).
 11. The chief started **10** agents in the last 24 hours.
+
+#### The chief's dispatch budget
+
+The two caps (guards 10 and 11) are **data the chief reads at the call**, not
+numbers it is told: `task_dispatch`'s description says only that limits on
+live agents and on daily starts apply. The chief's conversation survives
+restarts, so a number in a tool description is a number it remembers — after
+the live cap was raised it kept quoting the old one ("at most 2") from its
+own history. Instead, every `task_dispatch` answer — a start, an
+`already_dispatched`, and every refusal from guard 4 on (the live-cap and
+daily-cap refusals included) — carries the current `budget`, as does
+`task_route_attention`'s result when you opted in:
+
+```json
+"budget": {
+  "live": 2, "live_cap": 5, "today": 3, "daily_cap": 10,
+  "live_agents": [
+    {"id": 41, "name": "quiet-owl", "task": 17},
+    {"id": null, "name": null, "task": 23}
+  ]
+}
+```
+
+- `live_agents` is exactly what `live` counts (`live` is its length): each
+  agent the chief started whose stored status is live, by id and name, oldest
+  first; then each start from the last 10 minutes whose agent is **not
+  recorded yet** — a start in flight, or one that failed before any agent
+  existed and was not released — with `id` and `name` null and only its
+  `task`. A start released because its create was refused holds no slot.
+- `today` is the chief's starts in the last 24 hours, recorded or not.
+- A refusal is `{"error": "<its sentence>", "budget": {…}}` and is still a
+  failed call (MCP `isError`). A cap refusal carries the budget the reservation
+  compared, under its lock; any other answer reads it fresh, so it can be one
+  start stale against a concurrent call.
+- Guards 1–3 (the flag, the opt-in, the deployment) refuse before there is
+  a budget the chief could spend, and carry none.
+- If the budget cannot be read the answer goes out without it (logged); it
+  never fails the call. `task_route_attention` then does not offer
+  `task_dispatch`.
+
+The count is the audit log, one function for both uses
+(`internal/plugins/chief_dispatch.go`, `chiefBudget`): the caps refuse on the
+same numbers the budget reports.
 
 A start that passed every check is recorded (a `task.chief_dispatch` audit row,
 with the kind, any instructions and the id of the attention ask they are your

@@ -79,11 +79,20 @@ func isToolErr(text string) bool {
 	if json.Unmarshal([]byte(text), &m) != nil {
 		return false
 	}
-	_, ok := m["error"]
-	// toolErr's {error}, or a structured refusal's {error, refused}
-	// (session_routes.go's routeRefusal) — nothing else.
-	_, refused := m["refused"]
-	return ok && (len(m) == 1 || (len(m) == 2 && refused))
+	if _, ok := m["error"]; !ok {
+		return false
+	}
+	// toolErr's {error}, plus only the keys a structured refusal adds:
+	// `refused` (session_routes.go's routeRefusal) and `budget`
+	// (task_dispatch's dispatchRefusal) — nothing else.
+	for k := range m {
+		switch k {
+		case "error", "refused", "budget":
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func (s *Server) writeMCP(w http.ResponseWriter, id json.RawMessage, result any, rpcErr *mcpError) {

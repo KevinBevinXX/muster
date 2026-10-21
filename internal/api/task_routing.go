@@ -79,8 +79,8 @@ const (
 	chiefDispatchOffText   = "task_dispatch is off on this deployment (MUSTER_CHIEF_DISPATCH_OWNERS is empty): use task_route_attention"
 	chiefDispatchOptOut    = "your owner has not opted in to their chief starting agents: use task_route_attention"
 	chiefDispatchNoTask    = "no such task"
-	chiefDispatchLiveCap   = "you already have the most live agents you may start; use task_route_attention"
-	chiefDispatchDailyCap  = "you have started the most agents allowed in a day; use task_route_attention"
+	chiefDispatchLiveCap   = "you already have the most live agents you may start (budget: live has reached live_cap; live_agents lists them); use task_route_attention"
+	chiefDispatchDailyCap  = "you have started the most agents allowed in a day (budget: today has reached daily_cap); use task_route_attention"
 	chiefDispatchGatedText = "is gated: only your owner can release it; use task_route_attention"
 	chiefDispatchNotOpen   = "is not open"
 	chiefDispatchHasAgent  = "already has an agent working it; use task_forward"
@@ -88,6 +88,50 @@ const (
 	chiefDispatchNoGitHub  = "your owner has no GitHub connection, so a repo cannot be checked; dispatch without repo or use task_route_attention"
 	chiefDispatchTaskRepo  = "already names its repository"
 )
+
+// chiefDispatchDescription is task_dispatch's description.
+//
+// 🔴 IT STATES NO CAP NUMBER, AND A TEST PINS THE WHOLE STRING
+// (TestTaskDispatchDescriptionCarriesNoCapNumbers). The chief's conversation
+// survives restarts (claude --resume), so a number written here is a number it
+// remembers: after the live cap was raised it kept quoting the old one ("at
+// most 2") from its own history. The caps are DATA instead — every
+// task_dispatch answer and refusal, and task_route_attention, carry the current
+// `budget` (plugins.ChiefBudget).
+const chiefDispatchDescription = "Start a new agent on one of your owner's open, ungated tasks. Only with your owner's opt-in. " +
+	"Limits apply to how many of the agents you start may be live at once and to how many you may start in a day: every result " +
+	"and every refusal of this tool carries your current budget (live, live_cap, today, daily_cap, live_agents), and so does " +
+	"task_route_attention's result — read the limits from the latest budget, never from memory. " +
+	"Once per task (calling it again answers with that start), until your owner destroys the agent you started there. " +
+	"The agent opens a DRAFT pull request at most and never marks the task complete. " +
+	"It starts a claude-code agent (a Claude Code pod) unless you pass kind \"gateway\" or this deployment has no " +
+	"claude-code. Either kind works in the task's repository, or the one you pass: a claude-code agent's session " +
+	"starts inside a checkout of it, so the repository's CLAUDE.md and project skills (.claude/skills) load."
+
+// chiefBudgetNow is owner's chief-dispatch budget for an answer, or nil when it
+// could not be read — logged, and the answer goes out without it: a budget
+// that cannot be read never fails the call it would have decorated.
+func (s *Server) chiefBudgetNow(ctx context.Context) *plugins.ChiefBudget {
+	if s.ext.ChiefDispatch == nil {
+		return nil
+	}
+	b, err := s.ext.ChiefDispatch.ChiefDispatchBudget(ctx)
+	if err != nil {
+		s.logger.Printf("task routing: read the chief's dispatch budget: %v", err)
+		return nil
+	}
+	return &b
+}
+
+// dispatchRefusal is a task_dispatch refusal: toolErr's {error}, plus the
+// chief's current budget when b is not nil ({error, budget} — isToolErr
+// still reads it as a failed call).
+func dispatchRefusal(msg string, b *plugins.ChiefBudget) string {
+	if b == nil {
+		return toolErr("%s", msg)
+	}
+	return toolJSON(map[string]any{"error": msg, "budget": b})
+}
 
 // repoNameRe is a GitHub owner/name.
 var repoNameRe = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})/[A-Za-z0-9._-]{1,100}$`)
@@ -203,13 +247,7 @@ func taskRoutingToolDefs(dispatch bool) []agents.ToolDef {
 	}
 	if dispatch {
 		defs = append(defs, agents.ToolDef{Type: "function", Name: taskDispatchTool,
-			Description: "Start a new agent on one of your owner's open, ungated tasks. Only with your owner's opt-in; at most " +
-				strconv.Itoa(plugins.MaxChiefLiveAgents) + " of the agents you start live at once and " +
-				strconv.Itoa(plugins.MaxChiefDispatchesPerDay) + " a day; once per task (calling it again answers with that start), until your owner destroys the agent you started there. " +
-				"The agent opens a DRAFT pull request at most and never marks the task complete. " +
-				"It starts a claude-code agent (a Claude Code pod) unless you pass kind \"gateway\" or this deployment has no " +
-				"claude-code. Either kind works in the task's repository, or the one you pass: a claude-code agent's session " +
-				"starts inside a checkout of it, so the repository's CLAUDE.md and project skills (.claude/skills) load.",
+			Description: chiefDispatchDescription,
 			Parameters: objSchema(map[string]any{"task_id": id,
 				"repo": strProp("The repository to work in (owner/name), only when the task names none: it must be one of " +
 					"your owner's connected GitHub repositories. Without a repository the agent cannot open a pull request."),
@@ -294,7 +332,7 @@ func (s *Server) toolTaskRouteAttention(ctx context.Context, a agents.Agent, tas
 	if !ok {
 		return toolErr("%s", chiefDispatchNoTask)
 	}
-	acts, err := s.chiefTaskActions(ctx, a, n)
+	acts, budget, withheld, err := s.chiefTaskActions(ctx, a, n)
 	if err != nil {
 		s.logger.Printf("task routing: the actions on task %d: %v", taskID, err)
 		return toolErr("the task could not be put in front of your owner")
@@ -303,7 +341,7 @@ func (s *Server) toolTaskRouteAttention(ctx context.Context, a agents.Agent, tas
 	if c := cleanNote(note); c != "" {
 		addendum = "Your chief's note: " + c + "\n\n"
 	}
-	addendum += chiefTaskActionsLine(acts)
+	addendum += chiefTaskActionsLine(acts, withheld)
 	options, offered := make([]string, 0, len(acts)), make([]string, 0, len(acts))
 	for _, x := range acts {
 		options, offered = append(options, x.Label), append(offered, x.Tool)
@@ -318,10 +356,16 @@ func (s *Server) toolTaskRouteAttention(ctx context.Context, a agents.Agent, tas
 		return toolErr("the task could not be put in front of your owner")
 	}
 	s.recordTaskRouted(ctx, n, taskRouteAttentionTool)
-	return toolJSON(map[string]any{"id": ask.ID, "task_id": n.ID, "status": "pending", "actions_offered": offered,
+	out := map[string]any{"id": ask.ID, "task_id": n.ID, "status": "pending", "actions_offered": offered,
 		"next": "Your owner has it. Their answer will be delivered to you as a new message in your default session; act on it then " +
 			"(with one of actions_offered when they pick one). You do not need to wait; you MAY call attention_wait{id: " +
-			strconv.FormatInt(ask.ID, 10) + "} to block on it."})
+			strconv.FormatInt(ask.ID, 10) + "} to block on it."}
+	// The chief's dispatch budget, when its owner opted in: why task_dispatch
+	// is or is not among actions_offered.
+	if budget != nil {
+		out["budget"] = budget
+	}
+	return toolJSON(out)
 }
 
 // askOwnerAboutTask files an ask by asker naming task n ("Task #N needs you:
@@ -549,10 +593,16 @@ func (s *Server) toolTaskDispatch(ctx context.Context, a agents.Agent, taskID in
 	if why := s.chiefDispatchDeploymentRefusal(owner); why != "" {
 		return toolErr("%s", why)
 	}
+	// 🔴 FROM HERE ON EVERY ANSWER CARRIES THE CHIEF'S CURRENT BUDGET (refuse,
+	// and the results below): the caps are data read at the call, never numbers
+	// the chief remembers (chiefDispatchDescription). Before the opt-in and the
+	// deployment there is no budget the chief could spend, so those two refusals
+	// carry none.
+	refuse := func(msg string) string { return dispatchRefusal(msg, s.chiefBudgetNow(ctx)) }
 	raw := instructions
 	instructions, ok := cleanInstructions(instructions)
 	if !ok {
-		return toolErr("%s", chiefDispatchInstructionsCap)
+		return refuse(chiefDispatchInstructionsCap)
 	}
 	// 🔴 INSTRUCTIONS ARE ONLY EVER THE OWNER'S OWN WORDS. The pod is told to
 	// follow them as its owner's wishes, and the chief may be reading outside
@@ -563,7 +613,7 @@ func (s *Server) toolTaskDispatch(ctx context.Context, a agents.Agent, taskID in
 	if instructions != "" {
 		var why string
 		if source, why = s.ownerAnswer(ctx, owner, taskID, raw); why != "" {
-			return toolErr("%s", why)
+			return refuse(why)
 		}
 	}
 	if kindArg == "" {
@@ -571,7 +621,7 @@ func (s *Server) toolTaskDispatch(ctx context.Context, a agents.Agent, taskID in
 	}
 	kind, err := s.resolveKind(ctx, kindArg)
 	if err != nil {
-		return toolErr("%s", err.Error())
+		return refuse(err.Error())
 	}
 	// 🔴 THE CHIEF DOES NOT START A HERMES AGENT, YET: the rules its kickoff
 	// carries (draft PR, comment the URL, set ready_for_review) are done with
@@ -580,7 +630,7 @@ func (s *Server) toolTaskDispatch(ctx context.Context, a agents.Agent, taskID in
 	// before the reservation, so no unit is spent. A person may still dispatch
 	// one from the forms or the API.
 	if kind == agents.KindHermes {
-		return toolErr("%s", chiefDispatchNoHermes)
+		return refuse(chiefDispatchNoHermes)
 	}
 	cc := kind == agents.KindClaudeCode
 	// 🔴 THE REPOSITORY THE AGENT WILL WORK IN MUST BE ONE THE OWNER CONNECTED —
@@ -601,7 +651,7 @@ func (s *Server) toolTaskDispatch(ctx context.Context, a agents.Agent, taskID in
 	}
 	if effective != "" {
 		if why := s.connectedRepo(ctx, effective); why != "" {
-			return toolErr("%s", why)
+			return refuse(why)
 		}
 	}
 	var task notes.Note
@@ -642,14 +692,16 @@ func (s *Server) toolTaskDispatch(ctx context.Context, a agents.Agent, taskID in
 	switch {
 	case err == nil:
 	case errors.As(err, &refusal):
-		return toolErr("%s", string(refusal))
+		return refuse(string(refusal))
+	// A cap refusal carries the budget the reservation decided it on — the
+	// SAME numbers the cap compared (plugins.chiefBudget), not a second read.
 	case errors.Is(err, plugins.ErrChiefLiveCap):
-		return toolErr("%s", chiefDispatchLiveCap)
+		return dispatchRefusal(chiefDispatchLiveCap, res.Budget)
 	case errors.Is(err, plugins.ErrChiefDailyCap):
-		return toolErr("%s", chiefDispatchDailyCap)
+		return dispatchRefusal(chiefDispatchDailyCap, res.Budget)
 	default:
 		s.logger.Printf("task routing: reserve a start for task %d: %v", taskID, err)
-		return toolErr("the start could not be reserved")
+		return refuse("the start could not be reserved")
 	}
 	if res.Prior {
 		// An already_dispatched answer routes the task (it leaves "Task to
@@ -698,6 +750,9 @@ func (s *Server) toolTaskDispatch(ctx context.Context, a agents.Agent, taskID in
 				"Use task_route_attention."
 		}
 		out := map[string]any{"task_id": taskID, "already_dispatched": true, "next": next}
+		if b := s.chiefBudgetNow(ctx); b != nil {
+			out["budget"] = b
+		}
 		if res.AgentID != nil {
 			out["agent_id"] = *res.AgentID
 		}
@@ -730,10 +785,10 @@ func (s *Server) toolTaskDispatch(ctx context.Context, a agents.Agent, taskID in
 	// (provisioner_seam_test.go) is function-granular — a body that calls the
 	// provisioner and nil-checks it is the barrier.
 	if s.ext.Provisioner == nil {
-		return toolErr("this deployment cannot start agents")
+		return refuse("this deployment cannot start agents")
 	}
 	if reason := s.ext.Provisioner.KickoffUndeliverableReason(); reason != "" {
-		return toolErr("this deployment cannot start an agent now: %s", reason)
+		return refuse("this deployment cannot start an agent now: " + reason)
 	}
 	rec, err := s.createAndDispatchAgent(ctx, p)
 	if err != nil {
@@ -749,17 +804,22 @@ func (s *Server) toolTaskDispatch(ctx context.Context, a agents.Agent, taskID in
 			if _, rerr := s.ext.ChiefDispatch.ReleaseRefusedChiefDispatch(ctx, taskID, res.ReservationID); rerr != nil {
 				s.logger.Printf("task routing: release the refused start for task %d: %v", taskID, rerr)
 			}
-			return toolErr("the agent could not be started: %s; use task_route_attention", err.Error())
+			return refuse("the agent could not be started: " + err.Error() + "; use task_route_attention")
 		}
-		return toolErr("the agent could not be started; use task_route_attention")
+		return refuse("the agent could not be started; use task_route_attention")
 	}
 	if err := s.ext.ChiefDispatch.RecordChiefDispatchAgent(ctx, taskID, rec.ID); err != nil {
 		s.logger.Printf("task routing: record agent %d for task %d: %v", rec.ID, taskID, err)
 	}
 	s.advanceTaskToInProgress(ctx, taskID)
 	s.attentionChanged(owner, "task-routed-"+strconv.FormatInt(taskID, 10))
-	return toolJSON(map[string]any{"task_id": taskID, "agent_id": rec.ID, "agent": rec.Name,
-		"next": "Started. It opens a draft pull request at most and cannot mark the task complete. Do not start another."})
+	out := map[string]any{"task_id": taskID, "agent_id": rec.ID, "agent": rec.Name,
+		"next": "Started. It opens a draft pull request at most and cannot mark the task complete. Do not start another."}
+	// Read after the agent is recorded, so the budget names it.
+	if b := s.chiefBudgetNow(ctx); b != nil {
+		out["budget"] = b
+	}
+	return toolJSON(out)
 }
 
 // chiefDispatchInstructionsUnsourced is task_dispatch's refusal of instructions
