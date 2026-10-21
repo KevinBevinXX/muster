@@ -14,7 +14,7 @@ import (
 	"github.com/ZacxDev/muster/internal/mirror"
 )
 
-// EDITING A QUEUED MESSAGE (migration 0039): the ⋯ menu's Edit opens a queued
+// EDITING A QUEUED MESSAGE (migration 0040): the ⋯ menu's Edit opens a queued
 // message's text in its row, Save replaces it, Cancel leaves it as it was.
 //
 // 🔴 HELD WHILE IT IS EDITED, AND THE HOLD COMES FIRST. Hold marks the row held
@@ -180,7 +180,7 @@ func (s *PGStore) ReleaseEdit(ctx context.Context, id int64, token string) (it I
 // owner (the system scope), recording that it ran out (hold_lapsed_at), and
 // returns how many. The dispatcher runs it on every pass: a row then carries
 // held_until and hold_token only while its hold is live, which bounds what an
-// older image (whose statements do not clear them, and so trip 0039's
+// older image (whose statements do not clear them, and so trip 0040's
 // send_queue_hold_check on a held row) can meet during a rollout or rollback.
 func (s *PGStore) ClearLapsedHolds(ctx context.Context) (int, error) {
 	tag, err := s.pool.Exec(sys(ctx), `UPDATE send_queue SET hold_lapsed_at = held_until, `+clearHold+`
@@ -192,7 +192,7 @@ func (s *PGStore) ClearLapsedHolds(ctx context.Context) (int, error) {
 }
 
 // clearHold is the SET clause that ends a row's hold: every transition out of
-// 'queued' says it (0039's send_queue_hold_check), as do Save and a release.
+// 'queued' says it (0040's send_queue_hold_check), as do Save and a release.
 const clearHold = `held_until = NULL, hold_token = NULL`
 
 // notHeld is the predicate "this row has no live hold": the claim's.

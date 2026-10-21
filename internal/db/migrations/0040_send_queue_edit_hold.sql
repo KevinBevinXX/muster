@@ -1,9 +1,10 @@
--- muster 0039 — EDITING A QUEUED MESSAGE (internal/sendqueue Hold, SaveEdit,
+-- muster 0040 — EDITING A QUEUED MESSAGE (internal/sendqueue Hold, SaveEdit,
 -- ReleaseEdit): the ⋯ menu's Edit opens a queued message's text in its row,
 -- and while it is open the row is HELD — the dispatcher never sends it.
 --
--- ⚠ NUMBERED 0039 WHILE 0037 AND 0038 ARE STILL IN OPEN PULL REQUESTS. It
--- merges after them (or is renumbered to the next free number);
+-- ⚠ NUMBERED 0040 AHEAD OF ITS PREDECESSORS: 0038 (the Hermes agent kind, #192)
+-- and 0039 (Android devices, #186) are in open pull requests and merge first
+-- (or this is renumbered to the next free number);
 -- TestEmbeddedMigrationsAreContiguousFrom0001 refuses a tree with a gap.
 --
 -- 🔴 A HOLD IS A LEASE ON THE DATABASE'S CLOCK, LIKE A CLAIM. held_until is

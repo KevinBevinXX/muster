@@ -16,7 +16,7 @@ import (
 
 // ---------------------------------------------------------------------------
 // EDITING A QUEUED MESSAGE (internal/sendqueue's Hold, SaveEdit, ReleaseEdit;
-// migration 0039): the queued row's ⋯ menu has Edit, which opens the message's
+// migration 0040): the queued row's ⋯ menu has Edit, which opens the message's
 // text in the row with Save and Cancel.
 //
 //   - POST /send-queue/{id}/edit HOLDS the row (the dispatcher never claims a

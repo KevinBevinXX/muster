@@ -128,7 +128,7 @@ func TestTheDispatcherNeverSendsDuringAnEdit(t *testing.T) {
 // dispatcher's next pass takes it off the row (held_until and hold_token back
 // to NULL) even while the window never goes idle — so a row keeps hold
 // columns only while its hold is LIVE, which is what bounds what an older
-// image (whose statements trip 0039's send_queue_hold_check on a held row)
+// image (whose statements trip 0040's send_queue_hold_check on a held row)
 // can meet during a rollout or a rollback. The row still says its edit ran out.
 // The control is a live hold on another row, which the same pass leaves alone.
 func TestALapsedHoldIsClearedByTheDispatchersPass(t *testing.T) {
