@@ -117,7 +117,7 @@ func prepareJob(a *Adapter, r worktreetest.Repo, sha string) (string, error) {
 // out: present in the worktree with the DEFAULT branch's bytes when the
 // default branch has them, absent when it does not.
 var overlayPaths = []string{
-	"CLAUDE.md", "AGENTS.md", ".mcp.json",
+	"CLAUDE.md", "CLAUDE.local.md", "AGENTS.md", ".mcp.json",
 	".claude/settings.json", ".claude/skills/rev/SKILL.md", ".claude/agents/evil.md",
 	"sub/.claude/skills/x/SKILL.md", "deep/.claude/settings.json",
 }
@@ -279,12 +279,17 @@ func TestAJobWorktreeIsRefusedWithoutATrustedDefaultBranch(t *testing.T) {
 	for _, tc := range []struct{ path, target string }{
 		{".claude/skills/link", "../../f"},
 		{"AGENTS.md", "f"},
+		// A non-ASCII path, which git C-quotes when it is not read with -z.
+		{".claude/skills/é/SKILL.md", "../../../f"},
 	} {
 		t.Run("a symlink on the default branch at "+tc.path, func(t *testing.T) {
 			a, d := newWorkspaceAdapter(t)
 			r := worktreetest.New(t, filepath.Join(d.root, "widgets"), filepath.Join(d.root, "markers"))
 			src := filepath.Join(t.TempDir(), "src")
 			worktreetest.Git(t, "", "clone", "-q", "file://"+r.Origin, src)
+			if err := os.MkdirAll(filepath.Dir(filepath.Join(src, tc.path)), 0o755); err != nil {
+				t.Fatal(err)
+			}
 			if err := os.Symlink(tc.target, filepath.Join(src, tc.path)); err != nil {
 				t.Fatal(err)
 			}
@@ -356,7 +361,7 @@ func TestTheFetchNamesThePublicURLAndThePullRequest(t *testing.T) {
 		t.Fatalf("%d execs, want 1", len(d.cmds))
 	}
 	want := []string{"muster-job-worktree", "/data/workspace/widgets", "/data/workspace/.muster-jobs/41", sha,
-		"https://github.com/acme/widgets", "7", "CLAUDE.md", "AGENTS.md", ".mcp.json"}
+		"https://github.com/acme/widgets", "7", "CLAUDE.md", "CLAUDE.local.md", "AGENTS.md", ".mcp.json"}
 	if got := d.cmds[0][3:]; strings.Join(got, "|") != strings.Join(want, "|") {
 		t.Fatalf("worktree command args = %q\nwant                    %q", got, want)
 	}
@@ -446,6 +451,35 @@ func TestAShaNotOnThePullRequestIsRefused(t *testing.T) {
 	}
 	if got := worktreetest.Git(t, wt, "rev-parse", "HEAD"); got != r.Default {
 		t.Fatalf("worktree HEAD = %s, want the ancestor %s", got, r.Default)
+	}
+}
+
+// TestANonASCIIPathInANestedClaudeIsRestored: the default branch carries a
+// nested .claude/ whose path has a byte outside ASCII. The job is made, and
+// that file in the worktree is the default branch's, byte for byte (read
+// without -z, git quoted the path and the restore checked out one that does
+// not exist, failing the job).
+func TestANonASCIIPathInANestedClaudeIsRestored(t *testing.T) {
+	a, d := newWorkspaceAdapter(t)
+	r := worktreetest.New(t, filepath.Join(d.root, "widgets"), filepath.Join(d.root, "markers"))
+	src := filepath.Join(t.TempDir(), "src")
+	worktreetest.Git(t, "", "clone", "-q", "file://"+r.Origin, src)
+	const rel, body = "sub/.claude/skills/ü/SKILL.md", "---\nname: ü\ndescription: default\n---\nnon-ascii\n"
+	if err := os.MkdirAll(filepath.Join(src, filepath.Dir(rel)), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(src, rel), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	worktreetest.Git(t, src, "add", "--", rel)
+	worktreetest.Git(t, src, "commit", "-q", "-m", "a non-ascii skill")
+	worktreetest.Git(t, src, "push", "-q", "origin", "main")
+	worktreetest.Git(t, r.Checkout, "fetch", "-q", "origin")
+	if _, err := prepareJob(a, r, r.Commit); err != nil {
+		t.Fatalf("prepare with a non-ASCII nested .claude path on the default branch: %v", err)
+	}
+	if b, err := os.ReadFile(filepath.Join(d.root, ".muster-jobs", "41", rel)); err != nil || string(b) != body {
+		t.Fatalf("%s = %q (%v), want the default branch's %q", rel, b, err, body)
 	}
 }
 

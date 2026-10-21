@@ -700,6 +700,9 @@ func (s *server) handleResponses(w http.ResponseWriter, r *http.Request) {
 		// Held until runTurn returns: no eviction may take the lane under its turn.
 		defer s.lanes.release(ln)
 		target = ln.srv
+		// Before any body is written: success or failure, the answer says where
+		// the lane's CLI works.
+		w.Header().Set(headerCCWorkdirUsed, s.lanes.dir(ln))
 	}
 	res, f := target.runTurn(r.Context(), prompt)
 	if f != nil {

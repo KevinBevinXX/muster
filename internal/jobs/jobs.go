@@ -74,6 +74,10 @@ const (
 	// predates worktrees, when a sha job moved the agent's own checkout, and is
 	// kept so a caller branching on it sees no change.
 	ReasonCheckoutFailed = "checkout_failed"
+	// ReasonWorkdirUnconfirmed: a sha job's turn succeeded but the agent's
+	// runtime did not confirm it ran in the job's worktree — an agent image too
+	// old for sha jobs — so its output was discarded.
+	ReasonWorkdirUnconfirmed = "workdir_unconfirmed"
 	// ReasonResultReadFailed: the turn succeeded but result_path could not be read.
 	ReasonResultReadFailed = "result_read_failed"
 	// ReasonEmptyReply: the turn succeeded with no reply text and no result_path

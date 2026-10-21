@@ -15,6 +15,9 @@ func TestTheWorkdirHeaderIsMusters(t *testing.T) {
 	if headerCCWorkdir != agents.HeaderCCWorkdir {
 		t.Fatalf("ccd reads %q, muster sends %q", headerCCWorkdir, agents.HeaderCCWorkdir)
 	}
+	if headerCCWorkdirUsed != agents.HeaderCCWorkdirUsed {
+		t.Fatalf("ccd answers %q, muster reads %q", headerCCWorkdirUsed, agents.HeaderCCWorkdirUsed)
+	}
 }
 
 // TestCheckJobDirTakesOnlyAnExistingJobWorktreeOfItsWorkspace: everything that

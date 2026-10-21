@@ -741,8 +741,13 @@ func (s *Server) handleConnectorCreate(w http.ResponseWriter, r *http.Request) {
 	refused := ""
 	if f.RequestID != 0 {
 		src := connectors.SourceStored
+		// 🔴 FAIL CLOSED: a request that cannot be read now is not approved —
+		// the pool-worker refusal needs its agent, and skipping the check on a
+		// read error would approve exactly what it exists to refuse.
 		var rerr error
-		if pg, gerr := s.ext.Connectors.GetGrant(ctx, f.RequestID); gerr == nil {
+		if pg, gerr := s.ext.Connectors.GetGrant(ctx, f.RequestID); gerr != nil {
+			rerr = fmt.Errorf("the request could not be read (%v), so it was not approved; approve it below", gerr)
+		} else {
 			rerr = s.refusePoolWorkerGitHubGrant(ctx, pg)
 			src = connectors.SourceFor(ctx, s.ext.Connectors, pg.Connector)
 		}

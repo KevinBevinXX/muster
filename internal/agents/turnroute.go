@@ -37,6 +37,12 @@ const (
 	// an explicit session (HeaderCCSession), whose CLI it then fixes in that
 	// directory for the session's life.
 	HeaderCCWorkdir = "X-Muster-CC-Workdir"
+	// HeaderCCWorkdirUsed is ccd's ANSWER on an explicit session's turn: the
+	// directory that session's CLI actually works in. A sha job's runner
+	// compares it with the HeaderCCWorkdir it sent and refuses the turn's result
+	// when it is missing or different — a ccd from before job worktrees ignores
+	// HeaderCCWorkdir and would run the job in the agent's own checkout.
+	HeaderCCWorkdirUsed = "X-Muster-CC-Workdir-Used"
 	// HeaderGatewayModel is the gateway runtime's per-request model override.
 	//
 	// ⚠ ITS SPELLING IS THE RUNTIME'S, LIKE sessionKeyHeader's: a third party's
@@ -53,6 +59,16 @@ type TurnRoute struct {
 	Runtime string
 	// Header is set on every request of the turn, after the transport's own.
 	Header http.Header
+	// OnResponse, when set, is handed the response headers of every request of
+	// the turn that got an answer, whatever its status.
+	OnResponse func(http.Header)
+}
+
+// observeTurnRoute hands resp's headers to the route's OnResponse, if any.
+func observeTurnRoute(req *http.Request, resp *http.Response) {
+	if r, ok := TurnRouteFrom(req.Context()); ok && r.OnResponse != nil && resp != nil {
+		r.OnResponse(resp.Header.Clone())
+	}
 }
 
 type turnRouteKey struct{}

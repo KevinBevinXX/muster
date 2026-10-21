@@ -20,9 +20,13 @@ import (
 // (internal/podagent gitroute.go). So the rule, in one predicate
 // (grantReachesGitHub) applied at two doors:
 //
-//   - a pool worker holding a LIVE grant (pending or approved — a pending one is
-//     an approval away from a credential) on such a connector is not eligible
-//     for a job (pickWorker → chooseWorker);
+//   - a pool worker holding an APPROVED grant on such a connector is not
+//     eligible for a job (pickWorker → chooseWorker). A PENDING one does not
+//     disqualify it: the door below means it can never become a credential, and
+//     ccd files a pending `github` request by itself whenever a clone fails
+//     (internal/podagent checkout.go), so counting pending ones would take a
+//     public-repository worker out of its pool after one failed clone until
+//     someone denied the request;
 //   - an approval of such a grant for a pool worker is refused
 //     (refusePoolWorkerGitHubGrant), at every approval door: the Connectors
 //     tab, a mirrored session's connector_request_decide, and the approval that
@@ -71,7 +75,7 @@ func (s *Server) connectorHosts(ctx context.Context) (map[string][]string, error
 	return out, nil
 }
 
-// gitHubGrants maps each agent among ids that holds a live grant reaching
+// gitHubGrants maps each agent among ids that holds an APPROVED grant reaching
 // GitHub to that grant's connector. Empty with no connector store.
 func (s *Server) gitHubGrants(ctx context.Context, ids []int64) (map[int64]string, error) {
 	out := map[int64]string{}
@@ -91,7 +95,7 @@ func (s *Server) gitHubGrants(ctx context.Context, ids []int64) (map[int64]strin
 		return nil, err
 	}
 	for _, g := range grants {
-		if want[g.AgentID] && grantReachesGitHub(g.Connector, hosts) {
+		if want[g.AgentID] && g.Usable() && grantReachesGitHub(g.Connector, hosts) {
 			out[g.AgentID] = g.Connector
 		}
 	}

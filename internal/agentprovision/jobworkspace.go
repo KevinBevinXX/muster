@@ -35,11 +35,12 @@ import (
 // has none). Together with every `.claude` directory (jobOverlayScript) they
 // are what the overlay covers, and nothing else is.
 //
-//   - CLAUDE.md, AGENTS.md: the instructions the CLI loads at launch from the
-//     project root.
+//   - CLAUDE.md, CLAUDE.local.md, AGENTS.md: the instructions the CLI loads at
+//     launch from the project root (CLAUDE.local.md is its personal memory
+//     file, loaded beside CLAUDE.md).
 //   - .mcp.json: the project's MCP servers. The CLI STARTS each server's
 //     command, so it is code the commit would otherwise run.
-var JobOverlayRootFiles = []string{"CLAUDE.md", "AGENTS.md", ".mcp.json"}
+var JobOverlayRootFiles = []string{"CLAUDE.md", "CLAUDE.local.md", "AGENTS.md", ".mcp.json"}
 
 // jobOverlayScript prepares job worktree $2 of the checkout $1 at commit $3,
 // of pull request $5 of the repository at the anonymous URL $4, the remaining
@@ -69,6 +70,14 @@ var JobOverlayRootFiles = []string{"CLAUDE.md", "AGENTS.md", ".mcp.json"}
 // "a subproject directory (e.g. `ios/.claude/skills/…`)"), and a skill's or
 // an agent's frontmatter can declare hooks. Replacing only the root would let
 // a commit add `sub/.claude/…` and have it loaded.
+//
+// 🔴 EVERY PATH LIST IS READ NUL-SEPARATED (ls-tree -z, grep -z, sed -z, sort
+// -z, xargs -0). Without -z, git C-quotes a path with a byte outside ASCII
+// under the default core.quotePath ("…\303\251…", with a leading quote), so a
+// symlink at .claude/skills/é/… slipped past the symlink check and was
+// restored, and a non-ASCII file in a nested .claude/ made the restore check
+// out a quoted path that does not exist — failing every sha job on the
+// repository.
 //
 // 🔴 THE FETCH IS ANONYMOUS, AND THE SCRIPT ENFORCES IT RATHER THAN ASSUMING IT.
 // An agent holding an approved grant on a connector that reaches github.com has
@@ -112,7 +121,8 @@ if [ "$sha" != "$head" ] && ! git merge-base --is-ancestor "$sha" "$head" 2>/dev
 	echo "` + NotOnPullRequestMessage + ` (pull request $pr's head is $head)" >&2
 	exit 6
 fi
-links=$(git ls-tree -r "$def" | awk -F '\t' '$1 ~ /^120000 / {print $2}' | grep -E '(^|/)\.claude(/|$)')
+tab=$(printf '\t')
+links=$(git ls-tree -r -z "$def" | grep -zE "^120000 [^$tab]*$tab(.*/)?\.claude(/|\$)" | tr '\0' '\n')
 for p in "$@"; do
 	case $(git ls-tree "$def" -- "$p") in
 	120000\ *) links="$links
@@ -131,11 +141,9 @@ find . -name .git -prune -o -name .claude -prune -exec rm -rf {} + || exit 1
 for p in "$@"; do
 	rm -rf ./"$p" || exit 1
 done
-git ls-tree -r --name-only "$def" | grep -E '(^|/)\.claude(/|$)' |
-	sed -E 's#^((.*/)?\.claude)(/.*)?$#\1#' | sort -u |
-	while IFS= read -r p; do
-		git --literal-pathspecs checkout --quiet "$def" -- "$p" || exit 1
-	done || exit 1
+git ls-tree -r -z --name-only "$def" | grep -zE '(^|/)\.claude(/|$)' |
+	sed -zE 's#^((.*/)?\.claude)(/.*)?$#\1#' | sort -zu |
+	xargs -0r -n1 sh -c 'git --literal-pathspecs checkout --quiet "$1" -- "$2" || exit 255' sh "$def" || exit 1
 for p in "$@"; do
 	if git cat-file -e "$def:$p" 2>/dev/null; then
 		git --literal-pathspecs checkout --quiet "$def" -- "$p" || exit 1

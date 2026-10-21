@@ -87,6 +87,10 @@ const (
 	// headerCCWorkdir: the directory the lane's CLI works in, a machine job's
 	// worktree (laneFor). Absent: ccd's own workspace.
 	headerCCWorkdir = "X-Muster-CC-Workdir"
+	// headerCCWorkdirUsed: ccd's answer on every lane turn — the directory the
+	// lane's CLI works in — so muster can tell a ccd that honoured
+	// headerCCWorkdir from one that predates it.
+	headerCCWorkdirUsed = "X-Muster-CC-Workdir-Used"
 )
 
 // laneModelPattern is what a lane's --model may be: an alias ("opus") or a model

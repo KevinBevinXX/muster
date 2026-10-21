@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -93,6 +94,12 @@ func (g *cliGateway) Chat(ctx context.Context, _ agents.Agent, _, _ string, _ fu
 		return "", errors.New("cliGateway: the turn named no working directory")
 	}
 	g.dirs = append(g.dirs, dir)
+	// Plays ccd's answer: the directory the session's CLI works in.
+	if route.OnResponse != nil {
+		h := http.Header{}
+		h.Set(agents.HeaderCCWorkdirUsed, route.Header.Get(agents.HeaderCCWorkdir))
+		route.OnResponse(h)
+	}
 	runCLIConfig(g.t, dir)
 	if g.resultPath != "" {
 		if err := os.MkdirAll(filepath.Dir(filepath.Join(dir, g.resultPath)), 0o755); err != nil {

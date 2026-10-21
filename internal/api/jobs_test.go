@@ -267,6 +267,11 @@ type jobGateway struct {
 	// panics makes the turn panic.
 	panics bool
 	turns  []string
+	// echo plays ccd's answer header (agents.HeaderCCWorkdirUsed) on an
+	// explicit session's turn: "" echoes the workdir the turn named, as ccd
+	// does; noEcho plays a ccd from before job worktrees, which sends none.
+	echo   string
+	noEcho bool
 }
 
 func (g *jobGateway) Chat(ctx context.Context, a agents.Agent, key, msg string, _ func(string)) (string, error) {
@@ -278,7 +283,16 @@ func (g *jobGateway) Chat(ctx context.Context, a agents.Agent, key, msg string, 
 	g.mu.Lock()
 	g.turns = append(g.turns, turn+" "+msg)
 	reply, err, block, release, panics := g.reply, g.err, g.block, g.release, g.panics
+	echo, noEcho := g.echo, g.noEcho
 	g.mu.Unlock()
+	if route.OnResponse != nil && !noEcho {
+		if echo == "" {
+			echo = route.Header.Get(agents.HeaderCCWorkdir)
+		}
+		h := http.Header{}
+		h.Set(agents.HeaderCCWorkdirUsed, echo)
+		route.OnResponse(h)
+	}
 	if panics {
 		panic("jobGateway: a bug in the turn")
 	}
@@ -1025,5 +1039,47 @@ func TestAResultPathUnderDotGitIsRefused(t *testing.T) {
 	}
 	if n := f.store.count(); n != 0 {
 		t.Fatalf("%d job(s) recorded", n)
+	}
+}
+
+// TestAShaJobWhoseRuntimeDoesNotConfirmTheWorktreeIsRefused: a ccd from before
+// job worktrees ignores X-Muster-CC-Workdir and answers with no
+// X-Muster-CC-Workdir-Used; one that names another directory ran elsewhere.
+// Either way the turn's reply — however successful — is not the job's result:
+// the job fails workdir_unconfirmed, saying the image is too old. With the
+// echo matching, the same job succeeds.
+func TestAShaJobWhoseRuntimeDoesNotConfirmTheWorktreeIsRefused(t *testing.T) {
+	body := map[string]any{"agent": "keen-wren", "prompt": "review", "repo": "acme/widgets", "sha": testFullSHA, "pr": 7}
+	for _, tc := range []struct {
+		name   string
+		echo   string
+		noEcho bool
+		got    string
+	}{
+		{"no echo", "", true, "no " + agents.HeaderCCWorkdirUsed},
+		{"another directory", "/data/workspace/widgets", false, agents.HeaderCCWorkdirUsed + ` "/data/workspace/widgets"`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newJobFixture(t, testServiceToken)
+			f.gw.reply, f.gw.echo, f.gw.noEcho = "LGTM", tc.echo, tc.noEcho
+			out := f.await(t, f.submit(t, body))
+			want := "the agent's runtime did not confirm it ran the turn in the job's worktree /data/workspace/.muster-jobs/1 " +
+				"(it answered with " + tc.got + "): its image is too old for sha jobs, so the turn's output was discarded; " +
+				"update the agent's image"
+			if out["status"] != jobs.StatusFailed || out["reason"] != jobs.ReasonWorkdirUnconfirmed || out["error"] != want {
+				t.Fatalf("job = %v/%v %q\nwant failed/%s %q", out["status"], out["reason"], out["error"], jobs.ReasonWorkdirUnconfirmed, want)
+			}
+			if _, ok := out["result"]; ok {
+				t.Fatalf("a refused job carries the turn's reply as its result: %v", out["result"])
+			}
+			if _, removed := f.ws.snapshot(); len(removed) != 1 {
+				t.Fatalf("worktrees removed = %q, want the job's", removed)
+			}
+		})
+	}
+	f := newJobFixture(t, testServiceToken)
+	f.gw.reply = "LGTM"
+	if out := f.await(t, f.submit(t, body)); out["status"] != jobs.StatusSucceeded || out["result"] != "LGTM" {
+		t.Fatalf("with the echo matching: job = %v/%v %q, want succeeded LGTM", out["status"], out["reason"], out["result"])
 	}
 }

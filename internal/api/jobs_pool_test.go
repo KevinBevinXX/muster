@@ -214,6 +214,10 @@ type grantStore struct {
 	grants  []connectors.Grant
 	conns   []connectors.Connector
 	decided []int64
+	// getsBeforeFailing, when positive, is how many GetGrant calls succeed
+	// before every later one fails.
+	getsBeforeFailing int
+	gets              int
 }
 
 func (g *grantStore) ListGrants(context.Context) ([]connectors.Grant, error) { return g.grants, nil }
@@ -221,6 +225,10 @@ func (g *grantStore) ListConnectors(context.Context) ([]connectors.Connector, er
 	return g.conns, nil
 }
 func (g *grantStore) GetGrant(_ context.Context, id int64) (connectors.Grant, error) {
+	g.gets++
+	if g.getsBeforeFailing > 0 && g.gets > g.getsBeforeFailing {
+		return connectors.Grant{}, errors.New("grantStore: the database is unreachable")
+	}
 	for _, gr := range g.grants {
 		if gr.ID == id {
 			return gr, nil
@@ -267,22 +275,28 @@ var testConnectors = []connectors.Connector{
 }
 
 // TestAPoolWorkerHoldingAGitHubGrantIsSkipped: through the real handler, rev-a
-// — first by name, otherwise winning — holds a pending grant on a stored
-// connector reaching github.com, so the job runs on rev-b; a grant on a
-// connector reaching elsewhere does not disqualify it.
+// — first by name, otherwise winning — holds an APPROVED grant on a stored
+// connector reaching github.com, so the job runs on rev-b. A PENDING github
+// request (what ccd files by itself after a failed clone) does not disqualify
+// it, nor does an approved grant on a connector reaching elsewhere.
 func TestAPoolWorkerHoldingAGitHubGrantIsSkipped(t *testing.T) {
 	f := newJobFixture(t, testServiceToken)
 	f.s.ext.Kinds = &poolKinds{states: map[string]ccpool.AccountState{"alpha": {}, "beta": {}}}
 	st := &grantStore{conns: testConnectors,
-		grants: []connectors.Grant{{ID: 1, AgentID: 20, AgentName: "rev-a", Connector: "gh-token", Status: connectors.StatusPending}}}
+		grants: []connectors.Grant{{ID: 1, AgentID: 20, AgentName: "rev-a", Connector: "gh-token", Status: connectors.StatusApproved}}}
 	f.s.ext.Connectors = st
 	f.gw.reply = "done"
 	if out := f.await(t, f.submit(t, map[string]any{"worker_pool": "reviewers", "prompt": "review"})); out["agent"] != "rev-b" {
-		t.Fatalf("with rev-a holding a GitHub grant the job ran on %v, want rev-b", out["agent"])
+		t.Fatalf("with rev-a holding an approved GitHub grant the job ran on %v, want rev-b", out["agent"])
 	}
-	st.grants[0].Connector = "chat"
-	if out := f.await(t, f.submit(t, map[string]any{"worker_pool": "reviewers", "prompt": "review"})); out["agent"] != "rev-a" {
-		t.Fatalf("with rev-a holding only a non-GitHub grant the job ran on %v, want rev-a", out["agent"])
+	for _, g := range []connectors.Grant{
+		{ID: 1, AgentID: 20, AgentName: "rev-a", Connector: "github", Status: connectors.StatusPending},
+		{ID: 1, AgentID: 20, AgentName: "rev-a", Connector: "chat", Status: connectors.StatusApproved},
+	} {
+		st.grants[0] = g
+		if out := f.await(t, f.submit(t, map[string]any{"worker_pool": "reviewers", "prompt": "review"})); out["agent"] != "rev-a" {
+			t.Fatalf("with rev-a holding a %s grant on %s the job ran on %v, want rev-a", g.Status, g.Connector, out["agent"])
+		}
 	}
 }
 
@@ -357,5 +371,29 @@ func TestEnteringACredentialDoesNotApproveAPoolWorkersGitHubGrant(t *testing.T) 
 		if !tc.decided && !strings.Contains(w.Body.String(), "a member of worker pool reviewers") {
 			t.Errorf("request %s: the refusal does not say why: %q", tc.id, w.Body.String())
 		}
+	}
+}
+
+// TestEnteringACredentialApprovesNothingItCannotRead: the form reads the
+// request (to show it), then the approval reads it again; when that second
+// read fails, nothing is approved — not even for an agent in no pool, whose
+// approval would otherwise go through — and the page says so.
+func TestEnteringACredentialApprovesNothingItCannotRead(t *testing.T) {
+	f := newJobFixture(t, testServiceToken)
+	st := &grantStore{getsBeforeFailing: 1, grants: []connectors.Grant{
+		{ID: 6, AgentID: 7, AgentName: "keen-wren", Connector: "gh-token2", Status: connectors.StatusPending},
+	}}
+	f.s.ext.Connectors = st
+	form := url.Values{"request_id": {"6"}, "preset": {"custom"}, "hosts": {"github.com"}, "scheme": {"bearer"},
+		"secret": {"not-a-real-token"}}
+	req := httptest.NewRequest(http.MethodPost, "/connectors", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+	f.s.handleConnectorCreate(w, req)
+	if len(st.decided) != 0 {
+		t.Fatalf("an unreadable request was approved: %v", st.decided)
+	}
+	if !strings.Contains(w.Body.String(), "could not be read") {
+		t.Fatalf("the page does not say the request could not be read: %q", w.Body.String())
 	}
 }

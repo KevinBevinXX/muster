@@ -102,6 +102,7 @@ func ChatStream(ctx context.Context, client *http.Client, url, token, sessionKey
 		return "", fmt.Errorf("request: %w", err)
 	}
 	defer resp.Body.Close()
+	observeTurnRoute(req, resp)
 	if resp.StatusCode != http.StatusOK {
 		// 🔴 THE BODY IS CARRIED, AND AN EARLIER REVISION DROPPED IT WHILE THREE OTHER
 		// PLACES ARGUED FROM IT. config.validateProvisioner's sentinel refusal, and the

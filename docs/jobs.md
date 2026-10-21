@@ -6,9 +6,10 @@ outcome. A job runs as one turn of an existing, running `claude-code` agent: one
 it names, or one muster chooses from a named **worker pool**.
 
 > **Who a `sha` job is safe for: commits by trusted members only.** A `sha`
-> job is isolated from its commit's agent configuration, and the worker running
-> it holds no credential that could write to the repository. It is NOT
-> isolated from the commit's code. That is enough for reviewing commits written
+> job is isolated from its commit's agent configuration, and when it runs on a
+> **pool** worker, that worker holds no credential that could write to the
+> repository (a job naming an agent gets no such guarantee: see below). It is
+> NOT isolated from the commit's code. That is enough for reviewing commits written
 > by people you already trust with your repository — a teammate's pull
 > request. It is **not** enough for a third party's commit (a pull request from
 > a fork, an outside contributor): keep those away from the job API until
@@ -23,22 +24,30 @@ it names, or one muster chooses from a named **worker pool**.
 >   repository's default branch's copies (`origin/HEAD`) put back where it has
 >   them: every `.claude/` directory at any depth (settings with their hooks —
 >   commands the CLI runs — agents, and skills, which the CLI also finds in
->   subdirectories); the root `CLAUDE.md` and `AGENTS.md` (the instructions it
->   loads at launch); the root `.mcp.json` (MCP servers, whose commands it
->   starts). With the real CLI, a commit whose `.claude/settings.json` defines a
+>   subdirectories); the root `CLAUDE.md`, `CLAUDE.local.md` and `AGENTS.md`
+>   (the instructions it loads at launch, `CLAUDE.local.md` being its personal
+>   memory file); the root `.mcp.json` (MCP servers, whose commands it starts).
+>   Every path list is read NUL-separated, so a non-ASCII name is handled like
+>   any other. With the real CLI, a commit whose `.claude/settings.json` defines a
 >   SessionStart hook and whose `.mcp.json` defines a server runs neither in its
 >   job, and runs both without this step
 >   ([`realcli_test.go`](../internal/agentprovision/realcli_test.go), in CI's
 >   image job).
-> - **Write access to the repository.** The commit is fetched anonymously, as
+> - **Write access to the repository, on a pool worker.** The commit is
+>   fetched anonymously, as
 >   pull request `pr`'s head from `https://github.com/<repo>` — not through
 >   muster's credentialed proxy, whatever git routing the pod has (in CI, with
 >   that routing in force, a plain fetch reaches the proxy and the job's fetch
 >   does not) — and the job runs only at that head or one of its ancestors. A
->   pool worker holds no grant on any connector that reaches github.com: it is
->   skipped for a job while it holds one, and such a grant is never approved
->   for it ([Worker pools](#worker-pools)). So a pool job's turn has no
->   credential to push, comment or merge with.
+>   pool worker holds no approved grant on any connector that reaches
+>   github.com: such a grant is never approved for it, and a worker holding one
+>   anyway is skipped ([Worker pools](#worker-pools)). So a pool job's turn has
+>   no credential to push, comment or merge with.
+> - **A runtime that ignores the worktree.** ccd answers every such turn with
+>   the directory its CLI worked in (`X-Muster-CC-Workdir-Used`). When the
+>   answer is missing — a ccd from before job worktrees, which would have run
+>   the turn in the agent's own checkout — or names another directory, the
+>   turn's reply is discarded and the job fails `workdir_unconfirmed`.
 >
 > **Not isolated:** the turn runs in the worker's pod with the worker's Claude
 > account, its network (any public HTTPS host) and its volume. Every other file
@@ -48,7 +57,10 @@ it names, or one muster chooses from a named **worker pool**.
 > commit's code can therefore read what the pod holds (the worker's Claude
 > credential, the volume) and send it anywhere on the public internet. A named
 > agent (not a pool member) may also hold a GitHub grant, and the commit's code
-> could use it.
+> could use it. And the default branch's restored `CLAUDE.md` may `@import`
+> other files by path; if the CLI follows such an import into the worktree, it
+> reads the COMMIT's copy of that file. Both are accepted for commits by
+> trusted members.
 
 ## Auth
 
@@ -115,12 +127,15 @@ or a stored connector with a `github.com` host: approved, it routes all of the
 pod's git traffic to github.com through muster's proxy, which adds the
 credential. So:
 
-- a member holding such a grant **pending or approved** (a pending one is an
-  approval away) is not eligible for a job;
 - approving such a grant for a member is **refused**, on the Connectors tab,
   from a mirrored session (`connector_request_decide`), and in the approval
-  that comes with entering a credential. A connector whose hosts muster cannot
-  read counts as reaching github.com.
+  that comes with entering a credential — including when the request cannot be
+  read at that moment. A connector whose hosts muster cannot read counts as
+  reaching github.com;
+- a member holding such a grant **approved** anyway is not eligible for a job.
+  A **pending** one does not count: it can never be approved, and ccd files a
+  pending `github` request by itself whenever a clone fails, which would
+  otherwise take a worker out of its pool after one failed clone.
 
 An agent joins its pool when it is created, before it can hold any grant, so
 with both rules it never holds one. A worker therefore cannot clone a
@@ -130,7 +145,7 @@ ones a job's anonymous fetch can read.
 
 A job naming a pool runs on the member chosen when it is submitted. A member is
 **eligible** when it is a `claude-code` agent whose status is `running`, works
-on the job's `repo` (when it names one), holds no grant reaching github.com,
+on the job's `repo` (when it names one), holds no approved grant reaching github.com,
 runs on a Claude account that is configured and whose current token is not
 marked `auth_failed`, and has fewer than 4 jobs queued or running. Of the
 eligible it prefers, in order:
@@ -221,6 +236,7 @@ kept — the job keeps its status and `error` says
 | `timeout` | the job's `timeout_s` elapsed (status `timed_out`) |
 | `turn_timeout` | ccd's own turn budget elapsed (status `timed_out`) |
 | `checkout_failed` | the job's worktree could not be made: the pull request's head could not be fetched anonymously (a private repository, no such pull request, no network), the `sha` is neither that head nor an ancestor of it, the checkout's own git configuration rewrites the fetch URL or adds a header or credential to it, the default branch (`origin/HEAD`) could not be resolved, the default branch has a symlink among the overlaid paths (it could point at a file the commit controls), or git failed; `error` says which |
+| `workdir_unconfirmed` | a `sha` job's turn succeeded, but the agent's runtime did not confirm it ran in the job's worktree (its image predates job worktrees); the reply was discarded — update the agent's image |
 | `result_read_failed` | the turn succeeded but `result_path` could not be returned |
 | `empty_reply` | the turn produced no reply text and no `result_path` was asked for |
 | `agent_unavailable` | the agent could not be loaded when the job was due to start |

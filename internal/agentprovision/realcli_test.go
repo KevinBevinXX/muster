@@ -264,6 +264,9 @@ func turn(t *testing.T, addr, key, workdir string) {
 	b, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
 	t.Logf("turn %s in %s: %d %s", key, workdir, resp.StatusCode, b)
+	if used := resp.Header.Get(agents.HeaderCCWorkdirUsed); used != workdir {
+		t.Errorf("ccd answered %s %q, want the job's worktree %q", agents.HeaderCCWorkdirUsed, used, workdir)
+	}
 }
 
 func markerLines(t *testing.T, r worktreetest.Repo, name string) string {

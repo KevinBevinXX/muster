@@ -54,10 +54,12 @@ import (
 // it after the job, whatever the outcome (removeJobWorktree). The agent's own
 // checkout is never moved.
 //
-// 🔴 AND IT RUNS WITHOUT A WRITE CREDENTIAL. The commit is fetched anonymously
-// as pull request `pr`'s head from the repository's public URL, around any
-// proxy routing the pod has, and the job runs only at that head or an ancestor;
-// a pool worker holds no grant reaching github.com (jobs_grants.go).
+// 🔴 ON A POOL WORKER IT RUNS WITHOUT A WRITE CREDENTIAL. The commit is fetched
+// anonymously as pull request `pr`'s head from the repository's public URL,
+// around any proxy routing the pod has, and the job runs only at that head or
+// an ancestor; a POOL worker holds no approved grant reaching github.com
+// (jobs_grants.go). A NAMED agent is not checked: one with an approved grant
+// runs the job with that grant in its pod.
 //
 // ⚠ WHAT A JOB DOES NOT HAVE, STATED SO IT IS NOT INFERRED:
 //   - isolation from the commit's code. The turn runs in the worker's pod, with
@@ -360,7 +362,7 @@ const maxWorkerSkipsNamed = 10
 
 // chooseWorker is the worker-pool selection, pure. Of pool's members, a worker
 // is ELIGIBLE when it is a claude-code agent whose stored status is running,
-// works on repo (when the job names one), holds no live grant reaching GitHub
+// works on repo (when the job names one), holds no approved grant reaching GitHub
 // (github: worker id → that grant's connector; jobs_grants.go), runs on a
 // Claude account that is configured and whose current token is not marked
 // auth_failed, and has fewer than jobs.MaxActivePerAgent jobs queued or
@@ -787,6 +789,9 @@ func (s *Server) runJobTurn(ctx context.Context, a agents.Agent, sess agents.Cha
 	// worktree is the job whose worktree the result is read from: 0 for a job
 	// without a sha, which runs in the agent's working directory.
 	var worktree int64
+	// echo is the working directory ccd says the turn's CLI used
+	// (agents.HeaderCCWorkdirUsed), for a sha job.
+	var echo workdirEcho
 	if j.SHA != "" {
 		// 🔴 ONLY IN A SESSION OF ITS OWN. A turn with no explicit Claude Code
 		// session goes to the agent's primary CLI, which works in the agent's
@@ -804,7 +809,7 @@ func (s *Server) runJobTurn(ctx context.Context, a agents.Agent, sess agents.Cha
 			return jobs.Failed(jobs.ReasonCheckoutFailed, err.Error())
 		}
 		worktree = j.ID
-		turnCtx = withJobWorkdir(turnCtx, dir)
+		turnCtx = withJobWorkdir(turnCtx, dir, &echo)
 	}
 	// The transcript writes outlive the deadline: a timed-out job's prompt
 	// still belongs in the session it was sent to.
@@ -817,6 +822,21 @@ func (s *Server) runJobTurn(ctx context.Context, a agents.Agent, sess agents.Cha
 	o = jobs.Classify(reply, err, expired())
 	if o.Status != jobs.StatusSucceeded {
 		return o
+	}
+	// 🔴 A RESULT FROM ANOTHER TREE IS NOT THE JOB'S RESULT. A ccd from before
+	// job worktrees ignores the workdir header and runs the turn in the agent's
+	// own checkout, answering as if nothing were wrong; only its echo (absent
+	// there) tells the two apart.
+	if worktree != 0 {
+		if used, ok := echo.get(); !ok || used != echo.want {
+			got := "no " + agents.HeaderCCWorkdirUsed
+			if ok {
+				got = fmt.Sprintf("%s %q", agents.HeaderCCWorkdirUsed, used)
+			}
+			return jobs.Failed(jobs.ReasonWorkdirUnconfirmed, fmt.Sprintf("the agent's runtime did not confirm it ran the "+
+				"turn in the job's worktree %s (it answered with %s): its image is too old for sha jobs, so the turn's "+
+				"output was discarded; update the agent's image", echo.want, got))
+		}
 	}
 	if j.ResultPath != "" {
 		o = s.readJobResult(ctx, a, worktree, j)
@@ -837,9 +857,32 @@ func (s *Server) runJobTurn(ctx context.Context, a agents.Agent, sess agents.Cha
 const JobNoOwnSessionError = "this deployment's chat store cannot open a Claude Code session of the job's own, " +
 	"so the turn could not be kept out of the agent's checkout; nothing was run"
 
+// workdirEcho records the working directory ccd answered with for a turn.
+type workdirEcho struct {
+	want string
+	mu   sync.Mutex
+	used string
+	seen bool
+}
+
+func (e *workdirEcho) record(h http.Header) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if v := h.Values(agents.HeaderCCWorkdirUsed); len(v) == 1 {
+		e.used, e.seen = v[0], true
+	}
+}
+
+func (e *workdirEcho) get() (string, bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.used, e.seen
+}
+
 // withJobWorkdir is ctx with the turn's route also naming dir as the working
-// directory of the session's CLI (agents.HeaderCCWorkdir).
-func withJobWorkdir(ctx context.Context, dir string) context.Context {
+// directory of the session's CLI (agents.HeaderCCWorkdir), and recording into
+// echo the directory ccd answers it used (agents.HeaderCCWorkdirUsed).
+func withJobWorkdir(ctx context.Context, dir string, echo *workdirEcho) context.Context {
 	r, _ := agents.TurnRouteFrom(ctx)
 	h := r.Header.Clone()
 	if h == nil {
@@ -847,6 +890,8 @@ func withJobWorkdir(ctx context.Context, dir string) context.Context {
 	}
 	h.Set(agents.HeaderCCWorkdir, dir)
 	r.Header = h
+	echo.want = dir
+	r.OnResponse = echo.record
 	return agents.WithTurnRoute(ctx, r)
 }
 

@@ -312,8 +312,17 @@ RULES: list[tuple[str, str, str]] = [
         # match after a dot, and a label one letter longer still matches neither.
         # This was found by the self-audit below, on its first run, which is the
         # whole argument for having one.
-        r"\b[A-Za-z0-9][A-Za-z0-9-]*\.(?:lan|local|internal|home(?:lab)?)\b"
-        r"|\b[A-Za-z0-9][A-Za-z0-9-]*\.(?:lan|local|internal)\.[A-Za-z]{2,}\b",
+        #
+        # ⚠ ONE NAME IS EXCUSED, EXACTLY: `CLAUDE.local.md`, the Claude Code
+        # CLI's personal memory file, which the machine job API names because
+        # it replaces it (internal/agentprovision jobworkspace.go). It is a
+        # FILE NAME, not a host, and both alternatives below would read it as
+        # one. The lookahead excuses only a match that STARTS at that exact
+        # spelling with a word boundary after it; any other `*.local.md`, or
+        # that name with anything more after it, is still refused (pinned by
+        # NEGATIVE_CONTROLS and ALLOWED_CONTROLS).
+        r"\b(?!CLAUDE\.local\.md\b)[A-Za-z0-9][A-Za-z0-9-]*\.(?:lan|local|internal|home(?:lab)?)\b"
+        r"|\b(?!CLAUDE\.local\.md\b)[A-Za-z0-9][A-Za-z0-9-]*\.(?:lan|local|internal)\.[A-Za-z]{2,}\b",
         "a private or lab hostname — it names real infrastructure. Use "
         "`example.com` / `muster.example` in documentation",
     ),
@@ -567,6 +576,13 @@ EXEMPT_FIXTURE_VALUES: dict[str, str] = {
         "(DOC_BLOCKS), which is the control that the allowance is the whole "
         "base address and not a prefix; zero files in the source deployment",
     # -- hostnames, all on invented or IANA-reserved domains ------------------
+    "notes.local":
+        "the look-alike negative control for the one excused file name: an "
+        "invented `.local` name, zero occurrences in the source deployment",
+    "CLAUDE.local":
+        "the excused file name's look-alike negative control "
+        "(`CLAUDE.local.mdx.example`): a public tool's file-name stem, not a "
+        "host, under an RFC 2606 domain",
     "workshed.lan":
         "an invented lab domain: zero occurrences in the source deployment, "
         "whose lab hostnames are spelled differently",
@@ -606,7 +622,7 @@ EXEMPT_FIXTURE_VALUES: dict[str, str] = {
 #: value is a two-line diff, and the second line is this number — which is the
 #: difference between a reviewer skimming a table and a reviewer being told the
 #: table grew.
-EXEMPT_FIXTURE_VALUE_COUNT = 14
+EXEMPT_FIXTURE_VALUE_COUNT = 16
 
 #: Dated stamps in an exempt file must predate this year. A control cannot use
 #: the year-SYNTHETIC_DATE_YEAR convention the rule steers toward, because the
@@ -806,6 +822,11 @@ def partition_tracked_files() -> tuple[list[Path], list[Skipped]]:
 NEGATIVE_CONTROLS = [
     ("private-hostname",
      'MUSTER_API_URL = "https://muster.workshed.lan/api/tasks"'),
+    # The one excused file name must not excuse its look-alikes.
+    ("private-hostname",
+     "    // notes.local.md is served from the workshed box"),
+    ("private-hostname",
+     "    base = 'https://CLAUDE.local.mdx.example/api'"),
     ("private-hostname",
      "    // the gateway resolves agent-7.devpod.internal on the cluster network"),
     ("registry-ref",
@@ -867,6 +888,9 @@ POSITIVE_CONTROL = "trusted = '172.16.4.9'  # a real private address"
 #: A false positive here is not cosmetic: it is how a security gate gets
 #: disabled, and then the real findings ship alongside the noise.
 ALLOWED_CONTROLS = [
+    ("  JobOverlayRootFiles = []string{\"CLAUDE.md\", \"CLAUDE.local.md\", \"AGENTS.md\"}",
+     "the Claude Code CLI's personal memory FILE NAME, the one name the "
+     "private-hostname rule excuses"),
     ('    "10.244.0.0/16",  # a pod CIDR: every pod in the cluster',
      "the standard Kubernetes pod-CIDR example"),
     ('    Except: []string{"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"},',

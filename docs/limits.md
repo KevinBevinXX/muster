@@ -52,7 +52,7 @@
   [jobs.md](jobs.md#what-it-does-not-do).
 - **A job at a commit is for commits by trusted members only.** It runs in a
   worktree of its own whose `.claude/` directories, root `CLAUDE.md`,
-  `AGENTS.md` and `.mcp.json` are the default branch's, fetched anonymously as
+  `CLAUDE.local.md`, `AGENTS.md` and `.mcp.json` are the default branch's, fetched anonymously as
   a pull request's head by a pool worker that holds no GitHub credential — so
   the commit cannot configure its reviewer or write to the repository. It is
   not isolated from the commit's code: the turn runs in the worker's pod with

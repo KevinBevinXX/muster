@@ -18,11 +18,21 @@ import (
 // laneChatIn is laneChat with the session's CLI working in workdir
 // (agents.HeaderCCWorkdir), as muster sends a sha job's turn.
 func (r *serveRig) laneChatIn(key, workdir, p string) (string, error) {
+	reply, _, err := r.laneChatInEcho(key, workdir, p)
+	return reply, err
+}
+
+// laneChatInEcho is laneChatIn also returning ccd's X-Muster-CC-Workdir-Used
+// answer ("" when there was none).
+func (r *serveRig) laneChatInEcho(key, workdir, p string) (string, string, error) {
 	h := http.Header{}
 	h.Set(agents.HeaderCCSession, key)
 	h.Set(agents.HeaderCCWorkdir, workdir)
-	ctx := agents.WithTurnRoute(context.Background(), agents.TurnRoute{Runtime: agents.SessionRuntimeClaudeCode, Header: h})
-	return mustersGatewayNoT(r.gwAddr).Chat(ctx, contractAgent, key, p, nil)
+	var used string
+	ctx := agents.WithTurnRoute(context.Background(), agents.TurnRoute{Runtime: agents.SessionRuntimeClaudeCode, Header: h,
+		OnResponse: func(rh http.Header) { used = rh.Get(agents.HeaderCCWorkdirUsed) }})
+	reply, err := mustersGatewayNoT(r.gwAddr).Chat(ctx, contractAgent, key, p, nil)
+	return reply, used, err
 }
 
 // 🔴 A JOB'S SESSION RUNS ITS OWN CLI IN THE JOB'S WORKTREE: through the whole
@@ -55,9 +65,12 @@ func TestTmuxLaneRunsAJobInItsWorktree(t *testing.T) {
 		t.Fatal(err)
 	}
 	const key, prompt = "job-session-7", "review the commit"
-	got, err := rig.laneChatIn(key, wt, prompt)
+	got, used, err := rig.laneChatInEcho(key, wt, prompt)
 	if err != nil || got != wantReply(prompt, "") {
 		t.Fatalf("job turn: reply %q err %v; ccd log:\n%s", got, err, rig.logs.String())
+	}
+	if used != wt {
+		t.Fatalf("ccd answered %s %q, want the worktree %q", agents.HeaderCCWorkdirUsed, used, wt)
 	}
 	argv := rig.argvLog(t)
 	var line string
