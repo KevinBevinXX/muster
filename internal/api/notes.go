@@ -19,6 +19,7 @@ import (
 	"github.com/ZacxDev/muster/internal/notes"
 	"github.com/ZacxDev/muster/internal/taskstatus"
 	"github.com/ZacxDev/muster/internal/ui"
+	"github.com/ZacxDev/muster/internal/uploads"
 )
 
 // taskSourceAllowlist bounds the cardinality of the muster_tasks_created_total
@@ -393,6 +394,10 @@ func (s *Server) handleNoteCreate(w http.ResponseWriter, r *http.Request) {
 				s.logger.Printf("notes: read attachment %q: %v", fh.Filename, err)
 				continue
 			}
+			// content_type is the uploader's LABEL, stored as given and shown as
+			// such. It never decides how the bytes are served:
+			// handleNoteAttachment sniffs the bytes on every request, and that
+			// is the only authority (uploads.SetServeHeaders).
 			ct := fh.Header.Get("Content-Type")
 			if ct == "" {
 				ct = "application/octet-stream"
@@ -2089,8 +2094,13 @@ func (s *Server) handleNoteCard(w http.ResponseWriter, r *http.Request) {
 	s.renderNoteCard(w, r, note)
 }
 
-// handleNoteAttachment handles GET /notes/{id}/attachments/{aid}: stream an
+// handleNoteAttachment handles GET /tasks/{id}/attachments/{aid}: stream an
 // attachment's bytes for download/preview.
+//
+// 🔴 THE HEADERS ARE uploads.SetServeHeaders', FROM THE SNIFFED BYTES. The
+// stored content_type of a row written before that rule was the uploader's
+// claim, so it is not read here: an HTML file stored as text/html and served
+// inline from muster's origin is stored XSS against whoever opens it.
 func (s *Server) handleNoteAttachment(w http.ResponseWriter, r *http.Request) {
 	aid, err := strconv.ParseInt(r.PathValue("aid"), 10, 64)
 	if err != nil {
@@ -2107,9 +2117,7 @@ func (s *Server) handleNoteAttachment(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "could not load attachment", http.StatusInternalServerError)
 		return
 	}
-	w.Header().Set("Content-Type", att.ContentType)
-	w.Header().Set("Content-Disposition", "inline; filename=\""+att.Filename+"\"")
-	w.Header().Set("Content-Length", strconv.Itoa(len(att.Data)))
+	uploads.SetServeHeaders(w.Header(), uploads.Sniff(att.Data), att.Filename, int64(len(att.Data)))
 	_, _ = w.Write(att.Data)
 }
 

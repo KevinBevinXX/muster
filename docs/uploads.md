@@ -86,10 +86,10 @@ it could not tell.
   request and asks no step-up: an upload types into nothing. The line reaches a
   session only through Send, which is gated as if it had been typed.
 - **The type comes from the bytes**, never from the browser or the filename.
-  Only PNG, JPEG, GIF, WebP and PDF are served inline. HTML, SVG, XML and
-  anything unrecognised is an attachment typed `application/octet-stream`.
-  Every response carries `X-Content-Type-Options: nosniff`, a sandboxing CSP and
-  `Cache-Control: private, no-store`.
+  Only PNG, JPEG, GIF and WebP are served inline. A PDF is an attachment typed
+  `application/pdf`; HTML, SVG, XML and anything unrecognised is an attachment
+  typed `application/octet-stream`. See [Serving uploaded files](#serving-uploaded-files)
+  for the headers every response carries.
 - **The object key is random** (`uploads/<128-bit id>`). The original filename
   is stored for the owner only; agents and download headers see a reduced name
   of `[A-Za-z0-9._-]` characters.
@@ -109,6 +109,57 @@ it could not tell.
 - **Downloads are not time-limited.** A slow agent gets the whole file: only
   the store's first response is bounded (30 s), never the transfer. `HEAD` on a
   link answers from the object's metadata without fetching it.
+
+## Serving uploaded files
+
+A file someone uploaded is served from muster's own origin, so a file that a
+browser renders as a page (HTML, SVG, XHTML, or anything it sniffs as one)
+would run its script **as muster**, with the signed-in operator's session:
+stored XSS. Three routes serve uploaded bytes, and all three answer through one
+function, `uploads.SetServeHeaders`:
+
+| Route | Who | Bytes |
+|---|---|---|
+| `GET /f/{id}?exp=…&sig=…` | anyone with the signed link (an agent) | an upload, from the object store |
+| `GET /uploads/{id}/file` | the owner's session (thumbnails, Open) | an upload, from the object store |
+| `GET /tasks/{id}/attachments/{aid}` | a session | a task's attachment, from Postgres |
+
+Each response is decided from the type **sniffed from the bytes** at serve
+time, never from what the uploader claimed (a task attachment's stored type is
+not read: rows written before this rule hold the uploader's claim). Every
+response carries all of:
+
+- `Content-Disposition: attachment`, except for PNG, JPEG, GIF and WebP, which
+  are `inline` so a thumbnail can show. SVG and PDF are attachments. The
+  filename is reduced to `[A-Za-z0-9._-]`, so it cannot break out of its quotes.
+- a `Content-Type` that never names markup: HTML, SVG and XML go out as
+  `application/octet-stream`.
+- `X-Content-Type-Options: nosniff`, so the browser keeps the type it was given.
+- `Content-Security-Policy: default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; frame-ancestors 'none'; sandbox`.
+  `sandbox` with no `allow-*` token gives the response an opaque origin and runs
+  no script, so even a file that some client did render as a page could not act
+  as muster. It replaces the app's own page CSP, which allows inline script.
+- `Cache-Control: private, no-store`.
+
+A task attachment's stored `contentType` is the uploader's **label**, kept as
+given so the UI can show it; it never decides how the file is served.
+
+The `filename=` parameter is an ASCII fallback (`[A-Za-z0-9._-]`; a stem with
+nothing ASCII left keeps its extension, so `報告.pdf` is `file.pdf`). When that
+lost anything, an RFC 5987 `filename*=UTF-8''…` carries the original name,
+percent-encoded byte by byte, so no quote, `;`, backslash or line break in a
+name can reach the header.
+
+muster never hands out a presigned object-store URL: every download is
+streamed through muster, so these headers cannot be skipped by fetching the
+object directly.
+
+**A separate origin is not needed for this.** The headers above close the hole
+for every route (a test opens an uploaded HTML file in a real browser and
+watches it not run). A separate download origin (a different registrable
+domain, so a script that did run would hold no muster cookie) would be a
+further layer; it is recommended if muster ever needs to show an uploaded
+document inline, which today it does not.
 
 ## Not done
 
