@@ -295,26 +295,9 @@ func isTimeout(err error) bool {
 	return errors.As(err, &te) && te.Timeout()
 }
 
-// writeUploadHeaders sets the headers uploads.ServeAs decides.
+// writeUploadHeaders sets the headers uploads.SetServeHeaders decides.
 func writeUploadHeaders(w http.ResponseWriter, f uploads.Opened) {
-	sv := uploads.ServeAs(f.ContentType)
-	h := w.Header()
-	h.Set("Content-Type", sv.ContentType)
-	h.Set("Content-Disposition", uploads.Disposition(sv, f.Filename))
-	h.Set("X-Content-Type-Options", "nosniff")
-	// Revocable and short-lived: no cache — Cloudflare's included — may keep it.
-	h.Set("Cache-Control", "private, no-store")
-	// A document served from muster's origin runs nothing and loads nothing.
-	// A PDF is not sandboxed (Chromium refuses to show a PDF in a sandboxed
-	// document); its viewer runs in the browser's own origin, not muster's.
-	if sv.ContentType == "application/pdf" {
-		h.Set("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'")
-	} else {
-		h.Set("Content-Security-Policy", "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; frame-ancestors 'none'; sandbox")
-	}
-	if f.Size >= 0 {
-		h.Set("Content-Length", strconv.FormatInt(f.Size, 10))
-	}
+	uploads.SetServeHeaders(w.Header(), f.ContentType, f.Filename, f.Size)
 }
 
 // serveUpload streams an opened file with its headers.

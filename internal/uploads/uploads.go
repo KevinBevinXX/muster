@@ -18,8 +18,10 @@
 // is SNIFFED from the bytes (Classify); the original filename is stored for the
 // owner's eyes and never reaches the object key (NewPublicID is random), and
 // what an agent or a Content-Disposition header sees is SafeName's reduction of
-// it. Only raster images and PDFs are served inline; HTML, SVG, XML, script and
-// anything unrecognised is an attachment typed application/octet-stream.
+// it. Only PNG, JPEG, GIF and WebP are served inline; a PDF is a labelled
+// attachment; HTML, SVG, XML, script and anything unrecognised is an
+// attachment typed application/octet-stream. SetServeHeaders is the one place
+// the response headers are decided.
 package uploads
 
 import (

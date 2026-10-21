@@ -2,6 +2,7 @@ package uploads
 
 import (
 	"net/http"
+	"strconv"
 	"strings"
 )
 
@@ -19,21 +20,25 @@ func Sniff(head []byte) string {
 	return http.DetectContentType(head)
 }
 
-// inlineTypes are the ONLY types served inline: raster images and PDF. Each is
-// a format a browser renders without running anything from the file in the
-// page's origin.
+// inlineTypes are the ONLY types served inline: four raster image formats,
+// each one a browser renders as an image without running anything from the
+// file. SVG is NOT one of them (it is a document that runs script), and
+// neither is PDF: a PDF served inline from muster's origin is rendered by
+// whatever viewer the client has — on the Android app's WebView, or a browser
+// with a plugin viewer, that is not guaranteed to be isolated from muster's
+// origin — so a PDF is a download like any other non-image.
 var inlineTypes = map[string]bool{
-	"image/png":       true,
-	"image/jpeg":      true,
-	"image/gif":       true,
-	"image/webp":      true,
-	"application/pdf": true,
+	"image/png":  true,
+	"image/jpeg": true,
+	"image/gif":  true,
+	"image/webp": true,
 }
 
 // labelledTypes are served with their own type, as an ATTACHMENT. Every other
 // sniffed type — text/html, text/xml (SVG sniffs as XML or as text), any
 // script, anything unrecognised — is served as application/octet-stream.
 var labelledTypes = map[string]bool{
+	"application/pdf":              true,
 	"text/plain; charset=utf-8":    true,
 	"text/plain; charset=utf-16be": true,
 	"text/plain; charset=utf-16le": true,
@@ -63,6 +68,34 @@ func InlineImage(contentType string) bool {
 	return inlineTypes[contentType] && strings.HasPrefix(contentType, "image/")
 }
 
+// sandboxCSP is the Content-Security-Policy on EVERY served file. `sandbox`
+// (with no allow-* token) gives the response an opaque origin and runs no
+// script even if a browser did render it as a document; `default-src 'none'`
+// loads nothing. img-src 'self' and inline style are what a browser's own
+// image-viewer document needs to show an inline image.
+const sandboxCSP = "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; frame-ancestors 'none'; sandbox"
+
+// SetServeHeaders sets every header that makes a served file inert, for a file
+// whose SNIFFED type (Sniff, never a client's claim) is sniffedType. It is the
+// ONE place these headers are decided: every route that serves bytes someone
+// uploaded — the signed link, the owner's view, a task's attachment — calls
+// it, so they cannot drift. size < 0 sets no Content-Length.
+//
+// It overwrites (Set, never Add) whatever an earlier middleware put there, the
+// app's own page CSP included: that one allows inline script.
+func SetServeHeaders(h http.Header, sniffedType, filename string, size int64) {
+	sv := ServeAs(sniffedType)
+	h.Set("Content-Type", sv.ContentType)
+	h.Set("Content-Disposition", Disposition(sv, filename))
+	h.Set("X-Content-Type-Options", "nosniff")
+	h.Set("Content-Security-Policy", sandboxCSP)
+	// Revocable and short-lived: no cache — Cloudflare's included — may keep it.
+	h.Set("Cache-Control", "private, no-store")
+	if size >= 0 {
+		h.Set("Content-Length", strconv.FormatInt(size, 10))
+	}
+}
+
 // Serving is how a stored file goes out over HTTP.
 type Serving struct {
 	// ContentType is the response's Content-Type.
@@ -76,8 +109,8 @@ type Serving struct {
 // 🔴 HTML, SVG AND XML ARE NEVER INLINE AND NEVER CARRY THEIR OWN TYPE. A file
 // served inline as text/html (or image/svg+xml) from muster's origin is a
 // stored XSS: its script runs as muster. The response also carries
-// `X-Content-Type-Options: nosniff` and a sandboxing CSP (the handler's), so a
-// browser does not second-guess the type given here.
+// `X-Content-Type-Options: nosniff` and a sandboxing CSP (SetServeHeaders), so
+// a browser does not second-guess the type given here.
 func ServeAs(contentType string) Serving {
 	if inlineTypes[contentType] {
 		return Serving{ContentType: contentType, Inline: true}

@@ -1,6 +1,7 @@
 package uploads
 
 import (
+	"net/http"
 	"strings"
 	"testing"
 )
@@ -60,9 +61,10 @@ func TestHTMLSVGAndXMLAreNeverServedInline(t *testing.T) {
 	}
 }
 
-// TestOnlyRasterImagesAndPDFAreInline: the allowlist, read from the BYTES. A
-// PNG named .html is an image; an HTML file named .png is not.
-func TestOnlyRasterImagesAndPDFAreInline(t *testing.T) {
+// TestOnlyRasterImagesAreInline: the allowlist, read from the BYTES. A PNG
+// named .html is an image; an HTML file named .png is not; a PDF is a labelled
+// attachment, never inline.
+func TestOnlyRasterImagesAreInline(t *testing.T) {
 	for name, tc := range map[string]struct {
 		head   []byte
 		want   string
@@ -73,7 +75,7 @@ func TestOnlyRasterImagesAndPDFAreInline(t *testing.T) {
 		"jpeg": {jpegHead, "image/jpeg", true, true},
 		"gif":  {gifHead, "image/gif", true, true},
 		"webp": {webpHead, "image/webp", true, true},
-		"pdf":  {pdfHead, "application/pdf", true, false},
+		"pdf":  {pdfHead, "application/pdf", false, false},
 		"zip":  {zipHead, "application/zip", false, false},
 		"text": {[]byte("just some notes\nline two\n"), "text/plain; charset=utf-8", false, false},
 		"js":   {[]byte("alert(1);\nwindow.location='https://evil.example';"), "text/plain; charset=utf-8", false, false},
@@ -110,5 +112,33 @@ func TestTheDispositionFilenameIsTheSafeName(t *testing.T) {
 	}
 	if !strings.HasPrefix(d, `inline; filename="a_filename_evil.html_X-Injected_1.png"`) {
 		t.Errorf("disposition = %q", d)
+	}
+}
+
+// TestSetServeHeadersAloneMakesAFileInert: the helper sets every header itself,
+// on an EMPTY header map — it does not lean on the server's page middleware
+// (which also sets nosniff, so a route test cannot see the helper drop it).
+func TestSetServeHeadersAloneMakesAFileInert(t *testing.T) {
+	for sniffed, want := range map[string]struct{ ct, disp string }{
+		"text/html; charset=utf-8": {"application/octet-stream", `attachment; filename="a.html"`},
+		"text/xml; charset=utf-8":  {"application/octet-stream", `attachment; filename="a.html"`},
+		"application/pdf":          {"application/pdf", `attachment; filename="a.html"`},
+		"image/png":                {"image/png", `inline; filename="a.html"`},
+	} {
+		h := http.Header{}
+		SetServeHeaders(h, sniffed, "a.html", 42)
+		if h.Get("Content-Type") != want.ct || h.Get("Content-Disposition") != want.disp {
+			t.Errorf("%s: Content-Type %q, Content-Disposition %q; want %q, %q", sniffed,
+				h.Get("Content-Type"), h.Get("Content-Disposition"), want.ct, want.disp)
+		}
+		if h.Get("X-Content-Type-Options") != "nosniff" {
+			t.Errorf("%s: no nosniff", sniffed)
+		}
+		if csp := h.Get("Content-Security-Policy"); !strings.Contains(csp, "sandbox") || !strings.Contains(csp, "default-src 'none'") {
+			t.Errorf("%s: CSP %q", sniffed, csp)
+		}
+		if h.Get("Cache-Control") != "private, no-store" || h.Get("Content-Length") != "42" {
+			t.Errorf("%s: Cache-Control %q, Content-Length %q", sniffed, h.Get("Cache-Control"), h.Get("Content-Length"))
+		}
 	}
 }

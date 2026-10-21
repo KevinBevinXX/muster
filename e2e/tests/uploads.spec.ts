@@ -355,3 +355,86 @@ test('with no S3 configured there is no paperclip, and the routes do not exist',
   });
   expect(on.status(), await on.text()).toBe(201);
 });
+
+// STORED XSS: a file someone uploaded, opened in the signed-in operator's
+// browser on muster's origin, must not run script there — not the task
+// attachment route, not the owner's view, not the signed link. The detector is
+// the payload itself: it logs a marker (any execution at all) and writes
+// localStorage (execution IN muster's origin; a sandboxed document's storage
+// throws). The positive control serves the same payload as a plain page on
+// muster's origin and watches the detector fire, so the zeroes below are
+// zeroes of a detector that can see.
+test('an uploaded HTML file opened in the browser does not run script in the muster origin', async ({ page }) => {
+  await login(page, origin);
+  const MARK = 'MUSTER-XSS-RAN-' + stamp;
+  const PAYLOAD = Buffer.from(
+    `<!DOCTYPE html><html><body><script>console.log(${JSON.stringify(MARK)});` +
+      `try{localStorage.setItem('muster-xss',${JSON.stringify(MARK)})}catch(e){};document.title='PWNED'</script></body></html>`,
+  );
+  const ctx = page.context();
+  const stored = async () => {
+    const p = await ctx.newPage();
+    await p.goto(origin + '/login');
+    const v = await p.evaluate(() => localStorage.getItem('muster-xss'));
+    await p.evaluate(() => localStorage.removeItem('muster-xss'));
+    await p.close();
+    return v;
+  };
+  // open opens url in a fresh tab and reports what the payload did there.
+  const open = async (url: string) => {
+    const p = await ctx.newPage();
+    const logs: string[] = [];
+    p.on('console', (m) => logs.push(m.text()));
+    const download = p.waitForEvent('download', { timeout: 5_000 }).then(() => true, () => false);
+    await p.goto(url).catch(() => undefined); // a download aborts the navigation
+    const downloaded = await download;
+    const title = await p.title().catch(() => '');
+    await p.close();
+    return { ran: logs.includes(MARK) || title === 'PWNED', downloaded, inOrigin: await stored() };
+  };
+
+  // Positive control: the same bytes served as a page on muster's origin run.
+  const probe = origin + '/xss-detector-control-' + stamp;
+  await ctx.route(probe, (r) => r.fulfill({ status: 200, contentType: 'text/html', body: PAYLOAD }));
+  const control = await open(probe);
+  await ctx.unroute(probe);
+  expect(control.ran, 'CONTROL: the detector sees the payload run when served as a page').toBe(true);
+  expect(control.inOrigin, 'CONTROL: and sees it write muster-origin storage').toBe(MARK);
+
+  // 1. A task attachment, its part claiming text/html.
+  const created = await page.request.post(origin + '/tasks', {
+    multipart: { body: 'xss probe ' + stamp, attachments: { name: 'notes.html', mimeType: 'text/html', buffer: PAYLOAD } },
+    headers: { Origin: origin, 'X-Requested-With': 'XMLHttpRequest', 'HX-Request': 'true' },
+  });
+  expect(created.status(), await created.text()).toBe(200);
+  // The create answers the refreshed task list; the task's own page links
+  // its attachments.
+  const taskID = /\/tasks\/(\d+)/.exec(await created.text())?.[1];
+  expect(taskID, 'the created task is in the refreshed list').toBeTruthy();
+  let attachment: string | undefined;
+  for (const view of ['/tasks/' + taskID, '/ui/tasks/' + taskID + '/card']) {
+    attachment ??= /\/tasks\/\d+\/attachments\/\d+/.exec(await (await page.request.get(origin + view)).text())?.[0];
+  }
+  expect(attachment, 'the created task links its attachment').toBeTruthy();
+
+  // 2. An upload, through the composer's route: its owner's view and its link.
+  const up = await page.request.post(origin + '/uploads', {
+    multipart: { file: { name: 'notes.html', mimeType: 'text/html', buffer: PAYLOAD }, host, session: 'work', window: '@1' },
+    headers: { Origin: origin, 'X-Requested-With': 'XMLHttpRequest' },
+  });
+  expect(up.status(), await up.text()).toBe(201);
+  const rep = await up.json();
+  const link = LINK.exec(rep.line)?.[1];
+  expect(link, `a signed link in ${rep.line}`).toBeTruthy();
+
+  for (const [name, url] of [
+    ['task attachment', origin + attachment],
+    ["upload owner's view", origin + rep.preview],
+    ['upload signed link', link!],
+  ] as const) {
+    const got = await open(url);
+    expect(got.ran, `${name}: the uploaded HTML ran script`).toBe(false);
+    expect(got.inOrigin, `${name}: the uploaded HTML wrote muster-origin storage`).toBeNull();
+    expect(got.downloaded, `${name}: the browser downloads it rather than rendering it`).toBe(true);
+  }
+});
