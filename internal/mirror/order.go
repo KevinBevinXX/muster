@@ -57,6 +57,12 @@ type SessionView struct {
 	// Repo is the short name of the repository the entry works in
 	// (HostView.Repos, repos.go), "" when its host did not say.
 	Repo string
+	// Work is what the entry's Claude Code session has running now
+	// (HostView.Work, work.go); the zero value when its host did not say.
+	Work WindowWork
+	// Color is the entry's tmux identity colour, lowercase #rrggbb
+	// (HostView.Colors, work.go), "" when its host did not say.
+	Color string
 }
 
 // QualifierSep joins a Title and its Qualifier: "mango:1 · laptop".
@@ -262,6 +268,7 @@ func (h HostView) Entries() []SessionView {
 			e.Label, e.Command, e.Activity, e.Claude, e.ClaudeSession = w.Label, w.Command, w.Activity, w.Claude, w.ClaudeSession
 			e.Runtime, e.AgentSession = w.Runtime, w.AgentSession
 			e.Repo = h.Repos[w.ID]
+			e.Work, e.Color = h.Work[w.ID], h.Colors[w.ID]
 			out = append(out, e)
 		}
 		return out

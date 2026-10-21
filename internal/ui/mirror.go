@@ -8,6 +8,8 @@ import (
 
 	g "maragu.dev/gomponents"
 	. "maragu.dev/gomponents/html"
+
+	"github.com/ZacxDev/muster/internal/mirror"
 )
 
 // MirrorCardView is one MIRRORED entry on the Agents list: a tmux WINDOW (or,
@@ -73,6 +75,15 @@ type MirrorCardView struct {
 	// Attention is the card's attention badge (cards_attention.go), nil for
 	// none.
 	Attention *CardAttention
+	// Work is what the window's Claude Code session has running now
+	// (mirror.SessionView.Work): its chip (work_chip.go), display only. The zero value — nothing running, or a host that did not
+	// say — draws no chip.
+	Work mirror.WindowWork
+	// Color is the window's tmux identity colour (mirror.SessionView.Color,
+	// lowercase #rrggbb), "" for none: the card's border and title are tinted
+	// with it (identity_color.go). None — or anything that is not a wire
+	// colour — draws the card exactly as before.
+	Color string
 	// HostIcon is the key of Host's icon (HostIconFor, composed in
 	// internal/api from the host's registration rank); "" draws the hash
 	// fallback.
@@ -186,6 +197,9 @@ func mirrorCard(m MirrorCardView) g.Node {
 		g.If(m.Pinned, g.Attr("data-pinned", "")),
 		// What the list's recency and waiting filter chips read (list_signals.go).
 		cardActivityAttrs(time.Now(), m.ActiveAt),
+		// The window's tmux identity colour: its border and title (input.css
+		// maps the variants to the theme in force).
+		identityAttrs(m.Color),
 		g.If(waitTokens(m.Attention, false) != "", g.Attr("data-wait", waitTokens(m.Attention, false))),
 		// What the list's filter finds this card by (agents_filter.go): its title
 		// ("Gold:8"), the title as shown — with its qualifier ("Gold:8 · laptop")
@@ -230,6 +244,8 @@ func mirrorCard(m MirrorCardView) g.Node {
 				g.If(!m.Claude && m.Kind != "", Span(g.Attr("data-mirror-kind", ""), chip("kind", m.Kind))),
 				// The repository it works in (its host's repos message).
 				g.If(m.Repo != "", Span(g.Attr("data-mirror-repo", ""), chip("repo", m.Repo))),
+				// The subagents and background shells it has running now.
+				workChip(m.Work),
 				g.If(!m.Online, Span(
 					g.Attr("data-mirror-offline", ""),
 					g.Attr("title", "The host's muster-mirror is not connected, or the host no longer lists this tmux session"),

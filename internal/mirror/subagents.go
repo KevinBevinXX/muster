@@ -28,7 +28,7 @@ import (
 //     request alone (TypeSubagentTailed), bounded by MaxSubagentTailBytes.
 //
 // 🔴 NOT IN THE WINDOW LIST. That list is one message whose worst case already
-// measures 96% of MaxFrame (TestTheLargestWindowListFitsOneFrame); a summary
+// measures 98% of MaxFrame (TestTheLargestWindowListFitsOneFrame); a summary
 // per subagent does not fit beside it, and it is wanted only while somebody
 // has the view open — which is exactly when its transcript stream exists.
 //

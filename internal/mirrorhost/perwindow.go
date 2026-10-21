@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ZacxDev/muster/internal/cctasks"
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/termsize"
 )
@@ -64,6 +65,11 @@ type WindowInfo struct {
 	// for a window whose pane Claude Code did not claim; nil for none, and
 	// always nil when Claude is set (attachAgents).
 	Agent *AgentPane
+	// Color is the window's tmux identity colour, lowercase "#rrggbb" — from
+	// the user option ColorOption (@muster-color), which tmux
+	// resolves window, then session, then global — "" when it is unset or not a
+	// colour (windowColor). docs/design/agent-cards.md (b).
+	Color string
 	// Cwd is the working directory of the window's active pane (its
 	// /proc/<pid>/cwd link, " (deleted)" and all): of its Claude Code process
 	// when it runs one, else of the pane's root process (the shell), "" when it
@@ -132,7 +138,46 @@ func WindowAttacherOf(b Backend) (WindowAttacher, bool) { return capabilityOf[Wi
 // #{pane_tty} is the pane's terminal device: what a Hermes CLI's breadcrumb
 // file is named by (internal/hermeshost), and what its stdin must be for the
 // strict identity rule to claim it.
-const windowsFormat = "#{pane_active}\t#{window_id}\t#{window_index}\t#{window_active}\t#{pane_id}\t#{pane_pid}\t#{window_activity}\t#{session_activity}\t#{pane_current_command}\t#{pane_tty}\t#{session_name}"
+//
+// The two fields before the session name are the identity colour option
+// (ColorOption, a constant: nothing from outside the binary is ever spliced
+// into this format), EXPANDED and RAW (windowColor says why both). 🔴 EACH IS PASSED THROUGH `s/[^ -~]/!/`: a user option is
+// arbitrary text, and tmux prints a tab or a newline in it as it is (measured
+// on 3.7c) — which would shift the session name or split the line, and lose
+// the window. Every byte outside printable ASCII becomes '!', so such a value
+// is simply not a colour, and the line keeps its shape.
+const windowsFormat = "#{pane_active}\t#{window_id}\t#{window_index}\t#{window_active}\t#{pane_id}\t#{pane_pid}\t#{window_activity}\t#{session_activity}\t#{pane_current_command}\t#{pane_tty}\t" +
+	"#{s/[^ -~]/!/;E:" + ColorOption + "}\t#{s/[^ -~]/!/:" + ColorOption + "}\t#{session_name}"
+
+// windowsFields is how many fields a windowsFormat line has.
+const windowsFields = 13
+
+// ColorOption is the tmux user option a window's identity colour is read
+// from. A constant on purpose: a host's tmux config sets it (window, session or
+// global), and no flag or environment variable can name another.
+const ColorOption = "@muster-color"
+
+// colorFieldPattern is what windowColor accepts from either field: six hex
+// digits, with or without the '#'.
+var colorFieldPattern = regexp.MustCompile(`^#?[0-9a-fA-F]{6}$`)
+
+// windowColor is a window's identity colour from the listing's two colour
+// fields: the first of (expanded, raw) that is six hex digits, lowercased with
+// a leading '#'; "" when neither is.
+//
+// 🔴 WHY BOTH. `#{E:…}` expands a LITERAL colour as a format too, and an
+// uppercase hex digit can be one of tmux's one-letter aliases: measured on
+// 3.7c, `#D79921` expands to `%079921` (#D is the pane id) and `#Fabd2f` to
+// `*abd2f` (#F is the window flags). The raw value recovers a literal; the
+// expanded one is what a conditional (`#{?…}` per session) evaluates to.
+func windowColor(expanded, raw string) string {
+	for _, v := range []string{expanded, raw} {
+		if colorFieldPattern.MatchString(v) {
+			return "#" + strings.ToLower(strings.TrimPrefix(v, "#"))
+		}
+	}
+	return ""
+}
 
 // Windows implements WindowLister with ONE `tmux list-panes -a`, however many
 // windows there are: the listing, each session's current window, each window's
@@ -159,6 +204,16 @@ func (t Tmux) Windows(ctx context.Context) ([]WindowInfo, error) {
 	claude := t.claudeRuntime()
 	attachClaude(windows, func(ps []pane) map[string]ClaudePane { return claude.LocatePanes(ps, procs, children) })
 	attachAgents(windows, procs, children, t.runtimes()[1:])
+	// Each Claude window's background shells, from the CLI's own process tree
+	// (internal/cctasks): an in-memory walk of the table read above plus a few
+	// readlinks per descendant — and only while its status says something may
+	// be running (an idle CLI runs nothing, by its own account).
+	for i := range windows {
+		if c := windows[i].Claude; c != nil && c.PID > 0 && mayRunWork(c.RawStatus) {
+			c.Shells = cctasks.CountShells(t.Claude.proc(), c.PID, children,
+				func(pid int) []string { return procs[pid].argv }, t.Claude.configDir())
+		}
+	}
 	// Each window's working directory: one readlink per window — a syscall, no
 	// process (windowCwdPID says whose).
 	for i := range windows {
@@ -231,17 +286,17 @@ func parseWindows(out string) []WindowInfo {
 	type wkey struct{ session, id string }
 	others := map[wkey][]pane{}
 	for _, line := range strings.Split(out, "\n") {
-		f := strings.SplitN(strings.TrimRight(line, "\r"), "\t", 11)
-		if len(f) == 11 && f[0] != "1" && strings.HasPrefix(f[4], "%") {
+		f := strings.SplitN(strings.TrimRight(line, "\r"), "\t", windowsFields)
+		if len(f) == windowsFields && f[0] != "1" && strings.HasPrefix(f[4], "%") {
 			if pid, err := strconv.Atoi(f[5]); err == nil && pid > 0 {
-				others[wkey{f[10], f[1]}] = append(others[wkey{f[10], f[1]}], pane{Session: f[10], ID: f[4], PID: pid, TTY: paneTTY(f[9])})
+				others[wkey{f[12], f[1]}] = append(others[wkey{f[12], f[1]}], pane{Session: f[12], ID: f[4], PID: pid, TTY: paneTTY(f[9])})
 			}
 			continue
 		}
-		if len(f) != 11 || f[0] != "1" {
+		if len(f) != windowsFields || f[0] != "1" {
 			continue
 		}
-		session := f[10]
+		session := f[12]
 		if mirror.ValidSession(session) != nil || mirror.IsViewSession(session) ||
 			mirror.ValidWindowID(f[1]) != nil || !strings.HasPrefix(f[4], "%") {
 			continue
@@ -254,7 +309,8 @@ func parseWindows(out string) []WindowInfo {
 		if err != nil || pid <= 0 {
 			continue
 		}
-		w := WindowInfo{Session: session, ID: f[1], Index: index, Active: f[3] == "1", Pane: f[4], PanePID: pid, Command: f[8], TTY: paneTTY(f[9])}
+		w := WindowInfo{Session: session, ID: f[1], Index: index, Active: f[3] == "1", Pane: f[4], PanePID: pid, Command: f[8], TTY: paneTTY(f[9]),
+			Color: windowColor(f[10], f[11])}
 		w.Activity, _ = strconv.ParseInt(f[6], 10, 64)
 		if w.Active {
 			if sa, err := strconv.ParseInt(f[7], 10, 64); err == nil && sa > w.Activity {

@@ -191,6 +191,10 @@ export const hermesViewPort = port + 120;
 // The Agents list UX batch (agents-list-ux.spec.ts): its own server (the
 // e2eterm binary, mirror plugin on) and one mirrored host with four windows.
 export const listUxPort = port + 137;
+// Live work counts and identity colours on mirrored cards
+// (agent-cards-work.spec.ts): its own server (mirror plugin on), one mirrored
+// host with four windows and an OLDER host that sends neither message.
+export const workCardsPort = port + 145;
 export const baseURL = `http://localhost:${port}`;
 export const versionA = 'e2e-a';
 export const versionB = 'e2e-b';

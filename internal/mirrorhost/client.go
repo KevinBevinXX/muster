@@ -115,6 +115,11 @@ type Config struct {
 	// advertised, no tail request answered. FOR THE OLDER-HOST TESTS ONLY
 	// (cmd/muster-mirror's e2emirror build); no flag sets it.
 	NoSubagents bool
+	// NoWork makes this host behave as one that predates the live work counts
+	// and identity colours (mirror/work.go): it sends no work and no colors
+	// message. FOR THE OLDER-HOST TESTS ONLY (cmd/muster-mirror's e2emirror
+	// build); no flag sets it.
+	NoWork bool
 }
 
 // ErrUnauthorized: muster refused the token (unknown, revoked, or not a mirror
@@ -158,6 +163,10 @@ type Client struct {
 	// repos names each window's repository (repo.go); its per-cwd cache
 	// outlives each connection too.
 	repos *repoNamer
+	// work holds each Claude session's transcript ledger (work.go); it
+	// outlives each connection too.
+	work   *workCounter
+	workMu sync.Mutex
 
 	// cur is the live connection (nil between connections): what RefreshNow
 	// asks for an immediate listing.
@@ -343,9 +352,20 @@ func (c *Client) runOnce(ctx context.Context, version int) error {
 		c.log.Printf("muster-mirror: connected to %s as host %s with %d session(s)", c.url, c.cfg.Host, len(first.sessions))
 	}
 
-	// The first listing's repo names, after the hello that listed its windows.
+	// The first listing's repo names, work counts and colours, after the hello
+	// that listed its windows.
 	if len(first.repos) > 0 {
 		if err := conn.sendRepos(first.repos); err != nil {
+			return err
+		}
+	}
+	if len(first.work) > 0 {
+		if err := conn.send(mirror.Msg{Type: mirror.TypeWork, Work: first.work}); err != nil {
+			return err
+		}
+	}
+	if len(first.colors) > 0 {
+		if err := conn.send(mirror.Msg{Type: mirror.TypeColors, Colors: first.colors}); err != nil {
 			return err
 		}
 	}
@@ -493,6 +513,11 @@ type listing struct {
 	// on a repos message of its own (sendRepos), the window list having no room
 	// for it (mirror/repos.go).
 	repos map[string]string
+	// work and colors are each window's live work counts and identity colour
+	// by window id (work.go), on messages of their own exactly like repos
+	// (mirror/work.go).
+	work   map[string]mirror.WindowWork
+	colors map[string]string
 }
 
 func (l listing) equal(o listing) bool {
@@ -534,6 +559,10 @@ func (h *hostSide) read() (listing, bool) {
 	l := listing{windows: windows}
 	if h.sendsRepos() {
 		l.repos = mirror.NormalizeRepos(h.c.repoNamer().windowRepos(raw), windows)
+		if !h.c.cfg.NoWork {
+			l.work = mirror.NormalizeWork(h.c.workCounter().windowWork(raw), windows)
+			l.colors = mirror.NormalizeColors(windowColors(raw), windows)
+		}
 	}
 	l.sessions, l.claude, l.labels, l.activity = mirror.SessionsOf(windows)
 	// What a muster that predates Windows keeps is at most MaxSessions sessions,
@@ -867,6 +896,16 @@ func (h *hostSide) refreshOnce(last *listing) bool {
 			return false
 		}
 	}
+	if !maps.Equal(now.work, last.work) {
+		if err := h.send(mirror.Msg{Type: mirror.TypeWork, Work: now.work}); err != nil {
+			return false
+		}
+	}
+	if !maps.Equal(now.colors, last.colors) {
+		if err := h.send(mirror.Msg{Type: mirror.TypeColors, Colors: now.colors}); err != nil {
+			return false
+		}
+	}
 	*last = now
 	return true
 }
@@ -884,6 +923,17 @@ func (h *hostSide) sendsRepos() bool {
 // sendRepos sends the whole repo map (an empty one clears muster's).
 func (h *hostSide) sendRepos(repos map[string]string) error {
 	return h.send(mirror.Msg{Type: mirror.TypeRepos, Repos: repos})
+}
+
+// workCounter is the client's work ledgers (a zero Client — a test's — gets
+// one).
+func (c *Client) workCounter() *workCounter {
+	c.workMu.Lock()
+	defer c.workMu.Unlock()
+	if c.work == nil {
+		c.work = &workCounter{}
+	}
+	return c.work
 }
 
 // repoNamer is the client's repo namer (a zero Client — a test's — gets one).

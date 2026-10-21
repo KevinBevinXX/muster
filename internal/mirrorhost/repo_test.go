@@ -209,8 +209,8 @@ func TestTmuxReadsEveryWindowsWorkingDirectory(t *testing.T) {
 	proc.add(300, 1, "zsh", filepath.Join(root, "src/fixture-repo/cmd/tool"), "-zsh")
 	proc.add(400, 1, "vim", "", "vim") // no cwd link
 	bin := filepath.Join(t.TempDir(), "tmux")
-	out := "1\t@3\t1\t1\t%3\t300\t1791903000\t1791903000\tzsh\t/dev/pts/3\tshells\n" +
-		"1\t@4\t2\t0\t%4\t400\t1791903000\t1791903000\tvim\t/dev/pts/4\tshells\n"
+	out := "1\t@3\t1\t1\t%3\t300\t1791903000\t1791903000\tzsh\t/dev/pts/3\t\t\tshells\n" +
+		"1\t@4\t2\t0\t%4\t400\t1791903000\t1791903000\tvim\t/dev/pts/4\t\t\tshells\n"
 	listing := filepath.Join(t.TempDir(), "listing")
 	must(t, os.WriteFile(listing, []byte(out), 0o644))
 	must(t, os.WriteFile(bin, []byte("#!/bin/sh\ncat '"+listing+"'\n"), 0o755))

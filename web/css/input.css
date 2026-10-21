@@ -137,6 +137,36 @@
   }
 
   /*
+   * THE TMUX IDENTITY COLOUR (internal/ui/identity_color.go). A mirrored
+   * window's CARD (only the card: not its pages' headers) carries data-identity and four variants of its colour as "R G B" custom
+   * properties: border and title, dark and light, each already moved in
+   * lightness to meet 3:1 / 4.5:1 against that theme's s1 and bg. These rules
+   * pick the theme's pair (the same class switch as the palette above, so no
+   * script) and apply it to the card's border and ring and to its title.
+   *
+   * The selectors are attribute pairs, (0,2,0), so they out-rank the card's
+   * own border-line / ring-line / text-fg utilities (0,1,0) wherever they are
+   * emitted; `group-hover:text-accent` (0,3,0) still wins on hover. An element
+   * with no colour has no data-identity, so nothing here touches it.
+   */
+  [data-identity] {
+    --id-bd: var(--id-bd-d);
+    --id-tt: var(--id-tt-d);
+  }
+  :root:not(.dark) [data-identity] {
+    --id-bd: var(--id-bd-l);
+    --id-tt: var(--id-tt-l);
+  }
+  [data-identity][data-mirror-card] {
+    border-color: rgb(var(--id-bd));
+    --tw-ring-color: rgb(var(--id-bd));
+  }
+  [data-identity] [data-mirror-name],
+  [data-identity] [data-card-title] {
+    color: rgb(var(--id-tt));
+  }
+
+  /*
    * The `hidden` ATTRIBUTE must win over a display utility. Preflight's
    * `[hidden]` rule and `.flex` have equal specificity and utilities come
    * later, so an element written `class="flex" hidden` would SHOW. The PWA

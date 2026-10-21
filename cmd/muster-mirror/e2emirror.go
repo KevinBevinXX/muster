@@ -17,6 +17,8 @@ import (
 
 	"github.com/ZacxDev/muster/internal/askdrive"
 	"github.com/ZacxDev/muster/internal/askq"
+	"github.com/ZacxDev/muster/internal/cctasks"
+	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/mirrorhost"
 	"github.com/ZacxDev/muster/internal/termsize"
 )
@@ -49,7 +51,7 @@ import (
 // lines, re-read on every listing so a spec can close, renumber or re-order
 // them:
 //
-//	<session>|<window id>|<index>|<active 0/1>|<command>|<activity unix secs>|<claude transcript path, or empty>[|<split pane's transcript>[|<Claude's cwd>]]
+//	<session>|<window id>|<index>|<active 0/1>|<command>|<activity unix secs>|<claude transcript path, or empty>[|<split pane's transcript>[|<Claude's cwd>[|<identity colour>]]]
 //
 // A window's active "pane" is `%e2e-<session>-<window id>`. Its terminal prints
 // `FAKE-MIRROR session=<s> window=<id> mode=ro|rw`, so a spec sees WHICH window
@@ -109,6 +111,7 @@ func init() {
 	e2eNoPromptIndex = func() bool { return os.Getenv("MUSTER_MIRROR_E2E_NO_PROMPT_INDEX") == "1" }
 	e2eNoCatalog = func() bool { return os.Getenv("MUSTER_MIRROR_E2E_NO_CATALOG") == "1" }
 	e2eNoSubagents = func() bool { return os.Getenv("MUSTER_MIRROR_E2E_NO_SUBAGENTS") == "1" }
+	e2eNoWork = func() bool { return os.Getenv("MUSTER_MIRROR_E2E_NO_WORK") == "1" }
 	e2eWrap = func(b mirrorhost.Backend) mirrorhost.Backend {
 		if f := os.Getenv("MUSTER_MIRROR_E2E_SCROLL_FILE"); f != "" {
 			return &scrollFake{Backend: b, file: f, pos: map[string]int{}}
@@ -347,7 +350,7 @@ func (w windowFake) Windows(context.Context) ([]mirrorhost.WindowInfo, error) {
 	var out []mirrorhost.WindowInfo
 	for _, line := range strings.Split(string(b), "\n") {
 		f := strings.Split(strings.TrimSpace(line), "|")
-		if len(f) < 7 || len(f) > 9 {
+		if len(f) < 7 || len(f) > 10 {
 			continue
 		}
 		index, _ := strconv.Atoi(f[2])
@@ -355,9 +358,20 @@ func (w windowFake) Windows(context.Context) ([]mirrorhost.WindowInfo, error) {
 		info := mirrorhost.WindowInfo{Session: f[0], ID: f[1], Index: index, Active: f[3] == "1", Command: f[4],
 			Activity: activity, Pane: windowFakePane(f[0], f[1]), PanePID: 1}
 		if f[6] != "" {
-			status, since := windowFakeStatus(f[6])
+			st := windowFakeStatus(f[6])
+			status := mirror.NormalizeStatus(st.Status)
+			if st.Status != "" && status == "" {
+				status = st.Status
+			}
 			info.Claude = &mirrorhost.ClaudePane{Pane: info.Pane, PID: 1, Transcript: f[6],
-				Gen: strings.TrimSuffix(filepath.Base(f[6]), ".jsonl"), Busy: status == "busy", Status: status, StatusSince: since}
+				Gen: strings.TrimSuffix(filepath.Base(f[6]), ".jsonl"), Busy: status == "busy", Status: status, StatusSince: st.Since,
+				RawStatus: st.Status, StartedAt: st.StartedAt, Shells: cctasks.Shells{N: st.Shells, Monitor: st.Monitor}}
+		}
+		// A 10th field: the window's identity colour, as tmux would print the
+		// option (WindowInfo.Color; the host's wire normalisation drops
+		// anything that is not a lowercase #rrggbb).
+		if len(f) == 10 {
+			info.Color = f[9]
 		}
 		// An 8th field: the transcript of a Claude Code session in the window's
 		// SECOND (non-active) pane, "<window pane>-split".
@@ -367,7 +381,7 @@ func (w windowFake) Windows(context.Context) ([]mirrorhost.WindowInfo, error) {
 		}
 		// A 9th field: the working directory of the window's active pane
 		// (WindowInfo.Cwd), what its repo chip is named from.
-		if len(f) == 9 {
+		if len(f) >= 9 {
 			info.Cwd = f[8]
 		}
 		out = append(out, info)
@@ -381,24 +395,36 @@ func (w windowFake) Windows(context.Context) ([]mirrorhost.WindowInfo, error) {
 // fields of Claude Code's own sessions file, written by the spec as the CLI
 // writes them — else from the marker files (busy / waiting / idle) with NO
 // time, which is what a host that reports a status without its time sends.
-func windowFakeStatus(transcript string) (status string, since int64) {
+//
+// The status file may also carry what the work counts read (mirror/work.go):
+// "startedAt" (the CLI's start, Unix ms), and the CLI's process-tree shells,
+// "shells" (a count) and "monitor" — what the real host reads from /proc. Its
+// "status" is the RAW one ("shell" stays "shell" for the work rule), and the
+// window's Status is that normalised, as the real host's is.
+func windowFakeStatus(transcript string) fakeStatus {
 	if b, err := os.ReadFile(transcript + ".status"); err == nil {
-		var sf struct {
-			Status          string `json:"status"`
-			StatusUpdatedAt int64  `json:"statusUpdatedAt"`
-		}
+		var sf fakeStatus
 		if json.Unmarshal(b, &sf) == nil {
-			return sf.Status, sf.StatusUpdatedAt
+			return sf
 		}
-		return "", 0
+		return fakeStatus{}
 	}
 	if _, err := os.Stat(transcript + ".busy"); err == nil {
-		return "busy", 0
+		return fakeStatus{Status: "busy"}
 	}
 	if _, err := os.Stat(transcript + ".waiting"); err == nil {
-		return "waiting", 0
+		return fakeStatus{Status: "waiting"}
 	}
-	return "idle", 0
+	return fakeStatus{Status: "idle"}
+}
+
+// fakeStatus is a fake window's <transcript>.status.
+type fakeStatus struct {
+	Status    string `json:"status"`
+	Since     int64  `json:"statusUpdatedAt"`
+	StartedAt int64  `json:"startedAt"`
+	Shells    int    `json:"shells"`
+	Monitor   bool   `json:"monitor"`
 }
 
 // ReportsStatus implements mirrorhost.StatusReporter: yes, unless the spec

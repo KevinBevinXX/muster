@@ -390,6 +390,13 @@ type Msg struct {
 	// Repos (repos) is, per window id, the short name of the repository the
 	// window works in — the WHOLE map each time (repos.go).
 	Repos map[string]string `json:"repos,omitempty"`
+
+	// Work (work) is, per window id, the subagents and background shells its
+	// Claude Code session has running — the WHOLE map each time (work.go).
+	Work map[string]WindowWork `json:"work,omitempty"`
+	// Colors (colors) is, per window id, the window's tmux identity colour as
+	// lowercase #rrggbb — the WHOLE map each time (work.go).
+	Colors map[string]string `json:"colors,omitempty"`
 }
 
 // Window is one tmux window of a host (Msg.Windows).
@@ -457,8 +464,9 @@ type Window struct {
 	//
 	// ⚠ THE TRANSCRIPT PATH IS DELIBERATELY NOT ON THE WIRE. The window list is
 	// ONE message within MaxFrame, and with this field at its 64-byte bound its
-	// worst case measures 96% of it (1,010,303 of 1,048,576 bytes before OtherClaude, 1,012,575 with it:
-	// TestTheLargestWindowListFitsOneFrame, which logs the figure) — a host path
+	// worst case measures 98% of it (1,030,215 of 1,048,576 bytes, with every
+	// field this list carries now: TestTheLargestWindowListFitsOneFrame, which
+	// logs the figure) — a host path
 	// per window does not fit beside it. muster never needs the path: it reads a transcript
 	// through the host's own watch (Hub.WatchWindow), which resolves the path
 	// on the host.

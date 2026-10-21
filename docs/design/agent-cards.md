@@ -1,11 +1,26 @@
 # Design: live work counts and tmux identity colours on agent cards
 
-**Status: (a) and (b) decided, not implemented; (c) deferred.** The operator
-settled every open question. The decisions are recorded under
+**Status: (a) and (b) built for MIRRORED cards; parts deferred; (c) deferred.**
+The operator settled every open question; the decisions are recorded under
 [Operator decisions](#operator-decisions), and the sections on (a) and (b)
-describe the design as decided. Nothing on this page is implemented yet. It
-covers two additions to the Agents view's cards, plus one send-queue change that
-was scoped and then **deferred**:
+describe the design as decided. What is built, and what is not:
+
+- **Built (a):** `internal/cctasks` (process-tree shells, Monitors, the work
+  rule), the host's transcript ledger (`internal/mirrorhost/work.go`), the
+  `work` message, and the chip on mirrored cards (`internal/ui/work_chip.go`).
+  The chip is display only: it is **not** a filter field.
+- **Built (b):** the fixed `@muster-color` option read in the one listing, the
+  `colors` message, and the tint on mirrored CARDS' border and title
+  (`internal/ui/identity_color.go`). The option name is a constant: there is
+  **no** `-color-option` flag or environment variable. The rendered view's and
+  terminal page's headers are **not** tinted (the operator asked for the cards).
+- **Deferred:** the cluster/ccd agent chip (`POST /agent/work`); the rendered
+  view's work chip (that page has no live refresh); Hermes counts (after Hermes
+  Phase 2); the Phase 0 spike (until it lands, a running turn shows `1+ shell`);
+  and (c), below.
+
+It covers two additions to the Agents view's cards, plus one send-queue change
+that was scoped and then **deferred**:
 
 - **(a) Live work counts.** A card shows how many subagents and background
   shells its session has running now, for example `2 subagents · 1 shell`.
@@ -379,11 +394,12 @@ loses its chip within the TTL.
 - **Card:** a chip in the header row next to the repo chip
   (`internal/ui/mirror.go:207`), for example `2 subagents · 1 shell`,
   `1 subagent` or `1+ shell`. There is no chip when both counts are zero. It has
-  an accessible label ("2 subagents and 1 background shell running") and is a
-  filter field (`work:subagents`, `work:shells`) in `agents_filter.go`. Agent
-  cards (ccd) get the same chip.
-- **Rendered view:** the same chip in the header. The per-agent cards stay as
-  they are. A list of the shells themselves is out of scope.
+  an accessible label ("2 subagents and 1 background shell running").
+  *(As built: display only — no `work:` filter field. Agent cards (ccd) are
+  deferred.)*
+- **Rendered view:** the same chip in the header. *(Deferred: the page has no
+  live refresh.)* The per-agent cards stay as they are. A list of the shells
+  themselves is out of scope.
 
 #### Freshness and cost
 
@@ -558,9 +574,10 @@ first that is a valid colour:
 // with a leading '#'; else "".
 ```
 
-- **Configurable:** `-color-option` / `MUSTER_MIRROR_COLOR_OPTION`, default
-  `@muster-color`, must match `^@[A-Za-z0-9_-]{1,64}$`. A host whose config
-  already keeps a colour in another user option can point muster at it.
+- **Fixed name:** `@muster-color`, a constant. *(As built: the configurable
+  `-color-option` was dropped, so no value from outside the binary is spliced
+  into a tmux format.)* Each field is also passed through `s/[^ -~]/!/`, so a
+  tab or newline in a value cannot shift or split the listing's line.
 - **Cost:** zero extra processes. It is two more fields in the one
   `list-panes -a` per refresh.
 - **Freshness:** within one refresh (5 s) of a `set-option`, with no restart.
@@ -697,8 +714,8 @@ Other rules:
   agent spec could come later; it is out of scope here.
 - **Hermes and plain shell windows** are tinted the same way. The colour belongs
   to the tmux window, whatever runs in it.
-- **The rendered view and the terminal page** tint their header title with the
-  same variables.
+- **The rendered view and the terminal page** are not tinted. *(As built: the
+  operator asked for the cards only.)*
 
 #### Failure modes
 
@@ -732,7 +749,6 @@ Other rules:
     invalid; uppercase normalised; a field holding a tab or a newline. The
     session name must stay the last field: a session named with a tab still
     parses (`parseWindows`).
-  - The `-color-option` name is validated.
 - **Host-config generator** (in the host's own repository, not in muster):
   - The two-row example above, as an exact-string test.
   - Each refusal case (a name with `,`, a duplicated name, a 7-digit colour)

@@ -58,6 +58,7 @@
     "tests/attention.spec.ts": 20.0,
     "chief-runtimes.spec.ts": 12.0,
     "tests/agent-cards.spec.ts": 25.0,
+    "tests/agent-cards-work.spec.ts": 30.0,
     "tests/attention-delivery.spec.ts": 10.0,
     "tests/host-icons.spec.ts": 20.0,
     "tests/agents-list-ux.spec.ts": 60.0,
@@ -88,6 +89,7 @@
       "tests/attention.spec.ts",
       "chief-runtimes.spec.ts",
       "tests/agent-cards.spec.ts",
+      "tests/agent-cards-work.spec.ts",
       "tests/agents-list-ux.spec.ts"
     ],
     "2": [

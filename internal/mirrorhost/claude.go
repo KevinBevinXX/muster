@@ -18,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ZacxDev/muster/internal/cctasks"
 	"github.com/ZacxDev/muster/internal/hermeshost"
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/procstat"
@@ -104,6 +105,16 @@ type ClaudePane struct {
 	// statusUpdatedAt, Unix milliseconds — 0 when it states none (and whenever
 	// Status is ""). The send queue reads idle-since from it.
 	StatusSince int64
+	// RawStatus is the sessions file's status AS WRITTEN — "shell" stays
+	// "shell" — and StartedAt its startedAt (Unix ms): what the live work
+	// counts read (work.go, internal/cctasks), never sent as they are. "" and 0
+	// whenever Status has no sessions file behind it.
+	RawStatus string
+	StartedAt int64
+	// Shells is the CLI's background shells from its process tree
+	// (cctasks.CountShells), read by Tmux.Windows only while RawStatus says
+	// something may be running (shell, busy, waiting); zero otherwise.
+	Shells cctasks.Shells
 	// Pending is what the session waits on while Status is waiting
 	// (pending.go: read from the transcript's tail by the host's listing, not
 	// by the locator); nil otherwise.
@@ -330,10 +341,13 @@ type sessionFile struct {
 	// StatusUpdatedAt is when the CLI last wrote Status, Unix milliseconds:
 	// every write that carries a status stamps it (measured on Claude Code
 	// 2.1.289; see docs/mirroring.md).
-	StatusUpdatedAt int64  `json:"statusUpdatedAt"`
-	ProcStart       string `json:"procStart"`
-	Kind            string `json:"kind"`
-	JobID           string `json:"jobId"`
+	StatusUpdatedAt int64 `json:"statusUpdatedAt"`
+	// StartedAt is when the CLI process started, Unix ms: what drops a resumed
+	// CLI's predecessor's Agent calls from the work ledger (work.go).
+	StartedAt int64  `json:"startedAt"`
+	ProcStart string `json:"procStart"`
+	Kind      string `json:"kind"`
+	JobID     string `json:"jobId"`
 	// ParkedJobID: this CLI is showing a background job (/bg), not its own
 	// session.
 	ParkedJobID string `json:"parkedJobId"`
@@ -395,7 +409,7 @@ func (l ClaudeLocator) resolve(pid int, live func() liveSessions) (path, gen str
 			// kept current, the CLI's is not.
 			if sf.ParkedJobID != "" {
 				if job, ok := live().byJob[sf.ParkedJobID]; ok {
-					sf.SessionID, sf.Cwd, sf.Status, sf.StatusUpdatedAt = job.SessionID, job.Cwd, job.Status, job.StatusUpdatedAt
+					sf.SessionID, sf.Cwd, sf.Status, sf.StatusUpdatedAt, sf.StartedAt = job.SessionID, job.Cwd, job.Status, job.StatusUpdatedAt, job.StartedAt
 				}
 			}
 			st = statusOf(sf)
@@ -434,10 +448,13 @@ func (l ClaudeLocator) resolve(pid int, live func() liveSessions) (path, gen str
 	return newest, strings.TrimSuffix(filepath.Base(newest), ".jsonl"), paneStatus{}, true, true
 }
 
-// paneStatus is a sessions file's status and when the CLI wrote it.
+// paneStatus is a sessions file's status and when the CLI wrote it — and, for
+// the work counts, the status as written and when the CLI started.
 type paneStatus struct {
-	status string
-	since  int64
+	status  string
+	since   int64
+	raw     string
+	started int64
 }
 
 // statusOf is sf's status, normalised (mirror.NormalizeStatus: Claude Code's
@@ -448,7 +465,7 @@ type paneStatus struct {
 // sends "" for "shell" (and for any status it did not know), and the send
 // queue holds that window as unknown whatever muster version runs.
 func statusOf(sf sessionFile) paneStatus {
-	st := paneStatus{status: mirror.NormalizeStatus(sf.Status)}
+	st := paneStatus{status: mirror.NormalizeStatus(sf.Status), raw: sf.Status, started: sf.StartedAt}
 	if st.status != "" && sf.StatusUpdatedAt > 0 {
 		st.since = sf.StatusUpdatedAt
 	}
@@ -590,7 +607,7 @@ func (l ClaudeLocator) locatePanesIn(panes []pane, procs map[int]procInfo, child
 		if path, gen, ok := l.fromPaneMap(p, pid, procs); ok {
 			st := statusOf(lives().byID[gen])
 			out[p.ID] = ClaudePane{Pane: p.ID, PID: pid, Transcript: path, Gen: gen, Busy: st.status == mirror.StatusBusy,
-				Status: st.status, StatusSince: st.since, Source: SourcePaneMap}
+				Status: st.status, StatusSince: st.since, RawStatus: st.raw, StartedAt: st.started, Source: SourcePaneMap}
 			claims[path]++
 			continue
 		}
@@ -603,7 +620,7 @@ func (l ClaudeLocator) locatePanesIn(panes []pane, procs map[int]procInfo, child
 			src = SourceGuessed
 		}
 		out[p.ID] = ClaudePane{Pane: p.ID, PID: pid, Transcript: path, Gen: gen, Busy: st.status == mirror.StatusBusy,
-			Status: st.status, StatusSince: st.since, Source: src}
+			Status: st.status, StatusSince: st.since, RawStatus: st.raw, StartedAt: st.started, Source: src}
 		claims[path]++
 	}
 	for id, cp := range out {
