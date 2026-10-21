@@ -123,7 +123,7 @@ const (
 	// is claimed by header and checked against the token's own host
 	// (mirror_mcp_pg_test.go walks that refusal across hosts and owners).
 	classMirrorHost routeClass = "mirror-host"
-	// classDevice is a paired DEVICE credential's tier (/api/device/*, 0038): no
+	// classDevice is a paired DEVICE credential's tier (/api/device/*, 0039): no
 	// other credential opens it, it acts as the device's owner, and it names no
 	// object — a device acts on itself — so B's device must reach nothing of A's.
 	classDevice routeClass = "device"
@@ -184,7 +184,7 @@ var isolationClasses = map[string]routeClass{
 	// unsubscribe writes act on the CALLER's own devices (list); the account
 	// page's remove names a device by id (param, A's is the object). A's device
 	// carries the canary in its user agent and its endpoint.
-	// Paired devices (0038): minting a code is the caller's own; removing
+	// Paired devices (0039): minting a code is the caller's own; removing
 	// names a device; pairing is public (the code is the authority); the
 	// device tier is the device credential's alone.
 	"POST /account/devices/pair":        classList,
@@ -608,7 +608,7 @@ type isoWorld struct {
 	// (canary-labelled) — the revoke route's object, so revoking it never
 	// revokes a credential.
 	pluginTokens map[int64]string
-	// Paired devices (0038): each user's device credential, and A's device
+	// Paired devices (0039): each user's device credential, and A's device
 	// (canary-named), the object Remove names.
 	deviceTokens map[int64]string
 	aDevice      devices.Device
@@ -879,7 +879,7 @@ func newIsoWorld(t *testing.T) *isoWorld {
 		queued: ghostID, route: "rt_000000000000000000000000", upload: "GhostGhostGhostGhost00", ask: ghostID, pluginMsg: ghostID,
 		device: ghostID}
 
-	// Paired devices (0038): each user pairs one, through the real store and a
+	// Paired devices (0039): each user pairs one, through the real store and a
 	// real pairing code; A's is canary-named (Account → Devices shows it).
 	ds := devices.NewPG(pool)
 	w.deviceTokens = map[int64]string{}
@@ -1184,7 +1184,7 @@ type isoObjs struct {
 	draft                                     int64  // a plugin reply draft's id (0015/0016)
 	passkey                                   string // a GoTrue passkey id (the gotrue twin's fake)
 	pushDevice                                int64  // a Web Push device's id
-	device                                    int64  // a paired device's id (0038)
+	device                                    int64  // a paired device's id (0039)
 	agentName, connName, tag, link            string
 	mirrorHost, mirrorSession                 string
 	queued                                    int64  // a queued message's id (0019)

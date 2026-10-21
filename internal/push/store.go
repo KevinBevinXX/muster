@@ -27,7 +27,7 @@ type Device struct {
 	LastOKAt  *time.Time
 	FailCount int
 	// Kind is KindBrowser for a browser's PushSubscription and KindAndroid for
-	// a paired phone's UnifiedPush endpoint (migration 0038).
+	// a paired phone's UnifiedPush endpoint (migration 0039).
 	Kind string
 	// DeviceID is the paired device (internal/devices) a KindAndroid
 	// subscription belongs to; 0 for a browser.

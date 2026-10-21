@@ -723,7 +723,7 @@ func stressCredentialWriters(t *testing.T, w world, rounds int, budget time.Dura
 			return nil
 		}
 	}
-	// Paired phones (0038): pairing (an UNLOCKED read of the code's owner, then
+	// Paired phones (0039): pairing (an UNLOCKED read of the code's owner, then
 	// the credentials lock, then the code row) and removing take the
 	// credentials lock first; a disable, a reset and a sign-out everywhere
 	// delete the user's phones under it.

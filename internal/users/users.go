@@ -284,7 +284,7 @@ func (s *PGStore) SetDisabledAs(ctx context.Context, by *Actor, id int64, disabl
 		if err := revokePendingInvitesOf(ctx, tx, actor, id, "creator disabled"); err != nil {
 			return User{}, err
 		}
-		// Every paired phone (0038), in THIS transaction.
+		// Every paired phone (0039), in THIS transaction.
 		if err := deleteDevicesTx(ctx, tx, id); err != nil {
 			return User{}, err
 		}

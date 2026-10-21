@@ -1,4 +1,4 @@
--- muster 0038 — PAIRED PHONES: the native Android app's device credential and
+-- muster 0039 — PAIRED PHONES: the native Android app's device credential and
 -- its pairing codes (internal/devices; docs/design/android.md, server changes
 -- 5, 6 and 8).
 --
@@ -35,6 +35,9 @@
 -- lookups that cannot run as a user — redeeming a code and authenticating a
 -- credential, each of which is how the owner is LEARNED — run under System in
 -- one ledgered helper (internal/devices.sys).
+--
+-- Must apply after 0038 (the contiguity test refuses a gap). Re-applied by
+-- db.RLSOn after rollback/rls_off.sql, so every statement is idempotent.
 
 SET LOCAL lock_timeout = '3s';
 
