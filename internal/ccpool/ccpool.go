@@ -430,6 +430,21 @@ func authFailedNow(m Mark, token string) bool {
 // into the wrong year), and the configured cooldown is used instead.
 const maxResetAhead = 8 * 24 * time.Hour
 
+// maxClockResetAhead bounds a reset stated as a CLOCK TIME alone ("resets
+// 9:45pm (UTC)"), which is how the CLI states a session limit. A session window
+// is about 5h, so its reset is never more than that ahead of the mark; 12h
+// leaves room for clock skew between the pod and muster and for a mark written
+// late, while still refusing the one misreading a clock time invites — a mark
+// AT or just AFTER the stated time (an agent re-hitting the limit right at
+// reset, or skew) resolves to the same time TOMORROW, ~24h ahead, which would
+// bench the account (and possibly the whole pool, as 429s) for a day. Such a
+// reset is not believed, and the configured cooldown is used instead.
+//
+// ⚠ THE ROLL TO TOMORROW STAYS, BOUNDED: a clock time earlier than the mark's
+// can still be a real reset just after midnight ("resets 1am" marked at 23:00
+// is 2h ahead), which only the roll finds.
+const maxClockResetAhead = 12 * time.Hour
+
 // resetRe matches the reset the CLI states in a rate-limit message:
 // "· resets 9:45pm (UTC)", "· resets 9pm (Europe/Berlin)", "· resets Oct 9,
 // 9am (UTC)". Groups: month, day, hour, minute, am/pm, zone.
@@ -439,7 +454,8 @@ var resetRe = regexp.MustCompile(`resets\s+(?:([A-Z][a-z]{2})\s+(\d{1,2}),\s+)?(
 // account was marked): the next such clock time (or date and time) after at,
 // in the stated zone. ok is false when detail states none this can read — no
 // match, an hour or minute out of range, a zone the system does not know, a
-// date that does not exist, or a result more than [maxResetAhead] after at.
+// date that does not exist, or a result more than [maxResetAhead] after at
+// (a clock time alone: more than [maxClockResetAhead]).
 //
 // ⚠ A RESET WITH NO ZONE IS NOT READ. "resets 9pm" is 9pm somewhere; guessing
 // UTC would end the window up to a day early or late, so it falls back to the
@@ -489,6 +505,9 @@ func statedReset(detail string, at time.Time) (time.Time, bool) {
 		reset = time.Date(local.Year(), local.Month(), local.Day(), hour, minute, 0, 0, loc)
 		if !reset.After(at) {
 			reset = reset.AddDate(0, 0, 1)
+		}
+		if reset.Sub(at) > maxClockResetAhead {
+			return time.Time{}, false
 		}
 	}
 	if !reset.After(at) || reset.Sub(at) > maxResetAhead {

@@ -58,8 +58,11 @@ func TestEveryKindsRefusalIsReachedOnItsOwn(t *testing.T) {
 		{"cc storage without the kind", func(c *config) {
 			c.AgentKinds, c.AgentCCImage, c.AgentCCAccountNames, c.AgentCCStorage = nil, "", nil, "2Gi"
 		}, "armed switch"},
-		{"cc pool limits without the kind", func(c *config) {
+		{"cc job cap without the kind", func(c *config) {
 			c.AgentKinds, c.AgentCCImage, c.AgentCCAccountNames, c.AgentCCMaxJobs = nil, "", nil, 3
+		}, "no Claude account pool for them to limit"},
+		{"cc cooldown without the kind", func(c *config) {
+			c.AgentKinds, c.AgentCCImage, c.AgentCCAccountNames, c.AgentCCCooldown = nil, "", nil, 30*time.Minute
 		}, "no Claude account pool for them to limit"},
 		{"no provisioner", func(c *config) { c.AgentProvisioner = provisionerNone }, "nothing to build it with"},
 		{"no image", func(c *config) { c.AgentCCImage = "" }, "MUSTER_AGENT_CC_IMAGE is not set"},
