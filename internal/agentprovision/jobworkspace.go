@@ -188,7 +188,7 @@ var gitRunsNoRepoCommands = func() string {
 // differs: the URL `git ls-remote --get-url` resolves is not $4 (an insteadOf
 // in the checkout's own config), or that config names an extra header or a
 // credential setting. So the bytes come from $4 itself, with no credential.
-// Pool workers hold no GitHub grant at all (internal/api pickWorker) — this is
+// Pool workers hold no GitHub grant at all (internal/api createPoolJob) — this is
 // what makes the fetch anonymous for any agent.
 //
 // ⚠ NOT OVERLAID, AND SO THE COMMIT'S: every other file — including

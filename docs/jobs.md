@@ -103,9 +103,9 @@ job that returns the wrong thing.
 | 400 | a missing or malformed field — including both or neither of `agent` and `worker_pool`, a `worker_pool` with a `sha` but no `repo`, a `sha` without a `pr` (or a `pr` without a `sha`), a `repo` that is not `owner/name`, and an abbreviated `sha`: only a full 40-character id is accepted |
 | 404 | no agent by that name; no agent is a member of that `worker_pool` |
 | 409 | the agent is not `claude-code`; `repo` is not the agent's repository; `sha` on an agent with no repository |
-| 429 | the agent already has 4 jobs queued or running (the per-agent limit); submit again once one finishes |
+| 429 | the agent already has 4 jobs queued or running (the per-agent limit); for a `worker_pool`, every member that could otherwise take the job has 4 (`error` names each). Submit again once one finishes |
 | 501 | `sha` / `result_path` on a deployment with no provisioner |
-| 503 | no database, no agent gateway, or the service tier is unarmed; or, for a `worker_pool`, no member can take the job (`error` says why for each) |
+| 503 | no database, no agent gateway, or the service tier is unarmed; or, for a `worker_pool`, no member can take the job for a reason other than the limit (`error` says why for each) |
 
 **Idempotency.** A second submission with an `idempotency_key` already used
 records nothing and answers the first job, with **200** and
@@ -176,6 +176,11 @@ eligible it prefers, in order:
 3. then the account least recently marked `rate_limited` (never, then the
    oldest);
 4. then the agent's name, so the choice is deterministic.
+
+Submissions arriving at the same moment are placed one after another: each
+choice sees the jobs the ones before it placed, so six submitted at once to two
+idle workers are spread over both rather than sent to one until its limit
+refuses them.
 
 The job records the pool (`worker_pool`) and the worker (`agent`,
 `cc_account`). The choice is made once; a job is not moved to another worker
@@ -328,7 +333,8 @@ step 6 has its own bound.
   stops or crashes mid-job also leaves that job's worktree on the agent's
   volume (`.muster-jobs/<job_id>`); nothing removes it later.
 - **At most 4 jobs queued or running per agent.** A fifth submission naming
-  the agent is a 429; a pool skips a worker at the limit. A repeated
+  the agent is a 429; a pool skips a worker at the limit, and is a 429 when
+  every worker it could otherwise use is at the limit. A repeated
   `idempotency_key` is still answered. A job orphaned by a CRASHED server
   counts toward the 4 until the reaper fails it (a graceful shutdown fails its
   own jobs at once).

@@ -31,6 +31,7 @@ import (
 	"fmt"
 	"path"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -239,6 +240,10 @@ var ErrNotFound = errors.New("jobs: no such job")
 // MaxActivePerAgent jobs queued or running.
 var ErrAgentAtCapacity = errors.New("jobs: the agent has too many jobs queued or running")
 
+// ChooseFunc is CreateChosen's choice: given each candidate's queued and running
+// jobs, the job to record, or an error that refuses the submission.
+type ChooseFunc func(active map[int64]ActiveCount) (NewJob, error)
+
 // Store is the jobs persistence.
 type Store interface {
 	// Create records a queued job. With an idempotency key the caller already
@@ -247,13 +252,20 @@ type Store interface {
 	// MaxActivePerAgent jobs queued or running (a repeated key is answered
 	// first, so a retry of an accepted job is never refused).
 	Create(ctx context.Context, n NewJob) (j Job, created bool, err error)
+	// CreateChosen is Create for a job whose agent is chosen from candidates by
+	// what they hold: it reads each candidate's queued and running jobs and
+	// calls choose with them (an agent with none is absent), and records the
+	// job choose returns, whose AgentID must be one of candidates and whose
+	// IdempotencyKey must be n's. Nothing else can record a job on any of
+	// candidates between the read and the insert, so concurrent submissions
+	// each see the ones before them. With n's idempotency key already used it
+	// answers that job (created == false) without calling choose. An error from
+	// choose is returned unwrapped, and nothing is recorded.
+	CreateChosen(ctx context.Context, n NewJob, candidates []int64, choose ChooseFunc) (j Job, created bool, err error)
 	// Get is one of the caller's jobs, or ErrNotFound.
 	Get(ctx context.Context, id int64) (Job, error)
 	// ByIdempotencyKey is the caller's job recorded with key, or ErrNotFound.
 	ByIdempotencyKey(ctx context.Context, key string) (Job, error)
-	// ActiveCounts is, for each of agentIDs that has any, how many of its jobs
-	// are queued and how many running. An agent with none is absent.
-	ActiveCounts(ctx context.Context, agentIDs []int64) (map[int64]ActiveCount, error)
 	// Start moves a queued job to running, recording the Claude account and the
 	// chat session the turn runs on. It reports false when the job was not
 	// queued any more (the reaper failed it), and then the caller must not run
@@ -396,21 +408,61 @@ func scanJob(row pgx.Row) (Job, error) {
 // MaxQueueWait is derived from the cap, so a cap that could be overshot would
 // let the reaper fail a job that was legitimately still waiting.
 func (s *PGStore) Create(ctx context.Context, n NewJob) (Job, bool, error) {
+	return s.create(ctx, n, []int64{n.AgentID}, nil)
+}
+
+// CreateChosen records a job on the agent choose picks from candidates.
+//
+// 🔴 THE READ CHOOSE DECIDES ON AND THE INSERT ARE ONE TRANSACTION UNDER EVERY
+// CANDIDATE'S PER-AGENT LOCK — the same lock Create takes for one agent. A pool
+// choice read outside it let concurrent submissions all read the same queues
+// and all pick the same worker: six submitted at once to two idle workers with
+// four places each sent four to one, whose cap refused the other two with a
+// 429 while the second worker sat idle. Under the locks each submission reads
+// the queues the ones before it left, so choose sees every job it competes
+// with, a named submission to a candidate included. The locks are taken in one
+// global order (ascending key), so two choices over overlapping candidates
+// cannot deadlock, and a named submission takes only one.
+func (s *PGStore) CreateChosen(ctx context.Context, n NewJob, candidates []int64, choose ChooseFunc) (Job, bool, error) {
+	if choose == nil || len(candidates) == 0 {
+		return Job{}, false, errors.New("jobs: create chosen: no candidates or no choice")
+	}
+	return s.create(ctx, n, candidates, choose)
+}
+
+// lockKeys is the advisory lock keys of agentIDs (the per-agent key Create has
+// always used), deduplicated, in ascending order.
+func lockKeys(agentIDs []int64) []int32 {
+	seen := map[int32]bool{}
+	var keys []int32
+	for _, id := range agentIDs {
+		k := int32(id)
+		if !seen[k] {
+			seen[k] = true
+			keys = append(keys, k)
+		}
+	}
+	slices.Sort(keys)
+	return keys
+}
+
+// create is Create and CreateChosen: under the per-agent locks of lockIDs, the
+// idempotency answer, then (with choose) the choice, then the cap and the
+// insert.
+func (s *PGStore) create(ctx context.Context, n NewJob, lockIDs []int64, choose ChooseFunc) (Job, bool, error) {
 	var key *string
 	if n.IdempotencyKey != "" {
 		key = &n.IdempotencyKey
-	}
-	var agentID *int64
-	if n.AgentID != 0 {
-		agentID = &n.AgentID
 	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return Job{}, false, fmt.Errorf("jobs: create: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext('jobs.create'), $1::int)`, int32(n.AgentID)); err != nil {
-		return Job{}, false, fmt.Errorf("jobs: create: lock: %w", err)
+	for _, k := range lockKeys(lockIDs) {
+		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext('jobs.create'), $1::int)`, k); err != nil {
+			return Job{}, false, fmt.Errorf("jobs: create: lock: %w", err)
+		}
 	}
 	// A key already used answers its job first: a retry of an accepted
 	// submission is never refused for capacity. Under RLS this reads the
@@ -423,6 +475,25 @@ func (s *PGStore) Create(ctx context.Context, n NewJob) (Job, bool, error) {
 		if !errors.Is(err, pgx.ErrNoRows) {
 			return Job{}, false, fmt.Errorf("jobs: read job for idempotency key: %w", err)
 		}
+	}
+	if choose != nil {
+		active, err := activeCounts(ctx, tx, lockIDs)
+		if err != nil {
+			return Job{}, false, err
+		}
+		chosen, err := choose(active)
+		if err != nil {
+			return Job{}, false, err
+		}
+		if !slices.Contains(lockIDs, chosen.AgentID) || chosen.IdempotencyKey != n.IdempotencyKey {
+			return Job{}, false, fmt.Errorf("jobs: create chosen: the choice (agent %d, key %q) is not one of the candidates "+
+				"locked for it, or changed the idempotency key", chosen.AgentID, chosen.IdempotencyKey)
+		}
+		n = chosen
+	}
+	var agentID *int64
+	if n.AgentID != 0 {
+		agentID = &n.AgentID
 	}
 	if agentID != nil {
 		var active int
@@ -490,13 +561,15 @@ type ActiveCount struct {
 // Active is Queued + Running: what MaxActivePerAgent bounds.
 func (c ActiveCount) Active() int { return c.Queued + c.Running }
 
-// ActiveCounts counts the caller's queued and running jobs per agent.
-func (s *PGStore) ActiveCounts(ctx context.Context, agentIDs []int64) (map[int64]ActiveCount, error) {
+// activeCounts counts the caller's queued and running jobs per agent, inside
+// CreateChosen's transaction and under its locks: what its choice is given. An
+// agent with none is absent.
+func activeCounts(ctx context.Context, tx pgx.Tx, agentIDs []int64) (map[int64]ActiveCount, error) {
 	out := map[int64]ActiveCount{}
 	if len(agentIDs) == 0 {
 		return out, nil
 	}
-	rows, err := s.pool.Query(ctx, `SELECT agent_id, count(*) FILTER (WHERE status = 'queued'),
+	rows, err := tx.Query(ctx, `SELECT agent_id, count(*) FILTER (WHERE status = 'queued'),
 		count(*) FILTER (WHERE status = 'running')
 		FROM jobs WHERE agent_id = ANY($1) AND status IN ('queued', 'running') GROUP BY agent_id`, agentIDs)
 	if err != nil {

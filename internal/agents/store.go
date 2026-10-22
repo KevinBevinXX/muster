@@ -146,7 +146,7 @@ type Agent struct {
 	// jobs for (agents.worker_pool, migration 0042); "" for an agent in none.
 	// Set at creation (dispatch's worker_pool) and never written after; a job
 	// naming the pool instead of an agent is given one of its members
-	// (internal/api pickJobAgent). See [ValidWorkerPool].
+	// (internal/api createPoolJob). See [ValidWorkerPool].
 	WorkerPool string `json:"workerPool,omitempty"`
 	// OwnerID is the user this agent belongs to (agents.owner_id, migration
 	// 0006). A request authenticated by THIS agent's own token acts as this

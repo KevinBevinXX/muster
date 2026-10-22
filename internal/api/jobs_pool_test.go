@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -17,7 +18,7 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// WORKER POOLS (jobs.go pickWorker / chooseWorker).
+// WORKER POOLS (jobs.go createPoolJob / chooseWorker).
 // ---------------------------------------------------------------------------
 
 // worker is a pool member for chooseWorker's table.
@@ -81,9 +82,9 @@ func TestChooseWorkerPrefersTheIdleThenTheLeastQueuedThenTheMostRested(t *testin
 			healthy, map[int64]jobs.ActiveCount{1: {Running: 4}, 2: {Running: 1, Queued: 1}}, nil, "b-room"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got, why := chooseWorker("reviewers", tc.members, "", tc.accounts, tc.active, tc.github)
-			if why != "" || got.Name != tc.want {
-				t.Fatalf("chose %q (%q), want %q", got.Name, why, tc.want)
+			got, why, full := chooseWorker("reviewers", tc.members, "", tc.accounts, tc.active, tc.github)
+			if why != "" || full || got.Name != tc.want {
+				t.Fatalf("chose %q (%q, full %v), want %q", got.Name, why, full, tc.want)
 			}
 		})
 	}
@@ -101,7 +102,7 @@ func TestChooseWorkerSaysWhyNoWorkerIsEligible(t *testing.T) {
 	members := []agents.Agent{worker(6, "f-full", "beta"), other, gw, stopped, worker(1, "a-dead", "alpha"), worker(5, "e-unknown", "zeta")}
 	accounts := map[string]ccpool.AccountState{"alpha": {AuthFailed: true}, "beta": {}}
 	members = append(members, worker(7, "g-granted", "beta"))
-	_, why := chooseWorker("reviewers", members, "acme/widgets", accounts, map[int64]jobs.ActiveCount{6: {Running: 1, Queued: 3}},
+	_, why, full := chooseWorker("reviewers", members, "acme/widgets", accounts, map[int64]jobs.ActiveCount{6: {Running: 1, Queued: 3}},
 		map[int64]string{7: "github"})
 	const want = `no worker in pool "reviewers" can take the job: a-dead (its Claude account "alpha" failed authentication); ` +
 		`b-stopped (status stopped); c-gateway (kind gateway); d-other (works on repository "acme/other"); ` +
@@ -110,16 +111,29 @@ func TestChooseWorkerSaysWhyNoWorkerIsEligible(t *testing.T) {
 	if why != want {
 		t.Fatalf("reason = %q\nwant      %q", why, want)
 	}
+	// f-full is the one member eligible but for its cap: every such member is
+	// at capacity, so the refusal is "full" (a 429).
+	if !full {
+		t.Fatal("f-full alone could take the job but for its cap, and the refusal is not full")
+	}
+	// Without it, no member is eligible even with room: not full (a 503).
+	if _, why, full := chooseWorker("reviewers", members[1:], "acme/widgets", accounts, nil, map[int64]string{7: "github"}); why == "" || full {
+		t.Fatalf("without f-full: reason %q, full %v; want a reason and not full", why, full)
+	}
 }
 
 // poolKinds is AgentKinds with the account marks a pool job reads.
+// It is safe for concurrent submissions (jobs_pool_race_pg_test.go).
 type poolKinds struct {
 	AgentKinds
+	mu     sync.Mutex
 	states map[string]ccpool.AccountState
 	owners []int64
 }
 
 func (k *poolKinds) ClaudeAccountStates(_ context.Context, owner int64) (map[string]ccpool.AccountState, error) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
 	k.owners = append(k.owners, owner)
 	return k.states, nil
 }
