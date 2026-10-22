@@ -123,7 +123,7 @@ func buildClaudePool(cfg config, src ccpool.Source, marks ccpool.Store) (*ccpool
 		return nil, fmt.Errorf("%s includes %s, whose account pool persists its rate-limit and auth marks "+
 			"in Postgres, and %s is unset", envAgentKinds, agents.KindClaudeCode, envDatabase)
 	}
-	return ccpool.New(src, marks)
+	return ccpool.NewWithLimits(src, marks, cfg.ccPoolLimits())
 }
 
 // buildAgentPlaneWith is buildAgentPlane with the claude-code account pool,

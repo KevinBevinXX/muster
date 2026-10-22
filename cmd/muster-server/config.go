@@ -274,6 +274,13 @@ const (
 	envAgentCCTokenPrefix = "MUSTER_AGENT_CC_TOKEN_"
 	envAgentCCStorage     = "MUSTER_AGENT_CC_STORAGE_SIZE"
 
+	// The account pool's two limits (internal/ccpool.Limits): how long an
+	// account rests after a `rate_limited` whose message states no readable reset
+	// time, and how many jobs one account may run at once. Unset is the ccpool
+	// default (ccpool.DefaultCooldown, ccpool.DefaultMaxConcurrentJobs).
+	envAgentCCCooldown = "MUSTER_AGENT_CC_RATE_LIMIT_COOLDOWN"
+	envAgentCCMaxJobs  = "MUSTER_AGENT_CC_MAX_CONCURRENT_JOBS"
+
 	// The hermes kind (docs/design/hermes.md): its image (tag or digest pinned;
 	// no default, for MUSTER_AGENT_CC_IMAGE's reason) and its /data volume size.
 	// Its provider credential is the OpenRouter key the gateway kind uses
@@ -750,6 +757,11 @@ type config struct {
 	AgentCCTokens       map[string]string
 	// AgentCCStorage is the claude-code kind's /data volume size ("" = 10Gi).
 	AgentCCStorage string
+	// AgentCCCooldown and AgentCCMaxJobs are the account pool's limits
+	// (MUSTER_AGENT_CC_RATE_LIMIT_COOLDOWN, MUSTER_AGENT_CC_MAX_CONCURRENT_JOBS);
+	// zero is unset, which ccPoolLimits resolves to ccpool's defaults.
+	AgentCCCooldown time.Duration
+	AgentCCMaxJobs  int
 
 	// AgentHermesImage is the hermes kind's FULL image reference (tag or digest
 	// required; no default), and AgentHermesStorage its /data volume size
@@ -1024,6 +1036,23 @@ func loadConfig(getenv func(string) string) (config, error) {
 	// set the field), and two defaulting expressions is how one of them comes to
 	// hold a different literal.
 	c.AgentNamespacePrefix = agents.ResolveNamespacePrefix(c.AgentNamespacePrefix)
+
+	if v := strings.TrimSpace(getenv(envAgentCCCooldown)); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil || d < time.Minute || d > 7*24*time.Hour {
+			return config{}, fmt.Errorf("invalid %s %q: want a Go duration between 1m and 168h (unset means %s)",
+				envAgentCCCooldown, v, ccpool.DefaultCooldown)
+		}
+		c.AgentCCCooldown = d
+	}
+	if v := strings.TrimSpace(getenv(envAgentCCMaxJobs)); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 || n > 64 {
+			return config{}, fmt.Errorf("invalid %s %q: want an integer 1-64 (unset means %d)",
+				envAgentCCMaxJobs, v, ccpool.DefaultMaxConcurrentJobs)
+		}
+		c.AgentCCMaxJobs = n
+	}
 
 	if v := strings.TrimSpace(getenv(envPort)); v != "" {
 		p, err := strconv.Atoi(v)
@@ -1816,6 +1845,19 @@ func (c config) validateKinds() error {
 	return nil
 }
 
+// ccPoolLimits is the account pool's limits: the configured values, ccpool's
+// defaults where unset. It is the one place an unset limit is defaulted.
+func (c config) ccPoolLimits() ccpool.Limits {
+	l := ccpool.DefaultLimits()
+	if c.AgentCCCooldown != 0 {
+		l.Cooldown = c.AgentCCCooldown
+	}
+	if c.AgentCCMaxJobs != 0 {
+		l.MaxConcurrentJobs = c.AgentCCMaxJobs
+	}
+	return l
+}
+
 // validateClaudeCodeKind checks the claude-code kind's own settings: refused
 // while the kind is off (an armed switch), required while it is on.
 func (c config) validateClaudeCodeKind() error {
@@ -1825,6 +1867,11 @@ func (c config) validateClaudeCodeKind() error {
 				"an armed switch that does nothing. Add %s to %s, or unset them",
 				envAgentCCImage, envAgentCCAccounts, envAgentCCStorage, envAgentKinds, agents.KindClaudeCode,
 				agents.KindClaudeCode, envAgentKinds)
+		}
+		if c.AgentCCCooldown != 0 || c.AgentCCMaxJobs != 0 {
+			return fmt.Errorf("%s or %s is set but %s does not include %s: there is no Claude account pool for "+
+				"them to limit. Add %s to %s, or unset them", envAgentCCCooldown, envAgentCCMaxJobs, envAgentKinds,
+				agents.KindClaudeCode, agents.KindClaudeCode, envAgentKinds)
 		}
 		return nil
 	}

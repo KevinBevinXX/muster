@@ -67,8 +67,11 @@ defaults to `gateway`, and `gateway` must always be in it.
   - On Kubernetes it requires both `MUSTER_AGENT_NETPOL_FROM_*` variables.
 
   **The account pool.** Each new agent is assigned an account: first excluding
-  accounts marked `auth_failed`, then the least recently rate-limited, then the
-  one with the fewest live agents. A pin at dispatch overrides this. An agent
+  accounts marked `auth_failed` and accounts still cooling down after a
+  `rate_limited` (until the reset time the CLI stated, else
+  `MUSTER_AGENT_CC_RATE_LIMIT_COOLDOWN`, default `1h`), then the least recently
+  rate-limited, then the one with the fewest live agents. With every account
+  excluded the dispatch is refused. A pin at dispatch overrides this. An agent
   keeps its account for life. The token goes only into that agent's own Secret,
   as `CLAUDE_CODE_OAUTH_TOKEN`. The pool configured in the environment belongs
   to the admin; members use credentials they stored themselves

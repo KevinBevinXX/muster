@@ -34,13 +34,32 @@
 //     the token in the secret therefore clears the mark by itself; nothing else
 //     does. If that leaves nothing, refuse — dispatching onto a token that
 //     already failed authentication builds a pod that cannot answer one turn.
-//  2. Least-recently-rate-limited first: never rate-limited sorts before any
+//  2. Drop every account still COOLING DOWN after a rate_limited mark (see
+//     "The cooldown" below). If that leaves nothing, refuse with the time each
+//     account is usable again.
+//  3. Least-recently-rate-limited first: never rate-limited sorts before any
 //     timestamp, then oldest timestamp first.
-//  3. Then fewest LIVE agents (kind claude-code, status pending, provisioning or
+//  4. Then fewest LIVE agents (kind claude-code, status pending, provisioning or
 //     running) on the account.
-//  4. Then the account name, so the answer is deterministic.
+//  5. Then the account name, so the answer is deterministic.
 //
-// An explicit pin at dispatch bypasses all four — it is the operator's override,
+// # The cooldown and the per-account cap (M4)
+//
+// A `rate_limited` account is NOT selectable until its cooldown ends
+// ([CooldownUntil]): the reset time the CLI's message states ("resets 9:45pm
+// (UTC)", "resets Oct 9, 9am (UTC)") when one can be read, else the mark's time
+// plus [Limits.Cooldown] (default [DefaultCooldown]). It is selectable again at
+// exactly that instant. Before this, a rate-limited account was only ranked
+// last and was still chosen when nothing better was left.
+//
+// [Limits.MaxConcurrentJobs] (default [DefaultMaxConcurrentJobs]) caps how many
+// JOBS one account runs at once. This package does not count jobs; it carries
+// the cap to the job API's worker choice in [AccountState], and that choice
+// (internal/api chooseWorker) enforces it. Agent dispatch ([Choose]) has no cap:
+// an agent is not a job, and a cap there would refuse dispatches the operator
+// makes on purpose.
+//
+// An explicit pin at dispatch bypasses all of these — it is the operator's override,
 // including for an account the pool would skip — but must name a configured
 // account.
 //
@@ -69,7 +88,9 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -354,17 +375,21 @@ type AccountState struct {
 	AuthFailed bool
 	// RateLimitedAt is the account's latest rate_limited mark; zero for never.
 	RateLimitedAt time.Time
-	// CoolingUntil is when the account's rate-limit cooldown ends, set ONLY
-	// while it is still cooling down at the time States read it; zero otherwise.
+	// CoolingUntil is when the account's rate-limit cooldown ends ([CooldownUntil]),
+	// set ONLY while it is still cooling down at the pool's clock when States
+	// read it; zero once it has ended. A non-zero value means "not selectable".
 	CoolingUntil time.Time
-	// MaxConcurrentJobs is the per-account job cap ([Limits]).
+	// MaxConcurrentJobs is the per-account job cap ([Limits.MaxConcurrentJobs]),
+	// the same for every account. States always sets it (at least 1); a zero
+	// here is a hand-built state and means no cap.
 	MaxConcurrentJobs int
 }
 
 // States is AccountState for every one of owner's configured accounts, by
 // name. An account that is not configured for owner is absent. It is what the
 // job API's worker-pool selection reads (internal/api createPoolJob): the same
-// marks, under the same "current token" rule, as [Choose].
+// marks, under the same "current token" and cooldown rules, as [Choose], plus
+// the per-account job cap.
 func (p *Pool) States(ctx context.Context, owner int64) (map[string]AccountState, error) {
 	tokens, names, err := p.accounts(ctx, owner)
 	if err != nil {
@@ -374,10 +399,16 @@ func (p *Pool) States(ctx context.Context, owner int64) (map[string]AccountState
 	if err != nil {
 		return nil, fmt.Errorf("ccpool: read account marks: %w", err)
 	}
+	now := p.now()
 	out := make(map[string]AccountState, len(names))
 	for _, n := range names {
 		m := marks[n]
-		out[n] = AccountState{AuthFailed: authFailedNow(m, tokens[n]), RateLimitedAt: m.RateLimitedAt}
+		out[n] = AccountState{
+			AuthFailed:        authFailedNow(m, tokens[n]),
+			RateLimitedAt:     m.RateLimitedAt,
+			CoolingUntil:      coolingUntil(m, p.limits.Cooldown, now),
+			MaxConcurrentJobs: p.limits.MaxConcurrentJobs,
+		}
 	}
 	return out, nil
 }
@@ -388,13 +419,107 @@ func authFailedNow(m Mark, token string) bool {
 	return !m.AuthFailedAt.IsZero() && m.AuthFailedToken != "" && m.AuthFailedToken == Fingerprint(token)
 }
 
-// CooldownUntil is when m's rate-limit cooldown ends; zero for an account
-// never rate-limited.
-func CooldownUntil(m Mark, cooldown time.Duration) time.Time {
-	return time.Time{} // SCAFFOLDING: implemented in the next commit.
+// maxResetAhead bounds how far after its mark a stated reset time is believed.
+// The CLI's limits reset within a session window (hours) or a week; a reset
+// read as further away than a week and a day is a misreading (a date resolved
+// into the wrong year), and the configured cooldown is used instead.
+const maxResetAhead = 8 * 24 * time.Hour
+
+// resetRe matches the reset the CLI states in a rate-limit message:
+// "· resets 9:45pm (UTC)", "· resets 9pm (Europe/Berlin)", "· resets Oct 9,
+// 9am (UTC)". Groups: month, day, hour, minute, am/pm, zone.
+var resetRe = regexp.MustCompile(`resets\s+(?:([A-Z][a-z]{2})\s+(\d{1,2}),\s+)?(\d{1,2})(?::(\d{2}))?\s*([aApP][mM])\s*\(([^)\s]+)\)`)
+
+// statedReset is the reset time detail states, resolved against at (when the
+// account was marked): the next such clock time (or date and time) after at,
+// in the stated zone. ok is false when detail states none this can read — no
+// match, an hour or minute out of range, a zone the system does not know, a
+// date that does not exist, or a result more than [maxResetAhead] after at.
+//
+// ⚠ A RESET WITH NO ZONE IS NOT READ. "resets 9pm" is 9pm somewhere; guessing
+// UTC would end the window up to a day early or late, so it falls back to the
+// configured cooldown like any other unreadable message.
+func statedReset(detail string, at time.Time) (time.Time, bool) {
+	g := resetRe.FindStringSubmatch(detail)
+	if g == nil {
+		return time.Time{}, false
+	}
+	hour, err := strconv.Atoi(g[3])
+	if err != nil || hour < 1 || hour > 12 {
+		return time.Time{}, false
+	}
+	minute := 0
+	if g[4] != "" {
+		if minute, err = strconv.Atoi(g[4]); err != nil || minute > 59 {
+			return time.Time{}, false
+		}
+	}
+	hour %= 12
+	if strings.EqualFold(g[5], "pm") {
+		hour += 12
+	}
+	loc, err := time.LoadLocation(g[6])
+	if err != nil {
+		return time.Time{}, false
+	}
+	local := at.In(loc)
+	var reset time.Time
+	if g[1] != "" {
+		mon, err := time.Parse("Jan", g[1])
+		if err != nil {
+			return time.Time{}, false
+		}
+		day, err := strconv.Atoi(g[2])
+		if err != nil {
+			return time.Time{}, false
+		}
+		year := local.Year()
+		for i := 0; i < 2 && !reset.After(at); i++ {
+			reset = time.Date(year+i, mon.Month(), day, hour, minute, 0, 0, loc)
+			if reset.Month() != mon.Month() || reset.Day() != day { // Feb 30 normalises into March
+				return time.Time{}, false
+			}
+		}
+	} else {
+		reset = time.Date(local.Year(), local.Month(), local.Day(), hour, minute, 0, 0, loc)
+		if !reset.After(at) {
+			reset = reset.AddDate(0, 0, 1)
+		}
+	}
+	if !reset.After(at) || reset.Sub(at) > maxResetAhead {
+		return time.Time{}, false
+	}
+	return reset, true
 }
 
-// Choose is the selection algorithm (see the package doc), pure.
+// CooldownUntil is when m's rate-limit cooldown ends: the reset time its
+// message states ([statedReset]), else its mark's time plus cooldown. Zero for
+// an account never rate-limited. The account is selectable again AT that
+// instant: cooling down is now.Before(CooldownUntil(...)).
+//
+// It is computed from the stored mark at every read, not stored itself, so a
+// changed default cooldown applies to marks already written.
+func CooldownUntil(m Mark, cooldown time.Duration) time.Time {
+	if m.RateLimitedAt.IsZero() {
+		return time.Time{}
+	}
+	if reset, ok := statedReset(m.RateLimitedDetail, m.RateLimitedAt); ok {
+		return reset
+	}
+	return m.RateLimitedAt.Add(cooldown)
+}
+
+// coolingUntil is CooldownUntil when the cooldown is still running at now, and
+// zero when it has ended (or never began).
+func coolingUntil(m Mark, cooldown time.Duration, now time.Time) time.Time {
+	if until := CooldownUntil(m, cooldown); now.Before(until) {
+		return until
+	}
+	return time.Time{}
+}
+
+// Choose is the selection algorithm (see the package doc), pure. now and
+// cooldown decide which rate-limited accounts are still cooling down.
 func Choose(now time.Time, cooldown time.Duration, names []string, tokens map[string]string, marks map[string]Mark, live map[string]int) (string, error) {
 	type cand struct {
 		name string
@@ -409,15 +534,19 @@ func Choose(now time.Time, cooldown time.Duration, names []string, tokens map[st
 			skipped = append(skipped, fmt.Sprintf("%s (auth failed %s: %s)", n, m.AuthFailedAt.UTC().Format(time.RFC3339), m.AuthFailedDetail))
 			continue
 		}
+		if until := coolingUntil(m, cooldown, now); !until.IsZero() {
+			skipped = append(skipped, fmt.Sprintf("%s (rate-limited, cooling down until %s)", n, until.UTC().Format(time.RFC3339)))
+			continue
+		}
 		cands = append(cands, cand{name: n, rl: m.RateLimitedAt, live: live[n]})
 	}
 	if len(cands) == 0 {
 		if len(skipped) == 0 {
 			return "", fmt.Errorf("%w: the pool is empty", ErrNoUsableAccount)
 		}
-		return "", fmt.Errorf("%w: every account's current token failed authentication — %s. Replace the "+
-			"token (claude setup-token) to clear the mark, or pin an account explicitly",
-			ErrNoUsableAccount, strings.Join(skipped, "; "))
+		return "", fmt.Errorf("%w: no account is usable now — %s. A rate-limited account is usable again when its "+
+			"cooldown ends; a failed token's mark clears when the token is replaced (claude setup-token); or pin an "+
+			"account explicitly", ErrNoUsableAccount, strings.Join(skipped, "; "))
 	}
 	sort.SliceStable(cands, func(i, j int) bool {
 		a, b := cands[i], cands[j]

@@ -103,9 +103,9 @@ job that returns the wrong thing.
 | 400 | a missing or malformed field — including both or neither of `agent` and `worker_pool`, a `worker_pool` with a `sha` but no `repo`, a `sha` without a `pr` (or a `pr` without a `sha`), a `repo` that is not `owner/name`, and an abbreviated `sha`: only a full 40-character id is accepted |
 | 404 | no agent by that name; no agent is a member of that `worker_pool` |
 | 409 | the agent is not `claude-code`; `repo` is not the agent's repository; `sha` on an agent with no repository |
-| 429 | the agent already has 4 jobs queued or running (the per-agent limit); for a `worker_pool`, every member that could otherwise take the job has 4 (`error` names each). Submit again once one finishes |
+| 429 | the agent already has 4 jobs queued or running (the per-agent limit); for a `worker_pool`, every member that could otherwise take the job has 4, or runs on a Claude account that is cooling down after a rate limit or already running its limit of concurrent jobs (`error` names each, and when a cooldown ends). Submit again once one finishes or the cooldown ends |
 | 501 | `sha` / `result_path` on a deployment with no provisioner |
-| 503 | no database, no agent gateway, or the service tier is unarmed; or, for a `worker_pool`, no member can take the job for a reason other than the limit (`error` says why for each) |
+| 503 | no database, no agent gateway, or the service tier is unarmed; or, for a `worker_pool`, no member can take the job for a reason other than the limits above (`error` says why for each) |
 
 **Idempotency.** A second submission with an `idempotency_key` already used
 records nothing and answers the first job, with **200** and
@@ -167,8 +167,10 @@ ones a job's anonymous fetch can read.
 A job naming a pool runs on the member chosen when it is submitted. A member is
 **eligible** when it is a `claude-code` agent whose status is `running`, works
 on the job's `repo` (when it names one), holds no approved grant reaching github.com,
-runs on a Claude account that is configured and whose current token is not
-marked `auth_failed`, and has fewer than 4 jobs queued or running. Of the
+runs on a Claude account that is configured, whose current token is not
+marked `auth_failed` and that is not cooling down after a `rate_limited`, has
+fewer than 4 jobs queued or running, and would not take its account past
+`MUSTER_AGENT_CC_MAX_CONCURRENT_JOBS` (default 2) jobs at once. Of the
 eligible it prefers, in order:
 
 1. a worker with no job queued or running;
@@ -181,6 +183,21 @@ Submissions arriving at the same moment are placed one after another: each
 choice sees the jobs the ones before it placed, so six submitted at once to two
 idle workers are spread over both rather than sent to one until its limit
 refuses them.
+
+**The cooldown.** After a turn on an account answers `rate_limited`, the
+account rests: no pool job is placed on any worker using it until the reset
+time the CLI stated (`resets 9:45pm (UTC)`, `resets Oct 9, 9am (UTC)`), or,
+when the message states none muster can read (no zone, for one),
+`MUSTER_AGENT_CC_RATE_LIMIT_COOLDOWN` (default `1h`) after the mark. It is
+usable again at exactly that time.
+
+**The per-account cap.** Jobs on one worker run one after another, so the jobs
+an account runs at once are its workers with a job queued or running — in any
+pool, or none. An idle worker whose account already has
+`MUSTER_AGENT_CC_MAX_CONCURRENT_JOBS` such workers is skipped; a busy worker is
+not, because a job placed on it queues behind the one it runs. A job naming an
+agent directly is not checked against the cap or the cooldown: naming the
+agent is the caller's override.
 
 The job records the pool (`worker_pool`) and the worker (`agent`,
 `cc_account`). The choice is made once; a job is not moved to another worker
@@ -257,7 +274,7 @@ kept — the job keeps its status and `error` says
 
 | `reason` | |
 |---|---|
-| `rate_limited`, `auth_failed` | ccd's typed failure for the Claude account the agent runs on (`cc_account`). Re-queue on an agent with another account — a pool job submitted again is not given a worker whose account is marked `auth_failed`, and prefers the account rate-limited longest ago. |
+| `rate_limited`, `auth_failed` | ccd's typed failure for the Claude account the agent runs on (`cc_account`). Re-queue on an agent with another account — a pool job submitted again is not given a worker whose account is marked `auth_failed` or is still cooling down after a `rate_limited`, and prefers the account rate-limited longest ago. |
 | other ccd types | `busy`, `capacity`, `not_ready`, `empty_reply`, `turn_failed`, … — ccd's vocabulary, passed through unchanged |
 | `timeout` | the job's `timeout_s` elapsed (status `timed_out`) |
 | `turn_timeout` | ccd's own turn budget elapsed (status `timed_out`) |
@@ -340,8 +357,8 @@ step 6 has its own bound.
   own jobs at once).
 - **A pool is chosen from at submission, not re-balanced.** The marks it reads
   are the account pool's: `auth_failed` under the account's current token, and
-  the latest `rate_limited`. There is no cooldown window: an account
-  rate-limited a minute ago is only ranked after one rate-limited earlier.
+  the latest `rate_limited`, whose cooldown is judged at submission: a job
+  already queued on a worker whose account is then rate-limited is not moved.
 - **`result_path` is checked as a string, not resolved.** No `..`, no absolute
   path — but a symlink in the worktree (or the working directory) is followed,
   so the file read can be outside it.
