@@ -166,6 +166,10 @@ type Screen struct {
 	// the cursor is on there (1 = Submit answers).
 	Review       []ReviewItem
 	ReviewCursor int
+	// PreviewCol is, on a question drawn with previews (the package doc), the
+	// screen column the preview box starts in: every row line was cut there.
+	// 0: no preview box.
+	PreviewCol int
 }
 
 var (
@@ -298,6 +302,14 @@ func parse(capture string) Screen {
 	}
 	qtext, qends := unbox(q)
 	s.Question, s.QuestionEnds = strings.Join(qtext, "\n"), qends
+	if col := previewCol(body[i:]); col > 0 {
+		s.PreviewCol = col
+		for j := i; j < len(body) && !sepRE.MatchString(body[j]); j++ {
+			if r := []rune(body[j]); len(r) > col {
+				body[j] = trimRight(string(r[:col]))
+			}
+		}
+	}
 	for ; i < len(body); i++ {
 		l := body[i]
 		if sepRE.MatchString(l) {
@@ -329,6 +341,34 @@ func parse(capture string) Screen {
 		return Screen{}
 	}
 	return s
+}
+
+// previewTopRE is a preview box's top edge, from its first column to the
+// end of the line.
+var previewTopRE = regexp.MustCompile(`^┌─+┐\s*$`)
+
+// previewCol is the screen column of the preview box drawn beside a
+// question's rows (lines: the rows down to the separator, and below), 0 when
+// there is none: the box's top edge on a numbered row's line, after at least
+// two columns of white space (the CLI's gutter; a label is never cut).
+func previewCol(lines []string) int {
+	for _, l := range lines {
+		if sepRE.MatchString(l) {
+			return 0
+		}
+		if !rowRE.MatchString(l) {
+			continue
+		}
+		at := strings.Index(l, "┌")
+		if at < 0 {
+			return 0 // the box's top is on the first row's line, or there is none
+		}
+		if !previewTopRE.MatchString(l[at:]) || !strings.HasSuffix(l[:at], "  ") {
+			return 0
+		}
+		return utf8.RuneCountInString(l[:at])
+	}
+	return 0
 }
 
 // clipped reports whether lines — a screen down to its bottom, a question's
