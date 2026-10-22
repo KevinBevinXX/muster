@@ -542,7 +542,7 @@ func (hc *hostConn) list(m Msg, now int64) (sessions []string, windows []Window,
 }
 
 // sameWindows reports whether a and b are the same windows in everything but
-// Activity. Activity is compared on its own, as the card prints it (listed):
+// Activity (and LastMessage, its Claude-window stand-in: Window.CardActivity). Activity is compared on its own, as the card prints it (listed):
 // it moves all the time, and a change in it is shown — in the card's "active …
 // ago" — but is throttled (activityMoved) rather than nudged at once.
 // Status and StatusSince are ignored too: no card draws them and they move
@@ -554,7 +554,7 @@ func sameWindows(a, b []Window) bool {
 	// OtherClaude is ignored too: no card draws it (the MCP door reads it). So
 	// is Pending: only the attention queue draws it (waitingWindows nudges it).
 	card := func(w Window) Window {
-		w.Activity, w.Status, w.StatusSince, w.OtherClaude, w.Pending = 0, "", 0, nil, nil
+		w.Activity, w.LastMessage, w.Status, w.StatusSince, w.OtherClaude, w.Pending = 0, 0, "", 0, nil, nil
 		return w
 	}
 	for i := range a {

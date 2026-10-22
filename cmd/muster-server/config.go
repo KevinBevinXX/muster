@@ -28,6 +28,7 @@ import (
 	"github.com/ZacxDev/muster/internal/push"
 	"github.com/ZacxDev/muster/internal/sendqueue"
 	"github.com/ZacxDev/muster/internal/stepup"
+	"github.com/ZacxDev/muster/internal/ui"
 )
 
 // defaultPort is the port this service listens on when MUSTER_PORT is unset.
@@ -121,6 +122,11 @@ const (
 	// session on any host. A Go duration, 168h when unset, refused outside
 	// 1h–2160h (90 days).
 	envFocusRetention = "MUSTER_FOCUS_RETENTION"
+	// The Agents list's Idle section (internal/ui/idle_section.go): how long an
+	// entry must have had no activity to be drawn under the collapsed "Idle"
+	// header. Days ("14d") or a Go duration, 14d when unset, "0"/"off" turns it
+	// off, refused outside 1h–365d otherwise.
+	envAgentsIdleAfter = "MUSTER_AGENTS_IDLE_AFTER"
 
 	// The optional MIRRORED-sessions plugin (internal/mirror): "1" turns it on.
 	// Off, GET /mirror/connect answers 404 and nothing mirrored is listed.
@@ -494,6 +500,11 @@ type config struct {
 	FocusInterval time.Duration
 	// FocusRetention is MUSTER_FOCUS_RETENTION (focus.DefaultRetention unset).
 	FocusRetention time.Duration
+	// AgentsIdleAfter is MUSTER_AGENTS_IDLE_AFTER (ui.DefaultIdleSectionAfter
+	// when unset; 0 = no Idle section). AgentsIdleAfterRaw is the value as
+	// set ("" unset), for the banner.
+	AgentsIdleAfter    time.Duration
+	AgentsIdleAfterRaw string
 
 	// Mirror turns the mirrored-sessions plugin on (MUSTER_MIRROR=1).
 	Mirror bool
@@ -1092,6 +1103,12 @@ func loadConfig(getenv func(string) string) (config, error) {
 		}
 		c.FocusInterval = d
 	}
+	c.AgentsIdleAfterRaw = strings.TrimSpace(getenv(envAgentsIdleAfter))
+	idleAfter, err := ui.ParseIdleSectionAfter(c.AgentsIdleAfterRaw)
+	if err != nil {
+		return config{}, fmt.Errorf("invalid %s: %v", envAgentsIdleAfter, err)
+	}
+	c.AgentsIdleAfter = idleAfter
 	c.FocusRetention = focus.DefaultRetention
 	if v := strings.TrimSpace(getenv(envFocusRetention)); v != "" {
 		d, err := time.ParseDuration(v)

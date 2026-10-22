@@ -28,6 +28,14 @@ func (e listEntry) pinned() bool {
 	return e.mirror.Pinned
 }
 
+// idle reports whether the entry is drawn in the Idle section (MarkIdle).
+func (e listEntry) idle() bool {
+	if e.agent != nil {
+		return e.agent.Idle
+	}
+	return e.mirror.Idle
+}
+
 // activeAt is the entry's LAST ACTIVITY — the time its card prints as "active
 // … ago" (cardActivity), so the order and the label are one number:
 //

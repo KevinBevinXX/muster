@@ -519,3 +519,29 @@
     transition: none;
   }
 }
+
+/*
+ * The Agents list's Idle section (internal/ui/idle_section.go). Outside every
+ * @layer, like the rules above, so no utility can outrank it.
+ *
+ * WHERE: the header after the working entries, the idle entries after it — by
+ * `order`, not by DOM position, so a background refresh the hold keeps in its
+ * drawn DOM order (agentsFilterScript's keepDrawnOrder) still draws each card
+ * in its section. COLLAPSED unless <html> carries data-agents-idle-open (this
+ * viewer opened it; set from localStorage by the head script before the first
+ * paint) or data-agents-searching (a term in the search box: a search finds
+ * idle entries).
+ */
+#agents-list > [data-idle-head] {
+  order: 1;
+}
+#agents-list > article[data-idle-section] {
+  order: 2;
+}
+html:not([data-agents-idle-open]):not([data-agents-searching]) #agents-list > article[data-idle-section] {
+  display: none !important;
+}
+html[data-agents-idle-open] [data-idle-chevron],
+html[data-agents-searching] [data-idle-chevron] {
+  transform: rotate(90deg);
+}

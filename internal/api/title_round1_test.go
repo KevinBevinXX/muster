@@ -31,7 +31,7 @@ func TestADispatchedAgentNamedAfterALongMarkdownTitleRendersPlain(t *testing.T) 
 
 	a := ui.AgentCardView{ID: 41, Name: "agent-41", Status: "running", DisplayName: name}
 	var b bytes.Buffer
-	if err := ui.RenderAgentsList(&b, []ui.AgentCardView{a}, nil, []ui.RecentRef{{AgentID: 41}}); err != nil {
+	if err := ui.RenderAgentsList(&b, []ui.AgentCardView{a}, nil, []ui.RecentRef{{AgentID: 41}}, 0); err != nil {
 		t.Fatal(err)
 	}
 	list := b.String()

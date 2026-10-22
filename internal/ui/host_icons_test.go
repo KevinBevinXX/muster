@@ -131,7 +131,7 @@ func TestEveryListedEntryDrawsItsHostsIconBesideItsName(t *testing.T) {
 
 	var b bytes.Buffer
 	if err := RenderAgentsList(&b, []AgentCardView{agent}, []MirrorCardView{tower},
-		[]RecentRef{{AgentID: 4}, {Mirror: MirrorRef{Host: "tower", Session: "main"}}}); err != nil {
+		[]RecentRef{{AgentID: 4}, {Mirror: MirrorRef{Host: "tower", Session: "main"}}}, 0); err != nil {
 		t.Fatal(err)
 	}
 	strip := b.String()[strings.Index(b.String(), `id="agents-recent"`):]

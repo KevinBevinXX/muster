@@ -1,6 +1,8 @@
 package ui
 
 import (
+	"time"
+
 	g "maragu.dev/gomponents"
 )
 
@@ -30,22 +32,24 @@ import (
 
 // shellList is the list a document draws on its first paint.
 type shellList struct {
-	cards   []AgentCardView
-	mirrors []MirrorCardView
+	cards     []AgentCardView
+	mirrors   []MirrorCardView
+	idleAfter time.Duration
 }
 
 // WithList is WithRecent plus the list's own cards, drawn into #agents-list on
-// the first paint.
-func (d ShellData) WithList(list []AgentCardView, mirrors []MirrorCardView, refs []RecentRef) ShellData {
+// the first paint; idleAfter is the Idle section's threshold, for its header's
+// hint.
+func (d ShellData) WithList(list []AgentCardView, mirrors []MirrorCardView, refs []RecentRef, idleAfter time.Duration) ShellData {
 	d = d.WithRecent(list, mirrors, refs)
-	d.list = &shellList{cards: list, mirrors: mirrors}
+	d.list = &shellList{cards: list, mirrors: mirrors, idleAfter: idleAfter}
 	return d
 }
 
 // agentsListBody is what #agents-list holds: the one list, by activity, pins
-// first (AgentsCardsWithMirrors), or the empty state.
-func agentsListBody(list []AgentCardView, mirrors []MirrorCardView) g.Node {
-	return AgentsCardsWithMirrors(list, mirrors)
+// first, the Idle section last (agentsListNodes), or the empty state.
+func agentsListBody(list []AgentCardView, mirrors []MirrorCardView, idleAfter time.Duration) g.Node {
+	return agentsListNodes(list, mirrors, idleAfter)
 }
 
 // drawnList is what a document's #agents-list carries of its list: its cards;
@@ -54,7 +58,7 @@ func drawnList(l *shellList) g.Node {
 	if l == nil {
 		return nil
 	}
-	return agentsListBody(l.cards, l.mirrors)
+	return agentsListBody(l.cards, l.mirrors, l.idleAfter)
 }
 
 // listTrigger is the list's hx-trigger: no first load for a list the document

@@ -130,7 +130,14 @@ func agentsFilterHead() g.Node {
     if (!(urlQ && urlQ !== mine)) { try { host = localStorage.getItem('` + agentsHostTabsStorageKey + `') || ''; } catch (e) {} }
     var cs = '';
     try { cs = R.chipSel(R.chipsOf(localStorage.getItem('` + agentsChipsStorageKey + `'))); } catch (e) {}
-    var css = R.rules(R.terms(q), host, cs, true);
+    var ts = R.terms(q);
+    // The Idle section (idle_section.go): open only if this viewer opened it,
+    // and drawn open while the box has a term, so a search finds idle entries.
+    var open = false;
+    try { open = localStorage.getItem('` + agentsIdleOpenKey + `') === '1'; } catch (e) {}
+    document.documentElement.toggleAttribute('data-agents-idle-open', open);
+    document.documentElement.toggleAttribute('data-agents-searching', ts.length > 0);
+    var css = R.rules(ts, host, cs, true);
     var st = document.createElement('style');
     st.id = 'agents-filter-style';
     st.textContent = css;

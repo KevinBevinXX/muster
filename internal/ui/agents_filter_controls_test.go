@@ -74,7 +74,7 @@ func TestTheCardsCarryTheirHostLabel(t *testing.T) {
 	// The list's partial is the cards and the recent strip, and nothing else
 	// (no out-of-band tabs: the script builds them from the cards).
 	var b strings.Builder
-	if err := RenderAgentsList(&b, list, mirrors, nil); err != nil {
+	if err := RenderAgentsList(&b, list, mirrors, nil, 0); err != nil {
 		t.Fatal(err)
 	}
 	if b.String() != cards+renderNode(t, recentStrip(recentItems(list, mirrors, nil), true)) {

@@ -88,6 +88,9 @@ type MirrorCardView struct {
 	// internal/api from the host's registration rank); "" draws the hash
 	// fallback.
 	HostIcon string
+	// Idle: drawn in the list's Idle section (idle_section.go), composed by
+	// MarkIdle. Its card carries data-idle-section.
+	Idle bool
 }
 
 // MirrorCardHref is where a mirrored card opens: the rendered view for a
@@ -197,6 +200,7 @@ func mirrorCard(m MirrorCardView) g.Node {
 		ID(id),
 		g.Attr("data-mirror-card", ""),
 		g.If(m.Pinned, g.Attr("data-pinned", "")),
+		g.If(m.Idle, g.Attr("data-idle-section", "")),
 		// What the list's recency and waiting filter chips read (list_signals.go).
 		cardActivityAttrs(time.Now(), m.ActiveAt),
 		// The window's tmux identity colour: its border and title (input.css
@@ -332,11 +336,34 @@ const mirroredIcon = `<svg class="h-4 w-4 shrink-0" viewBox="0 0 24 24" fill="no
 // divider article — so the filter's `#agents-list > article` rule and its count
 // still see each one (agents_filter.go): a pinned card that does not match is
 // hidden like any other.
+//
+// Entries marked Idle (MarkIdle) are drawn after the rest, under the Idle
+// section's header (idle_section.go); this form, with no threshold to name,
+// draws the header without its "no activity in over …" hint.
 func AgentsCardsWithMirrors(list []AgentCardView, mirrors []MirrorCardView) g.Node {
+	return agentsListNodes(list, mirrors, 0)
+}
+
+// agentsListNodes is AgentsCardsWithMirrors with the Idle section's threshold
+// (after) for its header's hint.
+func agentsListNodes(list []AgentCardView, mirrors []MirrorCardView, after time.Duration) g.Node {
 	if len(list) == 0 && len(mirrors) == 0 {
 		return AgentsCards(nil)
 	}
-	return g.Group(g.Map(orderList(list, mirrors), listCard))
+	var working, idle []listEntry
+	for _, e := range orderList(list, mirrors) {
+		if e.idle() {
+			idle = append(idle, e)
+		} else {
+			working = append(working, e)
+		}
+	}
+	out := g.Group(g.Map(working, listCard))
+	if len(idle) > 0 {
+		out = append(out, idleHead(len(idle), after))
+		out = append(out, g.Map(idle, listCard)...)
+	}
+	return out
 }
 
 // mirrorSessionTitle is a mirrored session's name as a list or page title: the

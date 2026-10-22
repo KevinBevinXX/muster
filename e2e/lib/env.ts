@@ -203,6 +203,9 @@ export const viewSwapPort = port + 165;
 // own server (the e2eterm binary, mirror plugin on) and one mirrored host with
 // sixty-odd windows. Clear of the offsets above and of the specs beside them.
 export const clsListPort = port + 170;
+// The Agents list's Idle section (agents-idle.spec.ts): its own server (the
+// e2eterm binary, mirror plugin on) and one mirrored host.
+export const agentsIdlePort = port + 175;
 export const baseURL = `http://localhost:${port}`;
 export const versionA = 'e2e-a';
 export const versionB = 'e2e-b';

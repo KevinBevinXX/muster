@@ -249,6 +249,7 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 
 	ext := api.Extensions{
 		TagAutoDispatch: cfg.TagAutoDispatch,
+		AgentsIdleAfter: cfg.AgentsIdleAfter,
 		// 🔴 THE SAME FIELD THE DRIVER GETS, AND THAT IS THE WHOLE POINT.
 		// k8sDriverConfig hands cfg.AgentNamespacePrefix to the driver as
 		// k8s.Config.NamespacePrefix (where the instance goes); this hands the same
@@ -975,8 +976,26 @@ func (a *app) Close() {
 // BYTE-IDENTICAL IN THE LOG. An operator debugging a 503 needs to know whether
 // the door was ever armed, and "no line about it" answers neither question. Each
 // line below is printed whether the thing is on or off.
+// displayOrDefault is a variable's value as the banner prints it: as set, or
+// "unset (the default)".
+func displayOrDefault(v string) string {
+	if v == "" {
+		return "unset (the default)"
+	}
+	return v
+}
+
 func (a *app) logBanner(ext api.Extensions, port router.Port) {
 	l := a.logger
+
+	// The Agents list's Idle section (internal/ui/idle_section.go), in both
+	// directions: the threshold in force, or OFF.
+	if a.cfg.AgentsIdleAfter > 0 {
+		l.Printf("agents list: idle section ON — entries with no activity for more than %s (%s) are drawn under a collapsed \"Idle\" header (%s=%s)",
+			ui.IdleSectionAfterLabel(a.cfg.AgentsIdleAfter), a.cfg.AgentsIdleAfter, envAgentsIdleAfter, displayOrDefault(a.cfg.AgentsIdleAfterRaw))
+	} else {
+		l.Printf("agents list: idle section OFF (%s=0) — every entry is drawn in the one list", envAgentsIdleAfter)
+	}
 
 	if a.pool != nil {
 		l.Printf("persistence: Postgres (%s set); task and agent stores wired", envDatabase)

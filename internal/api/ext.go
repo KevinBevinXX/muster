@@ -214,6 +214,13 @@ type Extensions struct {
 	// sendqueue.DefaultIdleFor.
 	SendQueueIdle time.Duration
 
+	// AgentsIdleAfter is the Agents list's Idle section threshold
+	// (MUSTER_AGENTS_IDLE_AFTER, ui.DefaultIdleSectionAfter when unset): an
+	// entry with no activity for longer is drawn under the collapsed "Idle (N)"
+	// header (internal/ui/idle_section.go). 0 — the zero value, so every test
+	// fixture that does not set it — draws no section.
+	AgentsIdleAfter time.Duration
+
 	// Focus is session focus (internal/focus, migration 0020): what each of a
 	// user's sessions is working on. nil (no database): no card shows a focus
 	// and the focus tools are not offered.

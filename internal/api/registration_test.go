@@ -105,15 +105,16 @@ func fullyWiredServer(t *testing.T) *Server {
 		SessionRuntimes: []string{"claude-code", "gateway"},
 		SendQueue:       stubSendQueue{},
 		// NON-ZERO on purpose: the zero value is the default.
-		SendQueueIdle: time.Second,
-		PluginGateway: stubPluginGateway{},
-		Push:          stubPush{},
-		Devices:       principalDevices{},
-		AllowPINKeys:  true,
-		Transcriber:   stubTranscriber{},
-		Jobs:          stubJobs{},
-		JobWorkspace:  stubJobWorkspace{},
-		Uploads:       &uploads.Service{},
+		SendQueueIdle:   time.Second,
+		AgentsIdleAfter: ui.DefaultIdleSectionAfter,
+		PluginGateway:   stubPluginGateway{},
+		Push:            stubPush{},
+		Devices:         principalDevices{},
+		AllowPINKeys:    true,
+		Transcriber:     stubTranscriber{},
+		Jobs:            stubJobs{},
+		JobWorkspace:    stubJobWorkspace{},
+		Uploads:         &uploads.Service{},
 	})
 	s.UseRouter(stubRouter{})
 	return s

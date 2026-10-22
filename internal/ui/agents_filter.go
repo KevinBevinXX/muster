@@ -424,10 +424,14 @@ func agentsFilterScript() g.Node {
     IDLE.forEach(function (t) { if (d > t.ms) ts.push(t.t); });
     return ts.join(' ');
   }
-  function pendingCount() {
-    var n = 0;
-    Object.keys(pendingIdle).forEach(function (id) { if (document.getElementById(id)) n++; else delete pendingIdle[id]; });
-    return n;
+  // pendingIds is every card whose idle tokens or Idle section wait for the
+  // tap (pendingIdle, pendingSect), as a set; gone cards are forgotten.
+  function pendingIds() {
+    var out = {};
+    [pendingIdle, pendingSect].forEach(function (m) {
+      Object.keys(m).forEach(function (id) { if (document.getElementById(id)) out[id] = true; else delete m[id]; });
+    });
+    return out;
   }
   function restamp(list, live) {
     var now = Date.now();
@@ -450,6 +454,55 @@ func agentsFilterScript() g.Node {
     });
   }
   function el(id) { return document.getElementById(id); }
+  // THE IDLE SECTION (idle_section.go). Which section a card is in is the
+  // server's data-idle-section; where the section is drawn, and whether it is
+  // collapsed, is the stylesheet's (web/css/input.css) — keyed on <html>'s
+  // data-agents-idle-open (this viewer's choice, localStorage) and
+  // data-agents-searching (a term in the box draws it open).
+  var IDLE_OPEN_KEY = '` + agentsIdleOpenKey + `';
+  // pendingSect: id -> the section the server says, for a card kept in its
+  // drawn section because moving it would move what the reader sees.
+  var pendingSect = {};
+  function inSect(a) { return a.hasAttribute('data-idle-section'); }
+  function sectOpen() {
+    var r = document.documentElement;
+    return r.hasAttribute('data-agents-idle-open') || r.hasAttribute('data-agents-searching');
+  }
+  // sectWouldMove: whether giving drawn card d the section of c (the refresh's
+  // copy) would move anything in view — d has a box now (it would leave its
+  // place), or c would get one (it would appear in its new place).
+  function sectWouldMove(d, c) {
+    if (d.getClientRects().length) return true;
+    if (curSel && !c.matches(curSel)) return false;
+    return !inSect(c) || sectOpen();
+  }
+  function toggleIdleOpen() {
+    var r = document.documentElement, open = !r.hasAttribute('data-agents-idle-open');
+    r.toggleAttribute('data-agents-idle-open', open);
+    try { if (open) localStorage.setItem(IDLE_OPEN_KEY, '1'); else localStorage.removeItem(IDLE_OPEN_KEY); } catch (e) {}
+  }
+  // syncIdleHead keeps the header true: its count is the section's cards the
+  // filter shows (drawn ones; a held arrival is not), it is not drawn while
+  // that is none, aria-expanded is the state in force, and it sits right
+  // before the section's first card in the DOM (a refresh or a rank can leave
+  // it elsewhere; the stylesheet draws it in place regardless).
+  function syncIdleHead(list) {
+    var head = el('agents-idle-head');
+    if (!head || head.parentNode !== list) return;
+    var n = list.querySelectorAll(':scope > article[data-idle-section]:not([data-held])' + curSel).length;
+    var c = head.querySelector('[data-idle-count]'), txt = '(' + n + ')';
+    if (c && c.textContent !== txt) c.textContent = txt;
+    var disp = n ? '' : 'none';
+    if (head.style.display !== disp) head.style.display = disp;
+    var b = el('agents-idle-toggle'), ex = String(sectOpen());
+    if (b && b.getAttribute('aria-expanded') !== ex) b.setAttribute('aria-expanded', ex);
+    var first = list.querySelector(':scope > article[data-idle-section]');
+    if (first && head.nextElementSibling !== first) {
+      var focused = document.activeElement;
+      if (typeof list.moveBefore === 'function') list.moveBefore(head, first); else list.insertBefore(head, first);
+      if (focused && focused !== document.activeElement && focused.isConnected) focused.focus({ preventScroll: true });
+    }
+  }
   // reorder MOVES the cards into rank order for the first free-text term — the
   // DOM itself, so Tab and a screen reader follow the ranking, not only the
   // eye. A card's rank is the best window.musterRank (the pickers' rule,
@@ -491,9 +544,11 @@ func agentsFilterScript() g.Node {
     // it above a drawn card would move every drawn card behind it (with a
     // filter typed, a held arrival that matches it best did exactly that).
     var keyed = cards.map(function (c) {
-      return { c: c, h: c.hasAttribute('data-held') ? 1 : 0, r: w ? cardRank(c, w) : 0, i: +c.getAttribute('data-list-i') };
+      // s: the Idle section's cards after the rest, so the DOM (Tab, a screen
+      // reader) follows the sections the stylesheet draws.
+      return { c: c, h: c.hasAttribute('data-held') ? 1 : 0, s: inSect(c) ? 1 : 0, r: w ? cardRank(c, w) : 0, i: +c.getAttribute('data-list-i') };
     });
-    keyed.sort(function (a, b) { return a.h - b.h || a.r - b.r || a.i - b.i; });
+    keyed.sort(function (a, b) { return a.h - b.h || a.s - b.s || a.r - b.r || a.i - b.i; });
     arrange(list, cards, keyed.map(function (k) { return k.c; }));
   }
   // arrange puts cards (in DOM order now) into order (the same nodes), and
@@ -688,6 +743,10 @@ func agentsFilterScript() g.Node {
     var host = syncHosts(list, ts);
     var all_ = host ? ts.concat([{ attr: 'data-f-host', value: host, exact: true }]) : ts;
     curSel = all_.map(sel).join('') + cs;
+    // A term in the box draws the Idle section open (a search finds its
+    // entries); the reader's open/closed choice is left as it was.
+    document.documentElement.toggleAttribute('data-agents-searching', ts.length > 0);
+    syncIdleHead(list);
     var style = el('agents-filter-style');
     if (!style) {
       style = document.createElement('style');
@@ -759,7 +818,8 @@ func agentsFilterScript() g.Node {
     if (tab) { chooseHost(tab.getAttribute('data-host') || ''); apply(); return; }
     var chip = t.closest('#agents-chips [data-chip]');
     if (chip) { toggleChip(chip); apply(); return; }
-    if (t.closest('#agents-chips-clear')) { clearChips(); apply(); }
+    if (t.closest('#agents-chips-clear')) { clearChips(); apply(); return; }
+    if (t.closest('#agents-idle-toggle')) { toggleIdleOpen(); apply(); }
   });
   // The host tabs' keys, as tabs.go's: Left/Right (wrapping), Home and End
   // move to a tab AND choose it.
@@ -857,7 +917,7 @@ func agentsFilterScript() g.Node {
   }
   // A new body (a boosted navigation, or Back restoring one) holds a list this
   // state was not computed for: start over — its first load applies at once.
-  function forget() { heldOrder = null; liveOrder = null; pillCount = 0; }
+  function forget() { heldOrder = null; liveOrder = null; pillCount = 0; pendingSect = {}; }
   // adopt: a list the DOCUMENT drew (server-rendered, agents_list_ssr.go — or a
   // history restore's snapshot) is the drawn order, exactly as a first load's
   // swap would have made it (hold). Without it the first background refresh
@@ -883,6 +943,11 @@ func agentsFilterScript() g.Node {
   }
   function applyLive() {
     pendingIdle = {};
+    Object.keys(pendingSect).forEach(function (id) {
+      var c = document.getElementById(id);
+      if (c) c.toggleAttribute('data-idle-section', pendingSect[id]);
+    });
+    pendingSect = {};
     var list = el('agents-list');
     if (list && liveOrder) {
       heldOrder = liveOrder.slice();
@@ -985,19 +1050,25 @@ func agentsFilterScript() g.Node {
   function recountPill() {
     var list = el('agents-list');
     if (!list) return;
-    // Cards whose crossing an idle threshold is held (restamp) wait too.
-    var pend = pendingCount();
-    if (!heldOrder || !liveOrder) { showPill(pend); return; }
+    // Cards whose crossing an idle threshold is held (restamp), or whose move
+    // in or out of the Idle section is (pendingSect), wait too — each once,
+    // however many of those it is waiting on.
+    var pend = pendingIds();
+    if (!heldOrder || !liveOrder) { showPill(Object.keys(pend).length); return; }
+    var counted = {};
     var shown = function (id) { return shows(domById(id)); };
-    var arrived = cardsOf(list).filter(function (c) { return c.hasAttribute('data-held') && shows(c); }).length;
+    var arrived = cardsOf(list).filter(function (c) { return c.hasAttribute('data-held') && shows(c); });
+    arrived.forEach(function (c) { counted[c.id] = true; });
+    arrived = arrived.length;
     var inHeld = {};
     heldOrder.forEach(function (id) { inHeld[id] = true; });
     var heldShown = heldOrder.filter(shown);
     var liveKnown = liveOrder.filter(function (id) { return inHeld[id] && shown(id); });
     var risen = 0;
-    liveKnown.forEach(function (id, i) { if (i < heldShown.indexOf(id)) risen++; });
+    liveKnown.forEach(function (id, i) { if (i < heldShown.indexOf(id)) { risen++; counted[id] = true; } });
     var n = arrived + risen, w = wouldShow(liveOrder, domById);
-    showPill((w && w !== shownHost && !n ? 1 : n) + pend);
+    var extra = Object.keys(pend).filter(function (id) { return !counted[id]; }).length;
+    showPill((w && w !== shownHost && !n ? 1 : n) + extra);
   }
   // keepDrawnOrder rewrites a held refresh's markup so its cards come in the
   // order they are DRAWN (cards it no longer has dropped, arrivals after), and
@@ -1043,17 +1114,29 @@ func agentsFilterScript() g.Node {
     // A background refresh carries the server's data-idle: where that would
     // show or hide a drawn card, the drawn value is kept and the change held,
     // exactly as the clock's is (restamp).
-    if (background(e) && curSel) {
+    //
+    // So does its data-idle-section (the Idle section, idle_section.go): a
+    // card that would ENTER or LEAVE the section while it is drawn — or would
+    // become drawn — keeps the drawn section and the move waits for the tap
+    // (pendingSect): moving it would move every card between its two places.
+    if (background(e)) {
       var changed = false;
       arts.forEach(function (c) {
         var d = document.getElementById(c.id);
-        if (!d || d.parentNode !== e.target) return;
+        if (!d || d.parentNode !== e.target) { delete pendingSect[c.id]; return; }
         var drawnIdle = d.getAttribute('data-idle') || '', srv = c.getAttribute('data-idle') || '';
-        if (drawnIdle === srv) return;
-        setIdle(c, drawnIdle);
-        if (idleWouldMove(c, srv)) { pendingIdle[c.id] = srv; changed = true; } else setIdle(c, srv);
+        if (curSel && drawnIdle !== srv) {
+          setIdle(c, drawnIdle);
+          if (idleWouldMove(c, srv)) { pendingIdle[c.id] = srv; changed = true; } else setIdle(c, srv);
+        }
+        var ds = inSect(d), ss = inSect(c);
+        if (ds === ss) { delete pendingSect[c.id]; return; }
+        if (sectWouldMove(d, c)) { c.toggleAttribute('data-idle-section', ds); pendingSect[c.id] = ss; changed = true; } else delete pendingSect[c.id];
       });
       if (changed) e.detail.serverResponse = tpl.innerHTML;
+    } else {
+      // The reader's own refresh applies everything, the section included.
+      pendingSect = {};
     }
     swapPlan = { live: live, apply: decide(e, live, function (id) { return byId[id]; }) };
     if (!swapPlan.apply) keepDrawnOrder(e, drawn.map(function (c) { return c.id; }));

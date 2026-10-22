@@ -544,6 +544,36 @@ type Window struct {
 	// window at most). SessionKey is the runtime-qualified key it is stored by.
 	// Backward-compatible both ways, like ClaudeSession.
 	AgentSession string `json:"agentSession,omitempty"`
+	// LastMessage is when the Claude Code conversation in the window last had
+	// a MESSAGE — the newest timestamp of a user or assistant row in its
+	// transcript that is not meta (mirrorhost's lastMessageReader) — Unix
+	// seconds, floored to ActivityBucket; 0 when the window is not Claude or the
+	// host did not say. While the session is WORKING (a turn running, waiting
+	// on the person, a background shell of its own) it is instead the host's
+	// now: Claude Code writes no row then, and a working window must not read
+	// as idle (mirrorhost's WireWindows). CardActivity prefers it over Activity.
+	//
+	// 🔴 WHY: Activity is tmux's #{window_activity}, which a tmux restart (a
+	// tmux-resurrect restore) resets for EVERY window to the restore — measured:
+	// all 67 windows on one host read "active since the restore", so nothing
+	// could ever look idle. A resumed session's transcript is written on start
+	// too (attachment and system rows), so a file's mtime is no better; the last
+	// MESSAGE's own timestamp is the one that survives both.
+	//
+	// Backward-compatible both ways, like ClaudeSession: an older muster ignores
+	// it (and keeps ordering by Activity); an older host sends none, and muster
+	// falls back to Activity.
+	LastMessage int64 `json:"lastMessage,omitempty"`
+}
+
+// CardActivity is the window's activity as the Agents list uses it — the
+// order, the card's "active … ago" and the Idle section, one number: a Claude
+// window's LastMessage when the host reported one, else Activity.
+func (w Window) CardActivity() int64 {
+	if w.Claude && w.LastMessage > 0 {
+		return w.LastMessage
+	}
+	return w.Activity
 }
 
 // The agent runtimes a window can run (Window.AgentRuntime), sized for exactly
@@ -975,6 +1005,14 @@ func NormalizeWindows(in []Window, now int64) []Window {
 			w.Activity = now
 		}
 		w.Activity -= w.Activity % ActivityBucket
+		// The same bounds for the last message, which only a Claude window has.
+		if !w.Claude || w.LastMessage < 0 {
+			w.LastMessage = 0
+		}
+		if now > 0 && w.LastMessage > now {
+			w.LastMessage = now
+		}
+		w.LastMessage -= w.LastMessage % ActivityBucket
 		out = append(out, w)
 	}
 	sort.SliceStable(out, func(i, j int) bool {
@@ -1160,7 +1198,8 @@ func (w Window) Equal(o Window) bool {
 	return w.Session == o.Session && w.ID == o.ID && w.Index == o.Index && w.Active == o.Active && w.Label == o.Label &&
 		w.Activity == o.Activity && w.Claude == o.Claude && w.Command == o.Command && w.Status == o.Status &&
 		w.StatusSince == o.StatusSince && w.ClaudeSession == o.ClaudeSession && slices.Equal(w.OtherClaude, o.OtherClaude) &&
-		pendingEqual(w.Pending, o.Pending) && w.Runtime == o.Runtime && w.AgentSession == o.AgentSession
+		pendingEqual(w.Pending, o.Pending) && w.Runtime == o.Runtime && w.AgentSession == o.AgentSession &&
+		w.LastMessage == o.LastMessage
 }
 
 // AskTyping is an answer to type into an AskUserQuestion picker (Msg.Ask):

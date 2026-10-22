@@ -691,7 +691,7 @@ func (s *Server) shellData(ctx context.Context, tab string) ui.ShellData {
 		return ui.ShellData{}
 	}
 	refs := s.recentRefs(ctx)
-	return ui.ShellData{}.WithList(cards, mirrors, refs)
+	return ui.ShellData{}.WithList(cards, mirrors, refs, s.ext.AgentsIdleAfter)
 }
 
 // shellInstancesWithin bounds the Agents document's instance read (shellData):

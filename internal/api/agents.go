@@ -199,7 +199,7 @@ func (s *Server) handleAgentsContent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := ui.RenderAgentsList(w, cards, mirrors, s.recentRefs(ctx)); err != nil {
+	if err := ui.RenderAgentsList(w, cards, mirrors, s.recentRefs(ctx), s.ext.AgentsIdleAfter); err != nil {
 		s.logger.Printf("agents: render: %v", err)
 	}
 }
@@ -250,6 +250,10 @@ func (s *Server) agentsListCardsWithin(ctx context.Context, instancesWithin time
 	// them with the agents by activity (ui.AgentsCardsWithMirrors).
 	mirrors := s.mirrorCards(ctx, pinned, focused)
 	s.withCardAttention(ctx, cards, mirrors)
+	// The Idle section (ui.InIdleSection), with the server's clock, after the
+	// pins are marked: decided on every build, so an entry active again leaves
+	// it on the next refresh.
+	ui.MarkIdle(cards, mirrors, s.now(), s.ext.AgentsIdleAfter)
 	return cards, mirrors, nil
 }
 

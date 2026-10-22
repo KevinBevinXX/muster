@@ -272,6 +272,9 @@ func normaliseBannerLine(s string) string {
 // exclusion instead of gesturing at a parenthesised handful in prose.
 var bannerLedger = []string{
 	envDatabase,
+	// The Agents list's Idle section: one line in both directions (ON with the
+	// threshold / OFF).
+	envAgentsIdleAfter,
 	envUIPassword,
 	// Accounts PR 4: the mode, muster's GoTrue (its secret is named, never
 	// printed), and the browser listener — each on its own line in both
@@ -739,6 +742,9 @@ func bannerBothDirections(t *testing.T) (onOut, offOut string) {
 		GitHubAppID:         12345,
 		GitHubAppAccounts:   []githubapp.Account{{Login: "example-org", ID: 4200}},
 		CheckoutWaitTimeout: 48 * time.Hour,
+		// The Agents list's Idle section, at a value that is not the default.
+		AgentsIdleAfter:    72 * time.Hour,
+		AgentsIdleAfterRaw: "3d",
 	}
 	onOut = renderBannerWithPool(t, on, api.Extensions{
 		GitHubApp:   bannerStubGitHubApp{},

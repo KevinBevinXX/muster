@@ -111,6 +111,9 @@ type AgentCardView struct {
 	// status poll carries it (StatusPollPath) so a change or an expiry re-renders
 	// the list. Zero: no chip.
 	Work mirror.WindowWork
+	// Idle: drawn in the list's Idle section (idle_section.go's InIdleSection),
+	// composed by MarkIdle. Its card carries data-idle-section.
+	Idle bool
 }
 
 // lastActive is the card's "active" time: LastActiveAt, or UpdatedAt when the
@@ -335,6 +338,7 @@ func agentCard(a AgentCardView) g.Node {
 	return Article(
 		ID("agent-"+ids),
 		g.If(a.Pinned, g.Attr("data-pinned", "")),
+		g.If(a.Idle, g.Attr("data-idle-section", "")),
 		// What the list's recency filter chips read (list_signals.go).
 		cardActivityAttrs(time.Now(), a.lastActive()),
 		g.If(waitTokens(a.Attention, a.AwaitingApproval) != "", g.Attr("data-wait", waitTokens(a.Attention, a.AwaitingApproval))),
