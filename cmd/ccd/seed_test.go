@@ -113,25 +113,97 @@ func TestTheImagePinsDefaultPermissionModeNeverAutoNeverBypass(t *testing.T) {
 // The posture must survive a seed over a persisted settings.json that an
 // operator's /config (or the session) left in auto or bypass mode: the template's
 // top-level `permissions` replaces it wholesale.
+//
+// 🔴 TWO CASES, BOTH PINNED WHOLE. CCD_JOB_PERMISSION_MODE unset is the default
+// posture — bypass DISABLED; set to bypassPermissions it lifts ONLY
+// disableBypassPermissionsMode (defaultMode and disableAutoMode stay) and records
+// the consent the pinned CLI's launch dialog needs (jobmode.go). checkSeed agrees
+// with each, and refuses the other's file.
 func TestSeedReimposesThePermissionPostureOverAPersistedAutoMode(t *testing.T) {
-	cfg, ws := t.TempDir(), filepath.Join(t.TempDir(), "ws")
-	prior := `{"permissions":{"defaultMode":"auto","allow":["Bash(*)"]},"model":"kept"}`
-	if err := os.WriteFile(filepath.Join(cfg, "settings.json"), []byte(prior), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	seedInto(t, cfg, ws)
-	set := readObj(t, filepath.Join(cfg, "settings.json"))
-	got, _ := json.Marshal(set["permissions"])
-	if string(got) != `{"defaultMode":"default","disableAutoMode":"disable","disableBypassPermissionsMode":"disable"}` {
-		t.Fatalf("after seed, permissions = %s", got)
-	}
-	if set["model"] != "kept" {
-		t.Fatalf("seed dropped an unrelated key: %v", set)
+	for _, c := range []struct {
+		name, mode, prior, wantPerms string
+		wantSkip                     any // settingsSkipBypassPrompt's value; nil = not asserted
+	}{
+		{"default posture", "",
+			`{"permissions":{"defaultMode":"bypassPermissions","allow":["Bash(*)"]},"model":"kept"}`,
+			`{"defaultMode":"default","disableAutoMode":"disable","disableBypassPermissionsMode":"disable"}`, nil},
+		{"job-lane bypass", "bypassPermissions",
+			`{"permissions":{"defaultMode":"auto","allow":["Bash(*)"]},"model":"kept"}`,
+			`{"defaultMode":"default","disableAutoMode":"disable"}`, true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			cfg, ws := t.TempDir(), filepath.Join(t.TempDir(), "ws")
+			if err := os.WriteFile(filepath.Join(cfg, "settings.json"), []byte(c.prior), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			o := seedOpts{configDir: cfg, workspace: ws, settingsTemplate: imageSettingsTemplate, jobPermissionMode: c.mode}
+			if err := seed(o, &bytes.Buffer{}); err != nil {
+				t.Fatal(err)
+			}
+			set := readObj(t, filepath.Join(cfg, "settings.json"))
+			got, _ := json.Marshal(set["permissions"])
+			if string(got) != c.wantPerms {
+				t.Fatalf("after seed, permissions = %s\nwant                      %s", got, c.wantPerms)
+			}
+			if skip, ok := set["skipDangerousModePermissionPrompt"]; c.wantSkip != nil && skip != c.wantSkip {
+				t.Fatalf("after seed, skipDangerousModePermissionPrompt = %v (present %v), want %v", skip, ok, c.wantSkip)
+			}
+			if set["model"] != "kept" {
+				t.Fatalf("seed dropped an unrelated key: %v", set)
+			}
+			if err := checkSeed(o); err != nil {
+				t.Fatalf("checkSeed disagrees with seed: %v", err)
+			}
+			other := o
+			other.jobPermissionMode = map[string]string{"": "bypassPermissions", "bypassPermissions": ""}[c.mode]
+			if err := checkSeed(other); err == nil {
+				t.Fatalf("checkSeed with mode %q accepted the file seeded with mode %q", other.jobPermissionMode, c.mode)
+			}
+		})
 	}
 }
 
-// The supervisor never starts the CLI with a permission flag: the mode comes
-// from settings alone, so nothing on argv can widen it. ⚠ INVARIANT GUARD (the
+// 🔴 FAIL CLOSED: a CCD_JOB_PERMISSION_MODE that is neither unset nor EXACTLY
+// bypassPermissions is refused before anything is written — never read as
+// bypass, never silently dropped.
+func TestSeedRefusesAnyOtherJobPermissionMode(t *testing.T) {
+	for _, v := range []string{"bypass", "BypassPermissions", " bypassPermissions", "bypassPermissions\n", "true", "1", "dontAsk", "acceptEdits", "default"} {
+		cfg, ws := t.TempDir(), filepath.Join(t.TempDir(), "ws")
+		err := seed(seedOpts{configDir: cfg, workspace: ws, settingsTemplate: imageSettingsTemplate, jobPermissionMode: v}, &bytes.Buffer{})
+		if err == nil || !strings.Contains(err.Error(), "CCD_JOB_PERMISSION_MODE") {
+			t.Errorf("%q: err = %v, want a refusal naming CCD_JOB_PERMISSION_MODE", v, err)
+		}
+		for _, f := range []string{".claude.json", "settings.json"} {
+			if _, serr := os.Stat(filepath.Join(cfg, f)); serr == nil {
+				t.Errorf("%q: seed wrote %s before refusing", v, f)
+			}
+		}
+	}
+}
+
+// `ccd seed` takes the mode from the pod's environment (the entrypoint passes
+// no flag for it): set, the bypass refusal is lifted; unset, it stays.
+func TestRunSeedReadsTheJobPermissionModeFromTheEnvironment(t *testing.T) {
+	for _, c := range []struct {
+		env         string
+		wantDisable bool
+	}{{"", true}, {"bypassPermissions", false}} {
+		cfg, ws := t.TempDir(), filepath.Join(t.TempDir(), "ws")
+		t.Setenv(envJobPermissionMode, c.env)
+		var out, errb bytes.Buffer
+		if rc := runSeed([]string{"--config-dir", cfg, "--workspace", ws, "--settings-template", imageSettingsTemplate}, &out, &errb); rc != 0 {
+			t.Fatalf("env %q: rc %d: %s", c.env, rc, errb.String())
+		}
+		perms, _ := readObj(t, filepath.Join(cfg, "settings.json"))["permissions"].(map[string]any)
+		if _, has := perms["disableBypassPermissionsMode"]; has != c.wantDisable {
+			t.Fatalf("env %q: disableBypassPermissionsMode present = %v, want %v", c.env, has, c.wantDisable)
+		}
+	}
+}
+
+// The PRIMARY supervisor never starts the CLI with a permission flag: its mode
+// comes from settings alone, so nothing on argv can widen it (a job lane on an
+// opted-in pool is the one exception, jobmode_test.go). ⚠ INVARIANT GUARD (the
 // argv never carried one), and it checks the fresh-start argv only.
 func TestTheSupervisorPassesNoPermissionFlag(t *testing.T) {
 	sup := newSupervisor(nil, "claude", t.TempDir(), t.TempDir())

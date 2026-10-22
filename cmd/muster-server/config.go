@@ -293,6 +293,17 @@ const (
 	envAgentCCCooldown = "MUSTER_AGENT_CC_RATE_LIMIT_COOLDOWN"
 	envAgentCCMaxJobs  = "MUSTER_AGENT_CC_MAX_CONCURRENT_JOBS"
 
+	// envAgentCCBypassPools is a comma list of worker-pool names whose
+	// claude-code agents run their JOB lanes with permissions BYPASSED
+	// (agentspec.ClaudeCodeConfig.BypassPools -> CCD_JOB_PERMISSION_MODE in the
+	// pod, cmd/ccd/jobmode.go). Unset is none. 🔴 A listed pool's job lanes run
+	// any command on the code they are handed, without approval, and can read
+	// that worker's own Claude setup-token: for pools reviewing trusted members'
+	// PRs only. Names are lower-cased as read (splitList; pool names are
+	// lower-case only). Refused at boot without the claude-code kind, and for a
+	// name agents.ValidWorkerPool refuses.
+	envAgentCCBypassPools = "MUSTER_AGENT_CC_BYPASS_POOLS"
+
 	// The hermes kind (docs/design/hermes.md): its image (tag or digest pinned;
 	// no default, for MUSTER_AGENT_CC_IMAGE's reason) and its /data volume size.
 	// Its provider credential is the OpenRouter key the gateway kind uses
@@ -782,6 +793,10 @@ type config struct {
 	// zero is unset: ccpool.DefaultCooldown for the cooldown, and NO cap.
 	AgentCCCooldown time.Duration
 	AgentCCMaxJobs  int
+	// AgentCCBypassPools is MUSTER_AGENT_CC_BYPASS_POOLS read by splitList:
+	// trimmed, in order, LOWER-CASED (pool names are lower-case only, so
+	// "Pr-Review" names the pool "pr-review"). Empty is none.
+	AgentCCBypassPools []string
 
 	// AgentHermesImage is the hermes kind's FULL image reference (tag or digest
 	// required; no default), and AgentHermesStorage its /data volume size
@@ -1015,6 +1030,7 @@ func loadConfig(getenv func(string) string) (config, error) {
 		AgentCCImage:          strings.TrimSpace(getenv(envAgentCCImage)),
 		AgentCCAccountNames:   splitList(getenv(envAgentCCAccounts)),
 		AgentCCStorage:        strings.TrimSpace(getenv(envAgentCCStorage)),
+		AgentCCBypassPools:    splitList(getenv(envAgentCCBypassPools)),
 		AgentHermesImage:      strings.TrimSpace(getenv(envAgentHermesImage)),
 		AgentHermesStorage:    strings.TrimSpace(getenv(envAgentHermesStorage)),
 		AgentNetpolFromNS:     strings.TrimSpace(getenv(envAgentNetpolFromNS)),
@@ -1890,6 +1906,12 @@ func (c config) validateKinds() error {
 	return nil
 }
 
+// connectorStoreConfigured reports whether this deployment builds a connector
+// store: a database to hold it and a key to seal its secrets.
+func (c config) connectorStoreConfigured() bool {
+	return c.Database != "" && len(c.ConnectorEncKey) > 0
+}
+
 // ccPoolLimits is the account pool's limits: the configured values, with
 // ccpool.DefaultCooldown where the cooldown is unset. An unset cap stays zero,
 // which is NO cap: the per-account cap is opt-in.
@@ -1917,7 +1939,18 @@ func (c config) validateClaudeCodeKind() error {
 				"them to limit. Add %s to %s, or unset them", envAgentCCCooldown, envAgentCCMaxJobs, envAgentKinds,
 				agents.KindClaudeCode, agents.KindClaudeCode, envAgentKinds)
 		}
+		if len(c.AgentCCBypassPools) > 0 {
+			return fmt.Errorf("%s is set but %s does not include %s: there are no Claude Code job lanes for it to "+
+				"bypass permissions on, so it would be an armed switch that does nothing. Add %s to %s, or unset it",
+				envAgentCCBypassPools, envAgentKinds, agents.KindClaudeCode, agents.KindClaudeCode, envAgentKinds)
+		}
 		return nil
+	}
+	for _, p := range c.AgentCCBypassPools {
+		if !agents.ValidWorkerPool(p) {
+			return fmt.Errorf("invalid %s entry %q: a worker pool name is 1-63 of [a-z0-9-], starting with a "+
+				"letter or digit", envAgentCCBypassPools, p)
+		}
 	}
 	if c.agentProvisioner() == provisionerNone {
 		return fmt.Errorf("%s includes %s but %s=%s: a kind is something a DRIVER provisions, so there is "+

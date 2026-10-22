@@ -441,6 +441,10 @@ var bannerExempt = map[string]string{
 		"with it (ccpool.DefaultCooldown, config.ccPoolLimits), so there is no OFF state to announce",
 	envAgentCCMaxJobs: "an optional, opt-in limit of the claude-code account pool (unset is no cap, config.ccPoolLimits); " +
 		"refused at boot without the kind, so there is no OFF state to announce",
+	envAgentCCBypassPools: "printed on the claude-code arm of the `agent kinds:` line in both states (the pools listed, or " +
+		"\"no worker pool bypasses\"), which bannerBothDirections' fixture cannot render; refused at boot without the " +
+		"kind (validateClaudeCodeKind), so outside that arm there is no state to announce. " +
+		"TestTheKindsBannerLineAnnouncesTheJobLaneBypassBothWays pins both",
 	envAgentHermesImage: "printed on the hermes arm of the `agent kinds:` line; refused at boot when the kind is not " +
 		"enabled (validateKinds), so there is no OFF state to announce. TestTheKindsBannerLineNamesTheHermesImage pins it",
 	envAgentHermesStorage: "an optional size for the hermes volume; refused at boot without the kind, defaulted with it (agentspec.DefaultHermesStorage)",

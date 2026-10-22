@@ -316,7 +316,7 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		// old pod is still running its jobs while this one boots.
 		ext.Jobs = jobs.NewPG(pool)
 
-		if len(cfg.ConnectorEncKey) > 0 {
+		if cfg.connectorStoreConfigured() {
 			cs, err := connectors.NewPG(pool, cfg.ConnectorEncKey)
 			if err != nil {
 				a.Close()
@@ -449,6 +449,12 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		// The job API's sha checkout and result_path read exec through the
 		// same adapter (internal/api jobs.go).
 		ext.JobWorkspace = prov
+		// The job-lane bypass veto (wireGitHubGrantVeto): after the connector
+		// store is built, or boot is refused.
+		if err := wireGitHubGrantVeto(cfg, prov, ext.Connectors); err != nil {
+			a.Close()
+			return nil, err
+		}
 	}
 	if gw != nil {
 		ext.Gateway = gw
@@ -1419,6 +1425,20 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 					"never logged), per-agent PVC at /data, no ServiceAccount token, turn budget %s.",
 					agents.KindClaudeCode, a.cfg.AgentCCImage, envAgentCCImage, strings.Join(a.cfg.AgentCCAccountNames, ", "),
 					envAgentCCAccounts, envAgentCCTokenPrefix, agents.ClaudeCodeTurnTimeout)
+				// 🔴 The job-lane permission bypass is announced in both states, as
+				// CONFIGURATION: a pod gets it only when its spec is applied
+				// (dispatch, Start, ReapplyProfiles), so a running agent keeps the
+				// mode it was started with until then.
+				if len(a.cfg.AgentCCBypassPools) > 0 {
+					line += fmt.Sprintf(" Job-lane permission bypass CONFIGURED for worker pools [%s] (%s): applied "+
+						"when an agent's spec is applied (dispatch, Start, reapply), never to an agent holding an "+
+						"approved GitHub grant; running agents keep the mode they were started with until then.",
+						strings.Join(a.cfg.AgentCCBypassPools, ", "), envAgentCCBypassPools)
+				} else {
+					line += fmt.Sprintf(" No worker pool is configured for job-lane permission bypass (%s unset); "+
+						"a running agent keeps its mode until its spec is re-applied (Start or reapply), and leaving "+
+						"bypass means destroying and recreating the agent.", envAgentCCBypassPools)
+				}
 			}
 			if a.cfg.hermesEnabled() {
 				line += fmt.Sprintf(" %s: image %s (%s), on the OpenRouter key (%s, or each member's own), "+
