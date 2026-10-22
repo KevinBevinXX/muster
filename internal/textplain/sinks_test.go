@@ -121,6 +121,7 @@ var uiExempt = map[string]exemption{
 	"mirror.go mirrorFields m.Title":                   {2, whyFilter},
 	"mirror_ask.go askForm o.Label":                    {2, whyOption},
 	"mirror_ask.go askReadOnly o.Label":                {1, whyOption},
+	"mirror_ask.go askRetryForm q.Options[p].Label":    {1, whyOption},
 	"notes.go noteDispatchButton TaskTitle":            {1, whyDispatch},
 	"notes.go NotesEditModalBody n.Title":              {1, whyForm},
 	"notes.go statusFilterRow taskstatus.Label":        {1, whyStatic},

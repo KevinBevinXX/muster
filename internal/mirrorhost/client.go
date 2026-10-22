@@ -336,6 +336,7 @@ func (c *Client) runOnce(ctx context.Context, version int) error {
 	hello.Version, hello.Host, hello.Interactive, hello.PanePaste = version, c.cfg.Host, c.cfg.Interactive, conn.panePaste()
 	hello.PaneScroll = conn.paneScroll()
 	hello.AskAnswer = conn.askAnswer()
+	hello.AskCancel = conn.askCancel(hello.AskAnswer)
 	hello.StatusReport = reportsStatus(c.cfg.Backend)
 	hello.CatalogReport = version >= 2 && !c.cfg.NoCatalog
 	hello.SubagentReport = conn.subagentReport()
@@ -438,6 +439,10 @@ func (c *Client) runOnce(ctx context.Context, version int) error {
 			case mirror.TypeAnswer:
 				if conn.version >= 2 {
 					go conn.answer(m)
+				}
+			case mirror.TypeCancelAsk:
+				if conn.version >= 2 {
+					go conn.cancelAsk(m)
 				}
 			case mirror.TypeCatalog:
 				if conn.version >= 2 && !c.cfg.NoCatalog {

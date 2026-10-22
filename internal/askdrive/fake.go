@@ -124,6 +124,9 @@ func (f *FakePicker) arrow(c byte) {
 	q := f.qs[f.tab]
 	k := len(q.Options)
 	last := k + 1
+	if q.Previews() {
+		last = k
+	}
 	switch c {
 	case 'B': // Down
 		switch {
@@ -155,6 +158,18 @@ func (f *FakePicker) key(r rune) {
 	i := f.tab
 	q := f.qs[i]
 	k := len(q.Options)
+	if q.Previews() {
+		// A digit moves the cursor to its row; Enter takes the option under
+		// it. No text row.
+		switch {
+		case r == '\r' && f.cursor >= 1 && f.cursor <= k:
+			f.checked[i] = map[int]bool{f.cursor: true}
+			f.advance()
+		case r >= '1' && r <= '9' && int(r-'0') <= k:
+			f.cursor = int(r - '0')
+		}
+		return
+	}
 	editing := f.cursor == k+1
 	if editing && r != '\r' && r != 0x7f {
 		if r >= 0x20 {
@@ -267,6 +282,10 @@ func (f *FakePicker) Screen() string {
 	}
 	q := f.qs[f.tab]
 	k := len(q.Options)
+	if q.Previews() {
+		f.previewScreen(line, q)
+		return b.String()
+	}
 	if boxed(q.Question) {
 		for _, l := range fakeWrap(q.Question, fakeWidth-2) {
 			line("│ " + l)
@@ -328,6 +347,77 @@ func (f *FakePicker) Screen() string {
 	line("")
 	line("Enter to select · ↑/↓ to navigate · Esc to cancel")
 	return b.String()
+}
+
+// The preview layout's geometry, as measured at 80 columns
+// (testdata/preview-long-80): the box's left edge in column 34, 44 columns
+// wide; a label wrapped within its column, its further lines 4 in.
+const (
+	fakePreviewCol   = 34
+	fakePreviewBox   = 44
+	fakePreviewLabel = 26
+)
+
+// previewScreen draws question q (Previews) as the CLI does: the options in
+// a column, the preview of the one under the cursor boxed beside them.
+func (f *FakePicker) previewScreen(line func(string), q askq.Question) {
+	if boxed(q.Question) {
+		for _, l := range fakeWrap(q.Question, fakeWidth-2) {
+			line("│ " + l)
+		}
+	} else {
+		line(q.Question)
+	}
+	line("")
+	var left []string
+	for j, o := range q.Options {
+		mark := " "
+		if f.cursor == j+1 {
+			mark = "❯"
+		}
+		for n, l := range fakeWrap(o.Label, fakePreviewLabel) {
+			if n == 0 {
+				left = append(left, mark+" "+itoa(j+1)+". "+l)
+			} else {
+				left = append(left, "    "+l)
+			}
+		}
+	}
+	inner := fakePreviewBox - 4
+	right := []string{"┌" + strings.Repeat("─", fakePreviewBox-2) + "┐"}
+	if c := f.cursor; c >= 1 && c <= len(q.Options) {
+		for _, l := range strings.Split(q.Options[c-1].Preview, "\n") {
+			r := []rune(l)
+			if len(r) > inner {
+				r = r[:inner]
+			}
+			right = append(right, "│ "+string(r)+strings.Repeat(" ", inner-len(r))+" │")
+		}
+	}
+	right = append(right, "└"+strings.Repeat("─", fakePreviewBox-2)+"┘", "", "Notes: press n to add notes", "")
+	for n := 0; n < max(len(left), len(right)); n++ {
+		l, r := "", ""
+		if n < len(left) {
+			l = left[n]
+		}
+		if n < len(right) {
+			r = right[n]
+		}
+		if r == "" {
+			line(l)
+			continue
+		}
+		line(l + strings.Repeat(" ", max(0, fakePreviewCol-len([]rune(l)))) + r)
+	}
+	line(fakeRule)
+	line("  Chat about this")
+	line("")
+	if f.multiTabs() {
+		line("Enter to select · ↑/↓ to navigate · n to add notes · Tab to switch questions ·")
+		line("Esc to cancel")
+	} else {
+		line("Enter to select · ↑/↓ to navigate · n to add notes · Esc to cancel")
+	}
 }
 
 // fakeWidth is the fake's pane width: the 80 columns its rule is.

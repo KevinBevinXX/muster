@@ -90,12 +90,40 @@ type Options struct {
 // answer's own words in its "Type something" row. Drive never sends a key to
 // take it back: clearing it means typing into a picker it has just failed to
 // recognise, the very thing it refuses. The person finishes, corrects or
-// cancels it in the terminal; the card says it may be partly filled in
-// (internal/api askTypeFailure).
+// cancels it in the terminal — or answers again from muster, whose next drive
+// continues it (DriveFrom).
 func Drive(ctx context.Context, p Pane, qs []askq.Question, choices []Choice, opt Options) error {
+	_, err := DriveFrom(ctx, p, qs, choices, nil, opt)
+	return err
+}
+
+// Progress is how far a drive got (askq.Progress): the choices it was typing,
+// and how many keys of their Plan it sent.
+type Progress = askq.Progress
+
+// DriveFrom is Drive for a picker an earlier drive may have left part of an
+// answer in: prior is what that drive sent (nil: nothing). It returns how many
+// keys of choices' Plan the picker has received from muster, this drive's and
+// any it continued — what the next drive's prior is.
+//
+// 🔴 IT CONTINUES ONLY MUSTER'S OWN PARTIAL ANSWER. Before its first key it
+// reads the picker; when that is EXACTLY the screen prior's own keys led to —
+// after some k of them, k at most the keys prior sent — and choices' plan
+// begins with those same k keys, it continues from key k+1. A picker in any
+// other state is refused as before: untouched is required (ErrNotUntouched),
+// and a picker in a state prior's keys reached that choices' plan does not
+// pass through holds muster's earlier, different answer, and is refused the
+// same way (ErrNotUntouched): it is not untouched, and not this answer's.
+//
+// What the screen cannot show — WHICH answer an answered question was given —
+// is what prior vouches for: muster's own keys answered it, and the screen
+// confirmed each. Someone who changed such an answer in the terminal is caught
+// before the submit: the review screen lists every answer, and Drive submits
+// it only when they are exactly choices'.
+func DriveFrom(ctx context.Context, p Pane, qs []askq.Question, choices []Choice, prior *Progress, opt Options) (int, error) {
 	steps, err := Plan(qs, choices)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	if opt.Settle <= 0 {
 		opt.Settle = 3 * time.Second
@@ -110,13 +138,23 @@ func Drive(ctx context.Context, p Pane, qs []askq.Question, choices []Choice, op
 		opt.Grain = time.Second
 	}
 	answers := Answers(qs, choices)
-	want := Start()
+	first := 0
+	if prior != nil && prior.Keys > 0 {
+		scr, err := p.Capture(ctx)
+		if err != nil {
+			return 0, err
+		}
+		first = resumeAt(Parse(scr), qs, steps, prior)
+	}
+	want := At(steps, first)
 	act, _ := p.(Activity)
-	for i, st := range steps {
+	for i := first; i < len(steps); i++ {
+		st := steps[i]
 		// refuse is the error for a screen (or a person) not as wanted before
-		// key i: before the first key nothing of ours is in the picker.
+		// key i: before this drive's first key nothing of ITS is in the
+		// picker.
 		refuse := func(why error) error {
-			if i == 0 {
+			if i == first {
 				return fmt.Errorf("%w: %v", ErrNotUntouched, why)
 			}
 			return fmt.Errorf("%w (before key %d, wanted %s): %v", ErrLost, i+1, want, why)
@@ -131,48 +169,56 @@ func Drive(ctx context.Context, p Pane, qs []askq.Question, choices []Choice, op
 		for waits := 0; ; waits++ {
 			scr, err := p.Capture(ctx)
 			if err != nil {
-				return err
+				return i, err
 			}
 			if err := Match(Parse(scr), want, qs, answers); err != nil {
 				s := Parse(scr)
-				if i == 0 {
+				if i == first {
 					switch {
 					case s.Kind == None:
-						return fmt.Errorf("%w: %v", ErrNoPicker, err)
+						return i, fmt.Errorf("%w: %v", ErrNoPicker, err)
 					case s.Kind == Unknown:
-						return fmt.Errorf("%w: %v", ErrUnrecognised, err)
+						return i, fmt.Errorf("%w: %v", ErrUnrecognised, err)
 					case s.Kind == Clipped:
-						return fmt.Errorf("%w: %v", ErrUnreadable, err)
+						return i, fmt.Errorf("%w: %v", ErrUnreadable, err)
 					// Untouched in every way the screen can show, only the
 					// question's words differ: muster misread (or was told)
 					// the question — nobody is answering it.
 					case s.Kind == Question && match(s, want, qs, answers, false) == nil:
-						return fmt.Errorf("%w: %v", ErrUnreadable, err)
+						return i, fmt.Errorf("%w: %v", ErrUnreadable, err)
+					// One of these questions, its rows not drawn as its are —
+					// in ANY state: not someone answering it, a picker muster
+					// cannot read (a layout it does not know).
+					case s.Kind == Question && errors.Is(shownLayout(s, qs), errLayout):
+						return i, fmt.Errorf("%w: %v", ErrUnrecognised, shownLayout(s, qs))
 					}
 				} else if s.Kind == Clipped {
-					return fmt.Errorf("%w (before key %d, wanted %s): %w: %v", ErrLost, i+1, want, ErrUnreadable, err)
+					return i, fmt.Errorf("%w (before key %d, wanted %s): %w: %v", ErrLost, i+1, want, ErrUnreadable, err)
 				}
-				return refuse(err)
+				if changedAnswer(s, want, qs, answers) {
+					return i, fmt.Errorf("%w (before key %d, the review screen): %v — someone changed it in the terminal", ErrNotUntouched, i+1, err)
+				}
+				return i, refuse(err)
 			}
 			if err := sleep(ctx, opt.Steady); err != nil {
-				return err
+				return i, err
 			}
 			second := time.Now()
 			again, err := p.Capture(ctx)
 			if err != nil {
-				return err
+				return i, err
 			}
 			// The PICKER must be unchanged; the rest of the pane (the CLI's own
 			// status lines) may change on its own.
 			if !reflect.DeepEqual(Parse(again), Parse(scr)) {
-				return refuse(errors.New("the screen changed while it was being read — someone is typing in the terminal"))
+				return i, refuse(errors.New("the screen changed while it was being read — someone is typing in the terminal"))
 			}
 			if act == nil {
 				break
 			}
 			last, err := act.LastInput(ctx)
 			if err != nil {
-				return err
+				return i, err
 			}
 			// Input stamped last happened before last+Grain and is drawn
 			// within Steady of it: the second look saw it if it was taken
@@ -182,38 +228,101 @@ func Drive(ctx context.Context, p Pane, qs []askq.Question, choices []Choice, op
 				break
 			}
 			if waits >= maxInputWaits {
-				return refuse(errors.New("the terminal keeps getting input — someone is using it"))
+				return i, refuse(errors.New("the terminal keeps getting input — someone is using it"))
 			}
 			if err := sleep(ctx, time.Until(drawnBy)); err != nil {
-				return err
+				return i, err
 			}
 		}
 		if err := p.Send(ctx, st.Keys); err != nil {
-			return err
+			// Whether any of it arrived is not known: count it.
+			return i + 1, err
 		}
 		deadline := time.Now().Add(opt.Settle)
 		for {
 			scr, err := p.Capture(ctx)
 			if err != nil {
-				return err
+				return i + 1, err
 			}
 			merr := Match(Parse(scr), st.Want, qs, answers)
 			if merr == nil {
 				break
 			}
+			// The review lists every answer; one other than this drive's is
+			// someone's in the terminal (an earlier question changed): not
+			// untouched, and not submitted.
+			if changedAnswer(Parse(scr), st.Want, qs, answers) {
+				return i + 1, fmt.Errorf("%w (after key %d, the review screen): %v — someone changed it in the terminal", ErrNotUntouched, i+1, merr)
+			}
 			if time.Now().After(deadline) {
 				if Parse(scr).Kind == Clipped {
-					return fmt.Errorf("%w (after key %d, wanted %s): %w: %v", ErrLost, i+1, st.Want, ErrUnreadable, merr)
+					return i + 1, fmt.Errorf("%w (after key %d, wanted %s): %w: %v", ErrLost, i+1, st.Want, ErrUnreadable, merr)
 				}
-				return fmt.Errorf("%w (after key %d, wanted %s): %v", ErrLost, i+1, st.Want, merr)
+				return i + 1, fmt.Errorf("%w (after key %d, wanted %s): %v", ErrLost, i+1, st.Want, merr)
 			}
 			select {
 			case <-ctx.Done():
-				return ctx.Err()
+				return i + 1, ctx.Err()
 			case <-time.After(opt.Poll):
 			}
 		}
 		want = st.Want
+	}
+	return len(steps), nil
+}
+
+// resumeAt is the key a drive of steps starts at, given that the picker shows
+// s and an earlier drive sent prior: the number of keys of prior's plan whose
+// screen s is — the most of them, at most prior.Keys — when steps begin with
+// those same keys; 0 otherwise (the first look then judges it as any picker:
+// a screen of prior's keys that steps do not pass through — muster's earlier,
+// different answer — is not untouched).
+func resumeAt(s Screen, qs []askq.Question, steps []Step, prior *Progress) int {
+	old, err := Plan(qs, prior.Choices)
+	if err != nil {
+		return 0 // not an answer to these questions: nothing to continue
+	}
+	// same is how many keys the two plans share.
+	same := 0
+	for same < len(old) && same < len(steps) && old[same].Keys == steps[same].Keys && reflect.DeepEqual(old[same].Want, steps[same].Want) {
+		same++
+	}
+	// The review screen lists the answers, and prior's are what it must list
+	// to be prior's screen.
+	priorAnswers := Answers(qs, prior.Choices)
+	for k := min(prior.Keys, len(old), same); k > 0; k-- {
+		if w := At(old, k); w.Kind != None && Match(s, w, qs, priorAnswers) == nil {
+			return k
+		}
+	}
+	return 0
+}
+
+// changedAnswer reports whether s is the review screen w wants for qs in all
+// but an answer: every question in place, and an answer other than answers'
+// — one changed in the terminal.
+func changedAnswer(s Screen, w Want, qs []askq.Question, answers map[string]string) bool {
+	if w.Kind != Review || s.Kind != Review || Match(s, w, qs, answers) == nil {
+		return false
+	}
+	shown := map[string]string{}
+	for i, q := range qs {
+		if i >= len(s.Review) {
+			return false
+		}
+		shown[q.Question] = strings.Join(splitLines(s.Review[i].Answer), " ")
+	}
+	return Match(s, w, qs, shown) == nil
+}
+
+// shownLayout reports why the question screen s is not one of qs as drawn
+// (errLayout), nil when its rows are drawn as its question's — the question
+// whose text it shows; nil too when it shows none of theirs.
+func shownLayout(s Screen, qs []askq.Question) error {
+	for _, q := range qs {
+		if wrapEq(splitLines(s.Question), fullLines(s.QuestionEnds, s.Width), q.Question, false) {
+			return layoutMatch(s, q)
+		}
 	}
 	return nil
 }
@@ -287,35 +396,34 @@ func match(s Screen, w Want, qs []askq.Question, answers map[string]string, ques
 	if err := tabsMatch(s, qs, w.Q); err != nil {
 		return err
 	}
-	k := len(q.Options)
-	if len(s.Rows) != k+1 {
-		return fmt.Errorf("%d rows, not %d options and the text row", len(s.Rows), k)
+	if err := layoutMatch(s, q); err != nil {
+		return err
 	}
+	// A preview question's note: none may be there, nor being typed — a key
+	// would go into it (measured 2.1.289), and an answer would carry it.
+	switch {
+	case q.Previews() && s.NoteEditing:
+		return errors.New("a note is being typed on the question")
+	case q.Previews() && s.Notes != NotesUntouched:
+		return fmt.Errorf("the question carries a note: %q", s.Notes)
+	}
+	k := len(q.Options)
 	for j, r := range s.Rows {
-		if r.Num != j+1 {
-			return fmt.Errorf("row %d is numbered %d", j+1, r.Num)
-		}
-		checked := slices.Contains(w.Checked, j+1)
-		switch {
-		case q.MultiSelect && r.Box != "[ ]" && r.Box != "[✔]":
-			return fmt.Errorf("row %d has no checkbox", j+1)
-		case !q.MultiSelect && r.Box != "":
-			return fmt.Errorf("row %d has a checkbox on a single-select question", j+1)
-		case q.MultiSelect && (r.Box == "[✔]") != checked:
+		if checked := slices.Contains(w.Checked, j+1); q.MultiSelect && (r.Box == "[✔]") != checked {
 			return fmt.Errorf("row %d checked=%v, want %v", j+1, r.Box == "[✔]", checked)
 		}
-		if j < k {
-			if !labelMatch(r, s.Width, q.Options[j].Label) {
-				return fmt.Errorf("row %d is %q, not %q", j+1, r.Label, q.Options[j].Label)
-			}
-		} else if w.Text != "" {
+		// The options' labels are layoutMatch's; the text row's text is the
+		// state's.
+		switch {
+		case j < k:
+		case w.Text != "":
 			// The typed text, wrapped over the row's lines when long (the CLI
 			// never truncates or scrolls it: measured 2.1.289, 650+ characters
 			// drawn in full, wrapped).
 			if !wrapEq(textLines(r), fullLines(r.Ends, s.Width), w.Text, true) {
 				return fmt.Errorf("the text row holds %q, not %q", strings.Join(textLines(r), "\n"), w.Text)
 			}
-		} else if (r.Label != "Type something" && r.Label != "Type something.") || len(r.More) > 0 {
+		case (r.Label != "Type something" && r.Label != "Type something.") || len(r.More) > 0:
 			return fmt.Errorf("the text row holds %q, not its placeholder", strings.Join(textLines(r), "\n"))
 		}
 		if r.Cursor != (w.Cursor == j+1) {
@@ -327,6 +435,55 @@ func match(s Screen, w Want, qs []askq.Question, answers map[string]string, ques
 	}
 	if w.Cursor != 0 && s.NavCursor {
 		return errors.New("the cursor is on the Next/Submit row")
+	}
+	return nil
+}
+
+// errLayout marks a question screen whose rows are not drawn as question q's
+// would be — whatever state it is in: the wrong number of rows, other
+// labels, checkboxes where there should be none (or none where there should
+// be), previews where there should be none. Before the first key it is not
+// someone answering in the terminal; it is a picker muster cannot read
+// (ErrUnrecognised).
+var errLayout = errors.New("the picker's rows are not drawn as this question's")
+
+// layoutMatch reports why the rows of question screen s are not question q's
+// (nil when they are), in any state: one numbered row per option and then the
+// "Type something" row (none on a question with previews), with a checkbox on
+// each (multi-select) or none, labelled as q's options.
+func layoutMatch(s Screen, q askq.Question) error {
+	k := len(q.Options)
+	pv := q.Previews()
+	switch {
+	case pv && s.PreviewCol == 0:
+		return fmt.Errorf("%w: no preview box beside the options of a question with previews", errLayout)
+	case !pv && s.PreviewCol > 0:
+		return fmt.Errorf("%w: a preview box beside the options of a question without previews", errLayout)
+	}
+	want, what := k+1, "options and the text row"
+	if pv {
+		want, what = k, "options (a question with previews has no text row)"
+	}
+	if len(s.Rows) != want {
+		return fmt.Errorf("%w: %d rows, not %d %s", errLayout, len(s.Rows), k, what)
+	}
+	// A preview column wraps a label within itself, so its lines are never as
+	// wide as the pane: none is full (fullLines).
+	width := s.Width
+	if pv {
+		width = 0
+	}
+	for j, r := range s.Rows {
+		switch {
+		case r.Num != j+1:
+			return fmt.Errorf("%w: row %d is numbered %d", errLayout, j+1, r.Num)
+		case q.MultiSelect && r.Box != "[ ]" && r.Box != "[✔]":
+			return fmt.Errorf("%w: row %d has no checkbox", errLayout, j+1)
+		case !q.MultiSelect && r.Box != "":
+			return fmt.Errorf("%w: row %d has a checkbox on a single-select question", errLayout, j+1)
+		case j < k && !labelMatch(r, width, q.Options[j].Label):
+			return fmt.Errorf("%w: row %d is %q, not %q", errLayout, j+1, r.Label, q.Options[j].Label)
+		}
 	}
 	return nil
 }

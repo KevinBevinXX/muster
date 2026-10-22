@@ -424,8 +424,9 @@ var isolationClasses = map[string]routeClass{
 	"POST /mirror/confirm-send": classMirror,
 	// AskUserQuestion (mirror_ask.go): the live region (address in the query)
 	// and the answers (address in the form, plus the call's tool id).
-	"GET /mirror/view/asks": classMirror,
-	"POST /mirror/view/ask": classMirror,
+	"GET /mirror/view/asks":        classMirror,
+	"POST /mirror/view/ask":        classMirror,
+	"POST /mirror/view/ask/cancel": classMirror,
 	// A Hermes approval's answer (attention_hermes.go): addressed by the
 	// window's host and session in the form, like a send.
 	"POST /attention/hermes/approve": classMirror,
@@ -1444,7 +1445,7 @@ func namesObject(route string) bool {
 	return paramRE.MatchString(route) || route == "POST /agents" || route == "POST /tasks/merge" ||
 		strings.HasPrefix(route, "GET /mirror/terminal") || strings.HasPrefix(route, "GET /mirror/view") ||
 		route == "POST /mirror/view/send" || route == "POST /mirror/terminal/send" || route == "POST /mirror/confirm-send" ||
-		route == "POST /mirror/terminal/scroll" || route == "POST /mirror/view/ask" || route == "POST /attention/hermes/approve" ||
+		route == "POST /mirror/terminal/scroll" || route == "POST /mirror/view/ask" || route == "POST /mirror/view/ask/cancel" || route == "POST /attention/hermes/approve" ||
 		route == "GET /send-queue" || route == "POST /send-queue" || route == "POST /send-queue/confirm" ||
 		// Focus history (0022) names its session in the query (?subject=agent:<id>),
 		// so it is held to the object routes' rules: B's answer about A's agent

@@ -620,10 +620,48 @@ How it works:
   terminal*, with those answers; dismissed (Esc), *Dismissed in the terminal*.
 - 🔴 **Never half an answer.** If someone has started answering in the terminal,
   or the picker is gone or changes while muster types, muster stops before the
-  next key, nothing is submitted, and the card says to answer in the terminal.
-  When muster had already typed part of it, the card also says the picker may
-  be partly filled in: check what it shows before you submit it there. An
+  next key and nothing is submitted. The card says which: *someone else has
+  started answering it in the terminal* (finish it there), or *muster lost
+  track of the terminal's picker part-way through typing your answer*. An
   answer that arrives after the terminal's is refused, and nothing is typed.
+- **Trying again continues muster's own partial answer.** When muster stopped
+  part way (a key whose screen never came), it records how many keys of your
+  answer it typed, and the card shows that answer with **Try again** — which
+  resends exactly it (nothing on the card can be changed: the picker holds part
+  of it). Trying again continues from the first key not yet taken, but only
+  when the picker shows exactly what muster's own keys left; anything else is
+  someone else's and is refused as above. Which answer an earlier question was
+  given is not on the screen, so before the final submit muster checks the
+  review screen lists exactly your answers — an earlier answer changed in the
+  terminal is caught there, said as someone answering in the terminal, and
+  nothing is submitted. A muster restart, or a typing whose outcome the host
+  never reported, records nothing to continue: the picker is then the
+  terminal's to finish.
+- **Options with previews.** When a question's options carry a `preview`,
+  Claude Code draws them in a column with the highlighted option's preview
+  boxed beside them, and no row for your own answer (measured, 2.1.289). The
+  card shows each option's preview under it and no **Other** for that
+  question; muster moves the picker's cursor to your option and takes it. A
+  note added to such a question in the terminal (`n`) is part of the answer:
+  muster then types nothing, as for anyone answering there.
+- **Cancel question.** A question the terminal still shows has **Cancel
+  question** on its card. It opens a dialog naming the window (*Send Esc to
+  <window>? The question is dismissed.*); only **Send Esc** sends anything —
+  ONE Escape to that pane, which dismisses the whole ask (measured, Claude Code
+  2.1.289: on any question or the review screen, part answered or not; the CLI
+  records it declined). Before the key the host reads the pane once and needs
+  a picker on it — without one, an Escape would interrupt Claude itself, so
+  nothing is sent. It does not check that the picker is this card's ask (a
+  picker taller than the terminal cannot be read; one picker shows at a time).
+  The card says *Esc sent*, or, if the picker was still showing afterwards,
+  that the terminal still shows the question — muster never sends a second
+  Escape. When Claude Code records the ask declined, the card shows it
+  dismissed. Same gates as an answer — your own host, `-interactive`, a
+  same-origin request, one key at a time per pane — but no recent sign-in is
+  asked: the dialog is the confirmation. A host whose `muster-mirror` predates
+  it does not offer it, and muster never sends it one. (Hermes approval and
+  clarify cards have no Cancel: they are answered through Hermes's gateway,
+  not by keys.)
 - **One answer at a time.** Once you submit, closing the page does not stop
   it: muster waits for the host to report how it went. No second answer for
   the question starts until it has (or until 90 seconds have passed, when the
@@ -637,7 +675,9 @@ How it works:
   question leaves the attention queue. Time the host is disconnected does not
   count. If the transcript later shows the question answered (the session came
   back), the card still changes to that answer.
-- **When Claude Code changes its picker.** If the host cannot read the picker,
+- **When Claude Code changes its picker.** If the host cannot read the picker
+  — including one showing this question with its rows drawn in a layout muster
+  does not know, which is never blamed on someone in the terminal —
   the card says *couldn't recognise the terminal picker (Claude Code may have
   changed); answer in the terminal*, the host logs it, and muster counts it in
   `muster_mirror_ask_typing_total{result="unrecognised"}` (all outcomes are

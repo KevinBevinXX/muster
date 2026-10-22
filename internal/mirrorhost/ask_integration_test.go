@@ -106,7 +106,7 @@ func TestTmuxAnswerAskTypesThroughAReadOnlyViewer(t *testing.T) {
 		v, _ := exec.Command("tmux", "-V").Output()
 		t.Fatalf("send-keys with a read-only viewer on %s: %v %s — the premise of typing by paste-buffer -S does not hold on this tmux", strings.TrimSpace(string(v)), err, out)
 	}
-	if err := b.AnswerAsk(context.Background(), pane, qs, cs); err != nil {
+	if err := answer1(b, context.Background(), pane, qs, cs); err != nil {
 		t.Fatalf("AnswerAsk: %v\n%s", err, r.pane("ask"))
 	}
 	var got map[string]string
@@ -128,7 +128,7 @@ func TestTmuxAnswerAskNeverTypesIntoATouchedPicker(t *testing.T) {
 	}
 	waitFor(t, "the tick", func() bool { return strings.Contains(r.pane("touched"), "[✔] Dog") })
 	before := r.pane("touched")
-	err := b.AnswerAsk(context.Background(), pane, qs, []askq.Choice{{Picks: []int{0}}})
+	err := answer1(b, context.Background(), pane, qs, []askq.Choice{{Picks: []int{0}}})
 	if !errors.Is(err, askdrive.ErrNotUntouched) {
 		t.Fatalf("a touched picker: %v", err)
 	}
@@ -188,7 +188,7 @@ func TestTmuxFocusAndMouseDoNotStopADrive(t *testing.T) {
 		t.Fatalf("a read-only viewer attaching moved the input clock: %v -> %v", before, last)
 	}
 	done := make(chan error, 1)
-	go func() { done <- b.AnswerAsk(context.Background(), pane, qs, []askq.Choice{{Picks: []int{0, 2}}}) }()
+	go func() { done <- answer1(b, context.Background(), pane, qs, []askq.Choice{{Picks: []int{0, 2}}}) }()
 	stop := time.After(2 * time.Second)
 	tick := time.NewTicker(300 * time.Millisecond)
 	defer tick.Stop()
@@ -226,7 +226,7 @@ func TestTmuxAKeystrokeMidDriveStopsIt(t *testing.T) {
 	qs := []askq.Question{{Question: "Which pets do you have?", Header: "Pets", MultiSelect: true, Options: []askq.Option{{Label: "Cat"}, {Label: "Dog"}, {Label: "Fish"}}}}
 	r, b, pane, result, rw := typingRig(t, "keystroke", qs)
 	done := make(chan error, 1)
-	go func() { done <- b.AnswerAsk(context.Background(), pane, qs, []askq.Choice{{Picks: []int{0, 2}}}) }()
+	go func() { done <- answer1(b, context.Background(), pane, qs, []askq.Choice{{Picks: []int{0, 2}}}) }()
 	time.Sleep(600 * time.Millisecond)
 	if _, err := rw.Write([]byte("2")); err != nil {
 		t.Fatal(err)
@@ -273,11 +273,48 @@ func TestTmuxLeftoverBuffersAreDropped(t *testing.T) {
 	if has, known := b.RawPaste(context.Background()); !has || !known {
 		t.Fatalf("this tmux (>= %s) reports paste-buffer -S has=%v known=%v", MinRawPasteTmux, has, known)
 	}
-	if err := b.AnswerAsk(context.Background(), pane, qs, []askq.Choice{{Picks: []int{1}}}); err != nil {
+	if err := answer1(b, context.Background(), pane, qs, []askq.Choice{{Picks: []int{1}}}); err != nil {
 		t.Fatal(err)
 	}
 	got := r.run("list-buffers", "-F", "#{buffer_name}")
 	if strings.Contains(got, askBufferPrefix+"0123456789ab") || !strings.Contains(got, "operators-own") || !strings.Contains(got, live) {
 		t.Fatalf("buffers after a drive: %q", got)
+	}
+}
+
+// TestTmuxCancelAskSendsOneEscape: dismissing a picker in a real pane, a
+// read-only viewer attached: ONE Escape, pasted, reaches the program as the
+// Escape key and the picker records itself cancelled. The control: with no
+// picker on the pane (a shell), nothing is sent.
+func TestTmuxCancelAskSendsOneEscape(t *testing.T) {
+	r := newTmuxRig(t)
+	qs := []askq.Question{
+		{Question: "Which color do you prefer?", Header: "Color", Options: []askq.Option{{Label: "Red"}, {Label: "Blue"}, {Label: "Green"}}},
+		{Question: "What should the project be called?", Header: "Name", Options: []askq.Option{{Label: "Alpha"}, {Label: "Beta"}}},
+	}
+	pane, result := r.pickerSession("cancel", qs)
+	b := Tmux{Socket: r.sock}
+	term, err := b.Attach(context.Background(), "cancel", true, 100, 40)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer term.Close()
+	go func() { _, _ = io.Copy(io.Discard, term) }()
+	r.run("new-session", "-d", "-s", "shell", "-x", "100", "-y", "40", "sh", "-c", "printf 'a shell\\n'; exec cat")
+	shell := strings.TrimSpace(r.run("display-message", "-p", "-t", "=shell:", "#{pane_id}"))
+	if gone, err := b.CancelAsk(context.Background(), shell); !errors.Is(err, askdrive.ErrNoPicker) || gone {
+		t.Fatalf("a pane with no picker: %v", err)
+	}
+	if gone, err := b.CancelAsk(context.Background(), pane); err != nil || !gone {
+		t.Fatalf("dismiss: gone %v, %v\n%s", gone, err, r.pane("cancel"))
+	}
+	waitFor(t, "the picker's result", func() bool { _, err := os.Stat(result); return err == nil })
+	raw, _ := os.ReadFile(result)
+	var res struct {
+		Answers   map[string]string `json:"answers"`
+		Cancelled bool              `json:"cancelled"`
+	}
+	if err := json.Unmarshal(raw, &res); err != nil || !res.Cancelled || len(res.Answers) != 0 {
+		t.Fatalf("the picker's result: %s (%v)", raw, err)
 	}
 }

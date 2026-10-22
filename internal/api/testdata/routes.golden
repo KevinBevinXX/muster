@@ -220,6 +220,7 @@ POST /mirror/mcp
 POST /mirror/terminal/scroll
 POST /mirror/terminal/send
 POST /mirror/view/ask
+POST /mirror/view/ask/cancel
 POST /mirror/view/send
 POST /plugin/v1/drafts/claim
 POST /plugin/v1/drafts/{id}/result

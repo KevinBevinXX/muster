@@ -20,6 +20,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -39,6 +40,8 @@ const (
 	MaxQuestion    = 2048
 	MaxLabel       = 256
 	MaxDescription = 2048
+	// MaxPreview bounds an option's preview (Option.Preview).
+	MaxPreview = 4096
 	// MaxAnswer bounds one question's answer (labels joined, or typed text).
 	MaxAnswer = 4096
 	// MaxFreeText bounds what a person types as their own answer.
@@ -56,6 +59,10 @@ const MultiJoin = ", "
 type Option struct {
 	Label       string `json:"label"`
 	Description string `json:"description,omitempty"`
+	// Preview is the option's preview text, when the call gave one: the CLI
+	// draws it in a box beside the options of a single-select question
+	// (Question.Previews).
+	Preview string `json:"preview,omitempty"`
 }
 
 // Question is one question of an AskUserQuestion call.
@@ -64,6 +71,24 @@ type Question struct {
 	Header      string   `json:"header,omitempty"`
 	Options     []Option `json:"options"`
 	MultiSelect bool     `json:"multiSelect,omitempty"`
+}
+
+// Previews reports whether the terminal draws q as a PREVIEW picker: a
+// single-select question any of whose options has a preview. Measured
+// (Claude Code 2.1.289): the options are drawn in a column with the cursor's
+// preview boxed beside them, there is NO "Type something" row (so no answer of
+// one's own), a digit only moves the cursor to its row, and Enter takes the
+// option under the cursor. A multi-select question is drawn as usual.
+func (q Question) Previews() bool {
+	if q.MultiSelect {
+		return false
+	}
+	for _, o := range q.Options {
+		if o.Preview != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // ErrInvalid wraps every refusal of a question set or of answers.
@@ -136,6 +161,8 @@ func ParseQuestions(raw json.RawMessage) ([]Question, error) {
 				return nil, invalid("question %d repeats the option %q", i+1, o.Label)
 			case len(o.Description) > MaxDescription || !textOK(o.Description):
 				return nil, invalid("question %d option %d's description must be at most %d bytes of text", i+1, j+1, MaxDescription)
+			case len(o.Preview) > MaxPreview || !textOK(o.Preview):
+				return nil, invalid("question %d option %d's preview must be at most %d bytes of text", i+1, j+1, MaxPreview)
 			}
 			labels[o.Label] = true
 		}
@@ -154,6 +181,32 @@ func ParseInput(input json.RawMessage) ([]Question, error) {
 		return nil, invalid("the input is not a JSON object: %v", err)
 	}
 	return ParseQuestions(in.Questions)
+}
+
+// AnswersOf is the answers choices give, keyed by question text, as the CLI
+// records them — the review screen's lines and the transcript's toolUseResult:
+// a multi-select answer's options in the question's order, then the text, all
+// joined by MultiJoin.
+func AnswersOf(qs []Question, choices []Choice) map[string]string {
+	out := make(map[string]string, len(qs))
+	for i, q := range qs {
+		if i >= len(choices) {
+			break
+		}
+		picks := slices.Clone(choices[i].Picks)
+		slices.Sort(picks)
+		var parts []string
+		for _, p := range picks {
+			if p >= 0 && p < len(q.Options) {
+				parts = append(parts, q.Options[p].Label)
+			}
+		}
+		if choices[i].Other != "" {
+			parts = append(parts, choices[i].Other)
+		}
+		out[q.Question] = strings.Join(parts, MultiJoin)
+	}
+	return out
 }
 
 // Choice is one question's answer as the picker takes it: the options chosen
@@ -220,6 +273,8 @@ func FromForm(qs []Question, form url.Values) ([]Choice, map[string]string, erro
 		if otherOn {
 			n++
 			switch {
+			case q.Previews():
+				return nil, nil, invalid("question %d: the terminal's picker has no row for an answer of your own on this question — choose one of its options", i+1)
 			case other == "":
 				return nil, nil, invalid("question %d: type your own answer, or choose an option", i+1)
 			case len(other) > MaxFreeText || !textOK(other):

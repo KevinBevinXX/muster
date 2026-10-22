@@ -10,7 +10,9 @@
 //
 //   - before the first key it requires the picker UNTOUCHED (the first question,
 //     nothing chosen, the cursor on the first row) and every question's text and
-//     options to match what muster was asked;
+//     options to match what muster was asked — or, continuing an answer an
+//     earlier drive of muster's stopped part way through (DriveFrom), exactly
+//     the screen that drive's own keys left;
 //   - before EVERY key it re-reads the pane and requires the state the previous
 //     key was meant to produce — a person answering in the terminal meanwhile
 //     closes or changes the picker, and the driver stops without a key. It
@@ -166,7 +168,22 @@ type Screen struct {
 	// the cursor is on there (1 = Submit answers).
 	Review       []ReviewItem
 	ReviewCursor int
+	// PreviewCol is, on a question drawn with previews (the package doc), the
+	// screen column the preview box starts in: every row line was cut there.
+	// 0: no preview box.
+	PreviewCol int
+	// Notes is a preview question's notes line, as drawn under the box (from
+	// PreviewCol, trimmed; "" when there is none): NotesUntouched when nobody
+	// has added a note. NoteEditing says the footer offers "ctrl+g to edit":
+	// the notes line is being typed into (measured 2.1.289: n opens it, keys —
+	// digits too — then go INTO the note, and Escape leaves it, the note
+	// kept).
+	Notes       string
+	NoteEditing bool
 }
+
+// NotesUntouched is a preview question's notes line while it has no note.
+const NotesUntouched = "Notes: press n to add notes"
 
 var (
 	// "←  ☐ Color  ☒ Pets  ✔ Submit  →" or, one single-select question, " ☐ Color".
@@ -251,8 +268,10 @@ func parse(capture string) Screen {
 			break
 		}
 	}
+	editing := false
 	switch {
 	case footer >= 0:
+		editing = strings.Contains(strings.Join(lines[footer:min(len(lines), footer+3)], " "), "ctrl+g to edit")
 		last = footer
 	case last >= 1 && strings.TrimSpace(lines[last]) == "2. Cancel" && strings.HasSuffix(strings.TrimSpace(lines[last-1]), "1. Submit answers"):
 		review = true
@@ -298,6 +317,19 @@ func parse(capture string) Screen {
 	}
 	qtext, qends := unbox(q)
 	s.Question, s.QuestionEnds = strings.Join(qtext, "\n"), qends
+	if col := previewCol(body[i:]); col > 0 {
+		s.PreviewCol, s.NoteEditing = col, editing
+		for j := i; j < len(body) && !sepRE.MatchString(body[j]); j++ {
+			if r := []rune(body[j]); len(r) > col {
+				// The notes line is the box's column's, not a row's: kept
+				// before the cut, so a note someone saved is not cut away.
+				if right := strings.TrimSpace(string(r[col:])); strings.HasPrefix(right, "Notes:") {
+					s.Notes = right
+				}
+				body[j] = trimRight(string(r[:col]))
+			}
+		}
+	}
 	for ; i < len(body); i++ {
 		l := body[i]
 		if sepRE.MatchString(l) {
@@ -329,6 +361,34 @@ func parse(capture string) Screen {
 		return Screen{}
 	}
 	return s
+}
+
+// previewTopRE is a preview box's top edge, from its first column to the
+// end of the line.
+var previewTopRE = regexp.MustCompile(`^┌─+┐\s*$`)
+
+// previewCol is the screen column of the preview box drawn beside a
+// question's rows (lines: the rows down to the separator, and below), 0 when
+// there is none: the box's top edge on a numbered row's line, after at least
+// two columns of white space (the CLI's gutter; a label is never cut).
+func previewCol(lines []string) int {
+	for _, l := range lines {
+		if sepRE.MatchString(l) {
+			return 0
+		}
+		if !rowRE.MatchString(l) {
+			continue
+		}
+		at := strings.Index(l, "┌")
+		if at < 0 {
+			return 0 // the box's top is on the first row's line, or there is none
+		}
+		if !previewTopRE.MatchString(l[at:]) || !strings.HasSuffix(l[:at], "  ") {
+			return 0
+		}
+		return utf8.RuneCountInString(l[:at])
+	}
+	return 0
 }
 
 // clipped reports whether lines — a screen down to its bottom, a question's
