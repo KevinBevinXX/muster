@@ -321,6 +321,12 @@ func TestCheckSeedCatchesEachMissingPiece(t *testing.T) {
 	if err := checkSeed(o); err == nil || !strings.Contains(err.Error(), `"hooks"`) {
 		t.Fatalf("hooks: %v", err)
 	}
+	// A bypass consent left in a default-posture file (jobPermissionSettings).
+	seedInto(t, cfg, ws)
+	mutate("settings.json", func(m map[string]any) { m["skipDangerousModePermissionPrompt"] = true })
+	if err := checkSeed(o); err == nil || !strings.Contains(err.Error(), `carries "skipDangerousModePermissionPrompt"`) {
+		t.Fatalf("leftover bypass consent: %v", err)
+	}
 }
 
 func TestSeedRefusesARelativeWorkspace(t *testing.T) {

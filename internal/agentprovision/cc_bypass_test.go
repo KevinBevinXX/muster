@@ -42,6 +42,8 @@ func TestOnlyAListedPoolsAgentsAreToldToBypassJobPermissions(t *testing.T) {
 		{"unlisted pool", "build-worker-1", "builds", []string{"triage", "pr-review"}, nil},
 		{"pool sharing a prefix with a listed one", "review-worker-2", "pr-review-slow", []string{"pr-review"}, nil},
 		{"unpooled agent", "plain-worker", "", []string{"triage", "pr-review"}, nil},
+		// The server never lets "" into the list; agentspec holds the line itself.
+		{"unpooled agent, list naming the empty pool", "plain-worker-2", "", []string{"", "pr-review"}, nil},
 		{"chief, row naming a listed pool", agents.ChiefName, "pr-review", []string{"pr-review"}, nil},
 		{"chief of another user", agents.ChiefNameFor(7), "pr-review", []string{"pr-review"}, nil},
 		{"listed pool, list empty", "review-worker-3", "pr-review", nil, nil},
