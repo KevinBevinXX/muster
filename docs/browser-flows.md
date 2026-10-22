@@ -12,12 +12,36 @@ queue. A **runner** that you operate claims jobs and reports their results.
 A job moves through these states: `queued` → `running` (held for 2 minutes and
 extended by heartbeats) → `done`, `failed` or `needs_operator`.
 
+Cancelling (`POST /api/flows/jobs/{id}/cancel`, or the button on `/flows`)
+withdraws a `queued` job and dismisses a `needs_operator` one. A `running` job
+answers 409: it is the runner's until it reports, so stop the runner to stop it
+now.
+
+## The catalogue
+
+| flow | class | parameters |
+|---|---|---|
+| `muse.poll` | read | `thread` (a side chat's title) **or** `session` (its uuid), `task` |
+| `muse.send` | write | `text` (required), `thread` **or** `session`, `marker`, `wait`, `task` |
+
+- `session` is a Muse thread's uuid, lowercase. It opens that thread directly,
+  and it cannot be combined with `thread`.
+- `marker` (`md-` and 6 hex digits) needs `session`. The send completes only
+  when the reply's last line is `DONE <marker>`.
+- `wait` is how many seconds the flow waits for the reply, from 1 to 3600. The
+  runner gives the job `wait` + 240 seconds before it times out.
+
+A dispatch job can stay `running` for a long time and still be healthy: up to
+about 10 minutes waiting out Muse's pacing gap, then `wait`, then 240 seconds.
+Nothing caps how long a job may run. A job is only taken from its runner when
+the runner stops heartbeating and the 2-minute lease runs out.
+
 ## Three ways in
 
 | door | who | routes |
 |---|---|---|
 | The **page** | you, signed in | `/flows`: enqueue and cancel jobs, mint and revoke runner tokens, approve agents' requests |
-| The **API** | your personal `mst_` token | `POST /api/flows/jobs`, `GET /api/flows/jobs`, `GET /api/flows/jobs/{id}`. The shared hook and service secrets are refused. The CLI's `muster flow enqueue \| ls \| status` uses these. |
+| The **API** | your personal `mst_` token | `POST /api/flows/jobs`, `GET /api/flows/jobs`, `GET /api/flows/jobs/{id}`, `POST /api/flows/jobs/{id}/cancel`. The shared hook and service secrets are refused. The CLI's `muster flow enqueue \| ls \| status \| cancel` uses these. |
 | The **runner** | an `mfr_` runner token | `POST /runner/flows/claim` (a 25-second long-poll, which answers 204 when there is nothing to do), `POST /runner/flows/{id}/heartbeat`, `POST /runner/flows/{id}/result` |
 
 A runner token is minted on `/flows` for one owner and one host. It acts as its

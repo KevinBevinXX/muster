@@ -182,6 +182,7 @@ POST /api/agents/{name}/messages
 POST /api/chief/replace
 POST /api/device/pair
 POST /api/flows/jobs
+POST /api/flows/jobs/{id}/cancel
 POST /api/jobs
 POST /api/plugins/messages/{id}/retry
 POST /api/push/subscribe

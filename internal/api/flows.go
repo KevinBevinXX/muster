@@ -24,9 +24,9 @@ import (
 //
 //   - /flows (the page and its forms): a browser SESSION. Enqueue, cancel, and
 //     minting/revoking runner tokens — minting a credential is a person's act.
-//   - /api/flows/jobs: a PERSONAL API token (mst_…) ONLY, through
-//     requireAPIToken. 🔴 THE SHARED HOOK AND SERVICE TOKENS ARE REFUSED BY
-//     CONSTRUCTION: the hook token acts as the admin and is held by every hook
+//   - /api/flows/jobs (enqueue, list, read, cancel): a PERSONAL API token
+//     (mst_…) ONLY, through requireAPIToken. 🔴 THE SHARED HOOK AND SERVICE
+//     TOKENS ARE REFUSED BY CONSTRUCTION: the hook token acts as the admin and is held by every hook
 //     script on every host, so admitting it would let any of them drive the
 //     operator's logged-in browser. A personal token acts as its owner.
 //   - /runner/flows/*: a RUNNER token (mfr_…), through requireRunnerToken, and
@@ -67,6 +67,7 @@ func (s *Server) registerFlowRoutes(mux Mux) {
 	mux.HandleFunc("POST "+flowsAPIPath, s.requireAPIToken(s.handleFlowEnqueueAPI))
 	mux.HandleFunc("GET "+flowsAPIPath, s.requireAPIToken(s.handleFlowListAPI))
 	mux.HandleFunc("GET "+flowsAPIPath+"/{id}", s.requireAPIToken(s.handleFlowGetAPI))
+	mux.HandleFunc("POST "+flowsAPIPath+"/{id}/cancel", s.requireAPIToken(s.handleFlowCancelAPI))
 
 	mux.HandleFunc("POST "+runnerFlowsPrefix+"/claim", s.requireRunnerToken(s.handleRunnerClaim))
 	mux.HandleFunc("POST "+runnerFlowsPrefix+"/{id}/heartbeat", s.requireRunnerToken(s.handleRunnerHeartbeat))
@@ -290,6 +291,31 @@ func (s *Server) handleFlowGetAPI(w http.ResponseWriter, r *http.Request) {
 	s.writeFlowResult(w, j, err, http.StatusOK)
 }
 
+// FlowNotCancellable is the 409 body of a cancel that the job's state refuses.
+const FlowNotCancellable = "that job is running or already finished; a running job is the runner's until it reports (stop the runner to stop it now)"
+
+// handleFlowCancelAPI withdraws a queued job or dismisses one that needs the
+// operator — the API twin of handleFlowCancelForm, over the same store call.
+// Another owner's job is 404 (row-level security does not show it); a running
+// or finished one is 409.
+func (s *Server) handleFlowCancelAPI(w http.ResponseWriter, r *http.Request) {
+	if s.ext.Flows == nil {
+		s.writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": FlowsUnconfigured})
+		return
+	}
+	id, ok := flowJobID(r)
+	if !ok {
+		s.writeJSON(w, http.StatusNotFound, map[string]any{"error": "job not found"})
+		return
+	}
+	j, err := s.ext.Flows.Cancel(r.Context(), id)
+	if errors.Is(err, flows.ErrState) {
+		s.writeJSON(w, http.StatusConflict, map[string]any{"error": FlowNotCancellable})
+		return
+	}
+	s.writeFlowResult(w, j, err, http.StatusOK)
+}
+
 func flowJobID(r *http.Request) (int64, bool) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	return id, err == nil && id > 0
@@ -437,6 +463,29 @@ func (s *Server) handleRunnerTokenRevoke(w http.ResponseWriter, r *http.Request)
 	http.Redirect(w, r, flowsPath, http.StatusSeeOther)
 }
 
+// flowParamOrder names params' keys: the flow's catalogue parameters first, in
+// catalogue order, then any the catalogue does not name, sorted. The approval
+// card and the jobs list both draw through it.
+func flowParamOrder(flow string, params map[string]string) []string {
+	var names []string
+	seen := map[string]bool{}
+	if f, ok := flows.Lookup(flow); ok {
+		for _, p := range f.Params {
+			if _, has := params[p.Name]; has {
+				names, seen[p.Name] = append(names, p.Name), true
+			}
+		}
+	}
+	var extra []string
+	for k := range params {
+		if !seen[k] {
+			extra = append(extra, k)
+		}
+	}
+	sort.Strings(extra)
+	return append(names, extra...)
+}
+
 // flowDecidedShown is how many decided agent requests /flows lists.
 const flowDecidedShown = 20
 
@@ -459,23 +508,7 @@ func flowRequestCardHTML(q flows.FlowRequest) string {
 <span class="break-all text-sm font-semibold text-fg">` + esc(flows.VisibleEscape(q.AgentName)) + ` asks: ` + esc(q.Flow) + ` on ` + esc(q.Host) + `/` + esc(q.Instance) + `</span>
 <span class="text-xs font-semibold text-fg">Approving runs this flow with exactly these parameters:</span>
 `)
-	var names []string
-	seen := map[string]bool{}
-	if f, ok := flows.Lookup(q.Flow); ok {
-		for _, p := range f.Params {
-			if _, has := q.Params[p.Name]; has {
-				names, seen[p.Name] = append(names, p.Name), true
-			}
-		}
-	}
-	var extra []string
-	for k := range q.Params {
-		if !seen[k] {
-			extra = append(extra, k)
-		}
-	}
-	sort.Strings(extra)
-	names = append(names, extra...)
+	names := flowParamOrder(q.Flow, q.Params)
 	if len(names) == 0 {
 		b.WriteString(`<span class="text-xs text-fg2" data-flow-no-params>(no parameters)</span>
 `)
@@ -657,7 +690,9 @@ func (s *Server) renderFlowsPage(w http.ResponseWriter, r *http.Request, code in
 			b.WriteString(`<span class="text-xs font-semibold text-fg" data-testid="flow-stale">Waiting on you since ` + j.FinishedAt.UTC().Format("2006-01-02 15:04") + ` UTC</span>
 `)
 		}
-		for _, k := range []string{"thread", "task", "text"} {
+		// Every parameter the job carries, in the catalogue's order (not a
+		// hardcoded list a new parameter could slip past unshown).
+		for _, k := range flowParamOrder(j.Flow, j.Params) {
 			if v := j.Params[k]; v != "" {
 				if len([]rune(v)) > 300 {
 					v = string([]rune(v)[:300]) + "…"

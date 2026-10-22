@@ -1,6 +1,7 @@
 package flows
 
 import (
+	"sort"
 	"strings"
 	"testing"
 )
@@ -30,20 +31,32 @@ func TestVisibleEscapeIsOneToOne(t *testing.T) {
 	}
 }
 
-// TestOnlyTheTaskIDIsExemptFromTheAgentTextScreen pins Param.ID: the screen in
-// FileRequest skips exactly the parameters marked as closed identifiers, and
-// that mark may sit only on a parameter whose pattern is the task-id pattern.
-func TestOnlyTheTaskIDIsExemptFromTheAgentTextScreen(t *testing.T) {
+// TestOnlyTheClosedIdentifiersAreExemptFromTheAgentTextScreen pins Param.ID:
+// the screen in FileRequest skips exactly the parameters marked as closed
+// identifiers. The set is a LEDGER (a new exemption is a decision), and every
+// member must carry a Pattern — an ID with no pattern would be free text that
+// skips the screen.
+func TestOnlyTheClosedIdentifiersAreExemptFromTheAgentTextScreen(t *testing.T) {
 	n := 0
+	var ids []string
 	for _, f := range Catalogue() {
 		for _, p := range f.Params {
-			if p.ID != (p.Pattern == taskRE) {
-				t.Errorf("%s.%s: ID=%v but its pattern is task-id=%v", f.Name, p.Name, p.ID, p.Pattern == taskRE)
-			}
 			n++
+			if !p.ID {
+				continue
+			}
+			ids = append(ids, f.Name+"."+p.Name)
+			if p.Pattern == nil || !strings.HasPrefix(p.Pattern.String(), "^") || !strings.HasSuffix(p.Pattern.String(), "$") {
+				t.Errorf("%s.%s is ID but its pattern %v is not an anchored closed shape", f.Name, p.Name, p.Pattern)
+			}
 		}
 	}
-	if n < 5 {
+	if n < 9 {
 		t.Fatalf("walked %d parameters", n)
+	}
+	want := "muse.poll.session,muse.poll.task,muse.send.marker,muse.send.session,muse.send.task,muse.send.wait"
+	sort.Strings(ids)
+	if got := strings.Join(ids, ","); got != want {
+		t.Fatalf("ID parameters = %s\n want %s. A new exemption from the agent-text screen is a decision.", got, want)
 	}
 }

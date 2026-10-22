@@ -76,7 +76,7 @@ func TestEveryParameterAnAgentComposesIsScreened(t *testing.T) {
 	screened := 0
 	for _, f := range Catalogue() {
 		for _, p := range f.Params {
-			if p.Pattern == taskRE { // the closed identifier (Param.ID; pinned in screen_test.go)
+			if p.ID { // a closed identifier (the ledger is pinned in screen_test.go)
 				ids = append(ids, f.Name+"."+p.Name)
 				continue
 			}
@@ -96,8 +96,8 @@ func TestEveryParameterAnAgentComposesIsScreened(t *testing.T) {
 		}
 	}
 	sort.Strings(ids)
-	if got := strings.Join(ids, ","); got != "muse.poll.task,muse.send.task" {
-		t.Fatalf("parameters exempt from the text screen = %s; want only the task ids. A new exemption is a decision.", got)
+	if got := strings.Join(ids, ","); got != "muse.poll.session,muse.poll.task,muse.send.marker,muse.send.session,muse.send.task,muse.send.wait" {
+		t.Fatalf("parameters exempt from the text screen = %s; want only the closed identifiers. A new exemption is a decision.", got)
 	}
 	if screened < 9 {
 		t.Fatalf("only %d screened cases ran; the catalogue walk is not walking", screened)
@@ -190,4 +190,33 @@ func TestRequestsLeaveAnAuditTrailWithoutTheText(t *testing.T) {
 func itoa(n int64) string {
 	b, _ := json.Marshal(n)
 	return string(b)
+}
+
+// TestADispatchsIdentifiersPassTheAgentTextScreen: a muse.send request carrying
+// a thread uuid, a marker and a wait is FILED — and the control shows the same
+// uuid placed in `text` IS refused by the screen's long-token rule, so what
+// lets it through in `session` is the Param.ID exemption, not a screen that
+// never fires on that string.
+func TestADispatchsIdentifiersPassTheAgentTextScreen(t *testing.T) {
+	s, _ := pgStore(t)
+	agent := seedAgent(t, s, 2, "req-agent-dispatch")
+	r := dispatchReq()
+	r.Params["text"] = "summarise the reading list"
+	delete(r.Params, "task") // a task id the agent's owner may not have; not under test here
+	q, err := s.FileRequest(agentCtx(2), agent, 2, "d", r, "dispatch")
+	if err != nil {
+		t.Fatalf("a dispatch request was refused: %v", err)
+	}
+	if q.Params["session"] != dispatchSession || q.Params["marker"] != dispatchMarker || q.Params["wait"] != dispatchWait {
+		t.Fatalf("filed params = %v", q.Params)
+	}
+	// The control: the screen refuses that exact uuid as agent text.
+	if why := AgentTextRefusal(dispatchSession, nil); !strings.Contains(why, "long token-shaped string") {
+		t.Fatalf("CONTROL: AgentTextRefusal(uuid) = %q; want the long-token refusal", why)
+	}
+	c := sendReq("laptop", "personal")
+	c.Params["text"] = "open " + dispatchSession
+	if _, err := s.FileRequest(agentCtx(2), agent, 2, "d", c, ""); !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "long token-shaped string") {
+		t.Fatalf("CONTROL: the uuid in text = %v; want the screen's long-token refusal", err)
+	}
 }

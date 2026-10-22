@@ -10,7 +10,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// The browser-flow verbs: `flow enqueue|ls|status` over /api/flows/jobs.
+// The browser-flow verbs: `flow enqueue|ls|status|cancel` over /api/flows/jobs.
 //
 // 🔴 THEY WORK ONLY WITH A PERSONAL TOKEN IN envToken. The server's flow API
 // (api.requireAPIToken) refuses the shared hook secret by construction — it
@@ -18,12 +18,15 @@ import (
 // drives a logged-in browser — so on a hook-configured host these verbs exit 3
 // (auth). Mint a personal token at /account/tokens.
 //
-// There is no `flow cancel` and no runner-token verb: cancelling and minting
-// runner tokens are on the /flows page (a browser session).
+// `flow cancel` withdraws a queued job or dismisses one that needs the
+// operator; a running job is the runner's until it reports (409). There is no
+// runner-token verb: minting a runner token is on the /flows page (a browser
+// session), because minting a credential is a person's act.
 
 const (
 	flowJobsRoute = "/api/flows/jobs"
 	flowJobRoute  = "/api/flows/jobs/{id}"
+	flowCancel    = "/api/flows/jobs/{id}/cancel"
 )
 
 type flowEnqueueBody struct {
@@ -39,7 +42,7 @@ func newFlowCmd(a *app) *cobra.Command {
 		Use:   "flow",
 		Short: "Queue and read browser-flow jobs (needs a personal API token)",
 	}
-	cmd.AddCommand(newFlowEnqueueCmd(a), newFlowLsCmd(a), newFlowStatusCmd(a))
+	cmd.AddCommand(newFlowEnqueueCmd(a), newFlowLsCmd(a), newFlowStatusCmd(a), newFlowCancelCmd(a))
 	return cmd
 }
 
@@ -54,7 +57,11 @@ func newFlowEnqueueCmd(a *app) *cobra.Command {
 		Short: "POST /api/flows/jobs — queue a catalogue flow for one of your hosts' browsers",
 		Long: `Queue a browser flow (muse.poll, muse.send) for HOST's runner to claim and run
 on browser INSTANCE. Parameters are --param name=value (repeatable): muse.send
-takes text (required), thread and task; muse.poll takes thread and task. A job
+takes text (required), thread or session, marker, wait and task; muse.poll
+takes thread or session, and task. session is a Muse thread uuid (lowercase),
+exclusive with thread; marker (md-<6 hex>) needs session, and the send
+completes only when the reply's last line is "DONE <marker>"; wait is the
+seconds to await the reply (1..3600). A job
 not claimed within --ttl (default 15m, 1m..24h) becomes "expired" and never
 runs late. Prints the job; follow it with ` + "`flow status <id>`" + `.`,
 		Args: cobra.ExactArgs(1),
@@ -113,6 +120,39 @@ func newFlowLsCmd(a *app) *cobra.Command {
 	return cmd
 }
 
+// flowJobPath expands route with a job id argument, refusing a non-positive
+// one before anything is sent.
+func flowJobPath(route, arg string) (string, error) {
+	id, err := strconv.ParseInt(strings.TrimSpace(arg), 10, 64)
+	if err != nil || id <= 0 {
+		return "", failf(exitUsage, "job id %q is not a positive integer (see `flow ls`)", arg)
+	}
+	return expandPath(route, map[string]string{"id": strconv.FormatInt(id, 10)})
+}
+
+func newFlowCancelCmd(a *app) *cobra.Command {
+	return &cobra.Command{
+		Use:   "cancel <id>",
+		Short: "POST /api/flows/jobs/{id}/cancel — withdraw a queued job, or dismiss one that needs you",
+		Long: `Cancel one of your flow jobs: a queued job becomes cancelled before any
+runner claims it, and a needs_operator job is dismissed. A running or finished
+job cannot be cancelled (409, exit 5; stop the runner to stop a running one
+now). Another user's id is "not found" (exit 4). Prints the job.`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			path, err := flowJobPath(flowCancel, args[0])
+			if err != nil {
+				return err
+			}
+			body, err := a.call(cmd.Context(), request{method: http.MethodPost, path: path, cred: credHook})
+			if err != nil {
+				return err
+			}
+			return a.emit(body)
+		},
+	}
+}
+
 func newFlowStatusCmd(a *app) *cobra.Command {
 	return &cobra.Command{
 		Use:   "status <id>",
@@ -123,11 +163,7 @@ expired (not claimed before its ttl), cancelled. Another user's id is "not
 found" (exit 4).`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			id, err := strconv.ParseInt(strings.TrimSpace(args[0]), 10, 64)
-			if err != nil || id <= 0 {
-				return failf(exitUsage, "job id %q is not a positive integer (see `flow ls`)", args[0])
-			}
-			path, err := expandPath(flowJobRoute, map[string]string{"id": strconv.FormatInt(id, 10)})
+			path, err := flowJobPath(flowJobRoute, args[0])
 			if err != nil {
 				return err
 			}
