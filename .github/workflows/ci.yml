@@ -672,7 +672,7 @@ jobs:
           node verdict.mjs --all "${picked[@]}"
 
   # ---------------------------------------------------------------------------
-  # IMAGE PUBLISHING TO GHCR (ghcr.io/<owner>/{muster,claude-code-agent,hermes-agent}).
+  # IMAGE PUBLISHING TO GHCR (ghcr.io/<owner>/{muster,claude-code-agent}).
   #
   # 🔴 THIS ADDS A REGISTRY; IT DOES NOT MOVE OFF HARBOR. The existing
   # deployment pulls from a private Harbor, which devrc's `muster-ops release`
@@ -681,12 +681,15 @@ jobs:
   #
   # TAGS ARE THE HARBOR TAGS, so a deploy can pin either registry the same way:
   #   claude-code-agent:<7-char commit sha>               (muster-ops' tag)
-  #   hermes-agent:hermes-<pin8>-muster-<7-char sha>      (the image flake's imageTag)
   #   muster:<MAJOR.MINOR.PATCH>                          on a v<version> tag push,
   #       stamped with that VERSION, as muster-ops does;
   #   muster:<7-char sha>                                 on every push to main,
   #       stamped VERSION=<sha>. The semver is minted by muster-ops at release
   #       time, outside this repository, so a main push has no version to give it.
+  #
+  # ⚠ THE hermes-agent IMAGE IS DELIBERATELY NOT PUBLISHED HERE: no GHCR
+  # consumer runs the hermes kind, and its nix build costs ~6 minutes per run.
+  # It stays Harbor-only, via `make hermes-image`.
   #
   # 🔴 PUSHES ONLY ON A `push` EVENT (main, or a v* tag), AND ONLY AFTER EVERY
   # TEST JOB ABOVE IS GREEN (`publish-gate`). A pull request builds every image
@@ -698,7 +701,7 @@ jobs:
   # that already exists fails the job.
   #
   # Local: make image IMAGE=muster VERSION=<v>; docker build -f
-  # images/claude-code-agent/Dockerfile .; make hermes-image. Pushing is CI's.
+  # images/claude-code-agent/Dockerfile . Pushing is CI's.
   publish-gate:
     name: publish gate (every test job green)
     needs: [build, test, leakscan, nix, css, ccd-tmux, mirror-tmux, ccd-image, e2e]
@@ -801,56 +804,3 @@ jobs:
       - name: push
         if: ${{ github.event_name == 'push' }}
         run: .github/scripts/ghcr-push.sh push 'claude-code-agent:${{ steps.tag.outputs.short }}' '${{ steps.tag.outputs.ref }}' reuse
-
-  image-hermes-agent:
-    name: hermes-agent image (GHCR)
-    needs: publish-gate
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-    steps:
-      - uses: actions/checkout@v6
-
-      - uses: cachix/install-nix-action@v31
-        with:
-          extra_nix_config: |
-            experimental-features = nix-command flakes
-
-      # `make hermes-image` first refuses an image whose hermesd is not the one
-      # muster's own flake builds, then builds and `docker load`s it.
-      - name: make hermes-image
-        run: make hermes-image
-
-      # 🔴 THE TAG IS READ FROM THE FLAKE, AND ITS COMMIT HALF IS ASSERTED. It
-      # names hermesd's revision (the flake's `self.shortRev`); if that came out
-      # `-dirty` or `unknown`, or another commit, the tag would not name the
-      # commit this run built, so the job stops instead of publishing it.
-      - name: the tag this run publishes
-        id: tag
-        run: |
-          t="$(nix eval --raw ./images/hermes-agent#imageTag)"
-          echo "imageTag: $t"
-          case "$t" in
-            hermes-*-muster-"${GITHUB_SHA::7}") ;;
-            *) echo "::error::imageTag '$t' does not end in -muster-${GITHUB_SHA::7}"; exit 1 ;;
-          esac
-          docker image inspect "hermes-agent:$t" >/dev/null
-          echo "tag=$t" >> "$GITHUB_OUTPUT"
-          echo "ref=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/hermes-agent:$t" >> "$GITHUB_OUTPUT"
-
-      - name: log in to ghcr.io
-        if: ${{ github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository }}
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: probe the tag it would push (pull request; pushes nothing)
-        if: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
-        run: .github/scripts/ghcr-push.sh probe '${{ steps.tag.outputs.ref }}'
-
-      - name: push
-        if: ${{ github.event_name == 'push' }}
-        run: .github/scripts/ghcr-push.sh push 'hermes-agent:${{ steps.tag.outputs.tag }}' '${{ steps.tag.outputs.ref }}' reuse
