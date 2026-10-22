@@ -284,11 +284,11 @@ func TestAnAgentAwaitingApprovalIsWaitingOnAnAsk(t *testing.T) {
 	if !strings.Contains(openTag(t, blocked, `id="agent-7"`), `data-wait="ask"`) {
 		t.Errorf("an agent awaiting approval is not waiting on an ask: %s", openTag(t, blocked, `id="agent-7"`))
 	}
-	if !strings.Contains(blocked, `hx-get="/ui/agents/7/status?awaiting=1"`) {
+	if !strings.Contains(blocked, `hx-get="/ui/agents/7/status?awaiting=1&amp;work=0.0"`) {
 		t.Errorf("the status poll does not carry the card's awaiting state")
 	}
 	free := renderNode(t, agentCard(AgentCardView{ID: 8, Name: "free", Status: "running"}))
-	if strings.Contains(openTag(t, free, `id="agent-8"`), "data-wait") || !strings.Contains(free, `hx-get="/ui/agents/8/status?awaiting=0"`) {
+	if strings.Contains(openTag(t, free, `id="agent-8"`), "data-wait") || !strings.Contains(free, `hx-get="/ui/agents/8/status?awaiting=0&amp;work=0.0"`) {
 		t.Errorf("a free agent is waiting on something, or its poll lacks awaiting=0")
 	}
 	if !strings.Contains(agentsListTrigger, AgentsAwaitingEvent+" from:body") {

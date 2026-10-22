@@ -105,6 +105,9 @@ type Server struct {
 	// filed which request, and which agents report a blocked terminal. See
 	// approvals.go.
 	approvals approvalLedger
+	// agentWork is each dispatched claude-code agent's live work counts, as its
+	// pod last reported them (agent_work.go).
+	agentWork agentWorkLedger
 	// approvalGatePort is the queue the approval relay files through: a
 	// standalone deployment may arm the relay without arming any router
 	// behaviour. See UseApprovalGate.
@@ -544,6 +547,7 @@ func (s *Server) registerAll(mux Mux) {
 	s.registerConnectorRoutes(mux)
 	s.registerCredentialRoutes(mux)
 	s.registerApprovalRoutes(mux)
+	s.registerAgentWorkRoutes(mux)
 	s.registerMirrorRoutes(mux)
 	// Browser flows (internal/flows): /flows, /api/flows/jobs, /runner/flows/*.
 	s.registerFlowRoutes(mux)

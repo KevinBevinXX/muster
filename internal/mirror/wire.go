@@ -36,6 +36,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/ZacxDev/muster/internal/ccsubagents"
 	"github.com/ZacxDev/muster/internal/cctranscript"
 )
 
@@ -656,7 +657,7 @@ const (
 	// tail of the transcript file it is read from. The file is never sent
 	// wholesale: a viewer gets the recent conversation, not tens of MiB.
 	MaxBackfillEvents = 300
-	BackfillWindow    = 4 << 20
+	BackfillWindow    = ccsubagents.BackfillWindow // defined in the leaf ccd links too
 	// MaxPaste bounds a paste's text.
 	MaxPaste = 16 << 10
 	// MaxIndexPrompts and MaxIndexBytes bound a prompt index (Msg.Prompts): at

@@ -5,8 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"regexp"
 	"time"
+
+	"github.com/ZacxDev/muster/internal/ccsubagents"
 )
 
 // THE SUBAGENT CARDS (tunnel v2): what a mirrored Claude Code session's
@@ -59,8 +60,9 @@ const (
 // here.
 const (
 	// MaxSubagents bounds one view's summary list: the newest (by their Agent
-	// call's place in the transcript) are kept.
-	MaxSubagents = 64
+	// call's place in the transcript) are kept. Defined in
+	// internal/ccsubagents (the leaf ccd links too), re-exported here.
+	MaxSubagents = ccsubagents.MaxSubagents
 	// MaxSubagentText bounds a summary's description, type and latest step, and
 	// a tail step's text, in RUNES (CleanText).
 	MaxSubagentText = 200
@@ -73,20 +75,17 @@ const (
 	MaxSubagentTailBytes = 64 << 10
 )
 
-// subagentTools are the tool names whose calls spawn a subagent: "Agent"
-// (Claude Code 2.1), and "Task", its earlier name.
-var subagentTools = map[string]bool{"Agent": true, "Task": true}
+// IsSubagentTool reports whether a tool call of this name spawns a subagent
+// ("Agent", or "Task", its earlier name). Both halves read it: the host to
+// track the calls, muster to draw them as cards. It is
+// ccsubagents.IsSubagentTool, re-exported.
+func IsSubagentTool(name string) bool { return ccsubagents.IsSubagentTool(name) }
 
-// IsSubagentTool reports whether a tool call of this name spawns a subagent.
-// Both halves read it: the host to track the calls, muster to draw them as
-// cards.
-func IsSubagentTool(name string) bool { return subagentTools[name] }
-
-// The values of Subagent.State.
+// The values of Subagent.State (ccsubagents', re-exported).
 const (
-	SubagentRunning = "running"
-	SubagentDone    = "done"
-	SubagentFailed  = "failed"
+	SubagentRunning = ccsubagents.Running
+	SubagentDone    = ccsubagents.Done
+	SubagentFailed  = ccsubagents.Failed
 )
 
 // Subagent is one subagent's summary (Msg.Subagents).
@@ -102,7 +101,7 @@ type Subagent struct {
 	// Background: launched to run in the background.
 	Background bool `json:"background,omitempty"`
 	// State is SubagentRunning, SubagentDone or SubagentFailed (the host's
-	// rule: internal/mirrorhost's subagentState).
+	// rule: internal/ccsubagents' State).
 	State string `json:"state"`
 	// Started and Updated are the agent's first and last row (Unix ms, 0 =
 	// unknown): its elapsed time is Updated-Started once it ended, now-Started
@@ -114,14 +113,9 @@ type Subagent struct {
 	Last string `json:"last,omitempty"`
 }
 
-// SubagentStep is one step of a tail.
-type SubagentStep struct {
-	// Tool is the tool a call step ran; "" for a text step.
-	Tool string `json:"tool,omitempty"`
-	// Text is the call's one-line target, or the text's first line. Redacted.
-	Text string `json:"text"`
-	At   int64  `json:"at,omitempty"`
-}
+// SubagentStep is one step of a tail: ccsubagents.Step, whose fields and JSON
+// are {tool, text, at}.
+type SubagentStep = ccsubagents.Step
 
 // SubagentTail is a tail request's answer: the newest steps, oldest first, and
 // whether earlier ones were left out.
@@ -131,14 +125,11 @@ type SubagentTail struct {
 	More  bool           `json:"more,omitempty"`
 }
 
-// subagentIDPattern is a subagent id or a tool_use id as the wire carries one:
-// the CLI's are hex (a3f…) and toolu_… — bounded so a summary's worst case is
-// known, and safe as one path element on the host.
-var subagentIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`)
-
 // ValidSubagentID reports whether id is a subagent (or tool_use) id the wire
-// carries.
-func ValidSubagentID(id string) bool { return subagentIDPattern.MatchString(id) }
+// carries: the CLI's are hex (a3f…) and toolu_…, bounded so a summary's worst
+// case is known, and safe as one path element on the host. It is
+// ccsubagents.ValidID, re-exported.
+func ValidSubagentID(id string) bool { return ccsubagents.ValidID(id) }
 
 // NormalizeSubagents is in as the wire carries it: entries with a valid agent
 // and tool id, one per tool id (the first), a known state (else running), text

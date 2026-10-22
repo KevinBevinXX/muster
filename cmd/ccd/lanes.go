@@ -354,6 +354,12 @@ type laneTerminal interface {
 	KillSession(ctx context.Context) error
 }
 
+// panePIDReader is a terminal that can name its pane's process
+// (tmuxTerminal.PanePID).
+type panePIDReader interface {
+	PanePID(ctx context.Context, ref paneRef) (int, error)
+}
+
 // lane is one explicit session's CLI.
 type lane struct {
 	id, key, model string
@@ -563,6 +569,11 @@ func (l *lanes) newLane(id, key, model, workdir string) *lane {
 	}
 	srv := l.newServer(term)
 	srv.supervisedBy(sup)
+	// The lane CLI's own process, for the work counter (work.go): its pane's
+	// process is the CLI (`env CCD_LANE=… claude` execs it).
+	if pp, ok := term.(panePIDReader); ok {
+		srv.cliPID = func(ctx context.Context) (int, error) { return sup.runningPID(ctx, pp.PanePID) }
+	}
 	srv.blockedSrc = id
 	return &lane{id: id, key: key, model: model, workdir: workdir, srv: srv, sup: sup, term: term,
 		done: make(chan struct{}), lastUsed: l.now()}

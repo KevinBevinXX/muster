@@ -63,6 +63,8 @@ func TestEveryBroadcastCallSiteIsClassified(t *testing.T) {
 		"(*Server).handlePluginTask → broadcast(ctx)",
 		"(*Server).handleAPITaskEdit → broadcast(r.Context())",
 		"(*Server).handleAgentBlocked → broadcast(r.Context())",
+		// The pod's live work counts (agent_work.go): the relay agent's request.
+		"(*Server).handleAgentWork → broadcast(r.Context())",
 		"(*Server).handleAgentTaskComment → broadcast(r.Context())",
 		"(*Server).handleAgentTaskStatus → broadcast(r.Context())",
 		"(*Server).persistTurn → broadcast(ctx)",

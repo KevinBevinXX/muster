@@ -83,6 +83,7 @@ func (s *Server) stopChiefAgentOnComplete(ctx context.Context, n notes.Note) {
 			return
 		}
 		s.logger.Printf("tasks: complete %d: stopped the chief's agent %d (%s)", n.ID, a.ID, a.Name)
+		s.clearAgentWork(a.ID)
 		s.agentChangedFor(a.OwnerID, a.Name)
 	})
 }

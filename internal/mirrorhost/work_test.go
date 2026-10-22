@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ZacxDev/muster/internal/ccsubagents"
 	"github.com/ZacxDev/muster/internal/cctasks"
 	"github.com/ZacxDev/muster/internal/mirror"
 )
@@ -51,9 +52,9 @@ func agentsKilledRow(sec int) string {
 
 // ledgerAt reads f's transcript into a fresh ledger (or l) and returns its
 // running count at base+nowSec.
-func ledgerRunning(l *workLedger, nowSec int) int {
-	l.read()
-	return l.running(atT(nowSec))
+func ledgerRunning(l *ccsubagents.Ledger, nowSec int) int {
+	l.Read()
+	return l.Running(atT(nowSec))
 }
 
 // TestTheLedgerCountsRunningAgentCalls: each way an Agent call stops running,
@@ -61,7 +62,7 @@ func ledgerRunning(l *workLedger, nowSec int) int {
 // at each step are distinct (3, 2, …) so a mutant that ignores a signal shows.
 func TestTheLedgerCountsRunningAgentCalls(t *testing.T) {
 	f := newSAFixture(t)
-	l := newWorkLedger(f.transcript, atMS(1))
+	l := ccsubagents.NewLedger(f.transcript, atMS(1))
 	// Three calls: a sync one, two background ones (launched).
 	f.appendTo(f.transcript, timedCall("toolu_sync", 10, false))
 	f.appendTo(f.transcript, timedCall("toolu_bg1", 11, true))
@@ -93,7 +94,7 @@ func TestTheLedgerCountsRunningAgentCalls(t *testing.T) {
 // launched before it — but not one launched after.
 func TestTheLedgerClosesKilledAgents(t *testing.T) {
 	f := newSAFixture(t)
-	l := newWorkLedger(f.transcript, atMS(1))
+	l := ccsubagents.NewLedger(f.transcript, atMS(1))
 	for i, id := range []string{"toolu_k1", "toolu_k2", "toolu_k3"} {
 		f.appendTo(f.transcript, timedCall(id, 10+2*i, true))
 		f.appendTo(f.transcript, parentResultRow(id, 11+2*i, fmt.Sprintf("a00000000000000c%d", i+1), true, false))
@@ -123,11 +124,11 @@ func TestTheLedgerDropsCallsOlderThanTheCLI(t *testing.T) {
 	f := newSAFixture(t)
 	f.appendTo(f.transcript, timedCall("toolu_old", 10, true))
 	f.appendTo(f.transcript, timedCall("toolu_new", 30, true))
-	if got := ledgerRunning(newWorkLedger(f.transcript, atMS(20)), 31); got != 1 {
+	if got := ledgerRunning(ccsubagents.NewLedger(f.transcript, atMS(20)), 31); got != 1 {
 		t.Fatalf("with the CLI started between them: running = %d, want 1", got)
 	}
 	// Control: a CLI that started before both hosts both.
-	if got := ledgerRunning(newWorkLedger(f.transcript, atMS(5)), 31); got != 2 {
+	if got := ledgerRunning(ccsubagents.NewLedger(f.transcript, atMS(5)), 31); got != 2 {
 		t.Fatalf("with the CLI started before both: running = %d, want 2", got)
 	}
 }
@@ -136,7 +137,7 @@ func TestTheLedgerDropsCallsOlderThanTheCLI(t *testing.T) {
 // mid-write) is not read; it is read whole once its newline lands.
 func TestTheLedgerNeverReadsATornLine(t *testing.T) {
 	f := newSAFixture(t)
-	l := newWorkLedger(f.transcript, atMS(1))
+	l := ccsubagents.NewLedger(f.transcript, atMS(1))
 	f.appendTo(f.transcript, timedCall("toolu_t1", 10, true))
 	whole := timedCall("toolu_t2", 11, true)
 	f.appendTo(f.transcript, whole[:len(whole)/2])
@@ -160,7 +161,7 @@ func TestTheLedgerStartsWithinTheBackfillWindow(t *testing.T) {
 		f.appendTo(f.transcript, pad)
 	}
 	f.appendTo(f.transcript, timedCall("toolu_late", 12, true))
-	if got := ledgerRunning(newWorkLedger(f.transcript, atMS(1)), 13); got != 1 {
+	if got := ledgerRunning(ccsubagents.NewLedger(f.transcript, atMS(1)), 13); got != 1 {
 		t.Fatalf("running = %d, want 1 (only the call inside the backfill window)", got)
 	}
 }

@@ -166,6 +166,7 @@ POST /agent/approvals
 POST /agent/blocked
 POST /agent/connectors/{name}/request
 POST /agent/task/comment
+POST /agent/work
 POST /agents
 POST /agents/pins
 POST /agents/pins/delete

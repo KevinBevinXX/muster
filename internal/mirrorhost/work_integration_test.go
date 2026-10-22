@@ -87,6 +87,12 @@ func TestTmuxCountsAFakeClaudesBackgroundShell(t *testing.T) {
 	must(t, os.WriteFile(filepath.Join(bin, "claude"), []byte(script), 0o755))
 	r.run("new-session", "-d", "-s", "work", "-c", cwd, filepath.Join(bin, "claude"))
 
+	// 🔴 WAIT FOR THE FAKE CLI TO BE UP BEFORE THE FIRST READ. new-session
+	// returns once tmux has forked the pane, not once the script has written its
+	// sessions file and started its sleep; a read before that sees a pane that
+	// is not (yet) a Claude window and fails the instrument check — a race CI
+	// lost once. Ready is observable: sleep.pid and the sessions file exist.
+	waitFakeClaude(t, dir, filepath.Join(cfg, "sessions"))
 	tm := Tmux{Socket: r.sock, Claude: ClaudeLocator{Home: cfg}}
 	read := func() (cctasks.Shells, map[string]mirror.WindowWork) {
 		ws, err := tm.Windows(context.Background())
@@ -134,6 +140,25 @@ func TestTmuxCountsAFakeClaudesBackgroundShell(t *testing.T) {
 			t.Fatalf("the killed sleep is still counted: %+v", sh)
 		}
 		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+// waitFakeClaude waits, bounded, until a fake claude script is up: it wrote
+// dir/sleep.pid and a sessions file under sessions. It fails with what is
+// missing when it is not up within 10 s.
+func waitFakeClaude(t *testing.T, dir, sessions string) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		_, errPID := os.Stat(filepath.Join(dir, "sleep.pid"))
+		files, _ := filepath.Glob(filepath.Join(sessions, "*.json"))
+		if errPID == nil && len(files) > 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the fake claude did not come up in 10s: sleep.pid: %v; sessions files: %v", errPID, files)
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }
 

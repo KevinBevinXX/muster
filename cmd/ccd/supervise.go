@@ -257,6 +257,21 @@ func (s *supervisor) cliPID(ctx context.Context, panePID func(context.Context, p
 	return panePID(ctx, ref)
 }
 
+// runningPID is the pid of the CLI's pane process NOW, read with panePID, or
+// errNotStarted before the CLI's first start — it never waits (the work
+// counter samples on a timer and must not block on a CLI still starting).
+func (s *supervisor) runningPID(ctx context.Context, panePID func(context.Context, paneRef) (int, error)) (int, error) {
+	select {
+	case <-s.firstStart:
+	default:
+		return 0, errNotStarted
+	}
+	return panePID(ctx, s.ref())
+}
+
+// errNotStarted: the CLI has not been started yet.
+var errNotStarted = errors.New("the CLI has not been started")
+
 // startedRef is ref once the CLI has been started, waiting for that first start
 // (until ctx ends) when it has not been yet.
 //

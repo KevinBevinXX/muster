@@ -135,6 +135,9 @@ type server struct {
 	screenBlocked bool
 	clock         func() time.Time
 	pending       *pendingTurn
+	// work reports the pod's work counts to muster (work.go); set on the
+	// primary's server only, nil when the pod is not offered muster's surface.
+	work *workReporter
 
 	// lanes runs a CLI per explicit muster session (lanes.go); nil when ccd
 	// does not supervise, and on a lane's own server.
@@ -146,6 +149,12 @@ type server struct {
 	// SessionStart is recorded only when THAT process fired it (proctree.go);
 	// nil records none.
 	primaryPID func(ctx context.Context) (int, error)
+	// cliPID is the pid of THIS server's CLI process now (its tmux pane's) —
+	// the primary's or a lane's — without waiting for a start; nil when ccd
+	// does not know it. The work counter (work.go) reads the CLI's own sessions
+	// file by it: a hook cannot tell this CLI from a `claude` a tool call ran
+	// inside it (proctree.go), a pid can.
+	cliPID func(ctx context.Context) (int, error)
 
 	// gateway hands a gateway-runtime turn to the runtime beside ccd
 	// (gateway.go); nil when the pod runs none.
@@ -320,6 +329,7 @@ func (s *server) supervisePrimary(sup *supervisor, panePID func(context.Context,
 	s.supervisedBy(sup)
 	s.recordsPrimary = true
 	s.primaryPID = func(ctx context.Context) (int, error) { return sup.cliPID(ctx, panePID) }
+	s.cliPID = func(ctx context.Context) (int, error) { return sup.runningPID(ctx, panePID) }
 }
 
 // supervisedBy makes sup the CLI s serves, the primary's or a lane's: turns

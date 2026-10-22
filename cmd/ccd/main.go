@@ -84,6 +84,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/ZacxDev/muster/internal/cctasks"
 )
 
 const defaultListen = ":18789"
@@ -267,6 +269,12 @@ func serve() error {
 	// serves, so onHook never races its assignment.
 	if base, tok := strings.TrimRight(os.Getenv(envConnectURL), "/"), os.Getenv(envAgentToken); base != "" && tok != "" {
 		srv.blocked = newBlockedReporter(base, tok)
+		// The live work counts on the agent's card (work.go), on the same token.
+		counter := &podCounter{configDir: configDir, root: procRoot}
+		srv.work = newWorkReporter(base, tok, func() cctasks.Work {
+			w, _ := counter.work(context.Background(), srv.workServers())
+			return w
+		}, log.Printf)
 	}
 	if up := os.Getenv("CCD_GATEWAY_UPSTREAM"); up != "" {
 		// A missing or reused runtime credential refuses gateway turns only;
@@ -345,6 +353,9 @@ func serve() error {
 	}
 	if srv.blocked != nil {
 		go srv.blocked.run(ctx)
+	}
+	if srv.work != nil {
+		go srv.work.run(ctx)
 	}
 	// The agent's repository is checked out before the CLI starts, and the CLI
 	// starts in it (checkout.go). No repository: the CLI starts at once, as

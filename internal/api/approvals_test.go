@@ -168,6 +168,7 @@ var relayRoutes = []struct{ method, path, body string }{
 	{"GET", "/agent/approvals/req-1", ""},
 	{"DELETE", "/agent/approvals/req-1", ""},
 	{"POST", "/agent/blocked", `{"blocked":true}`},
+	{"POST", "/agent/work", `{"subagents":3,"shells":2}`},
 }
 
 // 🔴 THE SHARED TOKENS ARE REFUSED BY NAME — even though an agent row's token

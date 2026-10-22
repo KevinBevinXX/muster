@@ -59,6 +59,12 @@ func normalizeWork(w WindowWork) WindowWork {
 	return w
 }
 
+// NormalizeWorkEntry is normalizeWork for a count that is not a window's: a
+// dispatched claude-code agent's, which its pod reports on POST /agent/work
+// (internal/api/agent_work.go). The same clamp, so the two kinds of card can
+// never show different bounds.
+func NormalizeWorkEntry(w WindowWork) WindowWork { return normalizeWork(w) }
+
 // NormalizeWork is in restricted to windows (a host cannot report work for a
 // window it does not list), each entry through normalizeWork, entries with
 // nothing to show dropped; nil when nothing is left. Both halves apply it: the
