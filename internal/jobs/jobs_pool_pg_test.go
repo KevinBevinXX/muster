@@ -8,8 +8,26 @@ import (
 	"github.com/ZacxDev/muster/internal/agents"
 )
 
-// TestThePGStoreCountsActiveJobsAndFindsAKey: ActiveCounts splits each named
-// agent's unfinished jobs into queued and running — an agent whose jobs are all
+// countsSeen is the queued and running counts CreateChosen gives its choice for
+// candidates, read through that production path: the choice records nothing
+// (it refuses), so the read has no effect on the store.
+func countsSeen(t *testing.T, s *PGStore, uid int64, candidates []int64) map[int64]ActiveCount {
+	t.Helper()
+	stop := errors.New("countsSeen: record nothing")
+	var seen map[int64]ActiveCount
+	_, _, err := s.CreateChosen(as(uid), NewJob{Prompt: "p", TimeoutSeconds: 60}, candidates,
+		func(active map[int64]ActiveCount) (NewJob, error) {
+			seen = active
+			return NewJob{}, stop
+		})
+	if err != stop {
+		t.Fatalf("CreateChosen = %v, want the choice's refusal", err)
+	}
+	return seen
+}
+
+// TestThePGStoreCountsActiveJobsAndFindsAKey: the counts CreateChosen's choice
+// is given (countsSeen) split each candidate agent's unfinished jobs into queued and running — an agent whose jobs are all
 // finished, an agent not asked about, and another owner's agent are all absent
 // (row-level security). ByIdempotencyKey answers the caller's job, ErrNotFound
 // for another owner's key or none. The worker_pool a job was submitted to is
@@ -55,16 +73,10 @@ func TestThePGStoreCountsActiveJobsAndFindsAKey(t *testing.T) {
 			t.Fatalf("finish %d: %v %v", id, ok, err)
 		}
 	}
-	got, err := s.ActiveCounts(as(1), []int64{a.ID, b.ID, m.ID})
+	got := countsSeen(t, s, 1, []int64{a.ID, b.ID, m.ID})
 	// (c's jobs, the pr one included, are not asked about.)
-	if err != nil {
-		t.Fatal(err)
-	}
 	if len(got) != 1 || got[a.ID] != (ActiveCount{Queued: 1, Running: 1}) {
-		t.Fatalf("ActiveCounts = %v, want only %d: {Queued:1 Running:1}", got, a.ID)
-	}
-	if got, err := s.ActiveCounts(as(1), nil); err != nil || len(got) != 0 {
-		t.Fatalf("ActiveCounts(nil) = %v, %v", got, err)
+		t.Fatalf("the choice was given %v, want only %d: {Queued:1 Running:1}", got, a.ID)
 	}
 	j, err := s.ByIdempotencyKey(as(1), "count-a1")
 	if err != nil || j.ID != a1.ID || j.WorkerPool != "reviewers" || j.Agent != "job-count-a" {
@@ -161,8 +173,8 @@ func TestCreateChosenRecordsOnlyACandidateAndAnswersAKeyWithoutChoosing(t *testi
 	}); err != refusal {
 		t.Fatalf("the choice's error came back as %v, want it unchanged", err)
 	}
-	got, err := s.ActiveCounts(as(1), []int64{a.ID, b.ID, other.ID})
-	if err != nil || len(got) != 2 || got[a.ID].Active() != 1 || got[b.ID].Active() != 1 {
-		t.Fatalf("after the refusals: %v, %v; want one job each on a and b and none on x", got, err)
+	got := countsSeen(t, s, 1, []int64{a.ID, b.ID, other.ID})
+	if len(got) != 2 || got[a.ID].Active() != 1 || got[b.ID].Active() != 1 {
+		t.Fatalf("after the refusals: %v; want one job each on a and b and none on x", got)
 	}
 }

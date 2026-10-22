@@ -561,24 +561,15 @@ type ActiveCount struct {
 // Active is Queued + Running: what MaxActivePerAgent bounds.
 func (c ActiveCount) Active() int { return c.Queued + c.Running }
 
-// ActiveCounts counts the caller's queued and running jobs per agent: the read
-// CreateChosen gives its choice, outside the transaction (an agent with none is
-// absent).
-func (s *PGStore) ActiveCounts(ctx context.Context, agentIDs []int64) (map[int64]ActiveCount, error) {
-	return activeCounts(ctx, s.pool, agentIDs)
-}
-
-// querier is a pool or a transaction.
-type querier interface {
-	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
-}
-
-func activeCounts(ctx context.Context, q querier, agentIDs []int64) (map[int64]ActiveCount, error) {
+// activeCounts counts the caller's queued and running jobs per agent, inside
+// CreateChosen's transaction and under its locks: what its choice is given. An
+// agent with none is absent.
+func activeCounts(ctx context.Context, tx pgx.Tx, agentIDs []int64) (map[int64]ActiveCount, error) {
 	out := map[int64]ActiveCount{}
 	if len(agentIDs) == 0 {
 		return out, nil
 	}
-	rows, err := q.Query(ctx, `SELECT agent_id, count(*) FILTER (WHERE status = 'queued'),
+	rows, err := tx.Query(ctx, `SELECT agent_id, count(*) FILTER (WHERE status = 'queued'),
 		count(*) FILTER (WHERE status = 'running')
 		FROM jobs WHERE agent_id = ANY($1) AND status IN ('queued', 'running') GROUP BY agent_id`, agentIDs)
 	if err != nil {
