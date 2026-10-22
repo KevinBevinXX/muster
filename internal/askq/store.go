@@ -490,6 +490,29 @@ func (s *Store) TypingFailed(key Key, f Failure) (Entry, error) {
 	return en.snapshot(), nil
 }
 
+// Dismissing reports whether the question at key (key.Owner is the request's
+// own owner; another owner's is ErrNotFound) may be dismissed from muster: an
+// open question no answer is being typed into (ErrBusy for one that is, and
+// for one whose last typing's outcome is not known yet — a host may still be
+// typing it), and not resolved (ErrClosed).
+func (s *Store) Dismissing(key Key) (Entry, error) {
+	var fire []Entry
+	defer func() { s.notify(fire) }()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.sweepLocked(&fire)
+	en, ok := s.byID[s.byKey[key]]
+	switch {
+	case !ok:
+		return Entry{}, ErrNotFound
+	case !en.State.Open():
+		return en.snapshot(), ErrClosed
+	case en.State == Typing, s.now().Before(en.driveUntil):
+		return en.snapshot(), ErrBusy
+	}
+	return en.snapshot(), nil
+}
+
 // Gone expires every open question of (owner, source, scope, session) — the
 // session is no longer running anywhere its host lists — with why as the
 // Note. It returns how many it expired.

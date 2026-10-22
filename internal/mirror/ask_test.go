@@ -147,6 +147,101 @@ func TestAnAnswerReachesTheHostAndItsRefusalComesBack(t *testing.T) {
 	}
 }
 
+// TestADismissalIsOneEscapesWorthOfMessage: a host that advertised AskCancel
+// is sent the window — and nothing else, nothing that could be typed; each
+// kind of refusal it names is its own error; success carries its note ("" or
+// the host's). No step-up: a stale sign-in still dismisses (an operator
+// decision; the page confirms). The controls: a host that did not advertise
+// it, or is read-only, is sent nothing.
+func TestADismissalIsOneEscapesWorthOfMessage(t *testing.T) {
+	r := newRig(t)
+	tok, _ := r.store.mint(t, 1, "hd")
+	hi := winHello("hd", true, mirror.Window{Session: "work", ID: "@1", Index: 0, Active: true, Claude: true, ClaudeSession: "sess-a"})
+	hi.AskAnswer, hi.AskCancel = true, true
+	raw, err := r.rawConnect(t, tok, hi)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.online(t, 1, "hd", "work")
+	if hs := r.svc.Hosts(asUser(1)); len(hs) != 1 || !hs[0].AskCancel {
+		t.Fatalf("the host's AskCancel is not in its view: %+v", hs)
+	}
+	all := []error{mirror.ErrAskNoPicker, mirror.ErrAskBusy, mirror.ErrAskUnrecognised, mirror.ErrAskUnsupported, mirror.ErrAskRefused}
+	for _, tc := range []struct {
+		refusal, note string
+		want          error
+	}{
+		{"", "", nil},
+		{"", "Esc sent; the terminal still shows the question.", nil},
+		{mirror.AskRefusalNoPicker, "", mirror.ErrAskNoPicker},
+		{mirror.AskRefusalBusy, "", mirror.ErrAskBusy},
+		{mirror.AskRefusalUnrecognised, "", mirror.ErrAskUnrecognised},
+		{mirror.AskRefusalUnsupported, "", mirror.ErrAskUnsupported},
+		{"a-kind-this-muster-does-not-know", "", mirror.ErrAskRefused},
+	} {
+		seen := len(raw.of(mirror.TypeCancelAsk))
+		type out struct {
+			note string
+			err  error
+		}
+		done := make(chan out, 1)
+		// A stale sign-in: a dismissal needs none fresh.
+		go func() { n, err := r.svc.CancelAsk(asStaleUser(1), "hd", "work", "@1"); done <- out{n, err} }()
+		var asked mirror.Msg
+		eventually(t, "the host is asked to dismiss", func() bool {
+			if got := raw.of(mirror.TypeCancelAsk); len(got) > seen {
+				asked = got[seen]
+				return true
+			}
+			return false
+		})
+		// The window, and nothing else.
+		if want := (mirror.Msg{Type: mirror.TypeCancelAsk, ID: asked.ID, Session: "work", Window: "@1"}); !reflect.DeepEqual(asked, want) {
+			t.Fatalf("the host was sent %+v, want only %+v", asked, want)
+		}
+		why := ""
+		if tc.want != nil {
+			why = "refused"
+		}
+		raw.write(t, mirror.Msg{Type: mirror.TypeAskCancelled, ID: asked.ID, Error: why, Refusal: tc.refusal, Text: tc.note})
+		got := <-done
+		if tc.want == nil {
+			if got.err != nil || got.note != tc.note {
+				t.Errorf("success (note %q): %q, %v", tc.note, got.note, got.err)
+			}
+			continue
+		}
+		for _, e := range all {
+			if errors.Is(got.err, e) != (e == tc.want) {
+				t.Errorf("refusal %q: muster heard %v; want %v and none of the others", tc.refusal, got.err, tc.want)
+				break
+			}
+		}
+	}
+	// The controls: an AskAnswer-only (older) host, and a read-only one.
+	for _, c := range []struct {
+		host        string
+		interactive bool
+	}{{"older", true}, {"readonly", false}} {
+		tok, _ := r.store.mint(t, 1, c.host)
+		hi := winHello(c.host, c.interactive, mirror.Window{Session: "work", ID: "@1", Index: 0, Active: true, Claude: true, ClaudeSession: "sess-a"})
+		hi.AskAnswer, hi.AskCancel = true, !c.interactive
+		raw, err := r.rawConnect(t, tok, hi)
+		if err != nil {
+			t.Fatal(err)
+		}
+		r.online(t, 1, c.host, "work")
+		_, err = r.svc.CancelAsk(asUser(1), c.host, "work", "@1")
+		if !errors.Is(err, mirror.ErrAskCancelUnsupported) || !errors.Is(err, mirror.ErrAskNotSent) || len(raw.of(mirror.TypeCancelAsk)) != 0 {
+			t.Errorf("%s: %v, %d frame(s); want ErrAskCancelUnsupported, not sent", c.host, err, len(raw.of(mirror.TypeCancelAsk)))
+		}
+	}
+	// Another owner: not their host.
+	if _, err := r.svc.CancelAsk(asUser(2), "hd", "work", "@1"); !errors.Is(err, mirror.ErrHostOffline) {
+		t.Fatalf("another owner: %v", err)
+	}
+}
+
 func TestAHostThatCannotAnswerIsSentNothing(t *testing.T) {
 	r := newRig(t)
 	for _, c := range []struct {

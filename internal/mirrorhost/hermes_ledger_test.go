@@ -100,7 +100,7 @@ func TestEveryWayThisHostTypesIntoAPaneGoesThroughTheHermesGuard(t *testing.T) {
 						callers[sel.Sel.Name] = append(callers[sel.Sel.Name], where)
 					}
 					switch sel.Sel.Name {
-					case "PastePane", "Paste", "AnswerAsk":
+					case "PastePane", "Paste", "AnswerAsk", "CancelAsk":
 						switch {
 						case inTypeInto[x]:
 							// counted below, by its typeInto call
@@ -131,7 +131,7 @@ func TestEveryWayThisHostTypesIntoAPaneGoesThroughTheHermesGuard(t *testing.T) {
 		t.Fatalf("a call types into a pane WITHOUT the Hermes paste guard (hostSide.typeInto):\n  %s", strings.Join(unguarded, "\n  "))
 	}
 	slices.Sort(guarded)
-	if want := []string{"hostSide.answer", "hostSide.paste", "hostSide.paste"}; !slices.Equal(guarded, want) {
+	if want := []string{"hostSide.answer", "hostSide.cancelAsk", "hostSide.paste", "hostSide.paste"}; !slices.Equal(guarded, want) {
 		t.Fatalf("typeInto is called from %q; want exactly %q — update this ledger only for a NEW way of typing that goes through it", guarded, want)
 	}
 	for name, want := range map[string][]string{

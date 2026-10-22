@@ -44,6 +44,9 @@ import (
 const (
 	MirrorAskPath  = "/mirror/view/ask"
 	MirrorAsksPath = "/mirror/view/asks"
+	// MirrorAskCancelPath dismisses a card's picker in the terminal with one
+	// Escape (POST).
+	MirrorAskCancelPath = "/mirror/view/ask/cancel"
 )
 
 // The states a card can be in, as data-ask-state carries them.
@@ -175,6 +178,16 @@ type MirrorAskLiveView struct {
 	// Chosen is the answer muster typed part of (failed), one choice per
 	// question, as the picker takes them.
 	Chosen []askq.Choice
+	// CanCancel says the card offers "Cancel question" (pending, failed): the
+	// host is online, -interactive, and advertised it can dismiss a picker.
+	// WindowName is the window as the confirm dialog names it.
+	CanCancel  bool
+	WindowName string
+	// Sent is a dismissal's note, on the card the dismissal answers with
+	// (not kept: the next poll's card is the server's, and the CLI's record
+	// of the call ending flips it): the Esc was sent. The card then offers no
+	// second Cancel.
+	Sent string
 }
 
 // askTerminalLink is the card's link to the window's terminal.
@@ -231,6 +244,13 @@ func MirrorAskLive(v MirrorAskLiveView) g.Node {
 			why = v.Note
 		}
 		body = g.Group{askReadOnly(v.Questions, nil), status("text-muted", why, true)}
+	}
+	// An open question the terminal still shows can be dismissed from here.
+	switch {
+	case v.Sent != "":
+		body = g.Group{askReadOnly(v.Questions, nil), P(g.Attr("role", "status"), g.Attr("data-ask-sent", ""), Class("text-xs text-fg2"), g.Text(v.Sent))}
+	case v.CanCancel && (v.State == AskStatePending || v.State == AskStateFailed):
+		body = g.Group{body, askCancelControl(v)}
 	}
 	return Section(
 		g.Attr("data-ask-live", ""),
@@ -370,6 +390,40 @@ func askRetryForm(v MirrorAskLiveView) g.Node {
 			Button(Type("submit"), g.Attr("data-ask-submit", ""), Class(composerSendClass), g.Text("Try again"))))
 }
 
+// askCancelControl is a card's "Cancel question": it opens a dialog that
+// names the window, and only the dialog's "Send Esc" asks muster to dismiss
+// the picker (MirrorAskCancelPath). A DOM dialog, never window.confirm() —
+// native dialogs are suppressed in an installed standalone PWA.
+func askCancelControl(v MirrorAskLiveView) g.Node {
+	base := "askc" + MirrorAskRowID(v.ToolID)[2:]
+	hidden := func(n, val string) g.Node { return Input(Type("hidden"), Name(n), Value(val)) }
+	name := v.WindowName
+	if name == "" {
+		name = "this window"
+	}
+	return Div(g.Attr("data-ask-cancel-control", ""), Class("flex flex-col gap-1"),
+		Div(Class("flex flex-wrap items-center gap-2"),
+			Button(Type("button"), g.Attr("data-ask-cancel", ""), g.Attr("aria-haspopup", "dialog"),
+				Class("press inline-flex min-h-[44px] items-center rounded-lg px-3 text-xs font-medium text-fg2 ring-1 ring-inset ring-edge hover:bg-s2"+focusRing),
+				g.Text("Cancel question"))),
+		P(g.Attr("data-ask-cancel-note", ""), g.Attr("role", "alert"), g.Attr("hidden", ""),
+			Class("break-words rounded-lg bg-danger/15 px-3 py-2 text-xs text-fg")),
+		Dialog(g.Attr("data-ask-cancel-dialog", ""), g.Attr("aria-labelledby", base+"-title"),
+			Class("m-auto w-[calc(100%-2rem)] max-w-sm rounded-2xl bg-s1 p-4 text-sm text-fg shadow-2xl ring-1 ring-line backdrop:bg-black/60"),
+			Form(g.Attr("data-ask-cancel-form", ""), Method("post"), Action(MirrorAskCancelPath), Class("flex flex-col gap-3"),
+				hidden("host", v.Ref.Host), hidden("session", v.Ref.Session),
+				g.If(v.Ref.Window != "", hidden("window", v.Ref.Window)),
+				hidden("tool", v.ToolID),
+				P(ID(base+"-title"), Class("break-words font-medium"), g.Text("Send Esc to "+name+"? The question is dismissed.")),
+				Div(Class("flex flex-wrap justify-end gap-2"),
+					Button(Type("button"), g.Attr("data-ask-cancel-keep", ""),
+						Class("press inline-flex min-h-[44px] items-center rounded-lg px-3 text-sm text-fg2 ring-1 ring-inset ring-edge hover:bg-s2"+focusRing),
+						g.Text("Keep it")),
+					Button(Type("submit"), g.Attr("data-ask-cancel-confirm", ""),
+						Class("press inline-flex min-h-[44px] items-center rounded-lg bg-danger px-3 text-sm font-semibold text-on-danger hover:bg-danger/90"+focusRing),
+						g.Text("Send Esc"))))))
+}
+
 // askScript polls the window's live region and sends a form's answers.
 //
 // 🔴 A PENDING CARD IS NEVER REDRAWN WHILE IT STAYS PENDING: a poll that lists
@@ -441,11 +495,47 @@ func askScript() g.Node {
       .then(function () { if (btn && document.body.contains(btn)) btn.disabled = false; });
   }
   document.addEventListener('submit', function (e) {
+    var cf = e.target && e.target.closest && e.target.closest('form[data-ask-cancel-form]');
+    if (cf && typeof fetch === 'function') { e.preventDefault(); cancelAsk(cf); return; }
     var form = e.target && e.target.closest && e.target.closest('form[data-ask-form]');
     if (!form || typeof fetch !== 'function') return;
     e.preventDefault();
     send(form);
   });
+  // "Cancel question" opens its dialog; "Keep it" closes it, sending nothing.
+  document.addEventListener('click', function (e) {
+    var t = e.target && e.target.closest ? e.target : null;
+    if (!t) return;
+    var open = t.closest('[data-ask-cancel]');
+    if (open) {
+      var d = open.closest('[data-ask-cancel-control]').querySelector('[data-ask-cancel-dialog]');
+      if (d && !d.open) d.showModal();
+      return;
+    }
+    var keep = t.closest('[data-ask-cancel-keep]');
+    if (keep) { var kd = keep.closest('dialog'); if (kd) kd.close(); }
+  });
+  function cancelAsk(form) {
+    var card = form.closest('[data-ask-live]');
+    var ctl = form.closest('[data-ask-cancel-control]');
+    var note = ctl && ctl.querySelector('[data-ask-cancel-note]');
+    var dlg = form.closest('dialog');
+    var btn = form.querySelector('[data-ask-cancel-confirm]');
+    function say(msg) { if (!note) return; note.textContent = msg || ''; note.hidden = !msg; }
+    say('');
+    if (btn) btn.disabled = true;
+    fetch(form.getAttribute('action'), { method: 'POST', body: new URLSearchParams(new FormData(form)), credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'X-Requested-With': 'XMLHttpRequest' } })
+      .then(function (r) {
+        return r.text().then(function (t) {
+          if (dlg && dlg.open) dlg.close();
+          var got = r.headers.get('X-Ask-State') ? frag(t).querySelector('[data-ask-live]') : null;
+          if (got && card) { card.replaceWith(got); tidy(); return; }
+          if (!r.ok) say(t.trim() || ('Not sent (HTTP ' + r.status + ')'));
+        });
+      }, function () { if (dlg && dlg.open) dlg.close(); say('Not sent — check your connection.'); })
+      .then(function () { if (btn && document.body.contains(btn)) btn.disabled = false; });
+  }
   // Typing an answer of one's own chooses "Other".
   document.addEventListener('input', function (e) {
     var t = e.target;

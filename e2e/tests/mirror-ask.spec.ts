@@ -331,7 +331,8 @@ test.describe('phone 412×915 touch', () => {
     await c.getByRole('button', { name: 'Submit answers' }).tap();
     await expect(c).toHaveAttribute('data-ask-state', 'failed', { timeout: 10_000 });
     await expect(c).toContainText('Someone else has started answering it in the terminal — finish it there.');
-    await expect(c.locator('form'), 'a picker someone else is answering offers no retry').toHaveCount(0);
+    await expect(c.locator('form[data-ask-form]'), 'a picker someone else is answering offers no retry').toHaveCount(0);
+    await expect(c.getByRole('button', { name: 'Cancel question' }), 'it can still be dismissed from here').toHaveCount(1);
     expect(fs.readFileSync(tr, 'utf8'), 'something was submitted into a touched picker').toBe(before);
     expect(fs.existsSync(pickerFile()), 'the picker is still the terminal\'s').toBe(true);
     answerInTerminal(toolID, { 'Which color do you prefer?': 'Green', 'Which pets do you have?': 'Cat', 'What should the project be called?': 'Beta' });
@@ -451,6 +452,62 @@ test.describe('phone 412×915 touch', () => {
       'Which layout should the report use?': 'Cards',
       'What should the project be called?': 'Alpha',
     });
+  });
+
+  // 🔴 CANCEL QUESTION: "We need a way to get out of question prompts (send
+  // esc, with explicit confirm)". The card's "Cancel question" opens a dialog
+  // naming the window; "Send Esc" sends ONE Escape to that pane (the terminal's
+  // record of every key the fake picker received is checked byte for byte),
+  // the picker goes, and the CLI's record of the ask declined flips the card
+  // to dismissed. No step-up is asked (an operator decision).
+  test('Cancel question sends one Escape after the confirm, and the card shows it dismissed', async ({ page }) => {
+    await openView(page);
+    const toolID = 'toolu_e2e_cancel_' + stamp;
+    fs.rmSync(tr + '.picker.keys', { force: true });
+    await registered(toolID);
+    const c = card(page, toolID);
+    await expect(c, `the question is drawn (log:\n${mirrorLog})`).toHaveAttribute('data-ask-state', 'pending', { timeout: 10_000 });
+    const dlg = c.locator('[data-ask-cancel-dialog]');
+    await expect(dlg).toBeHidden();
+    await c.getByRole('button', { name: 'Cancel question' }).tap();
+    await expect(dlg).toBeVisible();
+    await expect(dlg).toHaveText(/Send Esc to work:0\? The question is dismissed\./);
+    const [sw, cw] = await page.evaluate(() => [document.documentElement.scrollWidth, document.documentElement.clientWidth]);
+    expect(sw, 'no horizontal scroll with the dialog open').toBeLessThanOrEqual(cw);
+    expect(fs.existsSync(tr + '.picker.keys'), 'nothing is sent before the confirm').toBe(false);
+    await dlg.getByRole('button', { name: 'Send Esc' }).tap();
+    // The CLI's record of the ask declined resolves the card, as any
+    // dismissal (the transient "Esc sent" note may be replaced first).
+    await expect(c, `dismissed (log:\n${mirrorLog})`).toHaveAttribute('data-ask-state', 'declined', { timeout: 10_000 });
+    await expect(c.getByRole('button', { name: 'Cancel question' })).toHaveCount(0);
+    expect(fs.readFileSync(tr + '.picker.keys', 'utf8'), 'exactly one Escape reached the terminal').toBe('1b\n');
+    expect(fs.existsSync(pickerFile()), 'the picker is gone').toBe(false);
+  });
+
+  // Cancel, then "Keep it": the dialog closes, nothing is sent, the question
+  // stays — on the card and in the terminal.
+  test('Cancel question then Keep it sends nothing', async ({ page }) => {
+    await openView(page);
+    const toolID = 'toolu_e2e_keep_' + stamp;
+    fs.rmSync(tr + '.picker.keys', { force: true });
+    await registered(toolID);
+    const c = card(page, toolID);
+    await expect(c, `the question is drawn (log:\n${mirrorLog})`).toHaveAttribute('data-ask-state', 'pending', { timeout: 10_000 });
+    await c.locator('fieldset').nth(0).getByText('Green', { exact: true }).tap();
+    await c.getByRole('button', { name: 'Cancel question' }).tap();
+    const dlg = c.locator('[data-ask-cancel-dialog]');
+    await expect(dlg).toBeVisible();
+    const before = fs.readFileSync(tr, 'utf8');
+    await dlg.getByRole('button', { name: 'Keep it' }).tap();
+    await expect(dlg).toBeHidden();
+    await page.waitForResponse((r) => r.url().includes('/mirror/view/asks'));
+    await expect(c).toHaveAttribute('data-ask-state', 'pending');
+    await expect(c.locator('fieldset').nth(0).getByRole('radio', { name: 'Green' }), 'the card was left as it was').toBeChecked();
+    expect(fs.existsSync(tr + '.picker.keys'), 'nothing reached the terminal').toBe(false);
+    expect(fs.readFileSync(tr, 'utf8')).toBe(before);
+    expect(fs.existsSync(pickerFile()), "the picker is still the terminal's").toBe(true);
+    answerInTerminal(toolID, { 'Which color do you prefer?': 'Green', 'Which pets do you have?': 'Cat', 'What should the project be called?': 'Beta' });
+    await expect(c).toHaveAttribute('data-ask-state', 'answered-terminal', { timeout: 10_000 });
   });
 
   // 🔴 A QUESTION MUSTER CANNOT READ IS NOT BLAMED ON THE TERMINAL: the

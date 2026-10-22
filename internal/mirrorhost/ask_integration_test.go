@@ -281,3 +281,40 @@ func TestTmuxLeftoverBuffersAreDropped(t *testing.T) {
 		t.Fatalf("buffers after a drive: %q", got)
 	}
 }
+
+// TestTmuxCancelAskSendsOneEscape: dismissing a picker in a real pane, a
+// read-only viewer attached: ONE Escape, pasted, reaches the program as the
+// Escape key and the picker records itself cancelled. The control: with no
+// picker on the pane (a shell), nothing is sent.
+func TestTmuxCancelAskSendsOneEscape(t *testing.T) {
+	r := newTmuxRig(t)
+	qs := []askq.Question{
+		{Question: "Which color do you prefer?", Header: "Color", Options: []askq.Option{{Label: "Red"}, {Label: "Blue"}, {Label: "Green"}}},
+		{Question: "What should the project be called?", Header: "Name", Options: []askq.Option{{Label: "Alpha"}, {Label: "Beta"}}},
+	}
+	pane, result := r.pickerSession("cancel", qs)
+	b := Tmux{Socket: r.sock}
+	term, err := b.Attach(context.Background(), "cancel", true, 100, 40)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer term.Close()
+	go func() { _, _ = io.Copy(io.Discard, term) }()
+	r.run("new-session", "-d", "-s", "shell", "-x", "100", "-y", "40", "sh", "-c", "printf 'a shell\\n'; exec cat")
+	shell := strings.TrimSpace(r.run("display-message", "-p", "-t", "=shell:", "#{pane_id}"))
+	if gone, err := b.CancelAsk(context.Background(), shell); !errors.Is(err, askdrive.ErrNoPicker) || gone {
+		t.Fatalf("a pane with no picker: %v", err)
+	}
+	if gone, err := b.CancelAsk(context.Background(), pane); err != nil || !gone {
+		t.Fatalf("dismiss: gone %v, %v\n%s", gone, err, r.pane("cancel"))
+	}
+	waitFor(t, "the picker's result", func() bool { _, err := os.Stat(result); return err == nil })
+	raw, _ := os.ReadFile(result)
+	var res struct {
+		Answers   map[string]string `json:"answers"`
+		Cancelled bool              `json:"cancelled"`
+	}
+	if err := json.Unmarshal(raw, &res); err != nil || !res.Cancelled || len(res.Answers) != 0 {
+		t.Fatalf("the picker's result: %s (%v)", raw, err)
+	}
+}

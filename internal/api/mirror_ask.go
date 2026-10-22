@@ -117,6 +117,13 @@ func (s *Server) registerMirrorAskRoutes(mux Mux) {
 	// The person: the live region, and an answer.
 	mux.HandleFunc("GET "+ui.MirrorAsksPath, s.requireSession(s.handleMirrorAsks))
 	mux.HandleFunc("POST "+ui.MirrorAskPath, s.requireOperatorWrite(s.handleMirrorAskAnswer))
+	mux.HandleFunc("POST "+ui.MirrorAskCancelPath, s.requireOperatorWrite(s.handleMirrorAskCancel))
+}
+
+// mirrorAskCanceller is the plugin's half of dismissing a picker
+// (mirror.Service.CancelAsk). A plugin without it has no Cancel control.
+type mirrorAskCanceller interface {
+	CancelAsk(ctx context.Context, host, session, window string) (note string, err error)
 }
 
 // mirrorAskOpenRequest is the hook's registration: the PreToolUse payload's
@@ -205,25 +212,26 @@ func askKey(r *http.Request, h mirror.HostView, e mirror.SessionView, tool strin
 
 // questionCard is entry x as a card of e's window, h being its host.
 func questionCard(h mirror.HostView, e mirror.SessionView, x askq.Entry) ui.MirrorAskLiveView {
-	v := ui.MirrorAskLiveView{Ref: mirrorRef(e), ToolID: x.Key.ToolUseID, Questions: x.Questions, Answers: x.Answers, Note: x.Note}
-	switch x.State {
-	case askq.Pending:
+	v := ui.MirrorAskLiveView{Ref: mirrorRef(e), ToolID: x.Key.ToolUseID, Questions: x.Questions, Answers: x.Answers, Note: x.Note,
+		WindowName: e.DisplayTitle(), CanCancel: h.Interactive && h.Online && h.AskCancel}
+	switch {
+	case x.State == askq.Pending:
 		v.State = ui.AskStatePending
-	case askq.Typing:
+	case x.State == askq.Typing:
 		v.State, v.Answers = ui.AskStateTyping, x.Typed
-	case askq.Failed:
+	case x.State == askq.Failed:
 		v.State, v.Retry = ui.AskStateFailed, x.Retry
 		if x.Left != nil {
 			v.Chosen = x.Left.Choices
 		}
-	case askq.Answered:
+	case x.State == askq.Answered:
 		v.State = ui.AskStateAnsweredTerminal
 		if x.By == askq.ByMuster {
 			v.State = ui.AskStateAnswered
 		}
-	case askq.Declined:
+	case x.State == askq.Declined:
 		v.State = ui.AskStateDeclined
-	case askq.Superseded:
+	case x.State == askq.Superseded:
 		v.State = ui.AskStateSuperseded
 	default:
 		v.State = ui.AskStateExpired
@@ -467,6 +475,100 @@ func (s *Server) handleMirrorAskAnswer(w http.ResponseWriter, r *http.Request) {
 	// before then shows "typing".
 	now, _ := s.asks.Find(key)
 	s.writeAskLive(w, http.StatusOK, questionCard(h, e, now))
+}
+
+// askCancelFailure is what a card says when muster could not dismiss its
+// picker: what happened, and whether the Escape was sent.
+func askCancelFailure(err error) string {
+	switch {
+	case errors.Is(err, mirror.ErrAskNoPicker):
+		return "The question is no longer on the terminal's screen — nothing was sent."
+	case errors.Is(err, mirror.ErrAskBusy):
+		return "An answer is being typed into this terminal — nothing was sent. Try again once it is done."
+	case errors.Is(err, mirror.ErrAskTouched):
+		return "The terminal's picker changed while muster was reading it — nothing was sent."
+	case errors.Is(err, mirror.ErrAskUnreadable), errors.Is(err, mirror.ErrAskUnrecognised):
+		return "Couldn't read the terminal's picker as this question — nothing was sent. Press Esc in the terminal."
+	case errors.Is(err, mirror.ErrAskCancelUnsupported), errors.Is(err, mirror.ErrAskUnsupported):
+		return "This host's muster-mirror cannot dismiss a question — press Esc in the terminal."
+	case errors.Is(err, mirror.ErrAskNotSent) && (errors.Is(err, mirror.ErrHostOffline) || errors.Is(err, mirror.ErrHostDisconnected)):
+		return "The host is offline — nothing was sent."
+	case errors.Is(err, mirror.ErrAskNotSent):
+		return "Couldn't reach the host — nothing was sent."
+	}
+	return "Couldn't dismiss it — check the terminal."
+}
+
+// handleMirrorAskCancel is POST ui.MirrorAskCancelPath: dismiss a question's
+// picker in the terminal with ONE Escape (the host's askdrive.Cancel). 200
+// with the card, saying the Esc was sent (the CLI's record of the call ending
+// unanswered then resolves it, as any dismissal); 409 with the card when the
+// question is not open,
+// or with what happened (text) when the host refused; 404 for a question
+// that is not the request's owner's.
+//
+// 🔴 THE SAME GATES AS AN ANSWER BUT ONE (handleMirrorAskAnswer): a
+// same-origin request from the session's owner (requireOperatorWrite;
+// another owner's host is not found), a host that advertised -interactive
+// and AskCancel — and NO step-up re-authentication, an operator decision:
+// the page asks for confirmation in a dialog naming the window. The host
+// checks the rest: a picker on screen, the pane's one-drive lock.
+func (s *Server) handleMirrorAskCancel(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, mirrorAskFormMax)
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "the request is too large", http.StatusRequestEntityTooLarge)
+		return
+	}
+	h, e, ok := s.askWindow(w, r, r.PostFormValue("host"), r.PostFormValue("session"), r.PostFormValue("window"))
+	if !ok {
+		return
+	}
+	if !h.Interactive {
+		http.Error(w, mirror.ErrInteractiveRefused.Error(), http.StatusConflict)
+		return
+	}
+	tool := r.PostFormValue("tool")
+	if !toolUseIDPattern.MatchString(tool) {
+		http.Error(w, "a dismissal names the call it dismisses (tool)", http.StatusBadRequest)
+		return
+	}
+	if e.ClaudeSession == "" {
+		http.NotFound(w, r)
+		return
+	}
+	key := askKey(r, h, e, tool)
+	entry, err := s.asks.Dismissing(key)
+	switch {
+	case errors.Is(err, askq.ErrNotFound):
+		http.NotFound(w, r)
+		return
+	case errors.Is(err, askq.ErrClosed), errors.Is(err, askq.ErrBusy):
+		s.writeAskLive(w, http.StatusConflict, questionCard(h, e, entry))
+		return
+	case err != nil:
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	c, can := s.ext.Mirror.(mirrorAskCanceller)
+	if !can || !h.AskCancel {
+		http.Error(w, askCancelFailure(mirror.ErrAskCancelUnsupported), http.StatusConflict)
+		return
+	}
+	// Not the request's context, as for an answer: a page that goes away must
+	// not end the wait while the host may be sending the key.
+	note, err := c.CancelAsk(context.WithoutCancel(r.Context()), h.Host, e.Session, e.Window)
+	if err != nil {
+		s.logger.Printf("mirror: dismissing a question in %s/%s%s failed: %v", h.Host, e.Session, e.Window, err)
+		http.Error(w, askCancelFailure(err), http.StatusConflict)
+		return
+	}
+	s.logger.Printf("mirror: dismissed a question in %s/%s%s with Escape (%s)", h.Host, e.Session, e.Window, entry.ID)
+	if note == "" {
+		note = "Esc sent — the question left the terminal's screen."
+	}
+	v := questionCard(h, e, entry)
+	v.Sent = note
+	s.writeAskLive(w, http.StatusOK, v)
 }
 
 // ---------------------------------------------------------------------------

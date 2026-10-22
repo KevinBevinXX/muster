@@ -590,11 +590,20 @@ type e2ePicker struct {
 	p    *askdrive.FakePicker
 }
 
-// AnswerAsk implements mirrorhost.AskBackend (see the comment above).
-func (w windowFake) AnswerAsk(ctx context.Context, pane string, qs []askq.Question, cs []askq.Choice, prior *askq.Progress) (int, error) {
+// e2eShown is a picker file: the call it is, and its questions.
+type e2eShown struct {
+	ToolUseID string          `json:"toolUseId"`
+	Questions []askq.Question `json:"questions"`
+}
+
+// pickerOf is the picker on the Claude pane pane: its window's transcript, the
+// picker file's call, and the picker (drawn the first time, touched when
+// T.picker.touched exists). ErrNoPicker when there is none.
+func (w windowFake) pickerOf(ctx context.Context, pane string) (string, e2eShown, e2ePicker, error) {
+	var shown e2eShown
 	ws, err := w.Windows(ctx)
 	if err != nil {
-		return 0, err
+		return "", shown, e2ePicker{}, err
 	}
 	transcript := ""
 	for _, win := range ws {
@@ -603,20 +612,17 @@ func (w windowFake) AnswerAsk(ctx context.Context, pane string, qs []askq.Questi
 		}
 	}
 	if transcript == "" {
-		return 0, fmt.Errorf("e2e fake: %w: no Claude window for pane %s", askdrive.ErrNoPicker, pane)
+		return "", shown, e2ePicker{}, fmt.Errorf("e2e fake: %w: no Claude window for pane %s", askdrive.ErrNoPicker, pane)
 	}
 	b, err := os.ReadFile(transcript + ".picker.json")
 	if err != nil {
-		return 0, fmt.Errorf("e2e fake: %w: no picker on screen", askdrive.ErrNoPicker)
-	}
-	var shown struct {
-		ToolUseID string          `json:"toolUseId"`
-		Questions []askq.Question `json:"questions"`
+		return "", shown, e2ePicker{}, fmt.Errorf("e2e fake: %w: no picker on screen", askdrive.ErrNoPicker)
 	}
 	if err := json.Unmarshal(b, &shown); err != nil {
-		return 0, err
+		return "", shown, e2ePicker{}, err
 	}
 	e2ePickers.Lock()
+	defer e2ePickers.Unlock()
 	cur, ok := e2ePickers.by[transcript]
 	if !ok || cur.tool != shown.ToolUseID {
 		cur = e2ePicker{tool: shown.ToolUseID, p: askdrive.NewFakePicker(shown.Questions)}
@@ -625,8 +631,16 @@ func (w windowFake) AnswerAsk(ctx context.Context, pane string, qs []askq.Questi
 		}
 		e2ePickers.by[transcript] = cur
 	}
-	e2ePickers.Unlock()
-	pp := &fakePickerPane{p: cur.p}
+	return transcript, shown, cur, nil
+}
+
+// AnswerAsk implements mirrorhost.AskBackend (see the comment above).
+func (w windowFake) AnswerAsk(ctx context.Context, pane string, qs []askq.Question, cs []askq.Choice, prior *askq.Progress) (int, error) {
+	transcript, shown, cur, err := w.pickerOf(ctx, pane)
+	if err != nil {
+		return 0, err
+	}
+	pp := &fakePickerPane{p: cur.p, keylog: transcript + ".picker.keys"}
 	if d, err := os.ReadFile(transcript + ".picker.drop"); err == nil {
 		pp.drop, _ = strconv.Atoi(strings.TrimSpace(string(d)))
 		_ = os.Remove(transcript + ".picker.drop")
@@ -655,18 +669,57 @@ func (w windowFake) AnswerAsk(ctx context.Context, pane string, qs []askq.Questi
 }
 
 // fakePickerPane is a FakePicker as the driver's pane; its drop-th key (from
-// 1; 0: none) never reaches the picker.
+// 1; 0: none) never reaches the picker. Every key sent is appended, as hex,
+// one per line, to keylog (T.picker.keys), so a spec sees exactly what reached
+// the terminal.
 type fakePickerPane struct {
 	p          *askdrive.FakePicker
 	drop, sent int
+	keylog     string
 }
 
 func (f *fakePickerPane) Capture(context.Context) (string, error) { return f.p.Screen(), nil }
 func (f *fakePickerPane) Send(_ context.Context, keys string) error {
 	f.sent++
+	if f.keylog != "" {
+		if lf, err := os.OpenFile(f.keylog, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600); err == nil {
+			_, _ = lf.WriteString(hex.EncodeToString([]byte(keys)) + "\n")
+			_ = lf.Close()
+		}
+	}
 	if f.sent == f.drop {
 		return nil
 	}
 	f.p.Type(keys)
 	return nil
+}
+
+// CancelAsk implements mirrorhost.AskCanceller: askdrive.Cancel on the
+// window's picker (see AnswerAsk). When the picker goes, the call and its
+// result are appended to T as the CLI writes a declined ask — a tool_result
+// with no answers — and the picker file is removed.
+func (w windowFake) CancelAsk(ctx context.Context, pane string) (bool, error) {
+	transcript, shown, cur, err := w.pickerOf(ctx, pane)
+	if err != nil {
+		return false, err
+	}
+	gone, err := askdrive.Cancel(ctx, &fakePickerPane{p: cur.p, keylog: transcript + ".picker.keys"}, askdrive.Options{})
+	if err != nil || !gone {
+		return gone, err
+	}
+	if _, cancelled, done := cur.p.Result(); !done || !cancelled {
+		return false, fmt.Errorf("e2e fake: the picker was not dismissed")
+	}
+	use, _ := json.Marshal(map[string]any{"type": "assistant", "message": map[string]any{"content": []any{
+		map[string]any{"type": "tool_use", "id": shown.ToolUseID, "name": askq.ToolName, "input": map[string]any{"questions": shown.Questions}}}}})
+	res, _ := json.Marshal(map[string]any{"type": "user", "promptId": "p", "message": map[string]any{"content": []any{
+		map[string]any{"type": "tool_result", "tool_use_id": shown.ToolUseID, "is_error": true, "content": "User declined to answer questions"}}}})
+	f, err := os.OpenFile(transcript, os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		return false, err
+	}
+	_, werr := f.Write(append(append(use, '\n'), append(res, '\n')...))
+	_ = f.Close()
+	_ = os.Remove(transcript + ".picker.json")
+	return true, werr
 }

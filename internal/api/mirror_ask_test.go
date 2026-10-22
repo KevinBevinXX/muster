@@ -50,6 +50,13 @@ type askMirror struct {
 	priors   []*askq.Progress
 	typeErr  error
 	noAnswer bool // the host does not advertise AskAnswer
+	// cancels records each CancelAsk (host session window), answered with
+	// cancelNote and cancelErr; noCancel: the host does not advertise
+	// AskCancel.
+	cancels    []string
+	cancelNote string
+	cancelErr  error
+	noCancel   bool
 	// hold, when set, keeps AnswerWindow typing until it is closed (or the
 	// call's ctx ends, which is then its error); typingCtx is the last call's
 	// ctx.
@@ -71,8 +78,165 @@ func (a *askMirror) Hosts(ctx context.Context) []mirror.HostView {
 	defer a.amu.Unlock()
 	for i := range hs {
 		hs[i].AskAnswer = hs[i].Online && hs[i].Interactive && !a.noAnswer
+		hs[i].AskCancel = hs[i].Online && hs[i].Interactive && !a.noCancel
 	}
 	return hs
+}
+
+func (a *askMirror) CancelAsk(ctx context.Context, host, session, window string) (string, error) {
+	a.amu.Lock()
+	defer a.amu.Unlock()
+	a.cancels = append(a.cancels, host+" "+session+" "+window)
+	return a.cancelNote, a.cancelErr
+}
+
+func (a *askMirror) cancelsSoFar() []string {
+	a.amu.Lock()
+	defer a.amu.Unlock()
+	return append([]string(nil), a.cancels...)
+}
+
+// cancelReq posts a card's dismissal, as answerReq posts its answers.
+func cancelReq(t *testing.T, s *Server, ts *httptest.Server, tool, cookie, origin string) (*http.Response, string) {
+	t.Helper()
+	form := url.Values{"host": {"ws"}, "session": {"main"}, "window": {"@1"}, "tool": {tool}}
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+ui.MirrorAskCancelPath, strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	if cookie == "" {
+		cookie = sessionCookieFor(s)
+	}
+	req.Header.Set("Cookie", cookie)
+	if origin == "" {
+		origin = ts.URL
+	}
+	req.Header.Set("Origin", origin)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	return resp, string(b)
+}
+
+// TestCancelQuestionIsOneConfirmedEscape: the card offers "Cancel question"
+// with a dialog naming the window; the dismissal goes to the host for exactly
+// this window — with NO step-up (an operator decision), a stale sign-in
+// dismisses — the card says Esc was sent (or the host's note: still showing)
+// and offers no second Cancel, and the CLI's record of the call ending
+// unanswered resolves it as any dismissal. The gates, each sent nothing:
+// another origin, another owner, a read-only host, a host that does not
+// advertise it (no control either), a question being typed into, one already
+// resolved; a host's refusal is said as what happened.
+func TestCancelQuestionIsOneConfirmedEscape(t *testing.T) {
+	am, s, ts := askServer(t, true)
+	register(t, ts)
+	card := region(t, s, ts, `data-ask-state="pending"`)
+	for _, want := range []string{"Cancel question", "data-ask-cancel-dialog", "Send Esc to main:0? The question is dismissed.", `action="` + ui.MirrorAskCancelPath + `"`} {
+		if !strings.Contains(card, want) {
+			t.Fatalf("the pending card lacks %q:\n%s", want, card)
+		}
+	}
+	for _, c := range []struct {
+		name, origin string
+		status       int
+	}{{"another origin", "https://evil.example", http.StatusForbidden}} {
+		if resp, body := cancelReq(t, s, ts, gateTool, "", c.origin); resp.StatusCode != c.status {
+			t.Errorf("%s: %d %q", c.name, resp.StatusCode, body)
+		}
+	}
+	if resp, _ := cancelReq(t, s, ts, "toolu_9", "", ""); resp.StatusCode != http.StatusNotFound {
+		t.Errorf("an unknown call: %d", resp.StatusCode)
+	}
+	// Another owner, same-origin: not found.
+	form := url.Values{"host": {"ws"}, "session": {"main"}, "window": {"@1"}, "tool": {gateTool}}
+	req := httptest.NewRequest(http.MethodPost, ui.MirrorAskCancelPath, strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	s.handleMirrorAskCancel(rec, req.WithContext(authz.WithPrincipal(context.Background(), authz.Principal{UserID: 2, Role: authz.RoleMember, Via: authz.ViaSession})))
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("user 2's dismissal: %d", rec.Code)
+	}
+	// A host that does not advertise it: no control, and refused.
+	am.amu.Lock()
+	am.noCancel = true
+	am.amu.Unlock()
+	if _, c := mirrorGet(t, s, ts, asksPath); strings.Contains(c, "Cancel question") {
+		t.Fatalf("a host that cannot dismiss is offered Cancel:\n%s", c)
+	}
+	if resp, body := cancelReq(t, s, ts, gateTool, "", ""); resp.StatusCode != http.StatusConflict || !strings.Contains(body, "cannot dismiss a question") {
+		t.Errorf("a host that cannot dismiss: %d %q", resp.StatusCode, body)
+	}
+	am.amu.Lock()
+	am.noCancel = false
+	am.amu.Unlock()
+	// A host's refusal: said as what happened.
+	am.amu.Lock()
+	am.cancelErr = fmt.Errorf("%w: x", mirror.ErrAskBusy)
+	am.amu.Unlock()
+	if resp, body := cancelReq(t, s, ts, gateTool, "", ""); resp.StatusCode != http.StatusConflict || !strings.Contains(body, "An answer is being typed into this terminal — nothing was sent.") {
+		t.Errorf("a host's refusal: %d %q", resp.StatusCode, body)
+	}
+	am.amu.Lock()
+	am.cancelErr = nil
+	am.amu.Unlock()
+	if got := am.cancelsSoFar(); len(got) != 1 {
+		t.Fatalf("dismissals sent: %q, want only the refused one", got)
+	}
+	// The dismissal, on a STALE sign-in: no step-up.
+	resp, body := cancelReq(t, s, ts, gateTool, staleCookieFor(s), "")
+	if resp.StatusCode != http.StatusOK || resp.Header.Get("X-Ask-State") != ui.AskStatePending || !strings.Contains(body, "Esc sent — the question left the terminal&#39;s screen.") ||
+		strings.Contains(body, "Cancel question") || strings.Contains(body, "data-ask-form") {
+		t.Fatalf("the dismissal: %d %s\n%s", resp.StatusCode, resp.Header.Get("X-Ask-State"), body)
+	}
+	if got := am.cancelsSoFar(); len(got) != 2 || got[1] != "ws main @1" {
+		t.Fatalf("dismissals sent: %q", got)
+	}
+	am.feed(gateTool, gateQs(t), nil)
+	card = region(t, s, ts, `data-ask-state="declined"`)
+	if strings.Contains(card, "Cancel question") {
+		t.Fatalf("the dismissed card:\n%s", card)
+	}
+	// Resolved: refused with the card, nothing sent.
+	if resp, _ := cancelReq(t, s, ts, gateTool, "", ""); resp.StatusCode != http.StatusConflict || resp.Header.Get("X-Ask-State") != ui.AskStateDeclined {
+		t.Fatalf("a resolved question: %d %s", resp.StatusCode, resp.Header.Get("X-Ask-State"))
+	}
+	// The picker still showing after the Escape: a success, with the host's
+	// note (no second Escape is the host's: askdrive.Cancel).
+	amn, sn, tsn := askServer(t, true)
+	register(t, tsn)
+	region(t, sn, tsn, `data-ask-state="pending"`)
+	amn.amu.Lock()
+	amn.cancelNote = "Esc sent; the terminal still shows the question."
+	amn.amu.Unlock()
+	if resp, body := cancelReq(t, sn, tsn, gateTool, "", ""); resp.StatusCode != http.StatusOK || !strings.Contains(body, "Esc sent; the terminal still shows the question.") {
+		t.Errorf("still showing: %d %q", resp.StatusCode, body)
+	}
+	// While an answer is being typed: refused, nothing sent.
+	am2, s2, ts2 := askServer(t, true)
+	register(t, ts2)
+	region(t, s2, ts2, `data-ask-state="pending"`)
+	am2.amu.Lock()
+	am2.hold = make(chan struct{})
+	am2.amu.Unlock()
+	go func() { _, _ = answerReq(t, s2, ts2, answerForm(gateTool, "a0", "Red", "a1", "Cat"), "", "") }()
+	region(t, s2, ts2, `data-ask-state="typing"`)
+	if resp, _ := cancelReq(t, s2, ts2, gateTool, "", ""); resp.StatusCode != http.StatusConflict || resp.Header.Get("X-Ask-State") != ui.AskStateTyping {
+		t.Errorf("while typing: %d %s", resp.StatusCode, resp.Header.Get("X-Ask-State"))
+	}
+	close(am2.hold)
+	if got := am2.cancelsSoFar(); len(got) != 0 {
+		t.Fatalf("dismissed while typing: %q", got)
+	}
+	// A read-only host: refused, nothing sent, no control.
+	am3, s3, ts3 := askServer(t, false)
+	register(t, ts3)
+	if c := region(t, s3, ts3, `data-ask-state="pending"`); strings.Contains(c, "Cancel question") {
+		t.Fatalf("a read-only host is offered Cancel:\n%s", c)
+	}
+	if resp, _ := cancelReq(t, s3, ts3, gateTool, "", ""); resp.StatusCode != http.StatusConflict || len(am3.cancelsSoFar()) != 0 {
+		t.Fatalf("a read-only host: %d", resp.StatusCode)
+	}
 }
 
 func (a *askMirror) AuthenticateHost(w http.ResponseWriter, r *http.Request) (int64, string, bool) {
@@ -373,7 +537,7 @@ func TestTheTerminalWinsTheRace(t *testing.T) {
 	am2.amu.Unlock()
 	resp, body = answerReq(t, s2, ts2, answerForm(gateTool, "a0", "Red", "a1", "Cat"), "", "")
 	if resp.StatusCode != http.StatusConflict || resp.Header.Get("X-Ask-State") != ui.AskStateFailed ||
-		!strings.Contains(body, "no longer on the terminal") || strings.Contains(body, "<form") {
+		!strings.Contains(body, "no longer on the terminal") || strings.Contains(body, "data-ask-form") {
 		t.Fatalf("a typing with no picker: %d %s\n%s", resp.StatusCode, resp.Header.Get("X-Ask-State"), body)
 	}
 	am2.feed(gateTool, gateQs(t), map[string]string{"Which color do you prefer?": "Blue", "Which pets do you have?": "Cat"})

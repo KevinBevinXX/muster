@@ -155,6 +155,15 @@ const (
 	// advertised Msg.AskAnswer.
 	TypeAnswer   = "answer"
 	TypeAnswered = "answered"
+
+	// Dismissing an AskUserQuestion picker (askcancel.go). muster → host:
+	// cancel-ask — the window only (ID, Session, Window): it carries NO keys,
+	// and the host's one response to it is a single Escape into that pane's
+	// picker. Host → muster: ask-cancelled (its outcome: Msg.Refusal naming
+	// the kind of refusal; on success, Msg.Text a note, "" for none). Sent
+	// only to a host that advertised Msg.AskCancel.
+	TypeCancelAsk    = "cancel-ask"
+	TypeAskCancelled = "ask-cancelled"
 )
 
 // Msg is every control message on the tunnel, as one JSON text frame.
@@ -328,6 +337,12 @@ type Msg struct {
 	// Ask (answer) is what to type: the questions as muster showed them, and
 	// one choice per question.
 	Ask *AskTyping `json:"ask,omitempty"`
+	// AskCancel (hello) is the host ADVERTISING that it dismisses an
+	// AskUserQuestion picker with one Escape (TypeCancelAsk) — an -interactive
+	// host whose muster-mirror can. 🔴 NO VERSION BUMP, BACKWARD-COMPATIBLE
+	// BOTH WAYS, like AskAnswer: an older host never sets it, so muster never
+	// sends it a cancel (and the card offers none); an older muster ignores it.
+	AskCancel bool `json:"askCancel,omitempty"`
 	// Keys (answered) is how many keys of the answer's plan the picker has
 	// received from muster (askdrive.DriveFrom): what the next answer's
 	// AskTyping.Prior is when this one stopped part way. 🔴 NO VERSION BUMP,

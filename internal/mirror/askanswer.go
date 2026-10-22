@@ -91,7 +91,7 @@ func AskOutcomeKnown(err error) bool {
 	if err == nil {
 		return true
 	}
-	for _, e := range []error{ErrAskNotSent, ErrAskNoPicker, ErrAskTouched, ErrAskLost, ErrAskUnsupported, ErrAskUnrecognised, ErrAskBusy, ErrAskUnreadable, ErrAskRefused,
+	for _, e := range []error{ErrAskNotSent, ErrAskNoPicker, ErrAskTouched, ErrAskLost, ErrAskUnsupported, ErrAskUnrecognised, ErrAskBusy, ErrAskUnreadable, ErrAskCancelUnsupported, ErrAskRefused,
 		ErrHermesApprovalGone, ErrHermesUnreachable} {
 		if errors.Is(err, e) {
 			return true

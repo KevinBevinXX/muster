@@ -94,6 +94,126 @@ func TestTheHostContinuesWhatMusterSaysWasLeft(t *testing.T) {
 	}
 }
 
+// cancellingBackend is askingBackend that can dismiss a picker
+// (AskCanceller): it records each CancelAsk — the pane, all it is handed —
+// and answers with stays (the picker still showing) and cerr.
+type cancellingBackend struct {
+	*askingBackend
+	cancels []string
+	stays   bool
+	cerr    error
+}
+
+func (b *cancellingBackend) CancelAsk(_ context.Context, pane string) (bool, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.cancels = append(b.cancels, pane)
+	return !b.stays && b.cerr == nil, b.cerr
+}
+
+func (b *cancellingBackend) snapshotCancels() []string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return append([]string(nil), b.cancels...)
+}
+
+// TestADismissalGoesToTheClaudePaneOnly: the host advertises AskCancel only
+// when it answers too (interactive, a backend that can); a cancel-ask for the
+// Claude window reaches the backend with ITS pane and the questions — the
+// keys, text and choices a message might also carry reach nothing; one for a
+// window that is not Claude Code is refused no-picker; a picker still showing
+// after the Escape is a success with its note; each backend refusal comes back
+// named; a read-only host dismisses nothing.
+func TestADismissalGoesToTheClaudePaneOnly(t *testing.T) {
+	for _, c := range []struct {
+		name        string
+		b           Backend
+		interactive bool
+		want        bool
+	}{
+		{"interactive, can dismiss", wrapped{&cancellingBackend{askingBackend: &askingBackend{windowsBackend: &windowsBackend{windows: threeWindows}}}}, true, true},
+		{"read-only", wrapped{&cancellingBackend{askingBackend: &askingBackend{windowsBackend: &windowsBackend{windows: threeWindows}}}}, false, false},
+		{"answers but cannot dismiss (older)", wrapped{&askingBackend{windowsBackend: &windowsBackend{windows: threeWindows}}}, true, false},
+	} {
+		d := newDrivenMuster(t)
+		d.run(t, c.b, nil, c.interactive)
+		waitUntil(t, "the hello", func() bool { return len(d.of(mirror.TypeHello)) == 1 })
+		if got := d.of(mirror.TypeHello)[0].AskCancel; got != c.want {
+			t.Errorf("%s: AskCancel %v, want %v", c.name, got, c.want)
+		}
+	}
+	b := &cancellingBackend{askingBackend: &askingBackend{windowsBackend: &windowsBackend{windows: threeWindows}}}
+	d := newDrivenMuster(t)
+	d.run(t, wrapped{b}, nil, true)
+	waitUntil(t, "the hello", func() bool { return len(d.of(mirror.TypeHello)) == 1 })
+	dismiss := func(id uint32, window string) mirror.Msg {
+		t.Helper()
+		// Everything a message could carry besides the questions: none of it
+		// is typed.
+		d.send(t, mirror.Msg{Type: mirror.TypeCancelAsk, ID: id, Session: "scratch2", Window: window, Text: "rm -rf ~\r",
+			Ask: &mirror.AskTyping{Questions: hostAskQs, Choices: []askq.Choice{{Other: "typed"}}}})
+		var out mirror.Msg
+		waitUntil(t, "the ask-cancelled", func() bool {
+			for _, m := range d.of(mirror.TypeAskCancelled) {
+				if m.ID == id {
+					out = m
+					return true
+				}
+			}
+			return false
+		})
+		return out
+	}
+	if a := dismiss(1, "@7"); a.Error != "" || a.Text != "" {
+		t.Fatalf("the Claude window's dismissal: %+v", a)
+	}
+	if got := b.snapshotCancels(); !reflect.DeepEqual(got, []string{"%21"}) {
+		t.Fatalf("dismissed %q, want the Claude pane %%21", got)
+	}
+	if calls := b.snapshotCalls(); len(calls) != 0 {
+		t.Fatalf("a dismissal typed an answer: %q", calls)
+	}
+	if a := dismiss(2, "@4"); a.Refusal != mirror.AskRefusalNoPicker || len(b.snapshotCancels()) != 1 {
+		t.Fatalf("a shell window: %+v", a)
+	}
+	b.mu.Lock()
+	b.stays = true
+	b.mu.Unlock()
+	if a := dismiss(3, "@7"); a.Error != "" || a.Refusal != "" || a.Text != askStillShowingNote {
+		t.Fatalf("a picker still showing after the Escape: %+v, want success with its note", a)
+	}
+	b.mu.Lock()
+	b.stays = false
+	b.mu.Unlock()
+	for i, c := range []struct {
+		err  error
+		want string
+	}{
+		{fmt.Errorf("x: %w", askdrive.ErrNoPicker), mirror.AskRefusalNoPicker},
+		{fmt.Errorf("x: %w", askdrive.ErrUnrecognised), mirror.AskRefusalUnrecognised},
+		{ErrPaneBusy, mirror.AskRefusalBusy},
+		{ErrNoRawPaste, mirror.AskRefusalUnsupported},
+		{errors.New("tmux broke"), ""},
+	} {
+		b.mu.Lock()
+		b.cerr = c.err
+		b.mu.Unlock()
+		if a := dismiss(uint32(10+i), "@7"); a.Error == "" || a.Refusal != c.want {
+			t.Errorf("backend error %v: %+v, want refusal %q", c.err, a, c.want)
+		}
+	}
+	// A read-only host refuses, whatever muster sends.
+	rb := &cancellingBackend{askingBackend: &askingBackend{windowsBackend: &windowsBackend{windows: threeWindows}}}
+	ro := newDrivenMuster(t)
+	ro.run(t, wrapped{rb}, nil, false)
+	waitUntil(t, "the hello", func() bool { return len(ro.of(mirror.TypeHello)) == 1 })
+	ro.send(t, mirror.Msg{Type: mirror.TypeCancelAsk, ID: 1, Session: "scratch2", Window: "@7"})
+	waitUntil(t, "the refusal", func() bool { return len(ro.of(mirror.TypeAskCancelled)) == 1 })
+	if a := ro.of(mirror.TypeAskCancelled)[0]; a.Refusal != mirror.AskRefusalUnsupported || len(rb.snapshotCancels()) != 0 {
+		t.Fatalf("a read-only host: %+v, dismissed %q", a, rb.snapshotCancels())
+	}
+}
+
 // rawlessBackend is askingBackend whose tmux can (raw) or cannot paste raw
 // keys, as far as it knows (Tmux.RawPaste).
 type rawlessBackend struct {

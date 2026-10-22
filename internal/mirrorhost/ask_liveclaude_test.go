@@ -89,19 +89,23 @@ func TestLiveClaudePicker(t *testing.T) {
 		// (n, the text, Escape — measured to keep it); the drive must refuse
 		// as someone answering it, and the picker is then dismissed.
 		note string
+		// cancel: the picker is dismissed (Tmux.CancelAsk: one Escape), not
+		// answered; the CLI must say the questions were declined.
+		cancel bool
 	}{
-		{"a note on a preview question refuses the drive", []askq.Question{layout, name}, []askdrive.Choice{{Picks: []int{1}}, {Picks: []int{0}}}, 0, "ship it friday"},
-		{"options with previews", []askq.Question{layout, name}, []askdrive.Choice{{Picks: []int{1}}, {Picks: []int{0}}}, 0, ""},
-		{"three questions, lost after question 1 and continued", []askq.Question{color, pets, name}, []askdrive.Choice{{Picks: []int{1}}, {Picks: []int{0, 2}}, {Picks: []int{1}}}, 2, ""},
-		{"single-select", []askq.Question{color}, []askdrive.Choice{{Picks: []int{2}}}, 0, ""},
-		{"single-select, four options, the last", []askq.Question{size}, []askdrive.Choice{{Picks: []int{3}}}, 0, ""},
-		{"own words", []askq.Question{name}, []askdrive.Choice{{Other: "Gamma, the third 42"}}, 0, ""},
-		{"multi-select", []askq.Question{pets}, []askdrive.Choice{{Picks: []int{0, 2}}}, 0, ""},
-		{"multi-select with own words", []askq.Question{pets}, []askdrive.Choice{{Picks: []int{1}, Other: "a hamster"}}, 0, ""},
-		{"three questions", []askq.Question{color, pets, name}, []askdrive.Choice{{Other: "teal, mostly"}, {Picks: []int{1}, Other: "a hamster"}, {Picks: []int{1}}}, 0, ""},
-		{"four questions", []askq.Question{color, pets, name, size}, []askdrive.Choice{{Picks: []int{0}}, {Picks: []int{0, 1, 2}}, {Other: "Delta"}, {Picks: []int{1}}}, 0, ""},
-		{"a long boxed question", []askq.Question{where}, []askdrive.Choice{{Picks: []int{1}}}, 0, ""},
-		{"a long answer of its own to question 2", []askq.Question{color, where}, []askdrive.Choice{{Picks: []int{0}}, {Other: own}}, 0, ""},
+		{"dismissed with one Escape, part answered", []askq.Question{color, pets}, []askdrive.Choice{{Picks: []int{1}}, {Picks: []int{0}}}, 0, "", true},
+		{"a note on a preview question refuses the drive", []askq.Question{layout, name}, []askdrive.Choice{{Picks: []int{1}}, {Picks: []int{0}}}, 0, "ship it friday", false},
+		{"options with previews", []askq.Question{layout, name}, []askdrive.Choice{{Picks: []int{1}}, {Picks: []int{0}}}, 0, "", false},
+		{"three questions, lost after question 1 and continued", []askq.Question{color, pets, name}, []askdrive.Choice{{Picks: []int{1}}, {Picks: []int{0, 2}}, {Picks: []int{1}}}, 2, "", false},
+		{"single-select", []askq.Question{color}, []askdrive.Choice{{Picks: []int{2}}}, 0, "", false},
+		{"single-select, four options, the last", []askq.Question{size}, []askdrive.Choice{{Picks: []int{3}}}, 0, "", false},
+		{"own words", []askq.Question{name}, []askdrive.Choice{{Other: "Gamma, the third 42"}}, 0, "", false},
+		{"multi-select", []askq.Question{pets}, []askdrive.Choice{{Picks: []int{0, 2}}}, 0, "", false},
+		{"multi-select with own words", []askq.Question{pets}, []askdrive.Choice{{Picks: []int{1}, Other: "a hamster"}}, 0, "", false},
+		{"three questions", []askq.Question{color, pets, name}, []askdrive.Choice{{Other: "teal, mostly"}, {Picks: []int{1}, Other: "a hamster"}, {Picks: []int{1}}}, 0, "", false},
+		{"four questions", []askq.Question{color, pets, name, size}, []askdrive.Choice{{Picks: []int{0}}, {Picks: []int{0, 1, 2}}, {Other: "Delta"}, {Picks: []int{1}}}, 0, "", false},
+		{"a long boxed question", []askq.Question{where}, []askdrive.Choice{{Picks: []int{1}}}, 0, "", false},
+		{"a long answer of its own to question 2", []askq.Question{color, where}, []askdrive.Choice{{Picks: []int{0}}, {Other: own}}, 0, "", false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -155,6 +159,31 @@ func TestLiveClaudePicker(t *testing.T) {
 					}
 					time.Sleep(200 * time.Millisecond)
 				}
+				time.Sleep(8 * time.Second)
+				return
+			}
+			if c.cancel {
+				// Part answered first (question 1), then dismissed.
+				if err := p.Send(ctx, "2"); err != nil {
+					t.Fatal(err)
+				}
+				time.Sleep(time.Second)
+				if gone, err := tm.CancelAsk(ctx, pane); err != nil || !gone {
+					scr, _ := p.Capture(ctx)
+					t.Fatalf("dismiss: gone %v, %v\n%s", gone, err, scr)
+				}
+				deadline := time.Now().Add(20 * time.Second)
+				for {
+					scr, _ := p.Capture(ctx)
+					if strings.Contains(scr, "User declined to answer questions") {
+						break
+					}
+					if time.Now().After(deadline) {
+						t.Fatalf("the CLI did not record the questions declined:\n%s", scr)
+					}
+					time.Sleep(200 * time.Millisecond)
+				}
+				t.Logf("%s: dismissed in %s", c.name, time.Since(start).Round(time.Millisecond))
 				time.Sleep(8 * time.Second)
 				return
 			}

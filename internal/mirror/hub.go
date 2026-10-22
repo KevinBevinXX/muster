@@ -124,6 +124,10 @@ type HostView struct {
 	// AskUserQuestion picker (Msg.AskAnswer) and is -interactive. False for an
 	// older or read-only muster-mirror and for an offline host.
 	AskAnswer bool
+	// AskCancel: the host advertised that it dismisses an AskUserQuestion
+	// picker with one Escape (Msg.AskCancel) and is -interactive. False for an
+	// older or read-only muster-mirror and for an offline host.
+	AskCancel bool
 	// Repos is the short repo name per WINDOW ID the host last sent
 	// (TypeRepos, repos.go), restricted to its windows when it arrived; nil when
 	// it sent none (an older muster-mirror, a per-session host). Display and
@@ -342,6 +346,9 @@ type hostConn struct {
 	// askAnswer: the host advertised Msg.AskAnswer, speaks v2 and is
 	// -interactive.
 	askAnswer bool
+	// askCancel: the host advertised Msg.AskCancel, speaks v2 and is
+	// -interactive.
+	askCancel bool
 	// hermesSend: the host advertised Msg.HermesSend, speaks v2 and is
 	// -interactive — the server half of the hermesSend switch (PasteWindow).
 	hermesSend bool
@@ -407,7 +414,7 @@ func (h *Hub) Hosts(owner int64) []HostView {
 		hc.mu.Lock()
 		out = append(out, HostView{Host: k.host, Sessions: append([]string(nil), hc.sessions...), Windows: slices.Clone(hc.windows),
 			Claude: append([]string(nil), hc.claude...), Labels: maps.Clone(hc.labels), Activity: maps.Clone(hc.activity), Repos: maps.Clone(hc.repos), Work: maps.Clone(hc.work), Colors: maps.Clone(hc.colors), Rendered: hc.version >= 2, Online: true, Interactive: hc.interactive, PanePaste: hc.panePaste, PaneScroll: hc.paneScroll,
-			StatusReport: hc.statusReport, AskAnswer: hc.askAnswer, HermesSend: hc.hermesSend, HermesAnswer: hc.hermesAnswer})
+			StatusReport: hc.statusReport, AskAnswer: hc.askAnswer, AskCancel: hc.askCancel, HermesSend: hc.hermesSend, HermesAnswer: hc.hermesAnswer})
 		hc.mu.Unlock()
 	}
 	now := h.now()
@@ -669,6 +676,8 @@ func (h *Hub) ServeConn(ctx context.Context, owner int64, host string, ws *webso
 		hc.subagentReport = hello.SubagentReport
 		// Typing an answer is a write into the pane: -interactive hosts only.
 		hc.askAnswer = hello.AskAnswer && hello.Interactive
+		// So is the Escape that dismisses a picker.
+		hc.askCancel = hello.AskCancel && hello.Interactive
 		// The hermesSend switch: a paste into a Hermes window is a write into
 		// the pane like any other, so -interactive hosts only.
 		hc.hermesSend = hello.HermesSend && hello.Interactive
@@ -886,6 +895,10 @@ func (h *Hub) ServeConn(ctx context.Context, owner int64, host string, ws *webso
 			case TypeAnswered:
 				if hc.version >= 2 {
 					hc.answered(m.ID, m.Error, m.Refusal, m.Keys)
+				}
+			case TypeAskCancelled:
+				if hc.version >= 2 {
+					hc.cancelled(m.ID, m.Error, m.Refusal, m.Text)
 				}
 			case TypeClosed:
 				var why error
