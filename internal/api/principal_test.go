@@ -194,6 +194,7 @@ var routeVias = map[authz.Via][]string{
 		"GET /uploads/{id}/file",
 		"POST /uploads/{id}/revoke",
 		"DELETE /connector-grants/{id}",
+		"DELETE /connector-standing-grants/{id}",
 		"DELETE /connectors/{name}",
 		"DELETE /tasks/{id}",
 		"DELETE /tasks/{id}/comments/{cid}",

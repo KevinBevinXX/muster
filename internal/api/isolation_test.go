@@ -250,8 +250,10 @@ var isolationClasses = map[string]routeClass{
 	"POST /tasks":                  classList,
 	"POST /tasks/merge":            classList, // the form names A's task as the loser
 
-	"DELETE /agents/{id}":                      classParam,
-	"DELETE /connector-grants/{id}":            classParam,
+	"DELETE /agents/{id}":           classParam,
+	"DELETE /connector-grants/{id}": classParam,
+	// A shared approval (0043) is named by id; A's is the object.
+	"DELETE /connector-standing-grants/{id}":   classParam,
 	"DELETE /connectors/{name}":                classParam,
 	"DELETE /tasks/{id}":                       classParam,
 	"DELETE /tasks/{id}/comments/{cid}":        classParam,
@@ -888,7 +890,7 @@ func newIsoWorld(t *testing.T) *isoWorld {
 		agentName: "ghost-agent" + w.suffix, connName: "ghostconn" + w.suffix, tag: "ghosttag", link: "ghost-sess-" + w.suffix,
 		mirrorHost: "ghost-host", mirrorSession: "main", ccAccount: "ghostacct", token: ghostID, pushDevice: ghostID,
 		flowJob: ghostID, runnerTok: ghostID, flowReq: ghostID, plugin: ghostID, draft: ghostID, passkey: "00000000-0000-4000-a000-00000000ghost",
-		queued: ghostID, route: "rt_000000000000000000000000", upload: "GhostGhostGhostGhost00", ask: ghostID, pluginMsg: ghostID,
+		queued: ghostID, route: "rt_000000000000000000000000", upload: "GhostGhostGhostGhost00", ask: ghostID, pluginMsg: ghostID, standing: ghostID,
 		device: ghostID}
 
 	// Paired devices (0039): each user pairs one, through the real store and a
@@ -1034,6 +1036,9 @@ func newIsoWorld(t *testing.T) *isoWorld {
 	must(pool.QueryRow(w.sys, `INSERT INTO connector_grants (agent_id, owner_id, connector_name, status, reason)
 		VALUES ($1, $2, $3, 'pending', $4) RETURNING id`, w.aChief.ID, w.a.uid, w.aConnName, w.canary+" reason").Scan(&w.aGrantID), "a pending grant")
 	w.objA.grant = w.aGrantID
+	// A's shared approval (a standing grant, 0043): the target B's revoke names.
+	must(pool.QueryRow(w.sys, `INSERT INTO connector_standing_grants (owner_id, connector_name, source)
+		VALUES ($1, $2, 'stored') RETURNING id`, w.a.uid, w.aConnName).Scan(&w.objA.standing), "a standing grant")
 	// An ACTIVE TURN of A's chief (round-2 audit 🟡1): the notifications
 	// panel's ACTIVE section reads a SERVER-WIDE in-memory registry, not a
 	// table, so row-level security never sees it. The chief has no unread
@@ -1068,6 +1073,7 @@ func newIsoWorld(t *testing.T) *isoWorld {
 		ids := []int64{w.a.uid, w.b.uid}
 		for _, q := range []string{
 			`DELETE FROM connector_audit WHERE owner_id = ANY($1)`, `DELETE FROM connector_grants WHERE owner_id = ANY($1)`,
+			`DELETE FROM connector_standing_grants WHERE owner_id = ANY($1)`,
 			`DELETE FROM connectors WHERE owner_id = ANY($1)`, `DELETE FROM chat_messages WHERE owner_id = ANY($1)`,
 			`DELETE FROM chat_sessions WHERE owner_id = ANY($1)`, `DELETE FROM agents WHERE owner_id = ANY($1)`,
 			`DELETE FROM task_sessions WHERE owner_id = ANY($1)`, `DELETE FROM note_attachments WHERE owner_id = ANY($1)`,
@@ -1204,6 +1210,7 @@ type isoObjs struct {
 	route                                     string // a session route's id (0021)
 	pluginMsg                                 int64  // a plugin message's id (its retry route)
 	ask                                       int64  // an attention ask's id (0025)
+	standing                                  int64  // a shared approval's id (0043)
 }
 
 // fill turns a route pattern into a concrete request naming objects o, with a
@@ -1217,6 +1224,10 @@ func (w *isoWorld) fill(pattern string, o isoObjs, actor isoUser) (method, path,
 	switch {
 	case strings.Contains(path, "/agents/{id}") || strings.HasPrefix(path, "/ui/agents/{id}"):
 		id = strconv.FormatInt(o.agent, 10)
+	case strings.Contains(path, "connector-standing-grants/{id}"):
+		// Before "connector-grants/{id}" below, which it does not contain, but
+		// kept apart so a rename cannot fold it into the per-agent grant.
+		id = strconv.FormatInt(o.standing, 10)
 	case strings.Contains(path, "connector-grants/{id}") || strings.Contains(path, "connector-requests/{id}"):
 		id = strconv.FormatInt(o.grant, 10)
 	case strings.Contains(path, "/agent/approvals/{id}"):
@@ -1360,7 +1371,7 @@ func (w *isoWorld) snapshot() map[string]string {
 		"chat_sessions", "chat_messages", "connectors", "connector_grants", "connector_audit", "github_connection", "mirror_tokens",
 		"user_credentials", "cc_account_marks", "flow_jobs", "flow_runner_tokens", "push_subscriptions", "push_preferences", "flow_requests",
 		"plugins", "plugin_messages", "plugin_reply_drafts", "pins", "recents", "send_queue", "agent_focus", "agent_focus_history", "session_routes", "uploads", "attention_asks", "jobs",
-		"devices", "device_pairing_codes"} {
+		"devices", "device_pairing_codes", "connector_standing_grants"} {
 		var js string
 		if err := w.pool.QueryRow(w.sys, `SELECT coalesce(json_agg(t ORDER BY t.id)::text, '[]') FROM `+tbl+` t WHERE owner_id=$1`, w.a.uid).Scan(&js); err != nil {
 			// task_sessions/github_connection have no `id` ordering column in every

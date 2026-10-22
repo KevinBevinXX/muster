@@ -73,6 +73,12 @@ func TestEveryBroadcastCallSiteIsClassified(t *testing.T) {
 		"(*Server).handleConnectorDelete → broadcast(r.Context())",
 		"(*Server).handleConnectorRevoke → broadcast(r.Context())",
 		"(*Server).handleConnectorRotate → broadcast(r.Context())",
+		// Shared approvals (connector_standing.go, 0043): an automatic approval
+		// runs under the requesting agent's owner (the agent routes, the proxy)
+		// or the deciding owner (an approval's sweep) — the grant's owner either
+		// way; the revoke is the tab's request.
+		"(*Server).approveFromStanding → broadcast(ctx)",
+		"(*Server).handleStandingGrantRevoke → broadcast(ctx)",
 		"(*Server).handleNoteEdit → broadcast(r.Context())",
 		"(*Server).handleNoteTagAdd → broadcast(r.Context())",
 		"(*Server).handleNoteTagRemove → broadcast(r.Context())",

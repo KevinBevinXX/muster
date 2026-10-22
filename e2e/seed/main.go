@@ -111,7 +111,7 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("connect for reset: %w", err)
 	}
-	_, err = owner.Exec(ctx, `TRUNCATE notes, agents, connectors, connector_audit,
+	_, err = owner.Exec(ctx, `TRUNCATE notes, agents, connectors, connector_standing_grants, connector_audit,
 		flow_jobs, flow_runner_tokens, flow_requests, plugins RESTART IDENTITY CASCADE`)
 	if err == nil {
 		// The accounts state the gotrue specs change: the admin claim binds

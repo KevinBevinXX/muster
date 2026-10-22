@@ -171,9 +171,9 @@ func (s *PGStore) RotateSecret(ctx context.Context, name, secret string) error {
 	return nil
 }
 
-// DeleteConnector removes a connector AND every grant naming it, in one
-// transaction, so a connector later re-created under the same name starts with
-// no approvals.
+// DeleteConnector removes a connector AND every grant and standing grant naming
+// it, in one transaction, so a connector later re-created under the same name
+// starts with no approvals — shared or not.
 func (s *PGStore) DeleteConnector(ctx context.Context, name string) error {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -192,6 +192,10 @@ func (s *PGStore) DeleteConnector(ctx context.Context, name string) error {
 		return ErrNotFound
 	}
 	if _, err := tx.Exec(ctx, `DELETE FROM connector_grants WHERE owner_id=$2 AND connector_name=$1`, name, owner); err != nil {
+		return err
+	}
+	// After the grants: a grant names its standing grant by foreign key.
+	if _, err := tx.Exec(ctx, `DELETE FROM connector_standing_grants WHERE owner_id=$2 AND connector_name=$1`, name, owner); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)
@@ -254,7 +258,8 @@ func (s *PGStore) TouchConnector(ctx context.Context, name string) error {
 
 const grantCols = `g.id, g.agent_id, coalesce(a.name, ''), g.connector_name, g.status, g.reason, g.requested_at,
 	g.decided_at, g.decided_by, g.last_used_at, g.source,
-	coalesce(g.decided_via, ''), coalesce(g.decided_via_host, ''), coalesce(g.decided_via_session, '')`
+	coalesce(g.decided_via, ''), coalesce(g.decided_via_host, ''), coalesce(g.decided_via_session, ''),
+	coalesce(g.standing_grant_id, 0)`
 
 const grantFrom = ` FROM connector_grants g LEFT JOIN agents a ON a.id = g.agent_id`
 
@@ -262,7 +267,7 @@ func scanGrant(row pgx.Row) (Grant, error) {
 	var g Grant
 	err := row.Scan(&g.ID, &g.AgentID, &g.AgentName, &g.Connector, &g.Status, &g.Reason, &g.RequestedAt,
 		&g.DecidedAt, &g.DecidedBy, &g.LastUsedAt, &g.Source,
-		&g.DecidedVia.Via, &g.DecidedVia.Host, &g.DecidedVia.Session)
+		&g.DecidedVia.Via, &g.DecidedVia.Host, &g.DecidedVia.Session, &g.StandingGrantID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Grant{}, ErrNotFound
 	}
@@ -383,7 +388,7 @@ func (s *PGStore) DecideGrantFrom(ctx context.Context, id int64, approve bool, b
 	}
 	tag, err := s.pool.Exec(ctx, `
 		UPDATE connector_grants SET status=$2, decided_by=$3, decided_at=now(), source=$4,
-		  decided_via=$5::text, decided_via_host=$6::text, decided_via_session=$7::text
+		  decided_via=$5::text, decided_via_host=$6::text, decided_via_session=$7::text, standing_grant_id=NULL
 		WHERE id=$1 AND status='pending'`, id, status, by, source, v, host, sess)
 	if err != nil {
 		return Grant{}, err
@@ -403,7 +408,7 @@ func (s *PGStore) DecideGrantFrom(ctx context.Context, id int64, approve bool, b
 func (s *PGStore) ReopenGrant(ctx context.Context, id int64) (Grant, bool, error) {
 	tag, err := s.pool.Exec(ctx, `
 		UPDATE connector_grants SET status='pending', decided_by='', decided_at=NULL, source='stored',
-		  decided_via=NULL, decided_via_host=NULL, decided_via_session=NULL
+		  decided_via=NULL, decided_via_host=NULL, decided_via_session=NULL, standing_grant_id=NULL
 		WHERE id=$1 AND status='approved'`, id)
 	if err != nil {
 		return Grant{}, false, err
@@ -419,7 +424,7 @@ func (s *PGStore) ReopenGrant(ctx context.Context, id int64) (Grant, bool, error
 func (s *PGStore) RevokeGrant(ctx context.Context, id int64, by string) (Grant, error) {
 	tag, err := s.pool.Exec(ctx, `
 		UPDATE connector_grants SET status='revoked', decided_by=$2, decided_at=now(),
-		  decided_via=NULL, decided_via_host=NULL, decided_via_session=NULL
+		  decided_via=NULL, decided_via_host=NULL, decided_via_session=NULL, standing_grant_id=NULL
 		WHERE id=$1 AND status IN ('pending', 'approved')`, id, by)
 	if err != nil {
 		return Grant{}, err

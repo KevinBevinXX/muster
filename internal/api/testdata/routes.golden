@@ -34,6 +34,7 @@ DELETE /api/tasks/{id}
 DELETE /api/tasks/{id}/comments/{cid}
 DELETE /api/tokens/{id}
 DELETE /connector-grants/{id}
+DELETE /connector-standing-grants/{id}
 DELETE /connectors/{name}
 DELETE /tasks/{id}
 DELETE /tasks/{id}/comments/{cid}

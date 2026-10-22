@@ -81,6 +81,7 @@ func writeEveryOwnedTable(ctx context.Context, pool *pgxpool.Pool, tag string) e
 		{`INSERT INTO chat_messages (agent_id, session_id, role, content) VALUES ($1, $2, 'user', 'hello')`, func() []any { return []any{agent, session} }, nil},
 		{`INSERT INTO connectors (name, hosts, auth_scheme, secret_ciphertext) VALUES ($1, ARRAY['api.example.test'], 'bearer', '\x00')`, func() []any { return []any{"conn-" + tag} }, nil},
 		{`INSERT INTO connector_grants (agent_id, connector_name) VALUES ($1, $2)`, func() []any { return []any{agent, "conn-" + tag} }, nil},
+		{`INSERT INTO connector_standing_grants (connector_name, source) VALUES ($1, 'stored')`, func() []any { return []any{"conn-" + strings.ToLower(tag)} }, nil},
 		{`INSERT INTO connector_audit (kind, agent_id, agent_name, connector_name, method, host, path, status) VALUES ('proxy', $1, 'a', 'c', 'GET', 'h', '/', 200)`, func() []any { return []any{agent} }, nil},
 		{`INSERT INTO github_connection (login, scopes, token_ciphertext) VALUES ($1, 'repo', '\xde')`, func() []any { return []any{"octo-" + tag} }, nil},
 		{`INSERT INTO mirror_tokens (host, token_hash) VALUES ($1, $2)`, func() []any { return []any{"host-" + tag, "hash-" + tag} }, nil},

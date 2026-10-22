@@ -489,7 +489,8 @@ open any pull request as a **draft**, never merge, never mark the task complete
 (set it `ready_for_review` with the pull request's URL in a comment). Marking a
 task complete is refused to every agent anyway. ⚠ The draft rule is an
 instruction, not enforced by muster: pushing and opening the pull request go
-through the `github` connector, which you approve per agent.
+through the `github` connector, which you approve once per repository
+([connectors.md](connectors.md#shared-approvals)).
 
 #### Completing a task stops the chief's agent
 
