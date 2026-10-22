@@ -50,7 +50,41 @@ var (
 	// ErrAskNotSent wraps an AnswerWindow error from BEFORE the answer was
 	// sent to the host: nothing can be being typed.
 	ErrAskNotSent = errors.New("mirror: the answer was not sent to the host")
+	// ErrAskOwnDifferent: the picker holds part of an answer muster typed
+	// earlier, which differs from this one. Nothing was typed.
+	ErrAskOwnDifferent = errors.New("mirror: the terminal's picker holds the answer muster started typing earlier, which differs from this one")
 )
+
+// askKeysError is a host's refusal with how many keys of the answer's plan
+// the picker had received (Msg.Keys).
+type askKeysError struct {
+	keys int
+	err  error
+}
+
+func (e askKeysError) Error() string { return e.err.Error() }
+func (e askKeysError) Unwrap() error { return e.err }
+
+// WithAskKeys is err carrying keys, as a host's refusal reports them (AskKeys):
+// how a host's outcome reaches AnswerWindow's caller, and how a stand-in for
+// the hub (a test's) reports one. nil stays nil, and keys 0 adds nothing.
+func WithAskKeys(err error, keys int) error {
+	if err == nil || keys <= 0 {
+		return err
+	}
+	return askKeysError{keys: keys, err: err}
+}
+
+// AskKeys is how many keys of the answer's plan the host reported the picker
+// had received when AnswerWindow's err ended it: 0 when it reported none (an
+// older host, nothing typed) or err is not the host's report.
+func AskKeys(err error) int {
+	var k askKeysError
+	if errors.As(err, &k) {
+		return k.keys
+	}
+	return 0
+}
 
 // AskOutcomeKnown reports whether err (from AnswerWindow) means the host is
 // NOT typing any more: nil (typed), a refusal the host reported, or an
@@ -60,7 +94,7 @@ func AskOutcomeKnown(err error) bool {
 	if err == nil {
 		return true
 	}
-	for _, e := range []error{ErrAskNotSent, ErrAskNoPicker, ErrAskTouched, ErrAskLost, ErrAskUnsupported, ErrAskUnrecognised, ErrAskBusy, ErrAskUnreadable, ErrAskRefused,
+	for _, e := range []error{ErrAskNotSent, ErrAskNoPicker, ErrAskTouched, ErrAskLost, ErrAskUnsupported, ErrAskUnrecognised, ErrAskBusy, ErrAskUnreadable, ErrAskOwnDifferent, ErrAskRefused,
 		ErrHermesApprovalGone, ErrHermesUnreachable} {
 		if errors.Is(err, e) {
 			return true
@@ -75,12 +109,15 @@ const askAnswerTimeout = 60 * time.Second
 
 // AnswerWindow types choices for qs into the AskUserQuestion picker in the
 // Claude pane of one WINDOW of owner's host's session (its tmux window id; ""
-// = the session's active window), and waits for the host's outcome.
-func (h *Hub) AnswerWindow(ctx context.Context, owner int64, host, session, window string, qs []askq.Question, choices []askq.Choice) error {
+// = the session's active window), and waits for the host's outcome. prior is
+// what an earlier answer is known to have left in that picker (nil: nothing);
+// a refusal carries how many keys the picker has received (AskKeys).
+func (h *Hub) AnswerWindow(ctx context.Context, owner int64, host, session, window string, qs []askq.Question, choices []askq.Choice, prior *askq.Progress) error {
 	ch, id, hc, m, err := h.prepareAnswer(ctx, owner, host, session, window, qs, choices)
 	if err != nil {
 		return fmt.Errorf("%w: %w", ErrAskNotSent, err)
 	}
+	m.Ask.Prior = prior
 	defer func() {
 		hc.mu.Lock()
 		delete(hc.answers, id)
@@ -131,8 +168,9 @@ func (h *Hub) prepareAnswer(ctx context.Context, owner int64, host, session, win
 	return ch, id, hc, Msg{Type: TypeAnswer, ID: id, Session: session, Window: windowID, Ask: &AskTyping{Questions: qs, Choices: choices}}, nil
 }
 
-// answered hands the host's outcome to the answer waiting on id.
-func (hc *hostConn) answered(id uint32, why, refusal string) {
+// answered hands the host's outcome to the answer waiting on id: keys is how
+// many keys of its plan the picker had received (Msg.Keys).
+func (hc *hostConn) answered(id uint32, why, refusal string, keys int) {
 	hc.mu.Lock()
 	ch := hc.answers[id]
 	delete(hc.answers, id)
@@ -140,7 +178,7 @@ func (hc *hostConn) answered(id uint32, why, refusal string) {
 	if ch == nil {
 		return
 	}
-	ch <- askAnswerError(why, refusal)
+	ch <- WithAskKeys(askAnswerError(why, refusal), keys)
 }
 
 // askAnswerError is the error a host's answered means; the host's prose (why)
@@ -166,6 +204,8 @@ func askAnswerError(why, refusal string) error {
 		return fmt.Errorf("%w: %s", ErrAskUnreadable, why)
 	case AskRefusalUnreadableTyped:
 		return fmt.Errorf("%w: %w: %s", ErrAskUnreadable, ErrAskLost, why)
+	case AskRefusalOwnDifferent:
+		return fmt.Errorf("%w: %s", ErrAskOwnDifferent, why)
 	case AskRefusalHermesGone:
 		return fmt.Errorf("%w: %s", ErrHermesApprovalGone, why)
 	case AskRefusalHermesUnreachable:
@@ -177,10 +217,10 @@ func askAnswerError(why, refusal string) error {
 }
 
 // AnswerWindow is Hub.AnswerWindow for the viewing principal's host.
-func (s *Service) AnswerWindow(ctx context.Context, host, session, window string, qs []askq.Question, choices []askq.Choice) error {
+func (s *Service) AnswerWindow(ctx context.Context, host, session, window string, qs []askq.Question, choices []askq.Choice, prior *askq.Progress) error {
 	o, err := owner(ctx)
 	if err != nil {
 		return err
 	}
-	return s.hub.AnswerWindow(ctx, o, host, session, window, qs, choices)
+	return s.hub.AnswerWindow(ctx, o, host, session, window, qs, choices, prior)
 }

@@ -330,7 +330,8 @@ test.describe('phone 412×915 touch', () => {
     const before = fs.readFileSync(tr, 'utf8');
     await c.getByRole('button', { name: 'Submit answers' }).tap();
     await expect(c).toHaveAttribute('data-ask-state', 'failed', { timeout: 10_000 });
-    await expect(c).toContainText('Someone has started answering it in the terminal');
+    await expect(c).toContainText('Someone else has started answering it in the terminal — finish it there.');
+    await expect(c.locator('form'), 'a picker someone else is answering offers no retry').toHaveCount(0);
     expect(fs.readFileSync(tr, 'utf8'), 'something was submitted into a touched picker').toBe(before);
     expect(fs.existsSync(pickerFile()), 'the picker is still the terminal\'s').toBe(true);
     answerInTerminal(toolID, { 'Which color do you prefer?': 'Green', 'Which pets do you have?': 'Cat', 'What should the project be called?': 'Beta' });
@@ -365,6 +366,93 @@ test.describe('phone 412×915 touch', () => {
     });
   });
 
+  // 🔴 THE OPERATOR'S REPORT: "Multi question responses still dont work, it
+  // gets stuck mid answer with 'someone else started answering'". A
+  // three-question answer whose typing is lost after question 1 (the first
+  // key of question 2 never reaches the picker) leaves question 1 answered in
+  // the terminal; the card says muster lost track — NOT that someone else is
+  // answering — and offers "Try again" with the answers still chosen; trying
+  // again continues from question 2 and the CLI takes the whole answer.
+  test('a three-question answer lost after question 1 is finished by trying again', async ({ page }) => {
+    await openView(page);
+    const toolID = 'toolu_e2e_resume_' + stamp;
+    await registered(toolID);
+    const c = card(page, toolID);
+    await expect(c, `the question is drawn (log:\n${mirrorLog})`).toHaveAttribute('data-ask-state', 'pending', { timeout: 10_000 });
+    await c.locator('fieldset').nth(0).getByText('Blue', { exact: true }).tap();
+    await c.locator('fieldset').nth(1).getByText('Cat', { exact: true }).tap();
+    await c.locator('fieldset').nth(1).getByText('Fish', { exact: true }).tap();
+    await c.locator('fieldset').nth(2).getByText('Beta', { exact: true }).tap();
+    // Key 1 answers question 1 (Blue); key 2, question 2's first, is lost.
+    fs.writeFileSync(tr + '.picker.drop', '2');
+    const before = fs.readFileSync(tr, 'utf8');
+    await c.getByRole('button', { name: 'Submit answers' }).tap();
+    await expect(c, `lost (log:\n${mirrorLog})`).toHaveAttribute('data-ask-state', 'failed', { timeout: 15_000 });
+    await expect(c).toContainText("Muster lost track of the terminal's picker part-way through typing your answer, and nothing was submitted.");
+    await expect(c).not.toContainText('started answering it');
+    expect(fs.readFileSync(tr, 'utf8'), 'nothing was submitted').toBe(before);
+    expect(fs.existsSync(pickerFile()), "the picker is still on the terminal's screen").toBe(true);
+    // The answers are still chosen, and it can be tried again from here.
+    await expect(c.locator('fieldset').nth(0).getByRole('radio', { name: 'Blue' })).toBeChecked();
+    await expect(c.locator('fieldset').nth(1).getByRole('checkbox', { name: 'Cat' })).toBeChecked();
+    await expect(c.locator('fieldset').nth(1).getByRole('checkbox', { name: 'Fish' })).toBeChecked();
+    await expect(c.locator('fieldset').nth(2).getByRole('radio', { name: 'Beta' })).toBeChecked();
+    await c.getByRole('button', { name: 'Try again' }).tap();
+    await expect(c, `finished (log:\n${mirrorLog})`).toHaveAttribute('data-ask-state', 'answered', { timeout: 15_000 });
+    await expect(c).toContainText('Answered here');
+    const lines = fs.readFileSync(tr, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+    const result = lines.find((l) => l.toolUseResult && l.message?.content?.[0]?.tool_use_id === toolID);
+    expect(result?.toolUseResult?.answers).toEqual({
+      'Which color do you prefer?': 'Blue',
+      'Which pets do you have?': 'Cat, Fish',
+      'What should the project be called?': 'Beta',
+    });
+  });
+
+  // 🔴 THE LIVE FAILURE: options with previews. Claude Code draws such a
+  // question with the cursor's preview boxed beside the options and no row
+  // for an answer of one's own; muster refused it before a key as someone
+  // answering in the terminal. The card shows each option's preview and no
+  // "Other" for that question, and the answer is typed (a digit moves the
+  // cursor, Enter takes it) and submitted.
+  test('a question whose options have previews is shown with them and typed into the terminal', async ({ page }) => {
+    await openView(page);
+    const toolID = 'toolu_e2e_preview_' + stamp;
+    const withPreviews: Question[] = [
+      {
+        question: 'Which layout should the report use?',
+        header: 'Layout',
+        options: [
+          { label: 'Table', description: 'Rows', preview: 'name | size\n---- | ----\nalpha | 3' },
+          { label: 'Cards', description: 'Boxes', preview: '[ alpha ]\n[ size 3 ]' },
+          { label: 'List', description: 'Lines', preview: '- alpha (3)' },
+        ],
+        multiSelect: false,
+      } as unknown as Question,
+      questions[2],
+    ];
+    await registered(toolID, { qs: withPreviews });
+    const c = card(page, toolID);
+    await expect(c, `the question is drawn (log:\n${mirrorLog})`).toHaveAttribute('data-ask-state', 'pending', { timeout: 10_000 });
+    const q1 = c.locator('fieldset').nth(0);
+    await expect(q1.locator('[data-ask-preview]')).toHaveCount(3);
+    await expect(q1.locator('[data-ask-preview]').nth(1)).toHaveText('[ alpha ]\n[ size 3 ]');
+    await expect(q1.getByRole('radio', { name: 'Other' }), 'a preview question has no row for an answer of one\'s own').toHaveCount(0);
+    await expect(c.locator('fieldset').nth(1).getByRole('radio', { name: 'Other' })).toHaveCount(1);
+    const [sw, cw] = await page.evaluate(() => [document.documentElement.scrollWidth, document.documentElement.clientWidth]);
+    expect(sw, 'no horizontal scroll with previews drawn').toBeLessThanOrEqual(cw);
+    await q1.getByText('Cards', { exact: true }).tap();
+    await c.locator('fieldset').nth(1).getByText('Alpha', { exact: true }).tap();
+    await c.getByRole('button', { name: 'Submit answers' }).tap();
+    await expect(c, `typed (log:\n${mirrorLog})`).toHaveAttribute('data-ask-state', 'answered', { timeout: 10_000 });
+    const lines = fs.readFileSync(tr, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+    const result = lines.find((l) => l.toolUseResult && l.message?.content?.[0]?.tool_use_id === toolID);
+    expect(result?.toolUseResult?.answers).toEqual({
+      'Which layout should the report use?': 'Cards',
+      'What should the project be called?': 'Alpha',
+    });
+  });
+
   // 🔴 A QUESTION MUSTER CANNOT READ IS NOT BLAMED ON THE TERMINAL: the
   // picker is untouched but shows the question in other words than the hook
   // registered. Nothing is typed, and the card says muster could not read it —
@@ -383,7 +471,7 @@ test.describe('phone 412×915 touch', () => {
     await c.getByRole('button', { name: 'Submit answers' }).tap();
     await expect(c).toHaveAttribute('data-ask-state', 'failed', { timeout: 10_000 });
     await expect(c).toContainText("Couldn't read this question off the terminal's screen as the one muster was sent — answer it in the terminal.");
-    await expect(c).not.toContainText('Someone has started answering it');
+    await expect(c).not.toContainText('started answering it');
     expect(fs.readFileSync(tr, 'utf8'), 'something was submitted into a picker muster could not read').toBe(before);
     expect(fs.existsSync(pickerFile()), "the picker is still the terminal's").toBe(true);
     answerInTerminal(toolID, { 'Which color do you prefer?': 'Green', 'Which pets do you have?': 'Cat', 'What should the project be called?': 'Beta' });

@@ -328,6 +328,12 @@ type Msg struct {
 	// Ask (answer) is what to type: the questions as muster showed them, and
 	// one choice per question.
 	Ask *AskTyping `json:"ask,omitempty"`
+	// Keys (answered) is how many keys of the answer's plan the picker has
+	// received from muster (askdrive.DriveFrom): what the next answer's
+	// AskTyping.Prior is when this one stopped part way. 🔴 NO VERSION BUMP,
+	// BACKWARD-COMPATIBLE BOTH WAYS: an older host never sets it (0: nothing
+	// muster can vouch for), and an older muster ignores it.
+	Keys int `json:"keys,omitempty"`
 	// HermesSend (hello) is the host ADVERTISING that it accepts a paste into
 	// a Hermes window (Window.Runtime RuntimeHermes), on an -interactive v2
 	// host. 🔴 NO HOST SETS IT YET: the host's flag and its gated send arrive
@@ -1147,6 +1153,11 @@ func (w Window) Equal(o Window) bool {
 type AskTyping struct {
 	Questions []askq.Question `json:"questions"`
 	Choices   []askq.Choice   `json:"choices"`
+	// Prior is what an earlier answer's typing is known to have left in this
+	// picker (askq.Entry.Left): the host continues it when the picker shows
+	// exactly that, and only then (askdrive.DriveFrom). nil: nothing. An
+	// older host ignores it and requires the picker untouched, as before.
+	Prior *askq.Progress `json:"prior,omitempty"`
 }
 
 // The kinds of paste refusal a host names (Msg.Refusal on pasted): the
@@ -1223,4 +1234,8 @@ const (
 	// before the picker went out of reading (off the top of the pane); nothing
 	// was submitted.
 	AskRefusalUnreadableTyped = "unreadable-typed"
+	// AskRefusalOwnDifferent: the picker holds part of the answer muster
+	// typed earlier (AskTyping.Prior), which differs from this one. Nothing
+	// was typed.
+	AskRefusalOwnDifferent = "own-different"
 )

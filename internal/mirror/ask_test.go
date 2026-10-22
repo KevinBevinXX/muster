@@ -19,6 +19,48 @@ import (
 
 var askQs = []askq.Question{{Question: "Which color?", Header: "Color", Options: []askq.Option{{Label: "Red"}, {Label: "Blue"}}}}
 
+// TestAnAnswerCarriesWhatWasLeftAndTheKeysComeBack: what an earlier answer
+// left in the picker goes to the host with the answer (AskTyping.Prior), and
+// how many keys the picker received comes back with a refusal (AskKeys) — 0
+// from a host that reports none (an older one).
+func TestAnAnswerCarriesWhatWasLeftAndTheKeysComeBack(t *testing.T) {
+	r := newRig(t)
+	tok, _ := r.store.mint(t, 1, "hd")
+	hi := winHello("hd", true, mirror.Window{Session: "work", ID: "@1", Index: 0, Active: true, Claude: true, ClaudeSession: "sess-a"})
+	hi.AskAnswer = true
+	raw, err := r.rawConnect(t, tok, hi)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.online(t, 1, "hd", "work")
+	choices := []askq.Choice{{Picks: []int{1}}}
+	prior := &askq.Progress{Choices: []askq.Choice{{Picks: []int{1}}}, Keys: 3}
+	for _, tc := range []struct {
+		prior *askq.Progress
+		keys  int
+	}{{prior, 5}, {nil, 0}} {
+		seen := len(raw.of(mirror.TypeAnswer))
+		done := make(chan error, 1)
+		go func() { done <- r.svc.AnswerWindow(asUser(1), "hd", "work", "@1", askQs, choices, tc.prior) }()
+		var asked mirror.Msg
+		eventually(t, "the host is asked to answer", func() bool {
+			if got := raw.of(mirror.TypeAnswer); len(got) > seen {
+				asked = got[seen]
+				return true
+			}
+			return false
+		})
+		if !reflect.DeepEqual(asked.Ask.Prior, tc.prior) {
+			t.Fatalf("the host was sent prior %+v, want %+v", asked.Ask.Prior, tc.prior)
+		}
+		raw.write(t, mirror.Msg{Type: mirror.TypeAnswered, ID: asked.ID, Error: "moved", Refusal: mirror.AskRefusalLost, Keys: tc.keys})
+		got := <-done
+		if !errors.Is(got, mirror.ErrAskLost) || mirror.AskKeys(got) != tc.keys {
+			t.Fatalf("lost after %d keys: %v, AskKeys %d", tc.keys, got, mirror.AskKeys(got))
+		}
+	}
+}
+
 // TestAnAnswerReachesTheHostAndItsRefusalComesBack: a host that advertised
 // AskAnswer is sent the questions and choices for the named window; each kind
 // of refusal it names is the error muster acts on, and an empty one is
@@ -38,7 +80,7 @@ func TestAnAnswerReachesTheHostAndItsRefusalComesBack(t *testing.T) {
 		t.Fatalf("the host's AskAnswer is not in its view: %+v", hs)
 	}
 	choices := []askq.Choice{{Picks: []int{1}}}
-	all := []error{mirror.ErrAskNoPicker, mirror.ErrAskTouched, mirror.ErrAskLost, mirror.ErrAskUnsupported, mirror.ErrAskUnrecognised, mirror.ErrAskBusy, mirror.ErrAskUnreadable, mirror.ErrAskRefused}
+	all := []error{mirror.ErrAskNoPicker, mirror.ErrAskTouched, mirror.ErrAskLost, mirror.ErrAskUnsupported, mirror.ErrAskUnrecognised, mirror.ErrAskBusy, mirror.ErrAskUnreadable, mirror.ErrAskOwnDifferent, mirror.ErrAskRefused}
 	for _, tc := range []struct {
 		why, refusal string
 		want         error
@@ -54,11 +96,12 @@ func TestAnAnswerReachesTheHostAndItsRefusalComesBack(t *testing.T) {
 		{"another drive", mirror.AskRefusalBusy, mirror.ErrAskBusy, nil},
 		{"other words", mirror.AskRefusalUnreadable, mirror.ErrAskUnreadable, nil},
 		{"off the top", mirror.AskRefusalUnreadableTyped, mirror.ErrAskUnreadable, mirror.ErrAskLost},
+		{"muster's earlier answer", mirror.AskRefusalOwnDifferent, mirror.ErrAskOwnDifferent, nil},
 		{"what", "a-kind-this-muster-does-not-know", mirror.ErrAskRefused, nil},
 	} {
 		seen := len(raw.of(mirror.TypeAnswer))
 		done := make(chan error, 1)
-		go func() { done <- r.svc.AnswerWindow(asUser(1), "hd", "work", "@1", askQs, choices) }()
+		go func() { done <- r.svc.AnswerWindow(asUser(1), "hd", "work", "@1", askQs, choices, nil) }()
 		var asked mirror.Msg
 		eventually(t, "the host is asked to answer", func() bool {
 			if got := raw.of(mirror.TypeAnswer); len(got) > seen {
@@ -96,7 +139,7 @@ func TestAnAnswerReachesTheHostAndItsRefusalComesBack(t *testing.T) {
 	}
 	// A stale sign-in: refused here too, before the host hears anything.
 	seen := len(raw.of(mirror.TypeAnswer))
-	err = r.svc.AnswerWindow(asStaleUser(1), "hd", "work", "@1", askQs, choices)
+	err = r.svc.AnswerWindow(asStaleUser(1), "hd", "work", "@1", askQs, choices, nil)
 	if !errors.Is(err, mirror.ErrStepUpRequired) || !errors.Is(err, mirror.ErrAskNotSent) || !mirror.AskOutcomeKnown(err) {
 		t.Fatalf("a stale sign-in: %v (want a step-up refusal, not sent)", err)
 	}
@@ -121,7 +164,7 @@ func TestAHostThatCannotAnswerIsSentNothing(t *testing.T) {
 		}
 		r.online(t, 1, c.host, "work")
 		ctx, cancel := context.WithTimeout(asUser(1), time.Second)
-		err = r.svc.AnswerWindow(ctx, c.host, "work", "@1", askQs, []askq.Choice{{Picks: []int{0}}})
+		err = r.svc.AnswerWindow(ctx, c.host, "work", "@1", askQs, []askq.Choice{{Picks: []int{0}}}, nil)
 		cancel()
 		if !errors.Is(err, mirror.ErrAskUnsupported) || len(raw.of(mirror.TypeAnswer)) != 0 {
 			t.Errorf("%s: %v, %d answer frame(s); want ErrAskUnsupported and none", c.host, err, len(raw.of(mirror.TypeAnswer)))
@@ -138,7 +181,7 @@ func TestAHostThatCannotAnswerIsSentNothing(t *testing.T) {
 		}
 	}
 	// Another owner: not their host.
-	if err := r.svc.AnswerWindow(asUser(2), "older", "work", "@1", askQs, []askq.Choice{{Picks: []int{0}}}); !errors.Is(err, mirror.ErrHostOffline) {
+	if err := r.svc.AnswerWindow(asUser(2), "older", "work", "@1", askQs, []askq.Choice{{Picks: []int{0}}}, nil); !errors.Is(err, mirror.ErrHostOffline) {
 		t.Fatalf("another owner: %v", err)
 	}
 }
@@ -180,7 +223,7 @@ func TestAnOutcomeNeverReportedIsUnknown(t *testing.T) {
 		}
 	}
 	r := newRig(t)
-	err := r.svc.AnswerWindow(asUser(1), "nohost", "work", "@1", askQs, []askq.Choice{{Picks: []int{0}}})
+	err := r.svc.AnswerWindow(asUser(1), "nohost", "work", "@1", askQs, []askq.Choice{{Picks: []int{0}}}, nil)
 	if !errors.Is(err, mirror.ErrHostOffline) || !errors.Is(err, mirror.ErrAskNotSent) || !mirror.AskOutcomeKnown(err) {
 		t.Fatalf("an offline host: %v (want offline, not sent)", err)
 	}

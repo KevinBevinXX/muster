@@ -10,7 +10,9 @@
 //
 //   - before the first key it requires the picker UNTOUCHED (the first question,
 //     nothing chosen, the cursor on the first row) and every question's text and
-//     options to match what muster was asked;
+//     options to match what muster was asked — or, continuing an answer an
+//     earlier drive of muster's stopped part way through (DriveFrom), exactly
+//     the screen that drive's own keys left;
 //   - before EVERY key it re-reads the pane and requires the state the previous
 //     key was meant to produce — a person answering in the terminal meanwhile
 //     closes or changes the picker, and the driver stops without a key. It

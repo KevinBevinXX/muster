@@ -42,6 +42,66 @@ func (b *askingBackend) snapshotCalls() []string {
 	return append([]string(nil), b.calls...)
 }
 
+// resumingBackend is askingBackend that can continue an answer
+// (AskResumer): it records the prior each answer was sent with, and answers
+// with keys and err.
+type resumingBackend struct {
+	*askingBackend
+	priors []*askq.Progress
+	keys   int
+}
+
+func (b *resumingBackend) AnswerAskFrom(_ context.Context, pane string, qs []askq.Question, cs []askq.Choice, prior *askq.Progress) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.calls = append(b.calls, fmt.Sprintf("%s %s %v", pane, qs[0].Question, cs))
+	b.priors = append(b.priors, prior)
+	return b.keys, b.err
+}
+
+// TestTheHostContinuesWhatMusterSaysWasLeft: the answer's Prior reaches the
+// backend's AnswerAskFrom, and the keys it reports go back with its refusal
+// (Msg.Keys) — and not with a success, which leaves nothing to continue.
+func TestTheHostContinuesWhatMusterSaysWasLeft(t *testing.T) {
+	b := &resumingBackend{askingBackend: &askingBackend{windowsBackend: &windowsBackend{windows: threeWindows}}}
+	d := newDrivenMuster(t)
+	d.run(t, wrapped{b}, nil, true)
+	waitUntil(t, "the hello", func() bool { return len(d.of(mirror.TypeHello)) == 1 })
+	prior := &askq.Progress{Choices: []askq.Choice{{Picks: []int{1}}}, Keys: 2}
+	answer := func(id uint32) mirror.Msg {
+		t.Helper()
+		d.send(t, mirror.Msg{Type: mirror.TypeAnswer, ID: id, Session: "scratch2", Window: "@7",
+			Ask: &mirror.AskTyping{Questions: hostAskQs, Choices: []askq.Choice{{Picks: []int{1}}}, Prior: prior}})
+		var out mirror.Msg
+		waitUntil(t, "the answered", func() bool {
+			for _, m := range d.of(mirror.TypeAnswered) {
+				if m.ID == id {
+					out = m
+					return true
+				}
+			}
+			return false
+		})
+		return out
+	}
+	b.mu.Lock()
+	b.keys, b.err = 5, fmt.Errorf("x: %w", askdrive.ErrLost)
+	b.mu.Unlock()
+	if a := answer(1); a.Refusal != mirror.AskRefusalLost || a.Keys != 5 {
+		t.Fatalf("lost after 5 keys: answered %+v", a)
+	}
+	b.mu.Lock()
+	b.keys, b.err = 7, nil
+	got := append([]*askq.Progress(nil), b.priors...)
+	b.mu.Unlock()
+	if a := answer(2); a.Error != "" || a.Keys != 0 {
+		t.Fatalf("a success: answered %+v", a)
+	}
+	if len(got) != 1 || !reflect.DeepEqual(got[0], prior) {
+		t.Fatalf("the backend was handed %+v, want %+v", got, prior)
+	}
+}
+
 // rawlessBackend is askingBackend whose tmux can (raw) or cannot paste raw
 // keys, as far as it knows (Tmux.RawPaste).
 type rawlessBackend struct {
@@ -119,6 +179,7 @@ func TestAnAnswerIsTypedIntoTheClaudePaneOnly(t *testing.T) {
 	}{
 		{fmt.Errorf("x: %w", askdrive.ErrNoPicker), mirror.AskRefusalNoPicker},
 		{fmt.Errorf("x: %w", askdrive.ErrNotUntouched), mirror.AskRefusalTouched},
+		{fmt.Errorf("x: %w", askdrive.ErrOwnDifferent), mirror.AskRefusalOwnDifferent},
 		{fmt.Errorf("x: %w", askdrive.ErrUnreadable), mirror.AskRefusalUnreadable},
 		{fmt.Errorf("%w: %w", askdrive.ErrLost, askdrive.ErrUnreadable), mirror.AskRefusalUnreadableTyped},
 		{fmt.Errorf("x: %w", askdrive.ErrLost), mirror.AskRefusalLost},

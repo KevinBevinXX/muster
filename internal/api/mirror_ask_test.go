@@ -45,6 +45,7 @@ type askMirror struct {
 	amu      sync.Mutex
 	nudges   map[int64]int
 	typed    []string
+	priors   []*askq.Progress
 	typeErr  error
 	noAnswer bool // the host does not advertise AskAnswer
 	// hold, when set, keeps AnswerWindow typing until it is closed (or the
@@ -85,10 +86,11 @@ func (a *askMirror) AuthenticateHost(w http.ResponseWriter, r *http.Request) (in
 	return 0, "", false
 }
 
-func (a *askMirror) AnswerWindow(ctx context.Context, host, session, window string, qs []askq.Question, cs []askq.Choice) error {
+func (a *askMirror) AnswerWindow(ctx context.Context, host, session, window string, qs []askq.Question, cs []askq.Choice, prior *askq.Progress) error {
 	b, _ := json.Marshal(cs)
 	a.amu.Lock()
 	a.typed = append(a.typed, host+" "+session+" "+window+" "+string(b))
+	a.priors = append(a.priors, prior)
 	hold, err := a.hold, a.typeErr
 	a.typingCtx = ctx
 	a.amu.Unlock()
@@ -719,6 +721,89 @@ func TestAnUnknownOutcomeHoldsTheQuestion(t *testing.T) {
 	}
 }
 
+// TestALostAnswerIsContinuedFromTheCard: the operator's report — a
+// multi-question answer "gets stuck mid answer with 'someone else started
+// answering'". The host typed part of the answer and lost the picker; the card
+// says so (not that someone else is answering), draws the form again with the
+// answers chosen and "Try again"; trying again hands the host what was typed,
+// so it continues. The controls: someone else answering in the terminal is
+// said as that, with no form; muster's own earlier, different answer is said
+// as that, with the form holding it.
+func TestALostAnswerIsContinuedFromTheCard(t *testing.T) {
+	am, s, ts := askServer(t, true)
+	register(t, ts)
+	region(t, s, ts, `data-ask-state="pending"`)
+	am.amu.Lock()
+	am.typeErr = mirror.WithAskKeys(fmt.Errorf("%w: after key 5", mirror.ErrAskLost), 4)
+	am.amu.Unlock()
+	resp, body := answerReq(t, s, ts, answerForm(gateTool, "a0", "Blue", "a1", "Fish", "a1", "Dog"), "", "")
+	if resp.StatusCode != http.StatusConflict || resp.Header.Get("X-Ask-State") != ui.AskStateFailed {
+		t.Fatalf("a lost typing: %d %s\n%s", resp.StatusCode, resp.Header.Get("X-Ask-State"), body)
+	}
+	for _, want := range []string{"lost track of the terminal", "muster continues from where it stopped", "<form", "Try again",
+		`value="Blue" checked`, `value="Dog" checked`, `value="Fish" checked`} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("the lost card lacks %q:\n%s", want, body)
+		}
+	}
+	if strings.Contains(body, "Someone") || strings.Contains(body, `value="Red" checked`) {
+		t.Fatalf("the lost card:\n%s", body)
+	}
+	am.amu.Lock()
+	am.typeErr = nil
+	am.amu.Unlock()
+	resp, body = answerReq(t, s, ts, answerForm(gateTool, "a0", "Blue", "a1", "Fish", "a1", "Dog"), "", "")
+	if resp.StatusCode != http.StatusOK || resp.Header.Get("X-Ask-State") != ui.AskStateTyping {
+		t.Fatalf("trying again: %d %s\n%s", resp.StatusCode, resp.Header.Get("X-Ask-State"), body)
+	}
+	am.amu.Lock()
+	priors := append([]*askq.Progress(nil), am.priors...)
+	am.amu.Unlock()
+	want := &askq.Progress{Choices: []askq.Choice{{Picks: []int{1}}, {Picks: []int{1, 2}}}, Keys: 4}
+	if len(priors) != 2 || priors[0] != nil || !reflect.DeepEqual(priors[1], want) {
+		t.Fatalf("the host was handed %+v then %+v, want nothing then %+v", priors[0], priors[len(priors)-1], want)
+	}
+
+	// Someone else typed in the terminal: said as that, no form.
+	am2, s2, ts2 := askServer(t, true)
+	register(t, ts2)
+	region(t, s2, ts2, `data-ask-state="pending"`)
+	am2.amu.Lock()
+	am2.typeErr = fmt.Errorf("%w: x", mirror.ErrAskTouched)
+	am2.amu.Unlock()
+	_, body = answerReq(t, s2, ts2, answerForm(gateTool, "a0", "Blue", "a1", "Fish"), "", "")
+	if !strings.Contains(body, "Someone else has started answering it in the terminal") || strings.Contains(body, "<form") || strings.Contains(body, "lost track") {
+		t.Fatalf("the touched card:\n%s", body)
+	}
+
+	// Muster's own earlier answer differs: said as that, the form holding it.
+	am3, s3, ts3 := askServer(t, true)
+	register(t, ts3)
+	region(t, s3, ts3, `data-ask-state="pending"`)
+	am3.amu.Lock()
+	am3.typeErr = mirror.WithAskKeys(fmt.Errorf("%w: x", mirror.ErrAskLost), 1)
+	am3.amu.Unlock()
+	_, _ = answerReq(t, s3, ts3, answerForm(gateTool, "a0", "Red", "a1", "Cat"), "", "")
+	am3.amu.Lock()
+	am3.typeErr = fmt.Errorf("%w: x", mirror.ErrAskOwnDifferent)
+	am3.amu.Unlock()
+	_, body = answerReq(t, s3, ts3, answerForm(gateTool, "a0", "Blue", "a1", "Cat"), "", "")
+	if !strings.Contains(body, "still holds the answer muster started typing earlier") || !strings.Contains(body, `value="Red" checked`) ||
+		strings.Contains(body, `value="Blue" checked`) || !strings.Contains(body, "Try again") {
+		t.Fatalf("the own-different card:\n%s", body)
+	}
+	am3.amu.Lock()
+	am3.typeErr = nil
+	am3.amu.Unlock()
+	_, _ = answerReq(t, s3, ts3, answerForm(gateTool, "a0", "Red", "a1", "Cat"), "", "")
+	am3.amu.Lock()
+	last := am3.priors[len(am3.priors)-1]
+	am3.amu.Unlock()
+	if last == nil || last.Keys != 1 || !reflect.DeepEqual(last.Choices, []askq.Choice{{Picks: []int{0}}, {Picks: []int{0}}}) {
+		t.Fatalf("after an own-different refusal the host was handed %+v, want the earlier answer still", last)
+	}
+}
+
 // TestEachFailureSaysWhatTheTerminalHas: the card's note for every outcome —
 // "partly filled in" exactly where keys may have been typed.
 func TestEachFailureSaysWhatTheTerminalHas(t *testing.T) {
@@ -728,20 +813,31 @@ func TestEachFailureSaysWhatTheTerminalHas(t *testing.T) {
 		partial bool
 	}{
 		{fmt.Errorf("%w: x", mirror.ErrAskNoPicker), "no longer on the terminal's screen", false},
-		{fmt.Errorf("%w: x", mirror.ErrAskTouched), "Someone has started answering it", false},
+		{fmt.Errorf("%w: x", mirror.ErrAskTouched), "Someone else has started answering it in the terminal", false},
 		{fmt.Errorf("%w: x", mirror.ErrAskUnreadable), "Couldn't read this question off the terminal's screen as the one muster was sent — answer it in the terminal.", false},
 		{fmt.Errorf("%w: %w: x", mirror.ErrAskUnreadable, mirror.ErrAskLost), "the question went off the terminal's screen while typing", true},
 		{fmt.Errorf("%w: x", mirror.ErrAskBusy), "Another answer is being typed into this terminal", false},
 		{fmt.Errorf("%w: x", mirror.ErrAskUnrecognised), "Couldn't recognise the terminal's picker (Claude Code may have changed) — answer it in the terminal.", false},
-		{fmt.Errorf("%w: x", mirror.ErrAskLost), "changed while typing", true},
+		{fmt.Errorf("%w: x", mirror.ErrAskLost), "lost track of the terminal's picker while typing", true},
 		{fmt.Errorf("%w: %w", mirror.ErrAskNotSent, mirror.ErrHostOffline), "The host is offline", false},
 		{mirror.ErrHostDisconnected, "went offline while typing", true},
 		{mirror.ErrAskTimeout, "Couldn't type it in.", true},
 	} {
-		got := askTypeFailure(c.err)
+		got := askTypeFailure(c.err, false, false)
 		if !strings.Contains(got, c.says) || strings.Contains(got, "partly filled in") != c.partial {
 			t.Errorf("%v: %q", c.err, got)
 		}
+	}
+	// Lost with what was typed recorded: try again, it continues.
+	if got := askTypeFailure(fmt.Errorf("%w: x", mirror.ErrAskLost), true, false); got != askNoteLost {
+		t.Errorf("lost, resumable: %q", got)
+	}
+	// Not as muster left it, after a typing whose outcome never came back.
+	if got := askTypeFailure(fmt.Errorf("%w: x", mirror.ErrAskTouched), false, true); got != askNoteTouchedUnsure {
+		t.Errorf("touched, unsure: %q", got)
+	}
+	if got := askTypeFailure(fmt.Errorf("%w: x", mirror.ErrAskOwnDifferent), false, false); got != askNoteOwnDifferent {
+		t.Errorf("own different: %q", got)
 	}
 }
 

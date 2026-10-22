@@ -610,10 +610,29 @@ How it works:
   terminal*, with those answers; dismissed (Esc), *Dismissed in the terminal*.
 - 🔴 **Never half an answer.** If someone has started answering in the terminal,
   or the picker is gone or changes while muster types, muster stops before the
-  next key, nothing is submitted, and the card says to answer in the terminal.
-  When muster had already typed part of it, the card also says the picker may
-  be partly filled in: check what it shows before you submit it there. An
+  next key and nothing is submitted. The card says which: *someone else has
+  started answering it in the terminal* (finish it there), or *muster lost
+  track of the terminal's picker part-way through typing your answer*. An
   answer that arrives after the terminal's is refused, and nothing is typed.
+- **Trying again continues muster's own partial answer.** When muster stopped
+  part way (a key whose screen never came), it records how many keys of your
+  answer it typed, and the card shows the form again — your answers still
+  chosen — with **Try again**. Trying again continues from the first key not
+  yet taken, but only when the picker shows exactly what muster's own keys
+  left; anything else is someone else's and is refused as above. Which answer
+  an earlier question was given is not on the screen, so before the final
+  submit muster checks the review screen lists exactly your answers — an
+  earlier answer changed in the terminal is caught there, and nothing is
+  submitted. If you change your answers before trying again, the card says
+  the picker still holds the answer muster started typing; submit that again,
+  or change it in the terminal. A muster restart, or a typing whose outcome
+  the host never reported, records nothing to continue: the picker is then
+  the terminal's to finish.
+- **Options with previews.** When a question's options carry a `preview`,
+  Claude Code draws them in a column with the highlighted option's preview
+  boxed beside them, and no row for your own answer (measured, 2.1.289). The
+  card shows each option's preview under it and no **Other** for that
+  question; muster moves the picker's cursor to your option and takes it.
 - **One answer at a time.** Once you submit, closing the page does not stop
   it: muster waits for the host to report how it went. No second answer for
   the question starts until it has (or until 90 seconds have passed, when the
@@ -627,7 +646,9 @@ How it works:
   question leaves the attention queue. Time the host is disconnected does not
   count. If the transcript later shows the question answered (the session came
   back), the card still changes to that answer.
-- **When Claude Code changes its picker.** If the host cannot read the picker,
+- **When Claude Code changes its picker.** If the host cannot read the picker
+  — including one showing this question with its rows drawn in a layout muster
+  does not know, which is never blamed on someone in the terminal —
   the card says *couldn't recognise the terminal picker (Claude Code may have
   changed); answer in the terminal*, the host logs it, and muster counts it in
   `muster_mirror_ask_typing_total{result="unrecognised"}` (all outcomes are

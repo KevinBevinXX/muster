@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"slices"
 	"strconv"
 
 	g "maragu.dev/gomponents"
@@ -168,6 +169,12 @@ type MirrorAskLiveView struct {
 	Unanswerable string
 	// Error is a refused submit's reason, drawn above the form.
 	Error string
+	// Retry (failed) says the answer can be tried again from here: the card
+	// draws the form again under its Note, Chosen's answers chosen.
+	Retry bool
+	// Chosen is the answers muster was typing (failed), one per question, as
+	// the picker takes them: what a form drawn again starts with.
+	Chosen []askq.Choice
 }
 
 // askTerminalLink is the card's link to the window's terminal.
@@ -195,6 +202,12 @@ func MirrorAskLive(v MirrorAskLiveView) g.Node {
 	case AskStateFailed:
 		label = "answer in the terminal"
 		body = g.Group{askReadOnly(v.Questions, nil), status("text-muted", v.Note, true)}
+		if v.Retry && v.Unanswerable == "" {
+			// It can be tried again from here: the form, with what was being
+			// typed chosen, under what happened.
+			label = "not typed in yet"
+			body = g.Group{status("text-muted", v.Note, true), askForm(v)}
+		}
 	case AskStateAnswered:
 		label = "answered here"
 		body = g.Group{askReadOnly(v.Questions, v.Answers), status("text-accent", "Answered here — Claude has it.", false)}
@@ -269,32 +282,51 @@ func askForm(v MirrorAskLiveView) g.Node {
 			kind = "checkbox"
 		}
 		name := "a" + idx
+		// chosen is what was being typed for this question (a form drawn
+		// again after a failure); nothing on a fresh one.
+		var chosen askq.Choice
+		if i < len(v.Chosen) {
+			chosen = v.Chosen[i]
+		}
 		opts := make([]g.Node, 0, len(q.Options)+1)
 		for j, o := range q.Options {
 			id := base + "-" + idx + "-" + strconv.Itoa(j)
 			opts = append(opts, Label(For(id), Class("flex min-h-[44px] cursor-pointer items-start gap-2 rounded-lg px-2 py-2 hover:bg-s2"),
-				Input(Type(kind), ID(id), Name(name), Value(o.Label), Class("mt-0.5 h-5 w-5 shrink-0 cursor-pointer rounded border-edge bg-s2 text-accent"+focusRing)),
+				Input(Type(kind), ID(id), Name(name), Value(o.Label), g.If(slices.Contains(chosen.Picks, j), Checked()),
+					Class("mt-0.5 h-5 w-5 shrink-0 cursor-pointer rounded border-edge bg-s2 text-accent"+focusRing)),
 				Span(Class("flex min-w-0 flex-col"),
 					Span(Class("break-words text-fg"), g.Text(o.Label)),
-					g.If(o.Description != "", Span(Class("break-words text-xs text-muted"), g.Text(o.Description))))))
+					g.If(o.Description != "", Span(Class("break-words text-xs text-muted"), g.Text(o.Description))),
+					g.If(o.Preview != "", Pre(g.Attr("data-ask-preview", ""),
+						Class("mt-1 whitespace-pre-wrap break-words rounded-lg bg-s2 px-2 py-1 font-mono text-[11px] text-fg2"), g.Text(o.Preview))))))
 		}
-		otherID := base + "-" + idx + "-other"
-		opts = append(opts, Div(Class("flex flex-col gap-1 rounded-lg px-2 py-2"),
-			Label(For(otherID), Class("flex min-h-[44px] cursor-pointer items-center gap-2"),
-				Input(Type(kind), ID(otherID), Name(name), Value(askq.OtherValue), Class("h-5 w-5 shrink-0 cursor-pointer rounded border-edge bg-s2 text-accent"+focusRing)),
-				Span(Class("text-fg"), g.Text("Other"))),
-			Textarea(Name("o"+idx), Rows("2"), MaxLength(strconv.Itoa(askq.MaxFreeText)),
-				g.Attr("data-ask-other-text", ""), g.Attr("data-ask-other-for", otherID),
-				g.Attr("aria-label", "Your own answer: "+q.Question),
-				g.Attr("placeholder", "Type your own answer"),
-				Class("w-full min-w-0 resize-y rounded-lg bg-s2 px-3 py-2 text-sm text-fg ring-1 ring-inset ring-line"+focusRing)),
-		))
+		// A question the terminal draws with previews has no row for an
+		// answer of one's own (askq.Question.Previews): no "Other" here either.
+		if !q.Previews() {
+			otherID := base + "-" + idx + "-other"
+			opts = append(opts, Div(Class("flex flex-col gap-1 rounded-lg px-2 py-2"),
+				Label(For(otherID), Class("flex min-h-[44px] cursor-pointer items-center gap-2"),
+					Input(Type(kind), ID(otherID), Name(name), Value(askq.OtherValue), g.If(chosen.Other != "", Checked()),
+						Class("h-5 w-5 shrink-0 cursor-pointer rounded border-edge bg-s2 text-accent"+focusRing)),
+					Span(Class("text-fg"), g.Text("Other"))),
+				Textarea(Name("o"+idx), Rows("2"), MaxLength(strconv.Itoa(askq.MaxFreeText)),
+					g.Attr("data-ask-other-text", ""), g.Attr("data-ask-other-for", otherID),
+					g.Attr("aria-label", "Your own answer: "+q.Question),
+					g.Attr("placeholder", "Type your own answer"),
+					Class("w-full min-w-0 resize-y rounded-lg bg-s2 px-3 py-2 text-sm text-fg ring-1 ring-inset ring-line"+focusRing),
+					g.Text(chosen.Other)),
+			))
+		}
 		sets = append(sets, FieldSet(g.Attr("data-ask-question", ""), Class("flex min-w-0 flex-col gap-1"),
 			Legend(Class("flex flex-col gap-1"), askQuestionHead(q)),
 			g.If(q.MultiSelect, P(Class("text-[11px] text-muted"), g.Text("Choose any number"))),
 			g.Group(opts)))
 	}
 	hidden := func(n, val string) g.Node { return Input(Type("hidden"), Name(n), Value(val)) }
+	submit := "Submit answers"
+	if v.Retry {
+		submit = "Try again"
+	}
 	return Form(
 		g.Attr("data-ask-form", ""),
 		Method("post"),
@@ -307,7 +339,7 @@ func askForm(v MirrorAskLiveView) g.Node {
 			Class("break-words rounded-lg bg-danger/15 px-3 py-2 text-xs text-fg"), g.Text(v.Error)),
 		g.Group(sets),
 		Div(Class("flex flex-wrap items-center gap-2"),
-			Button(Type("submit"), g.Attr("data-ask-submit", ""), Class(composerSendClass), g.Text("Submit answers")),
+			Button(Type("submit"), g.Attr("data-ask-submit", ""), Class(composerSendClass), g.Text(submit)),
 			Span(Class("text-xs text-muted"), g.Text("The terminal shows this question too — whichever is answered first counts."))),
 	)
 }
