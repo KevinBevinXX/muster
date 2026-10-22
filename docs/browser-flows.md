@@ -21,11 +21,14 @@ now.
 
 | flow | class | parameters |
 |---|---|---|
-| `muse.poll` | read | `thread` (a side chat's title) **or** `session` (its uuid), `task` |
+| `muse.poll` | read | `thread` (a side chat's title), `task` |
 | `muse.send` | write | `text` (required), `thread` **or** `session`, `marker`, `wait`, `task` |
 
 - `session` is a Muse thread's uuid, lowercase. It opens that thread directly,
   and it cannot be combined with `thread`.
+- `session`, `marker` and `wait` are screened like any agent-composed text when
+  an agent files a request (only `task` is exempt), so an agent cannot ask for
+  a dispatch; the dispatch client enqueues with a personal token.
 - `marker` (`md-` and 6 hex digits) needs `session`. The send completes only
   when the reply's last line is `DONE <marker>`.
 - `wait` is how many seconds the flow waits for the reply, from 1 to 3600. The

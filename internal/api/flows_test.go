@@ -556,8 +556,8 @@ func TestFlowCancelOverTheAPI(t *testing.T) {
 		}
 	}
 	// The form refuses session + thread together (400, not queued).
-	if rec := do("POST", "/flows/jobs", url.Values{"flow": {"muse.poll"}, "host": {host}, "instance": {"personal"},
-		"param_thread": {"Side chat"}, "param_session": {sess}}.Encode(), "", a); rec.Code != http.StatusBadRequest {
+	if rec := do("POST", "/flows/jobs", url.Values{"flow": {"muse.send"}, "host": {host}, "instance": {"personal"},
+		"param_text": {"dispatch body"}, "param_thread": {"Side chat"}, "param_session": {sess}}.Encode(), "", a); rec.Code != http.StatusBadRequest {
 		t.Fatalf("form enqueue with session and thread: %d; want 400", rec.Code)
 	}
 }

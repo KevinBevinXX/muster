@@ -130,11 +130,6 @@ func TestValidateAcceptsAMuseDispatch(t *testing.T) {
 			t.Errorf("wait %s refused: %v", w, err)
 		}
 	}
-	// muse.poll takes session (without marker or wait).
-	p := Request{Flow: "muse.poll", Host: "laptop", Instance: "personal", Params: map[string]string{"session": dispatchSession, "task": "7"}}
-	if _, err := Validate(&p); err != nil || p.Params["session"] != dispatchSession {
-		t.Fatalf("muse.poll with a session: %v (params %v)", err, p.Params)
-	}
 	// A send with neither session nor marker (the pre-dispatch shape) still works.
 	plain := Request{Flow: "muse.send", Host: "laptop", Instance: "personal", Params: map[string]string{"text": "hi", "wait": "30"}}
 	if _, err := Validate(&plain); err != nil {
@@ -162,27 +157,29 @@ func TestValidateRefusesMalformedDispatchParams(t *testing.T) {
 		"marker without session":  func(r *Request) { delete(r.Params, "session") },
 		"marker on muse.poll": func(r *Request) {
 			r.Flow = "muse.poll"
-			r.Params = map[string]string{"session": dispatchSession, "marker": dispatchMarker}
+			r.Params = map[string]string{"marker": dispatchMarker}
 		},
 		"wait on muse.poll": func(r *Request) {
 			r.Flow = "muse.poll"
-			r.Params = map[string]string{"session": dispatchSession, "wait": dispatchWait}
+			r.Params = map[string]string{"wait": dispatchWait}
 		},
-		"session and thread on muse.poll": func(r *Request) {
+		// Round-0 D4: nothing uses session on muse.poll, so neither catalogue
+		// takes it (the devrc runner's mirror refuses it too).
+		"session on muse.poll": func(r *Request) {
 			r.Flow = "muse.poll"
-			r.Params = map[string]string{"session": dispatchSession, "thread": "Side chat"}
+			r.Params = map[string]string{"session": dispatchSession, "task": "7"}
 		},
 	}
 	// Each case names the refusal it must produce, so a case refused for some
 	// OTHER reason (an earlier check winning) does not pass as this one.
 	wantMsg := map[string]string{
-		"session and thread":              `"session" and "thread" are exclusive`,
-		"session and thread on muse.poll": `"session" and "thread" are exclusive`,
-		"marker without session":          `"marker" needs "session"`,
-		"marker on muse.poll":             `takes no parameter "marker"`,
-		"wait on muse.poll":               `takes no parameter "wait"`,
-		"wait over the bound":             `the limit is 3600`,
-		"wait far over the bound":         `the limit is 3600`,
+		"session and thread":      `"session" and "thread" are exclusive`,
+		"session on muse.poll":    `takes no parameter "session"`,
+		"marker without session":  `"marker" needs "session"`,
+		"marker on muse.poll":     `takes no parameter "marker"`,
+		"wait on muse.poll":       `takes no parameter "wait"`,
+		"wait over the bound":     `the limit is 3600`,
+		"wait far over the bound": `the limit is 3600`,
 	}
 	r0 := dispatchReq()
 	if _, err := Validate(&r0); err != nil {

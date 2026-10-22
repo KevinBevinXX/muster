@@ -59,8 +59,7 @@ type Param struct {
 	Pattern *regexp.Regexp
 	// Help is the one-line description the /flows form and the CLI show.
 	Help string
-	// ID marks a CLOSED identifier (a task id, a thread uuid, a dispatch marker,
-	// a wait in seconds: each fully confined by its Pattern). It
+	// ID marks a CLOSED identifier (a task id: digits only, by its Pattern). It
 	// is the one kind of parameter that is not prose somebody composed, so it
 	// is the one kind the agent-text screen (requests.go) skips. Every other
 	// parameter — whatever its pattern — is screened; a new parameter is
@@ -117,14 +116,15 @@ const MaxWaitSeconds = 3600
 var (
 	paramTask   = Param{Name: "task", MaxLen: 18, Pattern: taskRE, ID: true, Help: "muster task id the flow posts its result on"}
 	paramThread = Param{Name: "thread", MaxLen: 120, Pattern: threadRE, Help: "Muse side-chat title (default: the main chat)"}
-	// session, marker and wait are CLOSED identifiers by pattern (hex, a fixed
-	// prefix, digits), so they are ID: the agent-text screen's long-token rule
-	// would otherwise refuse every uuid.
-	paramSession = Param{Name: "session", MaxLen: 36, Pattern: sessionRE, ID: true,
+	// session, marker and wait (muse dispatch) are NOT ID: they stay inside the
+	// agent-text screen. The dispatch client enqueues with a personal token, so
+	// no consumer files them as an agent request, and the screen's long-token
+	// rule refusing an agent-composed uuid is the closed default for that door.
+	paramSession = Param{Name: "session", MaxLen: 36, Pattern: sessionRE,
 		Help: "Muse thread id (uuid) — opens that thread directly; exclusive with thread"}
-	paramMarker = Param{Name: "marker", MaxLen: 9, Pattern: markerRE, ID: true,
+	paramMarker = Param{Name: "marker", MaxLen: 9, Pattern: markerRE,
 		Help: "dispatch id; the send completes only when the reply's last line is DONE <marker>"}
-	paramWait = Param{Name: "wait", MaxLen: 4, Pattern: waitRE, Max: MaxWaitSeconds, ID: true,
+	paramWait = Param{Name: "wait", MaxLen: 4, Pattern: waitRE, Max: MaxWaitSeconds,
 		Help: "seconds to await the reply (1..3600; the runner's job timeout is wait+240s)"}
 )
 
@@ -141,7 +141,7 @@ var catalogue = []Flow{
 		Name:   "muse.poll",
 		Class:  ClassRead,
 		Help:   "re-read the latest Muse reply (main chat, or a side chat)",
-		Params: []Param{paramThread, paramSession, paramTask},
+		Params: []Param{paramThread, paramTask},
 	},
 	{
 		Name:  "muse.send",

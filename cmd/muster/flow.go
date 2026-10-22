@@ -58,7 +58,7 @@ func newFlowEnqueueCmd(a *app) *cobra.Command {
 		Long: `Queue a browser flow (muse.poll, muse.send) for HOST's runner to claim and run
 on browser INSTANCE. Parameters are --param name=value (repeatable): muse.send
 takes text (required), thread or session, marker, wait and task; muse.poll
-takes thread or session, and task. session is a Muse thread uuid (lowercase),
+takes thread and task. session is a Muse thread uuid (lowercase),
 exclusive with thread; marker (md-<6 hex>) needs session, and the send
 completes only when the reply's last line is "DONE <marker>"; wait is the
 seconds to await the reply (1..3600). A job
