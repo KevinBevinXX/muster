@@ -9,18 +9,18 @@ import (
 	"github.com/ZacxDev/muster/internal/api"
 )
 
-// TestTheBypassPoolListIsReadAsWrittenAndReachesTheSpecConfig: the list is read
-// from MUSTER_AGENT_CC_BYPASS_POOLS trimmed and in order, NOT lower-cased (so a
-// name the pool rules refuse is refused below rather than rewritten into one
-// they accept), and the claude-code spec config carries exactly it.
-func TestTheBypassPoolListIsReadAsWrittenAndReachesTheSpecConfig(t *testing.T) {
+// TestTheBypassPoolListIsReadLowerCasedAndReachesTheSpecConfig: the list is read
+// from MUSTER_AGENT_CC_BYPASS_POOLS trimmed, in order and LOWER-CASED (pool
+// names are lower-case only, so an upper-case spelling names the same pool),
+// and the claude-code spec config carries exactly it.
+func TestTheBypassPoolListIsReadLowerCasedAndReachesTheSpecConfig(t *testing.T) {
 	cfg, err := loadConfig(func(k string) string {
 		return map[string]string{envAgentCCBypassPools: " pr-review , ,Triage-2"}[k]
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := []string{"pr-review", "Triage-2"}; !reflect.DeepEqual(cfg.AgentCCBypassPools, want) {
+	if want := []string{"pr-review", "triage-2"}; !reflect.DeepEqual(cfg.AgentCCBypassPools, want) {
 		t.Fatalf("read %q, want %q", cfg.AgentCCBypassPools, want)
 	}
 	cc := ccTestConfig()
@@ -37,11 +37,11 @@ func TestTheBypassPoolListIsReadAsWrittenAndReachesTheSpecConfig(t *testing.T) {
 
 // 🔴 EACH BOOT REFUSAL OF THE BYPASS LIST, reached from the VALID claude-code
 // config by one mutation and asserted by its own words: set without the kind
-// (an armed switch), a name the pool rules refuse, and a name listed twice. The
-// valid list boots.
+// (an armed switch), and a name the pool rules refuse. The valid list boots. (A
+// repeated name is not refused: it is harmless.)
 func TestEveryBypassPoolRefusalIsReachedOnItsOwn(t *testing.T) {
 	ok := ccTestConfig()
-	ok.AgentCCBypassPools = []string{"pr-review", "a", "0-x"}
+	ok.AgentCCBypassPools = []string{"pr-review", "a", "0-x", "pr-review"}
 	if err := ok.validate(); err != nil {
 		t.Fatalf("control: a valid bypass list is refused: %v", err)
 	}
@@ -53,16 +53,12 @@ func TestEveryBypassPoolRefusalIsReachedOnItsOwn(t *testing.T) {
 		{"without the kind", func(c *config) {
 			c.AgentKinds, c.AgentCCImage, c.AgentCCAccountNames, c.AgentCCBypassPools = nil, "", nil, []string{"pr-review"}
 		}, "MUSTER_AGENT_CC_BYPASS_POOLS is set but MUSTER_AGENT_KINDS does not include claude-code"},
-		{"upper case", func(c *config) { c.AgentCCBypassPools = []string{"pr-review", "PR-Review"} },
-			`invalid MUSTER_AGENT_CC_BYPASS_POOLS entry "PR-Review"`},
 		{"leading hyphen", func(c *config) { c.AgentCCBypassPools = []string{"-review"} },
 			`invalid MUSTER_AGENT_CC_BYPASS_POOLS entry "-review"`},
 		{"underscore", func(c *config) { c.AgentCCBypassPools = []string{"pr_review"} },
 			`invalid MUSTER_AGENT_CC_BYPASS_POOLS entry "pr_review"`},
 		{"too long", func(c *config) { c.AgentCCBypassPools = []string{strings.Repeat("a", 64)} },
 			`invalid MUSTER_AGENT_CC_BYPASS_POOLS entry "` + strings.Repeat("a", 64) + `"`},
-		{"listed twice", func(c *config) { c.AgentCCBypassPools = []string{"pr-review", "triage", "pr-review"} },
-			`pool "pr-review" is listed twice`},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			cfg := ccTestConfig()

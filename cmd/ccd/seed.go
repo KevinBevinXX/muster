@@ -101,27 +101,29 @@ const settingsSkipBypassPrompt = "skipDangerousModePermissionPrompt"
 // mode: the template itself (bypass disabled) by default, and for bypass the
 // template's `permissions` without disableBypassPermissionsMode plus the
 // disclaimer consent (settingsSkipBypassPrompt). The template is not modified.
-// It also returns the keys the seeded file must NOT carry: by default the
-// consent, so an agent taken off a bypass pool keeps none.
+//
+// ⚠ A CONSENT LEFT FROM AN EARLIER BYPASS POSTURE IS NOT REMOVED, AND IS INERT:
+// without the mode the template re-imposes disableBypassPermissionsMode and no
+// argv carries the flag, so nothing can start in bypass to consult it.
 //
 // ⚠ defaultMode and disableAutoMode are kept either way: the primary CLI starts
 // in default mode, and bypass is reached only by the flag on a job lane's argv
 // (lanes.newLane). seed and checkSeed both call this, so they cannot disagree.
-func jobPermissionSettings(tmpl map[string]any, mode string) (want map[string]any, absent []string, err error) {
+func jobPermissionSettings(tmpl map[string]any, mode string) (map[string]any, error) {
 	bypass, err := jobBypass(mode)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
-	want = make(map[string]any, len(tmpl)+1)
+	want := make(map[string]any, len(tmpl)+1)
 	for k, v := range tmpl {
 		want[k] = v
 	}
 	if !bypass {
-		return want, []string{settingsSkipBypassPrompt}, nil
+		return want, nil
 	}
 	perms, ok := tmpl["permissions"].(map[string]any)
 	if !ok {
-		return nil, nil, errors.New("settings template has no `permissions` object to lift the bypass refusal from")
+		return nil, errors.New("settings template has no `permissions` object to lift the bypass refusal from")
 	}
 	lifted := make(map[string]any, len(perms))
 	for k, v := range perms {
@@ -131,7 +133,7 @@ func jobPermissionSettings(tmpl map[string]any, mode string) (want map[string]an
 	}
 	want["permissions"] = lifted
 	want[settingsSkipBypassPrompt] = true
-	return want, nil, nil
+	return want, nil
 }
 
 func seed(o seedOpts, stderr io.Writer) error {
@@ -180,7 +182,7 @@ func seed(o seedOpts, stderr io.Writer) error {
 	if err := json.Unmarshal(tmpl, &raw); err != nil {
 		return fmt.Errorf("settings template %s: %w", o.settingsTemplate, err)
 	}
-	want, absent, err := jobPermissionSettings(raw, o.jobPermissionMode)
+	want, err := jobPermissionSettings(raw, o.jobPermissionMode)
 	if err != nil {
 		return err
 	}
@@ -191,9 +193,6 @@ func seed(o seedOpts, stderr io.Writer) error {
 	}
 	for k, v := range want {
 		have[k] = v
-	}
-	for _, k := range absent {
-		delete(have, k)
 	}
 	stripForbidden(have, setPath, stderr)
 	return writeJSONAtomic(setPath, have)
@@ -382,7 +381,7 @@ func checkSeed(o seedOpts) error {
 	if err := json.Unmarshal(tmpl, &raw); err != nil {
 		return err
 	}
-	want, absent, err := jobPermissionSettings(raw, o.jobPermissionMode)
+	want, err := jobPermissionSettings(raw, o.jobPermissionMode)
 	if err != nil {
 		return err
 	}
@@ -397,7 +396,7 @@ func checkSeed(o seedOpts) error {
 			return fmt.Errorf("settings.json: key %q differs from the template", k)
 		}
 	}
-	for _, k := range append(append([]string{}, settingsForbidden...), absent...) {
+	for _, k := range settingsForbidden {
 		if _, ok := have[k]; ok {
 			return fmt.Errorf("settings.json: carries %q, which seed removes", k)
 		}

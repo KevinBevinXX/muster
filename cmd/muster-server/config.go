@@ -293,8 +293,9 @@ const (
 	// pod, cmd/ccd/jobmode.go). Unset is none. 🔴 A listed pool's job lanes run
 	// any command on the code they are handed, without approval, and can read
 	// that worker's own Claude setup-token: for pools reviewing trusted members'
-	// PRs only. Refused at boot without the claude-code kind, and for a name
-	// agents.ValidWorkerPool refuses.
+	// PRs only. Names are lower-cased as read (splitList; pool names are
+	// lower-case only). Refused at boot without the claude-code kind, and for a
+	// name agents.ValidWorkerPool refuses.
 	envAgentCCBypassPools = "MUSTER_AGENT_CC_BYPASS_POOLS"
 
 	// The hermes kind (docs/design/hermes.md): its image (tag or digest pinned;
@@ -783,9 +784,9 @@ type config struct {
 	// zero is unset: ccpool.DefaultCooldown for the cooldown, and NO cap.
 	AgentCCCooldown time.Duration
 	AgentCCMaxJobs  int
-	// AgentCCBypassPools is MUSTER_AGENT_CC_BYPASS_POOLS as written (trimmed, in
-	// order, NOT lower-cased: a name the pool rules refuse is refused, never
-	// rewritten into one they accept). Empty is none.
+	// AgentCCBypassPools is MUSTER_AGENT_CC_BYPASS_POOLS read by splitList:
+	// trimmed, in order, LOWER-CASED (pool names are lower-case only, so
+	// "Pr-Review" names the pool "pr-review"). Empty is none.
 	AgentCCBypassPools []string
 
 	// AgentHermesImage is the hermes kind's FULL image reference (tag or digest
@@ -908,18 +909,6 @@ func splitList(v string) []string {
 	return out
 }
 
-// splitListAsWritten is splitList without the lower-casing: a comma list,
-// each entry trimmed, empty entries dropped.
-func splitListAsWritten(v string) []string {
-	var out []string
-	for _, part := range strings.Split(v, ",") {
-		if p := strings.TrimSpace(part); p != "" {
-			out = append(out, p)
-		}
-	}
-	return out
-}
-
 // parseOwnerIDs parses a comma list of positive user ids. Empty is no owners.
 func parseOwnerIDs(v string) (map[int64]bool, error) {
 	out := map[int64]bool{}
@@ -1032,7 +1021,7 @@ func loadConfig(getenv func(string) string) (config, error) {
 		AgentCCImage:          strings.TrimSpace(getenv(envAgentCCImage)),
 		AgentCCAccountNames:   splitList(getenv(envAgentCCAccounts)),
 		AgentCCStorage:        strings.TrimSpace(getenv(envAgentCCStorage)),
-		AgentCCBypassPools:    splitListAsWritten(getenv(envAgentCCBypassPools)),
+		AgentCCBypassPools:    splitList(getenv(envAgentCCBypassPools)),
 		AgentHermesImage:      strings.TrimSpace(getenv(envAgentHermesImage)),
 		AgentHermesStorage:    strings.TrimSpace(getenv(envAgentHermesStorage)),
 		AgentNetpolFromNS:     strings.TrimSpace(getenv(envAgentNetpolFromNS)),
@@ -1923,16 +1912,11 @@ func (c config) validateClaudeCodeKind() error {
 		}
 		return nil
 	}
-	pools := map[string]bool{}
 	for _, p := range c.AgentCCBypassPools {
 		if !agents.ValidWorkerPool(p) {
 			return fmt.Errorf("invalid %s entry %q: a worker pool name is 1-63 of [a-z0-9-], starting with a "+
 				"letter or digit", envAgentCCBypassPools, p)
 		}
-		if pools[p] {
-			return fmt.Errorf("invalid %s: pool %q is listed twice", envAgentCCBypassPools, p)
-		}
-		pools[p] = true
 	}
 	if c.agentProvisioner() == provisionerNone {
 		return fmt.Errorf("%s includes %s but %s=%s: a kind is something a DRIVER provisions, so there is "+

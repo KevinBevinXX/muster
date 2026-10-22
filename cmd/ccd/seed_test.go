@@ -115,18 +115,17 @@ func TestTheImagePinsDefaultPermissionModeNeverAutoNeverBypass(t *testing.T) {
 // top-level `permissions` replaces it wholesale.
 //
 // 🔴 TWO CASES, BOTH PINNED WHOLE. CCD_JOB_PERMISSION_MODE unset is the default
-// posture — bypass DISABLED and no disclaimer consent, even over a file a
-// bypass posture left behind; set to bypassPermissions it lifts ONLY
+// posture — bypass DISABLED; set to bypassPermissions it lifts ONLY
 // disableBypassPermissionsMode (defaultMode and disableAutoMode stay) and records
 // the consent the pinned CLI's launch dialog needs (jobmode.go). checkSeed agrees
 // with each, and refuses the other's file.
 func TestSeedReimposesThePermissionPostureOverAPersistedAutoMode(t *testing.T) {
 	for _, c := range []struct {
 		name, mode, prior, wantPerms string
-		wantSkip                     any // settingsSkipBypassPrompt's value; nil = absent
+		wantSkip                     any // settingsSkipBypassPrompt's value; nil = not asserted
 	}{
 		{"default posture", "",
-			`{"permissions":{"defaultMode":"bypassPermissions","allow":["Bash(*)"]},"skipDangerousModePermissionPrompt":true,"model":"kept"}`,
+			`{"permissions":{"defaultMode":"bypassPermissions","allow":["Bash(*)"]},"model":"kept"}`,
 			`{"defaultMode":"default","disableAutoMode":"disable","disableBypassPermissionsMode":"disable"}`, nil},
 		{"job-lane bypass", "bypassPermissions",
 			`{"permissions":{"defaultMode":"auto","allow":["Bash(*)"]},"model":"kept"}`,
@@ -146,7 +145,7 @@ func TestSeedReimposesThePermissionPostureOverAPersistedAutoMode(t *testing.T) {
 			if string(got) != c.wantPerms {
 				t.Fatalf("after seed, permissions = %s\nwant                      %s", got, c.wantPerms)
 			}
-			if skip, ok := set["skipDangerousModePermissionPrompt"]; (c.wantSkip == nil && ok) || (c.wantSkip != nil && skip != c.wantSkip) {
+			if skip, ok := set["skipDangerousModePermissionPrompt"]; c.wantSkip != nil && skip != c.wantSkip {
 				t.Fatalf("after seed, skipDangerousModePermissionPrompt = %v (present %v), want %v", skip, ok, c.wantSkip)
 			}
 			if set["model"] != "kept" {
@@ -320,12 +319,6 @@ func TestCheckSeedCatchesEachMissingPiece(t *testing.T) {
 	mutate("settings.json", func(m map[string]any) { delete(m, "hooks") })
 	if err := checkSeed(o); err == nil || !strings.Contains(err.Error(), `"hooks"`) {
 		t.Fatalf("hooks: %v", err)
-	}
-	// A bypass consent left in a default-posture file (jobPermissionSettings).
-	seedInto(t, cfg, ws)
-	mutate("settings.json", func(m map[string]any) { m["skipDangerousModePermissionPrompt"] = true })
-	if err := checkSeed(o); err == nil || !strings.Contains(err.Error(), `carries "skipDangerousModePermissionPrompt"`) {
-		t.Fatalf("leftover bypass consent: %v", err)
 	}
 }
 
