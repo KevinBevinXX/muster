@@ -100,7 +100,7 @@ func TestEveryWayThisHostTypesIntoAPaneGoesThroughTheHermesGuard(t *testing.T) {
 						callers[sel.Sel.Name] = append(callers[sel.Sel.Name], where)
 					}
 					switch sel.Sel.Name {
-					case "PastePane", "Paste", "AnswerAsk":
+					case "PastePane", "Paste", "AnswerAsk", "AnswerAskFrom":
 						switch {
 						case inTypeInto[x]:
 							// counted below, by its typeInto call
