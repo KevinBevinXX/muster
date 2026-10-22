@@ -480,6 +480,13 @@ type Options struct {
 	// beside ccd in its pod (chief_sidecar.go). A gateway-kind agent refuses it:
 	// its own process IS that runtime.
 	GatewaySidecar *GatewaySidecar
+
+	// JobBypassVeto, for a claude-code agent only, is why its JOB lanes must NOT
+	// run with permissions bypassed even though its worker pool is listed in
+	// ClaudeCodeConfig.BypassPools — e.g. it holds an approved grant on a
+	// connector that reaches GitHub (agentprovision). Non-empty vetoes the
+	// bypass; "" leaves the decision to [JobBypassListed].
+	JobBypassVeto string
 }
 
 // Build assembles the spec for one agent.

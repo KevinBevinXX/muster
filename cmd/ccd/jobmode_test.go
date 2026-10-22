@@ -80,3 +80,44 @@ func TestCcdReadsTheJobPermissionModeAgentspecWrites(t *testing.T) {
 		t.Errorf("agentspec writes %q, which ccd reads as bypass=%v (err %v)", agentspec.CCDJobPermissionBypass, on, err)
 	}
 }
+
+// 🔴 THE LANE SET serve RUNS TAKES THE MODE FROM THE ENVIRONMENT. newLaneSet is
+// the whole of serve's lane wiring (serve passes it os.Getenv and its own
+// terminal and server builders), so a lane set that dropped the mode — the
+// pool's job lanes back at default permissions, stalling on prompts nobody sees
+// — reddens here: with the mode set a JOB lane's argv carries the flag, with it
+// unset it does not. An invalid mode is refused (ccd does not start), even when
+// no lane would run.
+func TestServesLaneSetTakesTheJobPermissionModeFromTheEnvironment(t *testing.T) {
+	build := func(env map[string]string, maxLanes int) (*lanes, error) {
+		return newLaneSet(func(k string) string { return env[k] }, maxLanes,
+			func(string) laneTerminal { return &pidPane{pid: 4242} },
+			func(term terminal) *server { return newServer(serverConfig{}, term, newAuthTracker()) },
+			"claude", t.TempDir(), "/data/workspace")
+	}
+	uuid := laneUUID("key-1")
+	for _, c := range []struct {
+		mode, want string
+	}{
+		{"bypassPermissions", "env CCD_LANE=lane-1 claude --permission-mode bypassPermissions --session-id " + uuid},
+		{"", "env CCD_LANE=lane-1 claude --session-id " + uuid},
+	} {
+		l, err := build(map[string]string{envJobPermissionMode: c.mode}, 3)
+		if err != nil || l == nil {
+			t.Fatalf("mode %q: lanes %v, err %v", c.mode, l, err)
+		}
+		argv, _ := l.newLane("lane-1", "key-1", "", "/data/workspace/.muster/jobs/41").sup.argv()
+		if got := strings.Join(argv, " "); got != c.want {
+			t.Errorf("mode %q: job lane argv\n got  %s\n want %s", c.mode, got, c.want)
+		}
+	}
+	for _, maxLanes := range []int{3, 0} {
+		if l, err := build(map[string]string{envJobPermissionMode: "bypass"}, maxLanes); err == nil || l != nil ||
+			!strings.Contains(err.Error(), envJobPermissionMode) {
+			t.Errorf("max %d, invalid mode: lanes %v, err %v; want a refusal naming %s", maxLanes, l, err, envJobPermissionMode)
+		}
+	}
+	if l, err := build(nil, 0); l != nil || err != nil {
+		t.Errorf("max 0: lanes %v, err %v; want none", l, err)
+	}
+}

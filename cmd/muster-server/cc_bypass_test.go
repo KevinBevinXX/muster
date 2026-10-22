@@ -89,13 +89,15 @@ func TestTheKindsBannerLineAnnouncesTheJobLaneBypassBothWays(t *testing.T) {
 		return lineNaming(renderBanner(t, cc, api.Extensions{Provisioner: prov}), envAgentKinds)
 	}
 	on, off := render([]string{"pr-review", "triage"}), render(nil)
-	if !strings.Contains(on, "permissions BYPASSED for worker pools [pr-review, triage] (MUSTER_AGENT_CC_BYPASS_POOLS") {
+	if !strings.Contains(on, "Job-lane permission bypass CONFIGURED for worker pools [pr-review, triage] (MUSTER_AGENT_CC_BYPASS_POOLS)") ||
+		!strings.Contains(on, "running agents keep the mode they were started with") {
 		t.Fatalf("bypass on: %q", on)
 	}
-	if !strings.Contains(off, "No worker pool bypasses job-lane permissions (MUSTER_AGENT_CC_BYPASS_POOLS unset)") {
+	if !strings.Contains(off, "No worker pool is configured for job-lane permission bypass (MUSTER_AGENT_CC_BYPASS_POOLS unset); "+
+		"running agents keep the mode they were started with until restarted") {
 		t.Fatalf("bypass off: %q", off)
 	}
-	if strings.Contains(off, "BYPASSED") {
+	if strings.Contains(off, "CONFIGURED") {
 		t.Fatalf("bypass off announces a bypass: %q", off)
 	}
 }

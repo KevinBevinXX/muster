@@ -158,6 +158,26 @@ func envDuration(name string, def time.Duration) (time.Duration, error) {
 	return d, nil
 }
 
+// newLaneSet is the lane set serve runs: at most maxLanes lanes
+// (CCD_MAX_SESSIONS; nil when 0), JOB lanes started with permissions bypassed
+// when getenv's CCD_JOB_PERMISSION_MODE says so (jobmode.go). An invalid mode
+// is an error, so ccd does not start.
+func newLaneSet(getenv func(string) string, maxLanes int, newTerm func(target string) laneTerminal,
+	newSrv func(t terminal) *server, bin, configDir, workspace string) (*lanes, error) {
+	bypass, err := jobBypass(getenv(envJobPermissionMode))
+	if err != nil {
+		return nil, fmt.Errorf("ccd: %w", err)
+	}
+	if maxLanes == 0 {
+		return nil, nil
+	}
+	return &lanes{newTerm: newTerm, newServer: newSrv,
+		bin: bin, configDir: configDir, workspace: workspace, max: maxLanes,
+		startTimeout: laneStartTimeout, now: time.Now,
+		set: map[string]*lane{}, jobBypass: bypass,
+	}, nil
+}
+
 // hookChannel is ccd's hook listener and the credential it accepts.
 //
 // 🔴 A UNIX SOCKET, NOT 127.0.0.1. Every container in a pod shares one network
@@ -255,6 +275,7 @@ func serve() error {
 	if err != nil {
 		return fmt.Errorf("ccd: %w", err)
 	}
+	// Announced here; the lane set reads it again itself (newLaneSet).
 	if bypass {
 		log.Printf("ccd: job lanes (a machine job's worktree) start with --permission-mode %s (%s): their tool "+
 			"calls are NOT routed for approval. The primary and workspace lanes keep default permissions",
@@ -307,25 +328,26 @@ func serve() error {
 		if err != nil {
 			return err
 		}
-		if maxLanes > 0 {
-			srv.runLanes(&lanes{
-				newTerm: func(target string) laneTerminal {
-					t := term
-					t.target = target
-					return t
-				},
-				newServer: func(t terminal) *server {
-					ls := newServer(serverConfig{Bearer: bearer, ConfigDir: configDir,
-						SubmitTimeout: durs[0], TurnTimeout: durs[1], HookLog: os.Getenv("CCD_HOOK_LOG"),
-						HasCredential: credentialVisible(configDir)}, t, auth)
-					// The agent's one badge: a lane's prompt shows on it too.
-					ls.blocked = srv.blocked
-					return ls
-				},
-				bin: bin, configDir: configDir, workspace: workspace, max: maxLanes,
-				startTimeout: laneStartTimeout, now: time.Now,
-				set: map[string]*lane{}, jobBypass: bypass,
-			})
+		ls, err := newLaneSet(os.Getenv, maxLanes,
+			func(target string) laneTerminal {
+				t := term
+				t.target = target
+				return t
+			},
+			func(t terminal) *server {
+				ls := newServer(serverConfig{Bearer: bearer, ConfigDir: configDir,
+					SubmitTimeout: durs[0], TurnTimeout: durs[1], HookLog: os.Getenv("CCD_HOOK_LOG"),
+					HasCredential: credentialVisible(configDir)}, t, auth)
+				// The agent's one badge: a lane's prompt shows on it too.
+				ls.blocked = srv.blocked
+				return ls
+			},
+			bin, configDir, workspace)
+		if err != nil {
+			return err
+		}
+		if ls != nil {
+			srv.runLanes(ls)
 		}
 	}
 

@@ -13,8 +13,9 @@ import "fmt"
 // writing envJobPermissionMode=bypassPermissions into its agents' pods
 // (internal/agentspec claudeCodeEnv), and ccd then:
 //
-//   - starts JOB lanes only (a lane with a workdir: a machine job's worktree,
-//     lanes.newLane) with `--permission-mode bypassPermissions`. The primary
+//   - starts JOB lanes only (a lane with a workdir: a SHA job's worktree,
+//     lanes.newLane) with `--permission-mode bypassPermissions`. A job without
+//     a sha runs in an ordinary lane and still prompts. The primary
 //     CLI and a lane in ccd's own workspace (an explicit chat session) keep the
 //     default posture: their argv carries no permission flag;
 //   - has `ccd seed` drop permissions.disableBypassPermissionsMode from the
@@ -32,7 +33,9 @@ import "fmt"
 // it reviews, as ccd's user, and so can read anything that user can — the
 // agent's own Claude setup-token included. Every process in the pod runs as
 // that user, so on a listed pool's agent the WHOLE POD should be treated as
-// running without approvals, not just the lane.
+// running without approvals, not just the lane. That includes MUSTER_HOOK_TOKEN,
+// so a lane can call muster's API as the agent. What a lane writes to the volume
+// survives de-listing: leaving bypass is destroy and recreate, not a restart.
 const (
 	envJobPermissionMode = "CCD_JOB_PERMISSION_MODE"
 	jobPermissionBypass  = "bypassPermissions"

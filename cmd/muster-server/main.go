@@ -449,6 +449,11 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		// The job API's sha checkout and result_path read exec through the
 		// same adapter (internal/api jobs.go).
 		ext.JobWorkspace = prov
+		// The job-lane bypass veto: an agent holding an approved grant that
+		// reaches GitHub is never started with MUSTER_AGENT_CC_BYPASS_POOLS'
+		// bypass (agentprovision jobBypassVeto). nil Connectors is "no grant can
+		// exist", stated by the lookup itself.
+		prov.UseGitHubGrants(connectors.GitHubGrantLookup(ext.Connectors))
 	}
 	if gw != nil {
 		ext.Gateway = gw
@@ -1412,13 +1417,18 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 					"never logged), per-agent PVC at /data, no ServiceAccount token, turn budget %s.",
 					agents.KindClaudeCode, a.cfg.AgentCCImage, envAgentCCImage, strings.Join(a.cfg.AgentCCAccountNames, ", "),
 					envAgentCCAccounts, envAgentCCTokenPrefix, agents.ClaudeCodeTurnTimeout)
-				// 🔴 The job-lane permission bypass is announced in both states:
-				// ON, a listed pool's job lanes run every tool call unapproved.
+				// 🔴 The job-lane permission bypass is announced in both states, as
+				// CONFIGURATION: a pod gets it only when its spec is applied
+				// (dispatch, Start, ReapplyProfiles), so a running agent keeps the
+				// mode it was started with until then.
 				if len(a.cfg.AgentCCBypassPools) > 0 {
-					line += fmt.Sprintf(" Job lanes run with permissions BYPASSED for worker pools [%s] (%s; applied "+
-						"when an agent is provisioned or started).", strings.Join(a.cfg.AgentCCBypassPools, ", "), envAgentCCBypassPools)
+					line += fmt.Sprintf(" Job-lane permission bypass CONFIGURED for worker pools [%s] (%s): applied "+
+						"when an agent's spec is applied (dispatch, Start, reapply), never to an agent holding an "+
+						"approved GitHub grant; running agents keep the mode they were started with until then.",
+						strings.Join(a.cfg.AgentCCBypassPools, ", "), envAgentCCBypassPools)
 				} else {
-					line += fmt.Sprintf(" No worker pool bypasses job-lane permissions (%s unset).", envAgentCCBypassPools)
+					line += fmt.Sprintf(" No worker pool is configured for job-lane permission bypass (%s unset); "+
+						"running agents keep the mode they were started with until restarted.", envAgentCCBypassPools)
 				}
 			}
 			if a.cfg.hermesEnabled() {

@@ -394,6 +394,48 @@ type Adapter struct {
 	kickoffDeliverable bool
 	creds              CredentialResolver
 	anonGitBase        string
+	// githubGrant answers whether an agent holds an approved grant reaching
+	// GitHub (connectors.GitHubGrantLookup); set by UseGitHubGrants. nil is
+	// UNKNOWN, and vetoes job-lane bypass (jobBypassVeto).
+	githubGrant func(ctx context.Context, agentID int64) (string, error)
+}
+
+// UseGitHubGrants wires the lookup jobBypassVeto asks. Call it before the
+// adapter serves; without it every agent in a bypass-listed pool is started
+// WITHOUT bypass (fail closed).
+func (a *Adapter) UseGitHubGrants(f func(ctx context.Context, agentID int64) (string, error)) {
+	a.githubGrant = f
+}
+
+// jobBypassVeto is why ag's job lanes must not run with permissions bypassed
+// although its pool is listed (MUSTER_AGENT_CC_BYPASS_POOLS), or "".
+//
+// 🔴 AN AGENT HOLDING AN APPROVED GRANT THAT REACHES GITHUB IS NEVER BYPASSED.
+// With such a grant ccd routes the pod's git through muster's proxy, which adds a
+// GitHub App token with contents:write and pull_requests:write
+// (internal/githubapp), so a prompt-injected lane running unapproved could push
+// and merge. The approval doors already refuse such a grant to every pool worker
+// (internal/api refusePoolWorkerGitHubGrant), so this is the third door: it is
+// asked every time the spec is built — Dispatch, Start and ReapplyProfiles — and
+// it FAILS CLOSED: an unreadable grant state, or no lookup wired, is a veto too.
+// Each veto is logged naming the agent.
+func (a *Adapter) jobBypassVeto(ctx context.Context, ag agents.Agent, cfg agentspec.Config) string {
+	if !agentspec.JobBypassListed(ag, cfg) {
+		return ""
+	}
+	veto := ""
+	if a.githubGrant == nil {
+		veto = "no GitHub grant lookup is wired, so whether it holds one is unknown"
+	} else if conn, err := a.githubGrant(ctx, ag.ID); err != nil {
+		veto = fmt.Sprintf("its GitHub grants could not be read (%v)", err)
+	} else if conn != "" {
+		veto = fmt.Sprintf("it holds an approved grant on connector %q, which reaches GitHub", conn)
+	}
+	if veto != "" {
+		a.log.Printf("agentprovision: agent %q (pool %q) is listed for job-lane permission bypass "+
+			"(MUSTER_AGENT_CC_BYPASS_POOLS) but is started WITHOUT it: %s", ag.Name, ag.WorkerPool, veto)
+	}
+	return veto
 }
 
 // New validates the configuration and builds the adapter.
@@ -1075,7 +1117,7 @@ func (a *Adapter) buildSpec(ctx context.Context, ag agents.Agent) (provision.Spe
 	}
 	switch agents.ResolveKind(ag.Kind) {
 	case agents.KindClaudeCode:
-		return a.buildClaudeCodeSpec(ag, cfg)
+		return a.buildClaudeCodeSpec(ag, cfg, a.jobBypassVeto(ctx, ag, cfg))
 	case agents.KindHermes:
 		return buildHermesSpec(ag, cfg)
 	}
@@ -1113,9 +1155,12 @@ func (a *Adapter) buildSpec(ctx context.Context, ag agents.Agent) (provision.Spe
 // 🔴 A CHIEF WITH NO MCP SERVER IS REFUSED. Every tool its prose names is an MCP
 // tool, and without [agentspec.Config.ClaudeCodeMCPOffered] ccd registers no
 // server: the chief would boot with no muster tools and a prompt promising them.
-func (a *Adapter) buildClaudeCodeSpec(ag agents.Agent, cfg agentspec.Config) (provision.Spec, error) {
+//
+// jobBypassVeto is Adapter.jobBypassVeto's answer for a worker; a chief is never
+// listed for bypass (agentspec.JobBypassListed), so it is unused there.
+func (a *Adapter) buildClaudeCodeSpec(ag agents.Agent, cfg agentspec.Config, jobBypassVeto string) (provision.Spec, error) {
 	if !agents.IsChiefName(ag.Name) {
-		return agentspec.Build(ag, cfg, agentspec.Options{})
+		return agentspec.Build(ag, cfg, agentspec.Options{JobBypassVeto: jobBypassVeto})
 	}
 	if !cfg.ClaudeCodeMCPOffered() {
 		return provision.Spec{}, fmt.Errorf("agentprovision: chief %q is kind %s, which reaches muster's tools only "+
