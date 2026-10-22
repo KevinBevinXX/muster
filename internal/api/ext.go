@@ -883,7 +883,7 @@ type AgentKinds interface {
 	Unavailable(ctx context.Context, owner int64) map[string]string
 	// ClaudeAccountStates is what the account pool knows about each of
 	// owner's Claude accounts (auth-failed under its current token, last
-	// rate-limited), for the job API's worker-pool selection (pickWorker).
+	// rate-limited), for the job API's worker-pool selection (createPoolJob).
 	ClaudeAccountStates(ctx context.Context, owner int64) (map[string]ccpool.AccountState, error)
 }
 

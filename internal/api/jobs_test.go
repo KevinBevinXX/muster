@@ -46,13 +46,63 @@ func newMemJobs() *memJobs { return &memJobs{rows: map[int64]jobs.Job{}} }
 func (m *memJobs) Create(_ context.Context, n jobs.NewJob) (jobs.Job, bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if n.IdempotencyKey != "" {
-		for _, j := range m.rows {
-			if j.IdempotencyKey == n.IdempotencyKey {
-				return j, false, nil
-			}
+	if j, ok := m.byKeyLocked(n.IdempotencyKey); ok {
+		return j, false, nil
+	}
+	return m.insertLocked(n)
+}
+
+// CreateChosen holds the store's one lock across the counts, the choice and the
+// insert, as the PG store holds the candidates' locks.
+func (m *memJobs) CreateChosen(_ context.Context, n jobs.NewJob, candidates []int64, choose jobs.ChooseFunc) (jobs.Job, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if j, ok := m.byKeyLocked(n.IdempotencyKey); ok {
+		return j, false, nil
+	}
+	want := map[int64]bool{}
+	for _, id := range candidates {
+		want[id] = true
+	}
+	active := map[int64]jobs.ActiveCount{}
+	for _, j := range m.rows {
+		if !want[j.AgentID] {
+			continue
+		}
+		c := active[j.AgentID]
+		switch j.Status {
+		case jobs.StatusQueued:
+			c.Queued++
+		case jobs.StatusRunning:
+			c.Running++
+		default:
+			continue
+		}
+		active[j.AgentID] = c
+	}
+	chosen, err := choose(active)
+	if err != nil {
+		return jobs.Job{}, false, err
+	}
+	if !want[chosen.AgentID] || chosen.IdempotencyKey != n.IdempotencyKey {
+		return jobs.Job{}, false, errors.New("memJobs: the choice is not a candidate, or changed the key")
+	}
+	return m.insertLocked(chosen)
+}
+
+func (m *memJobs) byKeyLocked(key string) (jobs.Job, bool) {
+	if key == "" {
+		return jobs.Job{}, false
+	}
+	for _, j := range m.rows {
+		if j.IdempotencyKey == key {
+			return j, true
 		}
 	}
+	return jobs.Job{}, false
+}
+
+func (m *memJobs) insertLocked(n jobs.NewJob) (jobs.Job, bool, error) {
 	active := 0
 	for _, j := range m.rows {
 		if j.AgentID == n.AgentID && !j.Terminal() {
@@ -89,32 +139,6 @@ func (m *memJobs) ByIdempotencyKey(_ context.Context, key string) (jobs.Job, err
 		}
 	}
 	return jobs.Job{}, jobs.ErrNotFound
-}
-
-func (m *memJobs) ActiveCounts(_ context.Context, ids []int64) (map[int64]jobs.ActiveCount, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	want := map[int64]bool{}
-	for _, id := range ids {
-		want[id] = true
-	}
-	out := map[int64]jobs.ActiveCount{}
-	for _, j := range m.rows {
-		if !want[j.AgentID] {
-			continue
-		}
-		c := out[j.AgentID]
-		switch j.Status {
-		case jobs.StatusQueued:
-			c.Queued++
-		case jobs.StatusRunning:
-			c.Running++
-		default:
-			continue
-		}
-		out[j.AgentID] = c
-	}
-	return out, nil
 }
 
 func (m *memJobs) Start(_ context.Context, id int64, acct string, sess int64) (bool, error) {

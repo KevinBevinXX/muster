@@ -106,3 +106,63 @@ func TestAWorkerPoolIsAClaudeCodeAgentsOnly(t *testing.T) {
 		t.Fatalf("a job in pool %q: %v, want jobs_worker_pool_check", "Bad Pool", err)
 	}
 }
+
+// TestCreateChosenRecordsOnlyACandidateAndAnswersAKeyWithoutChoosing: the
+// choice is given each candidate's unfinished jobs (an agent with none absent)
+// and recorded; a choice outside the candidates, or one that changes the key,
+// records nothing; an error from the choice comes back as itself; and a
+// repeated key is answered without choosing again.
+func TestCreateChosenRecordsOnlyACandidateAndAnswersAKeyWithoutChoosing(t *testing.T) {
+	s, pool := pgStore(t)
+	a, b, other := mustAgent(t, pool, 1, "job-chosen-a"), mustAgent(t, pool, 1, "job-chosen-b"), mustAgent(t, pool, 1, "job-chosen-x")
+	if _, _, err := s.Create(as(1), NewJob{AgentID: a.ID, Agent: a.Name, Prompt: "p", TimeoutSeconds: 60}); err != nil {
+		t.Fatal(err)
+	}
+	base := NewJob{WorkerPool: "reviewers", Prompt: "p", TimeoutSeconds: 60, IdempotencyKey: "chosen-1"}
+	on := func(ag agents.Agent, key string) NewJob {
+		n := base
+		n.AgentID, n.Agent, n.IdempotencyKey = ag.ID, ag.Name, key
+		return n
+	}
+	var seen map[int64]ActiveCount
+	j, created, err := s.CreateChosen(as(1), base, []int64{a.ID, b.ID}, func(active map[int64]ActiveCount) (NewJob, error) {
+		seen = active
+		return on(b, "chosen-1"), nil
+	})
+	if err != nil || !created || j.AgentID != b.ID || j.WorkerPool != "reviewers" {
+		t.Fatalf("chosen = agent %d pool %q created %v err %v; want a new job on %d", j.AgentID, j.WorkerPool, created, err, b.ID)
+	}
+	if len(seen) != 1 || seen[a.ID] != (ActiveCount{Queued: 1}) {
+		t.Fatalf("the choice saw %v, want only %d: {Queued:1}", seen, a.ID)
+	}
+	called := false
+	again, created, err := s.CreateChosen(as(1), base, []int64{a.ID, b.ID}, func(map[int64]ActiveCount) (NewJob, error) {
+		called = true
+		return on(a, "chosen-1"), nil
+	})
+	if err != nil || created || again.ID != j.ID || called {
+		t.Fatalf("a repeated key = id %d created %v err %v chose %v; want id %d, not chosen again", again.ID, created, err, called, j.ID)
+	}
+	fresh := base
+	fresh.IdempotencyKey = "chosen-2"
+	for name, pick := range map[string]NewJob{
+		"an agent not among the candidates": on(other, "chosen-2"),
+		"a changed key":                     on(a, "chosen-other"),
+	} {
+		if _, _, err := s.CreateChosen(as(1), fresh, []int64{a.ID, b.ID}, func(map[int64]ActiveCount) (NewJob, error) {
+			return pick, nil
+		}); err == nil {
+			t.Fatalf("%s was recorded", name)
+		}
+	}
+	refusal := errors.New("every worker is full")
+	if _, _, err := s.CreateChosen(as(1), fresh, []int64{a.ID, b.ID}, func(map[int64]ActiveCount) (NewJob, error) {
+		return NewJob{}, refusal
+	}); err != refusal {
+		t.Fatalf("the choice's error came back as %v, want it unchanged", err)
+	}
+	got, err := s.ActiveCounts(as(1), []int64{a.ID, b.ID, other.ID})
+	if err != nil || len(got) != 2 || got[a.ID].Active() != 1 || got[b.ID].Active() != 1 {
+		t.Fatalf("after the refusals: %v, %v; want one job each on a and b and none on x", got, err)
+	}
+}

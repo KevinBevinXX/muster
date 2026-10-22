@@ -169,41 +169,48 @@ func (s *Server) handleJobCreate(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	a, status, msg := s.pickJobAgent(ctx, req)
-	if status != 0 {
-		s.writeJSON(w, status, map[string]any{"error": msg})
-		return
-	}
-	if n.SHA != "" && strings.TrimSpace(a.Repo) == "" {
-		s.writeJSON(w, http.StatusConflict, map[string]any{
-			"error": fmt.Sprintf("agent %q has no repository, so there is no checkout to move to %s", a.Name, n.SHA),
-		})
-		return
-	}
-	if n.Repo != "" && !strings.EqualFold(n.Repo, strings.TrimSpace(a.Repo)) {
-		s.writeJSON(w, http.StatusConflict, map[string]any{
-			"error": fmt.Sprintf("agent %q works on repository %q, not %q", a.Name, a.Repo, n.Repo),
-		})
-		return
-	}
-	n.AgentID, n.Agent, n.WorkerPool = a.ID, a.Name, strings.TrimSpace(req.WorkerPool)
-	// A sha job's commit is fetched from its repository's public URL, so the
-	// job records the repository it ran on, the agent's when it named none.
-	if n.SHA != "" && n.Repo == "" {
-		n.Repo = strings.TrimSpace(a.Repo)
-	}
+	n.WorkerPool = strings.TrimSpace(req.WorkerPool)
 	n.RequestedBy, _ = serviceActorFromContext(ctx)
-
-	j, created, err := s.ext.Jobs.Create(ctx, n)
+	var j jobs.Job
+	var created bool
+	var err error
+	// target names the agent, or the pool, in a log line.
+	target := "agent " + strconv.Quote(strings.TrimSpace(req.Agent))
+	if n.WorkerPool != "" {
+		target = "pool " + strconv.Quote(n.WorkerPool)
+		j, created, err = s.createPoolJob(ctx, n)
+	} else {
+		a, status, msg := s.namedJobAgent(ctx, strings.TrimSpace(req.Agent))
+		if status != 0 {
+			s.writeJSON(w, status, map[string]any{"error": msg})
+			return
+		}
+		if n, status, msg = jobOnAgent(n, a); status != 0 {
+			s.writeJSON(w, status, map[string]any{"error": msg})
+			return
+		}
+		j, created, err = s.ext.Jobs.Create(ctx, n)
+	}
+	var refused *jobRefusal
+	if errors.As(err, &refused) {
+		s.writeJSON(w, refused.status, map[string]any{"error": refused.msg})
+		return
+	}
 	if errors.Is(err, jobs.ErrAgentAtCapacity) {
-		s.writeJSON(w, http.StatusTooManyRequests, map[string]any{
-			"error": fmt.Sprintf("agent %q already has %d jobs queued or running (the limit); submit again once one finishes",
-				a.Name, jobs.MaxActivePerAgent),
-		})
+		// A pool job's choice already skips a worker at its cap, so this is the
+		// named agent's refusal; a pool's would be the store's backstop, and the
+		// chosen worker's name stayed inside the store.
+		msg := fmt.Sprintf("agent %q already has %d jobs queued or running (the limit); submit again once one finishes",
+			n.Agent, jobs.MaxActivePerAgent)
+		if n.WorkerPool != "" {
+			msg = fmt.Sprintf("the worker chosen in pool %q already has %d jobs queued or running (the limit); submit again once one finishes",
+				n.WorkerPool, jobs.MaxActivePerAgent)
+		}
+		s.writeJSON(w, http.StatusTooManyRequests, map[string]any{"error": msg})
 		return
 	}
 	if err != nil {
-		s.logger.Printf("jobs: create for agent %q: %v", a.Name, err)
+		s.logger.Printf("jobs: create for %s: %v", target, err)
 		s.writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "could not record the job"})
 		return
 	}
@@ -283,14 +290,36 @@ func validateJobRequest(req jobRequest) (jobs.NewJob, int, string) {
 	return n, 0, ""
 }
 
-// pickJobAgent resolves the agent a job runs on: the one it names, or a member
-// of the worker pool it names (pickWorker). validateJobRequest has made sure it
-// names exactly one of the two.
-func (s *Server) pickJobAgent(ctx context.Context, req jobRequest) (agents.Agent, int, string) {
-	if pool := strings.TrimSpace(req.WorkerPool); pool != "" {
-		return s.pickWorker(ctx, pool, strings.TrimSpace(req.Repo))
+// jobRefusal is a submission refused with an HTTP status and a reason, from
+// inside the job store's transaction (createPoolJob's choice).
+type jobRefusal struct {
+	status int
+	msg    string
+}
+
+func (e *jobRefusal) Error() string { return fmt.Sprintf("refused %d: %s", e.status, e.msg) }
+
+// jobOnAgent is n placed on agent a, or the status and reason a cannot take it:
+// a sha job needs a repository to check out, and a job naming a repository
+// must name a's.
+func jobOnAgent(n jobs.NewJob, a agents.Agent) (jobs.NewJob, int, string) {
+	if n.SHA != "" && strings.TrimSpace(a.Repo) == "" {
+		return n, http.StatusConflict, fmt.Sprintf("agent %q has no repository, so there is no checkout to move to %s", a.Name, n.SHA)
 	}
-	name := strings.TrimSpace(req.Agent)
+	if n.Repo != "" && !strings.EqualFold(n.Repo, strings.TrimSpace(a.Repo)) {
+		return n, http.StatusConflict, fmt.Sprintf("agent %q works on repository %q, not %q", a.Name, a.Repo, n.Repo)
+	}
+	n.AgentID, n.Agent = a.ID, a.Name
+	// A sha job's commit is fetched from its repository's public URL, so the
+	// job records the repository it ran on, the agent's when it named none.
+	if n.SHA != "" && n.Repo == "" {
+		n.Repo = strings.TrimSpace(a.Repo)
+	}
+	return n, 0, ""
+}
+
+// namedJobAgent loads the agent a job names; jobs run on claude-code agents only.
+func (s *Server) namedJobAgent(ctx context.Context, name string) (agents.Agent, int, string) {
 	a, err := s.ext.Agents.GetByName(ctx, name)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return agents.Agent{}, http.StatusNotFound, "no agent by that name"
@@ -309,15 +338,30 @@ func (s *Server) pickJobAgent(ctx context.Context, req jobRequest) (agents.Agent
 	return a, 0, ""
 }
 
-// pickWorker chooses the member of pool a job runs on (chooseWorker), reading
-// the members, their Claude accounts' marks and their queues. 404: no agent is
-// a member of pool. 503: members exist and none is eligible, or this
-// deployment cannot read the account marks the choice needs.
-func (s *Server) pickWorker(ctx context.Context, pool, repo string) (agents.Agent, int, string) {
+// createPoolJob records n on the member of its worker pool chosen for it
+// (chooseWorker), reading the members, their Claude accounts' marks and their
+// grants first, and their queues inside the store's transaction. Refusals are
+// a *jobRefusal: 404, no agent is a member of the pool; 429, every member that
+// could otherwise take the job is at its cap; 503, none could take it for any
+// other reason, or this deployment cannot read the account marks the choice
+// needs.
+//
+// 🔴 THE QUEUES ARE READ, AND THE CHOICE MADE, UNDER THE MEMBERS' LOCKS
+// (jobs.Store.CreateChosen), NOT BEFORE. Read before, every submission arriving
+// at once sees the same queues and chooses the same worker; its cap then
+// refuses the overflow with a 429 although another worker is idle. Measured: six
+// submitted at once to two idle workers with four places each — four went to
+// one, and two were refused. chooseWorker stays the one place that decides; it
+// is only called where its input cannot go stale.
+func (s *Server) createPoolJob(ctx context.Context, n jobs.NewJob) (jobs.Job, bool, error) {
+	pool, repo := n.WorkerPool, n.Repo
+	refuse := func(status int, msg string) (jobs.Job, bool, error) {
+		return jobs.Job{}, false, &jobRefusal{status: status, msg: msg}
+	}
 	list, err := s.ext.Agents.List(ctx)
 	if err != nil {
 		s.logger.Printf("jobs: list agents for pool %q: %v", pool, err)
-		return agents.Agent{}, http.StatusInternalServerError, "could not read the agents"
+		return refuse(http.StatusInternalServerError, "could not read the agents")
 	}
 	var members []agents.Agent
 	var ids []int64
@@ -328,7 +372,7 @@ func (s *Server) pickWorker(ctx context.Context, pool, repo string) (agents.Agen
 		}
 	}
 	if len(members) == 0 {
-		return agents.Agent{}, http.StatusNotFound, fmt.Sprintf("no worker pool %q: no agent is a member of it", pool)
+		return refuse(http.StatusNotFound, fmt.Sprintf("no worker pool %q: no agent is a member of it", pool))
 	}
 	// No kinds configured: no Claude account, so every member is skipped as
 	// "not configured" below.
@@ -337,24 +381,29 @@ func (s *Server) pickWorker(ctx context.Context, pool, repo string) (agents.Agen
 		states, err = s.ext.Kinds.ClaudeAccountStates(ctx, callerID(ctx))
 		if err != nil {
 			s.logger.Printf("jobs: read Claude account marks for pool %q: %v", pool, err)
-			return agents.Agent{}, http.StatusServiceUnavailable, "could not read the Claude accounts' marks, so no worker was chosen"
+			return refuse(http.StatusServiceUnavailable, "could not read the Claude accounts' marks, so no worker was chosen")
 		}
 	}
 	github, err := s.gitHubGrants(ctx, ids)
 	if err != nil {
 		s.logger.Printf("jobs: read connector grants for pool %q: %v", pool, err)
-		return agents.Agent{}, http.StatusInternalServerError, "could not read the workers' connector grants"
+		return refuse(http.StatusInternalServerError, "could not read the workers' connector grants")
 	}
-	active, err := s.ext.Jobs.ActiveCounts(ctx, ids)
-	if err != nil {
-		s.logger.Printf("jobs: count active jobs for pool %q: %v", pool, err)
-		return agents.Agent{}, http.StatusInternalServerError, "could not count the workers' jobs"
-	}
-	a, why := chooseWorker(pool, members, repo, states, active, github)
-	if why != "" {
-		return agents.Agent{}, http.StatusServiceUnavailable, why
-	}
-	return a, 0, ""
+	return s.ext.Jobs.CreateChosen(ctx, n, ids, func(active map[int64]jobs.ActiveCount) (jobs.NewJob, error) {
+		a, why, full := chooseWorker(pool, members, repo, states, active, github)
+		if why != "" {
+			status := http.StatusServiceUnavailable
+			if full {
+				status = http.StatusTooManyRequests
+			}
+			return jobs.NewJob{}, &jobRefusal{status: status, msg: why}
+		}
+		placed, status, msg := jobOnAgent(n, a)
+		if status != 0 {
+			return jobs.NewJob{}, &jobRefusal{status: status, msg: msg}
+		}
+		return placed, nil
+	})
 }
 
 // maxWorkerSkipsNamed bounds how many skipped workers a refusal names.
@@ -376,9 +425,12 @@ const maxWorkerSkipsNamed = 10
 //  4. then the agent's name, so the answer is deterministic.
 //
 // With none eligible it returns a non-empty reason naming why each member was
-// skipped (at most maxWorkerSkipsNamed of them).
+// skipped (at most maxWorkerSkipsNamed of them), and full: whether a member
+// was skipped for its cap alone — every check before the cap is passed — so
+// that every worker eligible but for capacity is at capacity (a 429, where a
+// pool with no such worker is a 503).
 func chooseWorker(pool string, members []agents.Agent, repo string, accounts map[string]ccpool.AccountState,
-	active map[int64]jobs.ActiveCount, github map[int64]string) (agents.Agent, string) {
+	active map[int64]jobs.ActiveCount, github map[int64]string) (chosen agents.Agent, why string, full bool) {
 	type cand struct {
 		a  agents.Agent
 		c  jobs.ActiveCount
@@ -391,25 +443,26 @@ func chooseWorker(pool string, members []agents.Agent, repo string, accounts map
 	for _, m := range sorted {
 		st, configured := accounts[m.CCAccount]
 		c := active[m.ID]
-		var why string
+		var skip string
 		switch {
 		case agents.ResolveKind(m.Kind) != agents.KindClaudeCode:
-			why = "kind " + agents.ResolveKind(m.Kind)
+			skip = "kind " + agents.ResolveKind(m.Kind)
 		case m.Status != agents.StatusRunning:
-			why = "status " + m.Status
+			skip = "status " + m.Status
 		case repo != "" && !strings.EqualFold(repo, strings.TrimSpace(m.Repo)):
-			why = fmt.Sprintf("works on repository %q", m.Repo)
+			skip = fmt.Sprintf("works on repository %q", m.Repo)
 		case github[m.ID] != "":
-			why = fmt.Sprintf("holds a grant on connector %q, which reaches github.com: a pool worker holds no GitHub credential", github[m.ID])
+			skip = fmt.Sprintf("holds a grant on connector %q, which reaches github.com: a pool worker holds no GitHub credential", github[m.ID])
 		case !configured:
-			why = fmt.Sprintf("its Claude account %q is not configured", m.CCAccount)
+			skip = fmt.Sprintf("its Claude account %q is not configured", m.CCAccount)
 		case st.AuthFailed:
-			why = fmt.Sprintf("its Claude account %q failed authentication", m.CCAccount)
+			skip = fmt.Sprintf("its Claude account %q failed authentication", m.CCAccount)
 		case c.Active() >= jobs.MaxActivePerAgent:
-			why = fmt.Sprintf("already has %d jobs queued or running (the limit)", c.Active())
+			skip = fmt.Sprintf("already has %d jobs queued or running (the limit)", c.Active())
+			full = true
 		}
-		if why != "" {
-			skipped = append(skipped, m.Name+" ("+why+")")
+		if skip != "" {
+			skipped = append(skipped, m.Name+" ("+skip+")")
 			continue
 		}
 		cands = append(cands, cand{a: m, c: c, rl: st.RateLimitedAt})
@@ -420,7 +473,7 @@ func chooseWorker(pool string, members []agents.Agent, repo string, accounts map
 		if len(named) > maxWorkerSkipsNamed {
 			named, more = named[:maxWorkerSkipsNamed], fmt.Sprintf("; and %d more", len(skipped)-maxWorkerSkipsNamed)
 		}
-		return agents.Agent{}, fmt.Sprintf("no worker in pool %q can take the job: %s%s", pool, strings.Join(named, "; "), more)
+		return agents.Agent{}, fmt.Sprintf("no worker in pool %q can take the job: %s%s", pool, strings.Join(named, "; "), more), full
 	}
 	sort.SliceStable(cands, func(i, j int) bool {
 		a, b := cands[i], cands[j]
@@ -438,7 +491,7 @@ func chooseWorker(pool string, members []agents.Agent, repo string, accounts map
 		}
 		return a.a.Name < b.a.Name
 	})
-	return cands[0].a, ""
+	return cands[0].a, "", false
 }
 
 func (s *Server) handleJobGet(w http.ResponseWriter, r *http.Request) {

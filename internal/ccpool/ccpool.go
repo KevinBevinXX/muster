@@ -320,7 +320,7 @@ type AccountState struct {
 
 // States is AccountState for every one of owner's configured accounts, by
 // name. An account that is not configured for owner is absent. It is what the
-// job API's worker-pool selection reads (internal/api pickJobAgent): the same
+// job API's worker-pool selection reads (internal/api createPoolJob): the same
 // marks, under the same "current token" rule, as [Choose].
 func (p *Pool) States(ctx context.Context, owner int64) (map[string]AccountState, error) {
 	tokens, names, err := p.accounts(ctx, owner)

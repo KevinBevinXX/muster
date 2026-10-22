@@ -21,7 +21,7 @@ import (
 // (grantReachesGitHub) applied at two doors:
 //
 //   - a pool worker holding an APPROVED grant on such a connector is not
-//     eligible for a job (pickWorker → chooseWorker). A PENDING one does not
+//     eligible for a job (createPoolJob → chooseWorker). A PENDING one does not
 //     disqualify it: the door below means it can never become a credential, and
 //     ccd files a pending `github` request by itself whenever a clone fails
 //     (internal/podagent checkout.go), so counting pending ones would take a
