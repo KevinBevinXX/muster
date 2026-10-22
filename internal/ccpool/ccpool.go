@@ -199,22 +199,60 @@ func (s Static) Accounts(context.Context, int64) (map[string]string, error) {
 	return out, nil
 }
 
-// Pool is selection and marking over a per-owner [Source] and its [Store].
-type Pool struct {
-	src   Source
-	store Store
-	now   func() time.Time
+// The defaults of [Limits].
+const (
+	// DefaultCooldown is how long an account rests after a `rate_limited` whose
+	// message states no reset time this package can read.
+	DefaultCooldown = time.Hour
+	// DefaultMaxConcurrentJobs is how many jobs one account may run at once.
+	DefaultMaxConcurrentJobs = 2
+)
+
+// Limits are the pool's two knobs: the cooldown after a rate limit, and the
+// per-account job concurrency cap.
+type Limits struct {
+	// Cooldown is the rest after a `rate_limited` whose message carries no
+	// readable reset time. Positive.
+	Cooldown time.Duration
+	// MaxConcurrentJobs caps the jobs one account runs at once. At least 1.
+	MaxConcurrentJobs int
 }
 
-// New builds a pool.
+// DefaultLimits is [DefaultCooldown] and [DefaultMaxConcurrentJobs].
+func DefaultLimits() Limits {
+	return Limits{Cooldown: DefaultCooldown, MaxConcurrentJobs: DefaultMaxConcurrentJobs}
+}
+
+// Pool is selection and marking over a per-owner [Source] and its [Store].
+type Pool struct {
+	src    Source
+	store  Store
+	now    func() time.Time
+	limits Limits
+}
+
+// New builds a pool with [DefaultLimits].
 func New(src Source, store Store) (*Pool, error) {
+	return NewWithLimits(src, store, DefaultLimits())
+}
+
+// NewWithLimits builds a pool with explicit limits. It refuses a non-positive
+// cooldown and a cap below 1: either would be a knob that silently disables
+// the guard it configures.
+func NewWithLimits(src Source, store Store, l Limits) (*Pool, error) {
 	if src == nil {
 		return nil, errors.New("ccpool: a Source is required (it says whose accounts an owner may use)")
 	}
 	if store == nil {
 		return nil, errors.New("ccpool: a Store is required (marks and live counts are what selection reads)")
 	}
-	return &Pool{src: src, store: store, now: time.Now}, nil
+	if l.Cooldown <= 0 {
+		return nil, fmt.Errorf("ccpool: the rate-limit cooldown must be positive, got %s", l.Cooldown)
+	}
+	if l.MaxConcurrentJobs < 1 {
+		return nil, fmt.Errorf("ccpool: the per-account job cap must be at least 1, got %d", l.MaxConcurrentJobs)
+	}
+	return &Pool{src: src, store: store, now: time.Now, limits: l}, nil
 }
 
 func (p *Pool) accounts(ctx context.Context, owner int64) (map[string]string, []string, error) {
@@ -276,7 +314,7 @@ func (p *Pool) Select(ctx context.Context, owner int64, pin string) (string, err
 	if err != nil {
 		return "", fmt.Errorf("ccpool: count live agents per account: %w", err)
 	}
-	return Choose(names, tokens, marks, live)
+	return Choose(p.now(), p.limits.Cooldown, names, tokens, marks, live)
 }
 
 // AuthFailure reports why owner's account cannot authenticate: a non-empty
@@ -316,6 +354,11 @@ type AccountState struct {
 	AuthFailed bool
 	// RateLimitedAt is the account's latest rate_limited mark; zero for never.
 	RateLimitedAt time.Time
+	// CoolingUntil is when the account's rate-limit cooldown ends, set ONLY
+	// while it is still cooling down at the time States read it; zero otherwise.
+	CoolingUntil time.Time
+	// MaxConcurrentJobs is the per-account job cap ([Limits]).
+	MaxConcurrentJobs int
 }
 
 // States is AccountState for every one of owner's configured accounts, by
@@ -345,8 +388,14 @@ func authFailedNow(m Mark, token string) bool {
 	return !m.AuthFailedAt.IsZero() && m.AuthFailedToken != "" && m.AuthFailedToken == Fingerprint(token)
 }
 
+// CooldownUntil is when m's rate-limit cooldown ends; zero for an account
+// never rate-limited.
+func CooldownUntil(m Mark, cooldown time.Duration) time.Time {
+	return time.Time{} // SCAFFOLDING: implemented in the next commit.
+}
+
 // Choose is the selection algorithm (see the package doc), pure.
-func Choose(names []string, tokens map[string]string, marks map[string]Mark, live map[string]int) (string, error) {
+func Choose(now time.Time, cooldown time.Duration, names []string, tokens map[string]string, marks map[string]Mark, live map[string]int) (string, error) {
 	type cand struct {
 		name string
 		rl   time.Time

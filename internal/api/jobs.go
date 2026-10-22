@@ -390,7 +390,7 @@ func (s *Server) createPoolJob(ctx context.Context, n jobs.NewJob) (jobs.Job, bo
 		return refuse(http.StatusInternalServerError, "could not read the workers' connector grants")
 	}
 	return s.ext.Jobs.CreateChosen(ctx, n, ids, func(active map[int64]jobs.ActiveCount) (jobs.NewJob, error) {
-		a, why, full := chooseWorker(pool, members, repo, states, active, github)
+		a, why, full := chooseWorker(pool, members, members, repo, states, active, github)
 		if why != "" {
 			status := http.StatusServiceUnavailable
 			if full {
@@ -429,7 +429,7 @@ const maxWorkerSkipsNamed = 10
 // was skipped for its cap alone — every check before the cap is passed — so
 // that every worker eligible but for capacity is at capacity (a 429, where a
 // pool with no such worker is a 503).
-func chooseWorker(pool string, members []agents.Agent, repo string, accounts map[string]ccpool.AccountState,
+func chooseWorker(pool string, members, peers []agents.Agent, repo string, accounts map[string]ccpool.AccountState,
 	active map[int64]jobs.ActiveCount, github map[int64]string) (chosen agents.Agent, why string, full bool) {
 	type cand struct {
 		a  agents.Agent
