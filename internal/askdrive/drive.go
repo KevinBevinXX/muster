@@ -399,6 +399,14 @@ func match(s Screen, w Want, qs []askq.Question, answers map[string]string, ques
 	if err := layoutMatch(s, q); err != nil {
 		return err
 	}
+	// A preview question's note: none may be there, nor being typed — a key
+	// would go into it (measured 2.1.289), and an answer would carry it.
+	switch {
+	case q.Previews() && s.NoteEditing:
+		return errors.New("a note is being typed on the question")
+	case q.Previews() && s.Notes != NotesUntouched:
+		return fmt.Errorf("the question carries a note: %q", s.Notes)
+	}
 	k := len(q.Options)
 	for j, r := range s.Rows {
 		if checked := slices.Contains(w.Checked, j+1); q.MultiSelect && (r.Box == "[✔]") != checked {

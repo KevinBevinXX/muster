@@ -172,7 +172,18 @@ type Screen struct {
 	// screen column the preview box starts in: every row line was cut there.
 	// 0: no preview box.
 	PreviewCol int
+	// Notes is a preview question's notes line, as drawn under the box (from
+	// PreviewCol, trimmed; "" when there is none): NotesUntouched when nobody
+	// has added a note. NoteEditing says the footer offers "ctrl+g to edit":
+	// the notes line is being typed into (measured 2.1.289: n opens it, keys —
+	// digits too — then go INTO the note, and Escape leaves it, the note
+	// kept).
+	Notes       string
+	NoteEditing bool
 }
+
+// NotesUntouched is a preview question's notes line while it has no note.
+const NotesUntouched = "Notes: press n to add notes"
 
 var (
 	// "←  ☐ Color  ☒ Pets  ✔ Submit  →" or, one single-select question, " ☐ Color".
@@ -257,8 +268,10 @@ func parse(capture string) Screen {
 			break
 		}
 	}
+	editing := false
 	switch {
 	case footer >= 0:
+		editing = strings.Contains(strings.Join(lines[footer:min(len(lines), footer+3)], " "), "ctrl+g to edit")
 		last = footer
 	case last >= 1 && strings.TrimSpace(lines[last]) == "2. Cancel" && strings.HasSuffix(strings.TrimSpace(lines[last-1]), "1. Submit answers"):
 		review = true
@@ -305,9 +318,14 @@ func parse(capture string) Screen {
 	qtext, qends := unbox(q)
 	s.Question, s.QuestionEnds = strings.Join(qtext, "\n"), qends
 	if col := previewCol(body[i:]); col > 0 {
-		s.PreviewCol = col
+		s.PreviewCol, s.NoteEditing = col, editing
 		for j := i; j < len(body) && !sepRE.MatchString(body[j]); j++ {
 			if r := []rune(body[j]); len(r) > col {
+				// The notes line is the box's column's, not a row's: kept
+				// before the cut, so a note someone saved is not cut away.
+				if right := strings.TrimSpace(string(r[col:])); strings.HasPrefix(right, "Notes:") {
+					s.Notes = right
+				}
 				body[j] = trimRight(string(r[:col]))
 			}
 		}

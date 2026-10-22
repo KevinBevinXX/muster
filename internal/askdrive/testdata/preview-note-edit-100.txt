@@ -1,0 +1,18 @@
+────────────────────────────────────────────────────────────────────────────────────────────────────
+←  ☐ Color  ☐ Size  ✔ Submit  →                                                                   
+
+Which color do you prefer?
+
+❯ 1. Red                          ┌──────────────────────────────────────────┐                    
+  2. Blue                         │ Red is the color of fire.                │
+  3. Green                        │ It signals energy and urgency.           │
+                                  └──────────────────────────────────────────┘
+
+                                  Notes: Add notes on this design…
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  Chat about this
+
+Enter to select · ↑/↓ to navigate · n to add notes · Tab to switch questions · ctrl+g to edit in 
+Nvim · Esc to cancel
+

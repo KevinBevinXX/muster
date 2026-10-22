@@ -26,10 +26,16 @@ func TestWhatADriveLeftIsHandedToTheNext(t *testing.T) {
 	if err != nil || got.Left == nil || got.Left.Keys != 2 || got.Left.Choices[0].Picks[0] != 1 || got.Retry {
 		t.Fatalf("the next drive is handed %+v (%v)", got.Left, err)
 	}
-	// This drive's outcome replaces it.
-	e, _ = s.TypingFailed(key(1), Failure{Note: "no picker", Settled: true})
-	if e.Left != nil || e.Retry {
-		t.Fatalf("a drive that left nothing: %+v", e)
+	// A drive that typed nothing keeps it (the picker is as the last left it);
+	// one that typed replaces it.
+	e, _ = s.TypingFailed(key(1), Failure{Note: "busy", Settled: true})
+	if e.Left == nil || e.Left.Keys != 2 || e.Retry {
+		t.Fatalf("a drive that typed nothing: %+v", e)
+	}
+	_, _, _ = s.BeginTyping(key(1), someAnswers)
+	e, _ = s.TypingFailed(key(1), Failure{Note: "lost", Settled: true, Left: &Progress{Choices: left.Choices, Keys: 5}})
+	if e.Left == nil || e.Left.Keys != 5 {
+		t.Fatalf("a drive that typed more: %+v", e)
 	}
 	// An unsettled one: nothing recorded.
 	c.add(MaxDrive)

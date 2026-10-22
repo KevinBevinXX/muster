@@ -451,8 +451,9 @@ type Failure struct {
 	Note string
 	// Settled says the host reported its outcome (it is not typing).
 	Settled bool
-	// Left is what the drive is known to have left in the picker (Entry.Left;
-	// nil: nothing known). It is recorded only when Settled.
+	// Left is what the drive is known to have left in the picker (Entry.Left).
+	// It is recorded only when Settled; nil (no key of this drive reached the
+	// picker) keeps what the last drive left.
 	Left *Progress
 	// Retry says the question can be answered from muster again (Entry.Retry).
 	Retry bool
@@ -474,7 +475,11 @@ func (s *Store) TypingFailed(key Key, f Failure) (Entry, error) {
 	}
 	if f.Settled {
 		en.driveUntil = time.Time{}
-		en.Left = f.Left.clone()
+		// A drive that typed nothing (refused before its first key: busy,
+		// not sent, …) left the picker as the last one did: keep that.
+		if f.Left != nil {
+			en.Left = f.Left.clone()
+		}
 	} else {
 		en.Left = nil
 	}

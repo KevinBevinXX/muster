@@ -775,6 +775,25 @@ func TestALostAnswerIsContinuedFromTheCard(t *testing.T) {
 		t.Fatalf("the host was handed %+v then %+v, want nothing then %+v", priors[0], priors[len(priors)-1], want)
 	}
 
+	// A retry that types nothing (busy: another drive has the pane) keeps the
+	// record: the next retry is still handed it, and continues.
+	am4, s4, ts4 := askServer(t, true)
+	register(t, ts4)
+	region(t, s4, ts4, `data-ask-state="pending"`)
+	form := answerForm(gateTool, "a0", "Blue", "a1", "Fish", "a1", "Dog")
+	for _, e := range []error{mirror.WithAskKeys(fmt.Errorf("%w: x", mirror.ErrAskLost), 4), fmt.Errorf("%w: x", mirror.ErrAskBusy), nil} {
+		am4.amu.Lock()
+		am4.typeErr = e
+		am4.amu.Unlock()
+		_, _ = answerReq(t, s4, ts4, form, "", "")
+	}
+	am4.amu.Lock()
+	p4 := append([]*askq.Progress(nil), am4.priors...)
+	am4.amu.Unlock()
+	if len(p4) != 3 || !reflect.DeepEqual(p4[1], want) || !reflect.DeepEqual(p4[2], want) {
+		t.Fatalf("after a busy retry the host was handed %+v, want %+v again", p4, want)
+	}
+
 	// Someone else typed in the terminal: said as that, no form; after keys
 	// of muster's reached the picker, that it may be partly filled in.
 	for _, keys := range []int{0, 3} {

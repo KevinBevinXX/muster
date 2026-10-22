@@ -85,18 +85,23 @@ func TestLiveClaudePicker(t *testing.T) {
 		// delivers: it is lost there, and a second drive handed what it sent
 		// must finish the answer (askdrive.DriveFrom).
 		lose int
+		// note: before driving, a note is added to question 1 in the terminal
+		// (n, the text, Escape — measured to keep it); the drive must refuse
+		// as someone answering it, and the picker is then dismissed.
+		note string
 	}{
-		{"options with previews", []askq.Question{layout, name}, []askdrive.Choice{{Picks: []int{1}}, {Picks: []int{0}}}, 0},
-		{"three questions, lost after question 1 and continued", []askq.Question{color, pets, name}, []askdrive.Choice{{Picks: []int{1}}, {Picks: []int{0, 2}}, {Picks: []int{1}}}, 2},
-		{"single-select", []askq.Question{color}, []askdrive.Choice{{Picks: []int{2}}}, 0},
-		{"single-select, four options, the last", []askq.Question{size}, []askdrive.Choice{{Picks: []int{3}}}, 0},
-		{"own words", []askq.Question{name}, []askdrive.Choice{{Other: "Gamma, the third 42"}}, 0},
-		{"multi-select", []askq.Question{pets}, []askdrive.Choice{{Picks: []int{0, 2}}}, 0},
-		{"multi-select with own words", []askq.Question{pets}, []askdrive.Choice{{Picks: []int{1}, Other: "a hamster"}}, 0},
-		{"three questions", []askq.Question{color, pets, name}, []askdrive.Choice{{Other: "teal, mostly"}, {Picks: []int{1}, Other: "a hamster"}, {Picks: []int{1}}}, 0},
-		{"four questions", []askq.Question{color, pets, name, size}, []askdrive.Choice{{Picks: []int{0}}, {Picks: []int{0, 1, 2}}, {Other: "Delta"}, {Picks: []int{1}}}, 0},
-		{"a long boxed question", []askq.Question{where}, []askdrive.Choice{{Picks: []int{1}}}, 0},
-		{"a long answer of its own to question 2", []askq.Question{color, where}, []askdrive.Choice{{Picks: []int{0}}, {Other: own}}, 0},
+		{"a note on a preview question refuses the drive", []askq.Question{layout, name}, []askdrive.Choice{{Picks: []int{1}}, {Picks: []int{0}}}, 0, "ship it friday"},
+		{"options with previews", []askq.Question{layout, name}, []askdrive.Choice{{Picks: []int{1}}, {Picks: []int{0}}}, 0, ""},
+		{"three questions, lost after question 1 and continued", []askq.Question{color, pets, name}, []askdrive.Choice{{Picks: []int{1}}, {Picks: []int{0, 2}}, {Picks: []int{1}}}, 2, ""},
+		{"single-select", []askq.Question{color}, []askdrive.Choice{{Picks: []int{2}}}, 0, ""},
+		{"single-select, four options, the last", []askq.Question{size}, []askdrive.Choice{{Picks: []int{3}}}, 0, ""},
+		{"own words", []askq.Question{name}, []askdrive.Choice{{Other: "Gamma, the third 42"}}, 0, ""},
+		{"multi-select", []askq.Question{pets}, []askdrive.Choice{{Picks: []int{0, 2}}}, 0, ""},
+		{"multi-select with own words", []askq.Question{pets}, []askdrive.Choice{{Picks: []int{1}, Other: "a hamster"}}, 0, ""},
+		{"three questions", []askq.Question{color, pets, name}, []askdrive.Choice{{Other: "teal, mostly"}, {Picks: []int{1}, Other: "a hamster"}, {Picks: []int{1}}}, 0, ""},
+		{"four questions", []askq.Question{color, pets, name, size}, []askdrive.Choice{{Picks: []int{0}}, {Picks: []int{0, 1, 2}}, {Other: "Delta"}, {Picks: []int{1}}}, 0, ""},
+		{"a long boxed question", []askq.Question{where}, []askdrive.Choice{{Picks: []int{1}}}, 0, ""},
+		{"a long answer of its own to question 2", []askq.Question{color, where}, []askdrive.Choice{{Picks: []int{0}}, {Other: own}}, 0, ""},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -120,6 +125,39 @@ func TestLiveClaudePicker(t *testing.T) {
 				measureRedraw(t, ctx, p)
 			}
 			start := time.Now()
+			if c.note != "" {
+				for _, k := range []string{"n", c.note, "\x1b"} {
+					if err := p.Send(ctx, k); err != nil {
+						t.Fatal(err)
+					}
+					time.Sleep(time.Second)
+				}
+				if scr, _ := p.Capture(ctx); !strings.Contains(scr, "Notes: "+c.note) {
+					t.Fatalf("the note was not saved:\n%s", scr)
+				}
+				_, err := tm.AnswerAsk(ctx, pane, c.qs, c.cs, nil)
+				if !errors.Is(err, askdrive.ErrNotUntouched) {
+					scr, _ := p.Capture(ctx)
+					t.Fatalf("a drive into a picker with a note: %v\n%s", err, scr)
+				}
+				t.Logf("%s: refused: %v", c.name, err)
+				if err := p.Send(ctx, "\x1b"); err != nil {
+					t.Fatal(err)
+				}
+				deadline := time.Now().Add(20 * time.Second)
+				for {
+					scr, _ := p.Capture(ctx)
+					if strings.Contains(scr, "User declined to answer questions") {
+						break
+					}
+					if time.Now().After(deadline) {
+						t.Fatalf("the picker was not dismissed:\n%s", scr)
+					}
+					time.Sleep(200 * time.Millisecond)
+				}
+				time.Sleep(8 * time.Second)
+				return
+			}
 			if c.lose > 0 {
 				keys, err := askdrive.DriveFrom(ctx, &losingPane{tmuxPane: p, lose: c.lose}, c.qs, c.cs, nil, askdrive.Options{})
 				if !errors.Is(err, askdrive.ErrLost) || keys != c.lose {
