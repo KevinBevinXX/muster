@@ -4,12 +4,13 @@ import path from 'node:path';
 import { Browser, BrowserContext, Page } from '@playwright/test';
 import { test, expect } from '../lib/fixtures';
 import {
-  baseURL, clsConnectPort, clsFullPort, clsGotrueBrowserPort, clsGotrueMainPort, clsSignedBrowserPort, clsSignedConnectPort,
+  baseURL, clsConnectPort, clsFullPort, clsListPort, clsGotrueBrowserPort, clsGotrueMainPort, clsSignedBrowserPort, clsSignedConnectPort,
   clsSignedGotruePort, clsSignedMainPort, dsn, e2eRoot, gotrueSecret, password, repoRoot, versionA, versionTerm,
 } from '../lib/env';
 import { serverBinary, startServer, Running } from '../lib/server';
 import { clsInit, readCls, resetCls, settle, ClsResult } from '../lib/cls';
 import { cc, MirrorRig, mkchat } from '../lib/mirrorhost';
+import { writeFileAtomic } from '../lib/atomic';
 
 // LAYOUT SHIFT UNDER 0.01 ON EVERY PAGE, at a phone (390×844, touch) and a
 // desktop (1280×800): each page is loaded, its async htmx loads are let land
@@ -528,6 +529,242 @@ test.describe('the full server', () => {
     }
     expect(bad).toEqual([]);
   });
+});
+
+// --- A LONG AGENTS LIST, SERVER-RENDERED. The Agents tab's document draws its
+// cards itself (internal/ui/agents_list_ssr.go) — the list is the first paint,
+// not a request's answer — and the reader's stored filter (a quick-filter chip,
+// a host tab) is applied before that paint (agents_filter_head.go).
+//
+// The fixture is the size of a real operator's list: sixty-four mirrored tmux
+// windows on one fake host (pairwise-distinct activity, 2 minutes to ~7.5 hours
+// ago), two of them pinned, and two dispatched agents with focus titles.
+//
+// 🔴 REGRESSION TESTS. On the tree before, #agents-list was drawn EMPTY and
+// filled by its own `load` request: with that request unanswered the document
+// held no card at all.
+//
+// ⚠ THE FIRST LIVE REFRESH (the resync the SSE stream's open fires) STILL
+// RE-SENDS THE LIST, and morphs it over the identical server-rendered one. A
+// version/204 protocol that answered it with no content was measured and
+// removed: CLS 0 with it and 0 / 0.00006 without, at both sizes; what it saved
+// was invisible DOM churn (data-list-i restamps, a class rewrite) and
+// relative-time labels a second fresher ("8s"->"9s"). The morph's shift is
+// measured below instead.
+const lrig = new MirrorRig(clsListPort, 'e2e-clslist', { MUSTER_FOCUS_INTERVAL: '0' });
+const lstamp = Date.now().toString(36);
+const lagents = [`cls-list-focus-a-${lstamp}`, `cls-list-focus-b-${lstamp}`];
+const NWIN = 64;
+const lwin = (i: number) => 'cl' + String(i).padStart(2, '0');
+// The pinned two: old windows, so their pins lift them from far down the list.
+const lpinned = [40, 51];
+
+// framesProbe records, for every animation frame from the document's first
+// until a little after load, how many of #agents-list's cards are DRAWN
+// (rendered boxes). A frame runs before its paint, so this is what each paint
+// showed. The stored filter must never draw a card it hides: no frame may show
+// more cards than the filtered list ends with.
+const framesProbe = `(() => {
+  window.__frames = [];
+  let after = 0;
+  const tick = () => {
+    const l = document.getElementById('agents-list');
+    if (l) {
+      let v = 0;
+      for (const a of l.children) if (a.tagName === 'ARTICLE' && a.getClientRects().length) v++;
+      window.__frames.push(v);
+      // Frames painted with cards while the document was still held before
+      // its body scripts (the stall below): the positive control.
+      if (v > 0 && !window.__stallEnded) window.__preStall = (window.__preStall || 0) + 1;
+    }
+    if (document.readyState !== 'complete' || after++ < 10) requestAnimationFrame(tick);
+  };
+  requestAnimationFrame(tick);
+})()`;
+
+test.describe('a long Agents list', () => {
+  test.use({ storageState: { cookies: [], origins: [] } });
+  let pinnedDone = false;
+  test.beforeAll(async () => {
+    test.setTimeout(180_000);
+    await lrig.start();
+    const now = Math.floor(Date.now() / 1000);
+    const windows = path.join(lrig.dir, 'windows');
+    const lines: string[] = [];
+    for (let i = 0; i < NWIN; i++) lines.push(`${lwin(i)}|@${i + 1}|1|1|zsh|${now - (2 + 7 * i) * 60}|`);
+    writeFileAtomic(windows, lines.join('\n') + '\n');
+    await lrig.startHost({ MUSTER_MIRROR_E2E_WINDOWS_FILE: windows, MUSTER_MIRROR_E2E_REFRESH: '300ms' });
+    mkchat(lagents[0], [{ role: 'user', content: 'rebalance the shards' }], {
+      MUSTER_E2E_ACTIVE_MINUTES_AGO: '33',
+      MUSTER_E2E_FOCUS: JSON.stringify([{ subject: 'self', title: 'Rebalancing the shard map before the cutover', description: 'Four shards left.' }]),
+    });
+    mkchat(lagents[1], [{ role: 'user', content: 'trim the dashboards' }], {
+      MUSTER_E2E_ACTIVE_MINUTES_AGO: '211',
+      MUSTER_E2E_FOCUS: JSON.stringify([{ subject: 'self', title: 'Trimming the dashboards nobody opens', description: 'Twelve to go.' }]),
+    });
+  });
+  test.afterAll(async () => {
+    await lrig.stop();
+    for (const a of lagents) mkchat(a, null);
+  });
+
+  for (const vp of viewports) {
+    test(`${vp.name}: the first paint is the list, and load, the first refresh, a restored filter and navigation shift less than ${BAR}`, async ({ browser }) => {
+      test.setTimeout(180_000);
+      const ctx = await browser.newContext({ ...vp.use, storageState: { cookies: [], origins: [] } });
+      try {
+        const page = await ctx.newPage();
+        await lrig.login(page);
+        await lrig.waitListed(page, `data-f-session="${lwin(NWIN - 1)}"`);
+        if (!pinnedDone) {
+          for (const i of lpinned) {
+            const r = await page.request.post(lrig.origin + '/agents/pins', {
+              form: { kind: 'mirror', host: lrig.host, session: lwin(i), window: `@${i + 1}` },
+              headers: { Origin: lrig.origin },
+            });
+            expect(r.status(), `pinned ${lwin(i)}`).toBe(200);
+          }
+          pinnedDone = true;
+        }
+        const total = NWIN + lagents.length;
+        const listCards = page.locator('#agents-list > article');
+        const mine = (i: number) => page.locator(`#agents-list > article[data-f-host="${lrig.host}"][data-f-session="${lwin(i)}"]`);
+
+        // (1) THE FIRST PAINT HOLDS THE CARDS: with the list's own request left
+        // unanswered, the document already has every one of them.
+        const heldRoutes: import('@playwright/test').Route[] = [];
+        await page.route('**/ui/agents', (r) => { heldRoutes.push(r); });
+        await page.goto(lrig.origin + '/agents', { waitUntil: 'domcontentloaded' });
+        const drawn = await listCards.count();
+        await page.unroute('**/ui/agents');
+        for (const r of heldRoutes) await r.abort().catch(() => {});
+        expect(drawn, `the /agents document drew its cards with /ui/agents unanswered (${heldRoutes.length} held)`).toBeGreaterThanOrEqual(total);
+        await expect(page.locator(`#agents-list > article:has-text("Rebalancing the shard map")`), 'a focus title is on the first paint').toHaveCount(1);
+        await expect(listCards.first(), 'a pinned window leads the list').toHaveAttribute('data-f-session', new RegExp(`^cl(${lpinned.join('|')})$`));
+
+        // (1b) AN ARRIVAL IN THE FIRST LIVE REFRESH IS HELD. The server-rendered
+        // list is the drawn order (agentsFilterScript's adopt), so the very
+        // first background refresh — the resync the SSE stream's open fires —
+        // waits behind "N new ↑" when it carries a change, like any later one.
+        // That refresh is held at the network here while an agent arrives, so
+        // it is the one that carries it. (Without adopt it found no drawn order
+        // and was applied at once, pushing every card down.)
+        let release: () => void = () => {};
+        const gate = new Promise<void>((r) => (release = r));
+        let firstRefresh = 0;
+        await page.route('**/ui/agents', async (r) => {
+          if (firstRefresh++ === 0) await gate;
+          await r.continue().catch(() => {});
+        });
+        await page.addInitScript(clsInit);
+        await page.goto(lrig.origin + '/agents');
+        await page.waitForLoadState('load');
+        await expect.poll(() => firstRefresh, { message: 'the first live refresh was asked for' }).toBeGreaterThan(0);
+        await resetCls(page);
+        const arrival = `cls-list-arrival-${lstamp}-${vp.name.split(' ')[0]}`;
+        mkchat(arrival, [{ role: 'user', content: 'arrived before the first refresh landed' }]);
+        try {
+          release();
+          await expect(page.locator('#agents-new-pill'), 'the arrival waits behind the pill').toHaveText('1 new ↑');
+          await expect(page.locator(`#agents-list > article[data-f-name="${arrival}"]`)).toBeHidden();
+          await settle(page);
+          const held = await readCls(page);
+          expect(held.total, report('an arrival in the first live refresh', held)).toBeLessThan(BAR);
+          await page.locator('#agents-new-pill').click();
+          await expect(page.locator(`#agents-list > article[data-f-name="${arrival}"]`)).toBeVisible();
+        } finally {
+          await page.unroute('**/ui/agents');
+          mkchat(arrival, null);
+        }
+
+        // (2) A RESTORED FILTER, THE LOAD AND THE FIRST LIVE REFRESH. The chip
+        // "Idle >1h" and this host's tab, stored the way the page stores them.
+        await page.evaluate((h) => {
+          localStorage.setItem('muster:agents:chips', JSON.stringify(['idle-1h']));
+          localStorage.setItem('muster:tabs:agents-host', h);
+        }, lrig.host);
+        const results: Record<string, ClsResult> = {};
+        const statuses: number[] = [];
+        page.on('response', (r) => { if (new URL(r.url()).pathname === '/ui/agents') statuses.push(r.status()); });
+        await page.addInitScript(framesProbe);
+        // 🔴 THE FIRST PAINT IS FORCED TO COME BEFORE THE BODY SCRIPTS. Left to
+        // itself Chromium parses this document in one go and paints after
+        // agentsFilterScript has run, so a missing head script read green four
+        // times out of four at both sizes (review, round 1). Here the document
+        // is held, between its panels and its scripts, on a parser-blocking
+        // script that answers after 1.2 s: the browser paints the list while it
+        // waits — with only what the HEAD has applied. (The frames counted
+        // during the hold are the positive control: __preStall.)
+        await page.route(lrig.origin + '/agents', async (r) => {
+          const res = await r.fetch();
+          const html = (await res.text()).replace('</main>', '</main><script src="/__e2e-stall.js"></script>');
+          await r.fulfill({ response: res, body: html });
+        });
+        await page.route('**/__e2e-stall.js', async (r) => {
+          await new Promise((res) => setTimeout(res, 1200));
+          await r.fulfill({ contentType: 'text/javascript', body: 'window.__stallEnded = true;' });
+        });
+        await page.goto(lrig.origin + '/agents');
+        await page.unroute(lrig.origin + '/agents');
+        await settle(page);
+        // The resync the SSE stream's open fires is the list's first live
+        // refresh: it morphs the list over its identical server-rendered self.
+        await expect.poll(() => statuses.length, { message: 'the first live refresh was made', timeout: 10_000 }).toBeGreaterThan(0);
+        await settle(page);
+        results['load, chip + host tab restored, first refresh'] = await readCls(page);
+        const frames: number[] = await page.evaluate(() => (window as any).__frames);
+        const shown = await page.evaluate(() => [...document.querySelectorAll('#agents-list > article')].filter((a) => a.getClientRects().length).length);
+        // Positive control: the filter really hides cards (the 1h chip leaves
+        // the windows active within the hour, and the other host's agents, out).
+        expect(shown, 'the restored filter shows some of the list').toBeGreaterThan(0);
+        expect(shown, 'and hides some of it').toBeLessThan(await listCards.count());
+        await expect(mine(0), 'a window active 2 minutes ago is hidden by Idle >1h').toBeHidden();
+        await expect(mine(20), 'a window idle 2h22m is shown').toBeVisible();
+        const preStall = await page.evaluate(() => (window as any).__preStall || 0);
+        expect(preStall, `control: frames were painted with cards before the body scripts ran (frames: ${frames.join(',')})`).toBeGreaterThan(0);
+        expect(Math.max(...frames), `no frame drew a card the restored filter hides (frames: ${frames.join(',')})`).toBeLessThanOrEqual(shown);
+
+        // A live nudge: the list refreshes and morphs; nothing moves.
+        await resetCls(page);
+        const before = statuses.length;
+        await page.evaluate(() => (window as any).htmx.trigger(document.body, 'sse:agent.changed'));
+        await expect.poll(() => statuses.length, { timeout: 10_000 }).toBeGreaterThan(before);
+        await settle(page);
+        results['a live refresh, nothing changed'] = await readCls(page);
+
+        // Back and forward: away to the board, then Back.
+        await resetCls(page);
+        await page.goto(lrig.origin + '/tasks');
+        await settle(page);
+        await page.goBack();
+        await expect(page).toHaveURL(/\/agents$/);
+        await settle(page);
+        await expect(mine(20)).toBeVisible();
+        results['back to /agents'] = await readCls(page);
+        await page.goForward();
+        await expect(page).toHaveURL(/\/tasks$/);
+        await settle(page);
+
+        // A boosted navigation back to /agents, from a page with no panels.
+        await page.goto(lrig.origin + '/agents/' + lagents[0]);
+        await settle(page);
+        await resetCls(page);
+        await page.evaluate(() => (document.querySelector('.sidebar-tab[data-tab="agents"]') as HTMLElement).click());
+        await expect(page).toHaveURL(/\/agents$/);
+        await settle(page);
+        await expect(mine(20)).toBeVisible();
+        await expect(mine(0)).toBeHidden();
+        results['boosted navigation to /agents'] = await readCls(page);
+
+        console.log(`[cls ${vp.name}] long list: ` + Object.entries(results).map(([k, r]) => `${k} ${r.total}`).join(' | '));
+        const bad = Object.entries(results).filter(([, r]) => r.total >= BAR).map(([k, r]) => report(k, r));
+        expect(bad).toEqual([]);
+        await page.evaluate(() => { localStorage.removeItem('muster:agents:chips'); localStorage.removeItem('muster:tabs:agents-host'); });
+      } finally {
+        await ctx.close();
+      }
+    });
+  }
 });
 
 // --- The public pages of a GoTrue-mode server. They render without a GoTrue to

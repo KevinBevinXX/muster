@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"time"
 
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/provision"
@@ -54,12 +55,49 @@ func (s *Server) instanceIndex(ctx context.Context) map[string]*provision.Instan
 	if s.ext.Provisioner == nil {
 		return nil
 	}
-	insts, err := s.ext.Provisioner.Instances(ctx)
+	return s.indexOf(s.ext.Provisioner.Instances(ctx))
+}
+
+// indexOf is an Instances read as the index liveStatusIndexed takes: nil (not
+// observed) on an error, which is logged. The ONE place the index is keyed.
+func (s *Server) indexOf(insts []provision.Instance, err error) map[string]*provision.Instance {
 	if err != nil {
 		s.logger.Printf("agents: list instances: %v", err)
 		return nil
 	}
 	return agents.InstanceIndex(insts)
+}
+
+// instanceIndexWithin is instanceIndex, given up after within (0 = never): a
+// read still running then answers nil — "live state was not observed", the
+// stored status — and is left to finish on its own. The wait does not rely on
+// the provisioner honouring ctx: a Kubernetes client with no timeout of its own
+// does not, so the bound is a select, not only a deadline on ctx.
+func (s *Server) instanceIndexWithin(ctx context.Context, within time.Duration) map[string]*provision.Instance {
+	if within <= 0 || s.ext.Provisioner == nil {
+		return s.instanceIndex(ctx)
+	}
+	// The provisioner is read HERE, not in the goroutine: a read left running
+	// past the bound must not touch the Server after this call returns.
+	p := s.ext.Provisioner
+	ctx, cancel := context.WithTimeout(ctx, within)
+	type answer struct {
+		insts []provision.Instance
+		err   error
+	}
+	done := make(chan answer, 1)
+	safeGo(s.logger, "agents: bounded instance read", func() {
+		defer cancel()
+		insts, err := p.Instances(ctx)
+		done <- answer{insts, err}
+	})
+	select {
+	case a := <-done:
+		return s.indexOf(a.insts, a.err)
+	case <-ctx.Done():
+		s.logger.Printf("agents: list instances: no answer within %s; drawing stored status", within)
+		return nil
+	}
 }
 
 // liveStatusIndexed composes one agent's displayed status against an index the

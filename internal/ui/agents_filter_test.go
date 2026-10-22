@@ -113,9 +113,11 @@ func TestTheFilterBoxIsOutsideTheListItFilters(t *testing.T) {
 // what is counted is what is shown).
 func TestTheFilterHidesWithOneRulePerWordAndCountsWithTheSameSelector(t *testing.T) {
 	page := renderString(t, Page("agents", featuresAllOn))
-	script := scriptWith(t, page, "__musterAgentsFilter")
+	// The rules and the grammar are the head script's (agents_filter_head.go),
+	// which the body script uses: the two are read as one.
+	script := scriptWith(t, page, "__musterAgentsRules =") + scriptWith(t, page, "__musterAgentsFilter")
 	for name, want := range map[string]string{
-		"the rule hides a card lacking the term":  `'#agents-list > article:not(' + sel(t) + '){display:none !important}'`,
+		"the rule hides a card lacking the term":  `r.push('#agents-list > article:not(' + sel(t) + '){display:none !important}')`,
 		"the count uses the same selector":        `list.querySelectorAll(':scope > article:not([data-held])' + curSel)`,
 		"the selector is the terms and the chips": `curSel = all_.map(sel).join('') + cs;`,
 		"a held arrival is hidden and uncounted":  `'#agents-list > article[data-held]{display:none !important}'`,
@@ -234,7 +236,7 @@ func TestEveryFieldIsARegisteredSafeIdentifier(t *testing.T) {
 		}
 	}
 	page := renderString(t, Page("agents", featuresAllOn))
-	script := scriptWith(t, page, "__musterAgentsFilter")
+	script := scriptWith(t, page, "__musterAgentsRules =")
 	if !strings.Contains(script, "var FIELDS = "+cardFieldKeysJSON()+";") {
 		t.Errorf("the filter script is not handed the registry's field set %s", cardFieldKeysJSON())
 	}

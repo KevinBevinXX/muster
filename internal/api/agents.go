@@ -211,12 +211,19 @@ func (s *Server) handleAgentsContent(w http.ResponseWriter, r *http.Request) {
 //
 // Every card carries its attention badge (withCardAttention).
 func (s *Server) agentsListCards(ctx context.Context) ([]ui.AgentCardView, []ui.MirrorCardView, error) {
+	return s.agentsListCardsWithin(ctx, 0)
+}
+
+// agentsListCardsWithin is agentsListCards with the provisioner's instance read
+// bounded by instancesWithin (0 = unbounded): past it the cards are drawn with
+// their STORED status (a nil index, liveStatusIndexed). See shellData.
+func (s *Server) agentsListCardsWithin(ctx context.Context, instancesWithin time.Duration) ([]ui.AgentCardView, []ui.MirrorCardView, error) {
 	list, err := s.ext.Agents.List(ctx)
 	if err != nil {
 		return nil, nil, err
 	}
 
-	instIdx := s.instanceIndex(ctx)
+	instIdx := s.instanceIndexWithin(ctx, instancesWithin)
 	// 🔴 MOST RECENTLY ACTIVE FIRST, BY agents.LastActivity — the same definition
 	// GET /api/agents publishes as lastActivityAt. The store's own order
 	// (created_at DESC) is left alone because the machine read documents

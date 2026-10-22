@@ -336,30 +336,33 @@ func agentsFilterBar() g.Node {
 // other shell script (htmx re-executes in-body scripts on a boosted swap), and
 // it looks its elements up at use time because a boosted swap replaces them.
 func agentsFilterScript() g.Node {
-	return Script(g.Raw(`
+	return Script(g.Raw(agentsRulesJS + `
 (function () {
   if (window.__musterAgentsFilter) return;
   window.__musterAgentsFilter = true;
   var KEY = '` + agentsFilterStorageKey + `';
-  // The registered fields (cardFieldRegistry). A token naming anything else is free text.
-  var FIELDS = ` + cardFieldKeysJSON() + `;
-  // THE PRESET CHIPS (list_signals.go): every selection's selector, by its
-  // canonical key, computed in Go (chipSelectorsJSON) — the combining rule
-  // lives there, so this only looks it up. The chosen chips are remembered
-  // per device (localStorage), in try/catch: storage can be unavailable.
-  var CHIP_SEL = ` + chipSelectorsJSON() + `;
-  var CHIP_IDS = ` + chipIDsJSON() + `;
+  // THE GRAMMAR, THE CHIPS' TABLE AND THE HIDE RULES ARE agentsRulesJS's
+  // (agents_filter_head.go; emitted just above this IIFE and in the shell's
+  // head, defined once per window): the parser (tokens, terms, sel), the
+  // chips' selectors — computed in Go (chipSelectorsJSON), so this only looks
+  // them up — and the rules. The head applies the stored filter before the
+  // first paint with them; this script keeps it applied. One definition, so
+  // the two cannot disagree.
+  var R = window.__musterAgentsRules;
+  function terms(q) { return R.terms(q); }
+  function sel(t) { return R.sel(t); }
+  // The chosen chips are remembered per device (localStorage), in try/catch:
+  // storage can be unavailable.
   var CHIPS_KEY = '` + agentsChipsStorageKey + `';
   var chips = null;
   function chipsChosen() {
     if (chips === null) {
       chips = [];
-      try { var v = JSON.parse(localStorage.getItem(CHIPS_KEY) || '[]'); if (Array.isArray(v)) chips = v.filter(function (c) { return CHIP_IDS.indexOf(c) >= 0; }); } catch (e) { chips = []; }
+      try { chips = R.chipsOf(localStorage.getItem(CHIPS_KEY)); } catch (e) { chips = []; }
     }
     return chips;
   }
-  function chipKey(cs) { return CHIP_IDS.filter(function (c) { return cs.indexOf(c) >= 0; }).join(','); }
-  function chipSel() { return CHIP_SEL[chipKey(chipsChosen())] || ''; }
+  function chipSel() { return R.chipSel(chipsChosen()); }
   // toggleChip: a wait chip toggles; an idle chip toggles and clears the other
   // idle chips (they are nested thresholds: one at a time).
   function toggleChip(b) {
@@ -447,44 +450,6 @@ func agentsFilterScript() g.Node {
     });
   }
   function el(id) { return document.getElementById(id); }
-  function norm(v) { return String(v || '').replace(/\s+/g, ' ').trim(); }
-  // tokens is a string in the grammar, term by term and in order: {raw, f, exact,
-  // v} each — f a registered field (lower-cased) or null for free text, exact
-  // true for field=value, v the value as written. Inside double quotes a
-  // backslash escapes a double quote or a backslash (\" and \\); any other
-  // backslash is itself. Outside quotes nothing is escaped.
-  function unq(v) { return v.replace(/\\(["\\])/g, '$1'); }
-  function tokens(s) {
-    var out = [], m, re = /([^\s:="]+)([:=])"((?:[^"\\]|\\.)*)"?|"((?:[^"\\]|\\.)*)"?|\S+/g;
-    s = String(s || '');
-    while ((m = re.exec(s))) {
-      var f = null, sep = '', v = m[0];
-      if (m[1] !== undefined) { f = m[1]; sep = m[2]; v = unq(m[3]); }
-      else if (m[4] !== undefined) { v = unq(m[4]); }
-      else {
-        var i = m[0].search(/[:=]/);
-        if (i > 0) { f = m[0].slice(0, i); sep = m[0][i]; v = m[0].slice(i + 1); }
-      }
-      if (f !== null && FIELDS.indexOf(f.toLowerCase()) < 0) { v = m[1] !== undefined ? f + sep + v : m[0]; f = null; }
-      out.push({ raw: m[0], f: f === null ? null : f.toLowerCase(), exact: f !== null && sep === '=', v: v });
-    }
-    return out;
-  }
-  // terms parses the filter into what must ALL match: {attr, value, exact}
-  // each, attr being data-filter (free text) or data-f-<registered field>. A
-  // field with nothing after its separator (host: mid-typing) is no term yet.
-  function terms(q) {
-    var out = [];
-    tokens(String(q || '').toLowerCase()).forEach(function (t) {
-      var v = norm(t.v);
-      if (v) out.push(t.f ? { attr: 'data-f-' + t.f, value: v, exact: t.exact } : { attr: 'data-filter', value: v });
-    });
-    return out;
-  }
-  // sel is the attribute selector for ONE term, its value a CSS double-quoted
-  // string: [a="v"] for an exact term, [a*="v"] for every other. The rule that
-  // hides and the query that counts are both built from it.
-  function sel(t) { return '[' + t.attr + (t.exact ? '=' : '*=') + '"' + t.value.replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"]'; }
   // reorder MOVES the cards into rank order for the first free-text term — the
   // DOM itself, so Tab and a screen reader follow the ranking, not only the
   // eye. A card's rank is the best window.musterRank (the pickers' rule,
@@ -729,11 +694,11 @@ func agentsFilterScript() g.Node {
       style.id = 'agents-filter-style';
       document.head.appendChild(style);
     }
-    // One rule per term: a card lacking ANY of them is hidden, so the terms AND.
+    // One rule per term: a card lacking ANY of them is hidden, so the terms AND
+    // (R.rules — the head script's, which wrote this element's first copy).
     // Then the rank (reorder): by the FIRST free-text word, best match first.
-    style.textContent = ['#agents-list > article[data-held]{display:none !important}'].concat(all_.map(function (t) {
-      return '#agents-list > article:not(' + sel(t) + '){display:none !important}';
-    })).concat(cs ? ['#agents-list > article:not(' + cs + '){display:none !important}'] : []).join('\n');
+    var text = R.rules(ts, host, cs, false);
+    if (style.textContent !== text) style.textContent = text;
     if (!held) reorder(ts);
     var all = list.querySelectorAll(':scope > article:not([data-held])');
     var shown = curSel ? list.querySelectorAll(':scope > article:not([data-held])' + curSel) : all;
@@ -758,6 +723,7 @@ func agentsFilterScript() g.Node {
   function boot() {
     var input = el('agents-search');
     if (!input) return;
+    adopt();
     var q = urlQ(), mine = null;
     try { mine = sessionStorage.getItem(KEY); } catch (e) {}
     if (q === null) q = mine || '';
@@ -892,7 +858,21 @@ func agentsFilterScript() g.Node {
   // A new body (a boosted navigation, or Back restoring one) holds a list this
   // state was not computed for: start over — its first load applies at once.
   function forget() { heldOrder = null; liveOrder = null; pillCount = 0; }
-  document.addEventListener('htmx:historyRestore', forget);
+  // adopt: a list the DOCUMENT drew (server-rendered, agents_list_ssr.go — or a
+  // history restore's snapshot) is the drawn order, exactly as a first load's
+  // swap would have made it (hold). Without it the first background refresh
+  // found no held order and was applied at once, moving whatever it moved.
+  function adopt() {
+    if (heldOrder) return;
+    var list = el('agents-list');
+    if (!list) return;
+    var ids = cardsOf(list).map(function (c) { return c.id; });
+    if (!ids.length) return;
+    heldOrder = ids.slice();
+    liveOrder = ids.slice();
+    stamp(list, heldOrder);
+  }
+  document.addEventListener('htmx:historyRestore', function () { forget(); adopt(); });
   document.addEventListener('htmx:beforeSwap', function (e) { if (e.target === document.body) forget(); });
   function stamp(list, order) {
     var at = {};

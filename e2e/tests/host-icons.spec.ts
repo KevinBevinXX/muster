@@ -199,10 +199,14 @@ test.describe('scroll positions', () => {
         await page.goto(rig.origin + rig.terminalPath('alpha7'));
         await page.goBack({ waitUntil: 'domcontentloaded' });
       }
-      // Hydrating: the list is still empty, and the offsets are already where
-      // they were — no frame at 0 waiting for the cards.
+      // The list's own request is held, and the cards are drawn anyway: the
+      // document carries them (internal/ui/agents_list_ssr.go) — and the offsets
+      // are already where they were, no frame at 0 waiting for the cards. (Before
+      // the list was server-rendered this read 0 cards, and a reserved list
+      // height in agents_scroll.go is what held the offset; with the cards in
+      // the document that reservation had nothing left to do and is gone.)
       await page.waitForTimeout(1000);
-      expect(await cardsOn(page, hostA).count(), 'control: the list has not loaded yet').toBe(0);
+      expect(await cardsOn(page, hostA).count(), 'the document drew the cards while the list request is held').toBeGreaterThan(0);
       // (soft, so a failure here still reports the hydrated state below.)
       expect.soft(await pos(page), `while the list hydrates after a ${how}`).toEqual({ y: 700, x: 200 });
       // Hydrated, past appScript's 2 s restore budget: still there.

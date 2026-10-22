@@ -199,6 +199,10 @@ export const workCardsPort = port + 145;
 // streams (view-swap.spec.ts): its own server (mirror plugin on) and one
 // per-window mirrored host with two Claude Code windows.
 export const viewSwapPort = port + 165;
+// The long Agents list's layout shift (cls.spec.ts "a long Agents list"): its
+// own server (the e2eterm binary, mirror plugin on) and one mirrored host with
+// sixty-odd windows. Clear of the offsets above and of the specs beside them.
+export const clsListPort = port + 170;
 export const baseURL = `http://localhost:${port}`;
 export const versionA = 'e2e-a';
 export const versionB = 'e2e-b';

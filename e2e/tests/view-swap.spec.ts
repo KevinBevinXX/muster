@@ -195,6 +195,10 @@ test.describe('a mirrored window', () => {
     await expect(framed(page).locator('#mv-log [data-tool-row]')).toHaveCount(1);
     await page.goBack();
     await expect.poll(() => pathOf(page)).toBe('/agents');
+    // The Agents tab draws its list in the document (#225): Back onto it has
+    // the cards, and no view frame came back with the page.
+    await expect(page.locator(`#agents-list > article[data-f-host="${rig.host}"]`).first()).toBeVisible();
+    await expect(frameEl(page)).toHaveCount(0);
     await settled();
     expect(unwatched('@1'), `leaving closed the transcript stream (log:\n${rig.log})`).toBe(2);
     expect(detached('@1'), 'and the attach').toBe(2);
@@ -538,6 +542,7 @@ test.describe('a claude-code agent', () => {
     await framed(page).locator('#sidebar a[data-tab="agents"]').click();
     await expect.poll(() => pathOf(page)).toBe('/agents');
     await expect(frameEl(page)).toHaveCount(0);
+    await expect(page.locator('#agents-list > article').first(), 'the list is drawn on arrival (#225)').toBeVisible();
     await settled();
     expect(chatOpened(agent) - chatClosed(agent), `the chat socket ended (server log:\n${rig.server!.log()})`).toBe(0);
     expect(termAttached(agent) - termDetached(agent), 'and the attach').toBe(0);
