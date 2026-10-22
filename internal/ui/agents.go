@@ -10,6 +10,7 @@ import (
 	. "maragu.dev/gomponents/html"
 
 	"github.com/ZacxDev/muster/internal/agents"
+	"github.com/ZacxDev/muster/internal/mirror"
 )
 
 // AgentCardView is the per-agent data the card grid renders.
@@ -103,6 +104,12 @@ type AgentCardView struct {
 	// (waitTokens), and the status poll asks for a list refresh when it changes
 	// (cardStatusIcon).
 	AwaitingApproval bool
+	// Work is what the agent's pod last reported it has running — subagents and
+	// background shells — internal/api's AgentWork, already expired when stale.
+	// It draws the same chip a mirrored window's card does (workChip), and the
+	// status poll carries it (StatusPollPath) so a change or an expiry re-renders
+	// the list. Zero: no chip.
+	Work mirror.WindowWork
 }
 
 // lastActive is the card's "active" time: LastActiveAt, or UpdatedAt when the
@@ -377,6 +384,9 @@ func agentCard(a AgentCardView) g.Node {
 					g.Text(name),
 				)),
 				g.If(a.Repo != "", chip("repo", a.Repo)),
+				// The subagents and background shells its pod has running now:
+				// the mirrored card's chip, from ccd's report (POST /agent/work).
+				workChip(a.Work),
 				// Only a non-default kind is labelled, so a gateway-only deployment's
 				// cards are unchanged. The account is a NAME, never a token.
 				g.If(agents.ResolveKind(a.Kind) == agents.KindClaudeCode,
@@ -812,7 +822,7 @@ func AwaitingApprovalBadge() g.Node {
 // apply to whatever the change moves.
 func cardStatusIcon(a AgentCardView) g.Node {
 	return Span(
-		hx("hx-get", StatusPollPath(a.ID, a.AwaitingApproval)),
+		hx("hx-get", StatusPollPath(a.ID, a.AwaitingApproval, a.Work)),
 		hx("hx-trigger", "load, every 10s"),
 		hx("hx-target", "this"),
 		hx("hx-swap", "innerHTML"),
@@ -821,18 +831,31 @@ func cardStatusIcon(a AgentCardView) g.Node {
 }
 
 // StatusPollPath is an agent card's status poll: GET /ui/agents/{id}/status,
-// with awaiting=1|0 saying whether the card was drawn awaiting approval.
-func StatusPollPath(id int64, awaiting bool) string {
+// with awaiting=1|0 saying whether the card was drawn awaiting approval, and
+// work=WorkPollToken saying which work chip it was drawn with.
+func StatusPollPath(id int64, awaiting bool, work mirror.WindowWork) string {
 	v := "0"
 	if awaiting {
 		v = "1"
 	}
-	return "/ui/agents/" + strconv.FormatInt(id, 10) + "/status?awaiting=" + v
+	return "/ui/agents/" + strconv.FormatInt(id, 10) + "/status?awaiting=" + v + "&work=" + WorkPollToken(work)
 }
 
-// AgentsAwaitingEvent is the HX-Trigger the status poll answers with when an
-// agent's awaiting-approval state differs from what its card was drawn with;
-// the Agents list re-renders on it (agentsListTrigger).
+// WorkPollToken is a work chip's state as the status poll carries it:
+// "<subagents>.<shells>", with a trailing "p" for a lower bound ("1+ shell");
+// "0.0" for no chip. Two reports that draw the same chip have the same token.
+func WorkPollToken(w mirror.WindowWork) string {
+	t := strconv.Itoa(w.Subagents) + "." + strconv.Itoa(w.Shells)
+	if w.ShellsAtLeast {
+		t += "p"
+	}
+	return t
+}
+
+// AgentsAwaitingEvent is the HX-Trigger the status poll answers with when what
+// an agent's card was drawn with is no longer true — its awaiting-approval
+// state, or its work chip (a new report, or one that expired with no POST to
+// announce it); the Agents list re-renders on it (agentsListTrigger).
 const AgentsAwaitingEvent = "agents:awaiting"
 
 // statusLabel is the agent-facing word for a stored agent status.

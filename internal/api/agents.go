@@ -437,7 +437,16 @@ func (s *Server) handleAgentStatusIcon(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	// The card says what it was drawn with (ui.StatusPollPath); when that is no
 	// longer true its data-wait is stale, so the list is asked to re-render.
+	stale := false
 	if drawn := r.URL.Query().Get("awaiting"); drawn != "" && (drawn == "1") != awaiting {
+		stale = true
+	}
+	// The work chip too (agent_work.go): a report that expired is announced by no
+	// POST, so this poll is what takes a dead pod's chip off the card.
+	if drawn := r.URL.Query().Get("work"); drawn != "" && drawn != ui.WorkPollToken(s.cardWork(a.ID, status)) {
+		stale = true
+	}
+	if stale {
 		w.Header().Set("HX-Trigger", ui.AgentsAwaitingEvent)
 	}
 	if err := ui.RenderStatusIcon(w, status, awaiting); err != nil {
@@ -586,6 +595,9 @@ func (s *Server) cardViewIndexed(a agents.Agent, idx map[string]*provision.Insta
 		// The polled badge's own answer (in memory), so "Waiting on ask" finds an
 		// agent blocked at a permission prompt.
 		AwaitingApproval: s.AwaitingApproval(a.ID),
+		// The pod's live work counts (agent_work.go): none unless it is running,
+		// and expired when stale.
+		Work: s.cardWork(a.ID, status),
 	}
 }
 
@@ -1153,6 +1165,10 @@ func (s *Server) handleAgentStart(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleAgentStop(w http.ResponseWriter, r *http.Request) {
+	// A stopped pod cannot post its own clear: forget its work report now.
+	if id, err := strconv.ParseInt(r.PathValue("id"), 10, 64); err == nil {
+		s.clearAgentWork(id)
+	}
 	s.agentLifecycle(w, r, func(ctx context.Context, id int64) error { return s.ext.Provisioner.Stop(ctx, id) }, "stop")
 }
 
@@ -1328,6 +1344,8 @@ func (s *Server) destroyAgent(ctx context.Context, id int64, destroy func(contex
 	if chief {
 		return a, errDestroyChief{a}
 	}
+	// A destroyed pod cannot post its own clear: forget its work report now.
+	s.clearAgentWork(id)
 	opCtx := context.WithoutCancel(ctx) // keeps the principal; see Provisioner
 	safeGo(s.logger, "destroy", func() {
 		if err := destroy(opCtx, id); err != nil {

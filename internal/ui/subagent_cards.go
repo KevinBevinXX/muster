@@ -23,7 +23,7 @@ import (
 // tool row it always was: no card, nothing broken.
 //
 // 🔴 THE STATE IS THE HOST'S, NEVER DERIVED HERE. The host applies the one
-// status rule (internal/mirrorhost's subagentState) and sends the result; a
+// status rule (internal/ccsubagents' State) and sends the result; a
 // card with no summary yet says "starting", whatever its call's tool_result
 // says — a background agent's result is only its launch.
 //

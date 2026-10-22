@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/ZacxDev/muster/internal/agents"
+	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/ui"
 )
 
@@ -73,7 +74,7 @@ func TestAnAgentAwaitingApprovalIsWaitingOnAnAskOnTheList(t *testing.T) {
 		t.Errorf("the other agent is waiting too: %s", tag)
 	}
 	poll := func(drawn bool) string {
-		return get(ui.StatusPollPath(relayAgentA.ID, drawn)).Header().Get("HX-Trigger")
+		return get(ui.StatusPollPath(relayAgentA.ID, drawn, mirror.WindowWork{})).Header().Get("HX-Trigger")
 	}
 	if got := poll(false); got != ui.AgentsAwaitingEvent {
 		t.Errorf("a card drawn free, now blocked: HX-Trigger %q, want %q", got, ui.AgentsAwaitingEvent)

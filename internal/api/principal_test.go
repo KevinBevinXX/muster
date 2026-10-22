@@ -385,6 +385,7 @@ var routeVias = map[authz.Via][]string{
 		"GET /agent/approvals/{id}",
 		"POST /agent/approvals",
 		"POST /agent/blocked",
+		"POST /agent/work",
 	},
 }
 

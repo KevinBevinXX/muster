@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ZacxDev/muster/internal/ccsubagents"
 	"github.com/ZacxDev/muster/internal/cctranscript"
 	"github.com/ZacxDev/muster/internal/mirror"
 )
@@ -151,36 +152,36 @@ func byTool(list []mirror.Subagent) map[string]mirror.Subagent {
 	return m
 }
 
-// THE STATUS RULE (subagentState), each branch with a case no earlier one
+// THE STATUS RULE (ccsubagents.State), each branch with a case no earlier one
 // decides. Times are pairwise distinct; "last row" is f.updated.
 func TestSubagentStateRule(t *testing.T) {
 	now := atT(1000)
-	running := subagentFacts{exists: true, mtime: atT(990), started: atMS(1), updated: atMS(100)}
-	finalOld := subagentFacts{exists: true, mtime: atT(900), started: atMS(2), updated: atMS(200), final: true}
-	finalNew := subagentFacts{exists: true, mtime: atT(995), started: atMS(3), updated: atMS(300), final: true}
+	running := ccsubagents.Facts{Exists: true, Mtime: atT(990), Started: atMS(1), Updated: atMS(100)}
+	finalOld := ccsubagents.Facts{Exists: true, Mtime: atT(900), Started: atMS(2), Updated: atMS(200), Final: true}
+	finalNew := ccsubagents.Facts{Exists: true, Mtime: atT(995), Started: atMS(3), Updated: atMS(300), Final: true}
 	cases := []struct {
 		name string
-		res  *parentResult
-		note *parentNotice
-		f    subagentFacts
+		res  *ccsubagents.ParentResult
+		note *ccsubagents.ParentNotice
+		f    ccsubagents.Facts
 		want string
 	}{
-		{"a sync result decides: done", &parentResult{at: atMS(400), ok: true}, nil, running, mirror.SubagentDone},
-		{"a sync result decides: an error is failed", &parentResult{at: atMS(401), ok: false}, nil, finalOld, mirror.SubagentFailed},
-		{"a background LAUNCH decides nothing", &parentResult{at: atMS(402), ok: true, async: true}, nil, running, mirror.SubagentRunning},
-		{"a notification decides: completed is done", &parentResult{at: atMS(5), ok: true, async: true}, &parentNotice{at: atMS(403), status: "completed"}, running, mirror.SubagentDone},
-		{"a notification decides: killed is failed", nil, &parentNotice{at: atMS(404), status: "killed"}, finalNew, mirror.SubagentFailed},
-		{"a notification decides: failed is failed", nil, &parentNotice{at: atMS(405), status: "failed"}, running, mirror.SubagentFailed},
-		{"a notification OLDER than the last row (resumed) decides nothing", nil, &parentNotice{at: atMS(50), status: "completed"}, running, mirror.SubagentRunning},
-		{"a sync result OLDER than the last row decides nothing", &parentResult{at: atMS(60), ok: true}, nil, running, mirror.SubagentRunning},
+		{"a sync result decides: done", &ccsubagents.ParentResult{At: atMS(400), OK: true}, nil, running, mirror.SubagentDone},
+		{"a sync result decides: an error is failed", &ccsubagents.ParentResult{At: atMS(401), OK: false}, nil, finalOld, mirror.SubagentFailed},
+		{"a background LAUNCH decides nothing", &ccsubagents.ParentResult{At: atMS(402), OK: true, Async: true}, nil, running, mirror.SubagentRunning},
+		{"a notification decides: completed is done", &ccsubagents.ParentResult{At: atMS(5), OK: true, Async: true}, &ccsubagents.ParentNotice{At: atMS(403), Status: "completed"}, running, mirror.SubagentDone},
+		{"a notification decides: killed is failed", nil, &ccsubagents.ParentNotice{At: atMS(404), Status: "killed"}, finalNew, mirror.SubagentFailed},
+		{"a notification decides: failed is failed", nil, &ccsubagents.ParentNotice{At: atMS(405), Status: "failed"}, running, mirror.SubagentFailed},
+		{"a notification OLDER than the last row (resumed) decides nothing", nil, &ccsubagents.ParentNotice{At: atMS(50), Status: "completed"}, running, mirror.SubagentRunning},
+		{"a sync result OLDER than the last row decides nothing", &ccsubagents.ParentResult{At: atMS(60), OK: true}, nil, running, mirror.SubagentRunning},
 		{"no signal: a final reply quiet past SubagentQuiet is done", nil, nil, finalOld, mirror.SubagentDone},
 		{"no signal: a final reply written just now is still running", nil, nil, finalNew, mirror.SubagentRunning},
-		{"no signal: a quiet agent whose last row is a tool call is running", nil, nil, subagentFacts{exists: true, mtime: atT(10), updated: atMS(7)}, mirror.SubagentRunning},
-		{"no file, no signal: running", nil, nil, subagentFacts{}, mirror.SubagentRunning},
+		{"no signal: a quiet agent whose last row is a tool call is running", nil, nil, ccsubagents.Facts{Exists: true, Mtime: atT(10), Updated: atMS(7)}, mirror.SubagentRunning},
+		{"no file, no signal: running", nil, nil, ccsubagents.Facts{}, mirror.SubagentRunning},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if got := subagentState(c.res, c.note, c.f, now); got != c.want {
+			if got := ccsubagents.State(c.res, c.note, c.f, now); got != c.want {
 				t.Fatalf("state %q, want %q", got, c.want)
 			}
 		})

@@ -1,20 +1,26 @@
 # Design: live work counts and tmux identity colours on agent cards
 
-**Status: (a) and (b) built for MIRRORED cards; parts deferred; (c) deferred.**
+**Status: (a) built for mirrored and dispatched cards, (b) for mirrored cards;
+parts deferred; (c) deferred.**
 The operator settled every open question; the decisions are recorded under
 [Operator decisions](#operator-decisions), and the sections on (a) and (b)
 describe the design as decided. What is built, and what is not:
 
 - **Built (a):** `internal/cctasks` (process-tree shells, Monitors, the work
-  rule), the host's transcript ledger (`internal/mirrorhost/work.go`), the
-  `work` message, and the chip on mirrored cards (`internal/ui/work_chip.go`).
+  rule), the transcript ledger (`internal/ccsubagents`, a leaf package both
+  muster-mirror and ccd count with), the `work` message, and the chip on
+  mirrored cards (`internal/ui/work_chip.go`).
   The chip is display only: it is **not** a filter field.
+- **Built (a), dispatched agents:** ccd's reporter (`cmd/ccd/work.go`),
+  `POST /agent/work` (`internal/api/agent_work.go`) and the same chip on a
+  dispatched `claude-code` agent's card, as
+  [ccd: POST /agent/work](#ccd-post-agentwork) describes.
 - **Built (b):** the fixed `@muster-color` option read in the one listing, the
   `colors` message, and the tint on mirrored CARDS' border and title
   (`internal/ui/identity_color.go`). The option name is a constant: there is
   **no** `-color-option` flag or environment variable. The rendered view's and
   terminal page's headers are **not** tinted (the operator asked for the cards).
-- **Deferred:** the cluster/ccd agent chip (`POST /agent/work`); the rendered
+- **Deferred:** the rendered
   view's work chip (that page has no live refresh); Hermes counts (after Hermes
   Phase 2); the Phase 0 spike (until it lands, a running turn shows `1+ shell`);
   and (c), below.
@@ -389,14 +395,36 @@ and re-sends it every minute, like `/agent/blocked` (`cmd/ccd/blocked.go:30`,
 `blockedReportTTL` (`internal/api/approvals.go:289`). A pod that stops reporting
 loses its chip within the TTL.
 
+*As built:* each CLI's raw status comes from its own sessions file (present in
+a live pod on 2.1.296), its shells from `cctasks.CountShells`, and its
+subagents — read only while busy or waiting — from `internal/ccsubagents`'
+`Ledger` over the transcript that sessions file names. Each CLI is found by
+its own process (the primary's and each lane's tmux pane), never by the
+session the last hook named: a `claude` a tool call runs inside the CLI
+inherits its hooks, and its SessionStart or SessionEnd must not take the card
+over. That is the ledger muster-mirror
+counts with, moved into a leaf package that imports no websocket, object-store
+or database client (`internal/modulegate`'s
+`TestTheSubagentLeafPullsNoNetworkOrStorageClient` pins it for the leaf, and
+pins `cmd/ccd` against the websocket, MinIO and SQLite clients — ccd already
+links pgx through `internal/agents`), so a dispatched card and a mirrored one count subagents
+identically: one shared transcript fixture is counted through both callers
+(`TestADispatchedCardCountsTheSharedWorkFixtureAsTheMirrorDoes`,
+`TestAMirroredWindowCountsTheSharedWorkFixture`). ccd samples every 5 s; the
+report is re-sent every minute only while something runs, and the card's
+status poll carries the chip it was drawn with, so an expiry that no POST
+announces still re-renders the list. A card shows a chip only while its agent
+is running; stopping or deleting an agent forgets its report, and ccd posts an
+empty report as it shuts down.
+
 #### UI
 
 - **Card:** a chip in the header row next to the repo chip
   (`internal/ui/mirror.go:207`), for example `2 subagents · 1 shell`,
   `1 subagent` or `1+ shell`. There is no chip when both counts are zero. It has
   an accessible label ("2 subagents and 1 background shell running").
-  *(As built: display only — no `work:` filter field. Agent cards (ccd) are
-  deferred.)*
+  *(As built: display only — no `work:` filter field. Dispatched agents'
+  cards draw the same chip from ccd's report.)*
 - **Rendered view:** the same chip in the header. *(Deferred: the page has no
   live refresh.)* The per-agent cards stay as they are. A list of the shells
   themselves is out of scope.
