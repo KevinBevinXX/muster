@@ -1878,6 +1878,12 @@ func (c config) validateKinds() error {
 	return nil
 }
 
+// connectorStoreConfigured reports whether this deployment builds a connector
+// store: a database to hold it and a key to seal its secrets.
+func (c config) connectorStoreConfigured() bool {
+	return c.Database != "" && len(c.ConnectorEncKey) > 0
+}
+
 // ccPoolLimits is the account pool's limits: the configured values, with
 // ccpool.DefaultCooldown where the cooldown is unset. An unset cap stays zero,
 // which is NO cap: the per-account cap is opt-in.

@@ -15,6 +15,7 @@ import (
 	"github.com/ZacxDev/muster/internal/agentspec"
 	"github.com/ZacxDev/muster/internal/agentstatus"
 	"github.com/ZacxDev/muster/internal/ccpool"
+	"github.com/ZacxDev/muster/internal/connectors"
 	"github.com/ZacxDev/muster/internal/credentials"
 	"github.com/ZacxDev/muster/internal/provision"
 	k8sdriver "github.com/ZacxDev/muster/internal/provision/k8s"
@@ -579,6 +580,25 @@ func agentSpecConfig(cfg config) (agentspec.Config, error) {
 		ConnectURL:  cfg.AgentConnectURL,
 		ConnectPort: cfg.ConnectPort,
 	}, nil
+}
+
+// wireGitHubGrantVeto hands prov the lookup its job-lane bypass veto asks:
+// whether an agent holds an approved grant reaching GitHub
+// (agentprovision.JobBypassDecision, connectors.GitHubGrantLookup over conns).
+//
+// 🔴 A CONFIGURED CONNECTOR STORE THAT DID NOT ARRIVE IS A BOOT REFUSAL, NOT "NO
+// GRANTS". The lookup over a nil store answers "holds none" for every agent —
+// right for a deployment with no connector store, and FAIL-OPEN for one that has
+// a store but handed nil here (built later, or not passed): every listed pool's
+// agent would get bypass whatever grants it holds.
+func wireGitHubGrantVeto(cfg config, prov *agentprovision.Adapter, conns connectors.Store) error {
+	if conns == nil && cfg.connectorStoreConfigured() {
+		return fmt.Errorf("agent plane: %s is set, so this deployment has a connector store, but none reached the "+
+			"provisioner's GitHub-grant veto (%s): refusing to boot rather than bypass job-lane permissions for "+
+			"an agent that may hold a GitHub grant", envConnectorEncKey, envAgentCCBypassPools)
+	}
+	prov.UseGitHubGrants(connectors.GitHubGrantLookup(conns))
+	return nil
 }
 
 // claudeCodeSpecConfig is the claude-code kind's deployment half, or nil when the

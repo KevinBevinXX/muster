@@ -277,7 +277,7 @@ func serve() error {
 	}
 	// Announced here; the lane set reads it again itself (newLaneSet).
 	if bypass {
-		log.Printf("ccd: job lanes (a machine job's worktree) start with --permission-mode %s (%s): their tool "+
+		log.Printf("ccd: job lanes (a sha job's worktree) start with --permission-mode %s (%s): their tool "+
 			"calls are NOT routed for approval. The primary and workspace lanes keep default permissions",
 			jobPermissionBypass, envJobPermissionMode)
 	}

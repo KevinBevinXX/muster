@@ -36,7 +36,7 @@ import (
 //     `env CCD_LANE=<id> claude [--model <m>] --session-id <laneUUID(key)>` the
 //     first time and `… --resume <laneUUID(key)>` once its transcript exists —
 //     the same resume-never-fork rule the primary keeps (supervise.go). A JOB
-//     lane (a machine job's worktree) on a pool muster opted in also gets
+//     lane (a sha job's worktree) on a pool muster opted in also gets
 //     `--permission-mode bypassPermissions` (jobmode.go); no other CLI does;
 //   - each lane is its own *server (busy, the pending turn, the turn slot, the
 //     session hooks) and its own *supervisor (restarts, crash loop), so two
@@ -568,7 +568,7 @@ func (l *lanes) newLane(id, key, model, workdir string) *lane {
 		if model != "" {
 			argv = append(argv, "--model", model)
 		}
-		// 🔴 JOB LANES ONLY (a machine job's worktree), and only on a pool muster
+		// 🔴 JOB LANES ONLY (a sha job's worktree), and only on a pool muster
 		// opted in (jobmode.go). The seeded settings refuse this flag otherwise.
 		if workdir != "" && l.jobBypass {
 			argv = append(argv, "--permission-mode", jobPermissionBypass)
