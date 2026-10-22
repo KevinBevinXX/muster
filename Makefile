@@ -131,10 +131,15 @@ run:
 # built from the same tree with no `-X` at all, so it reports `main.buildVersion`'s
 # default (`dev`), not this value. Same source, different reported version — see
 # the comment on that build step in Dockerfile.
+#
+# DOCKER_BUILD_FLAGS is passed through verbatim (CI's GHCR publish adds its OCI
+# source/revision labels with it); empty by default, so this target is unchanged
+# for every other caller.
 IMAGE ?= muster-server
 VERSION ?= dev
+DOCKER_BUILD_FLAGS ?=
 image:
-	docker build --build-arg VERSION=$(VERSION) -t $(IMAGE):$(VERSION) .
+	docker build $(DOCKER_BUILD_FLAGS) --build-arg VERSION=$(VERSION) -t $(IMAGE):$(VERSION) .
 
 # 🔴 `MUSTER_TEST_REQUIRE_DB=1` IS THE POINT OF THIS TARGET, NOT DECORATION.
 # Bare `go test ./...` with no database SKIPS every Postgres-backed test and
