@@ -631,7 +631,9 @@ How it works:
   Claude Code draws them in a column with the highlighted option's preview
   boxed beside them, and no row for your own answer (measured, 2.1.289). The
   card shows each option's preview under it and no **Other** for that
-  question; muster moves the picker's cursor to your option and takes it.
+  question; muster moves the picker's cursor to your option and takes it. A
+  note added to such a question in the terminal (`n`) is part of the answer:
+  muster then types nothing, as for anyone answering there.
 - **One answer at a time.** Once you submit, closing the page does not stop
   it: muster waits for the host to report how it went. No second answer for
   the question starts until it has (or until 90 seconds have passed, when the
