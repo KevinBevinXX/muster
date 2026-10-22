@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/ZacxDev/muster/internal/askdrive"
 	"github.com/ZacxDev/muster/internal/askq"
@@ -115,6 +116,49 @@ func (b *cancellingBackend) snapshotCancels() []string {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return append([]string(nil), b.cancels...)
+}
+
+// stuckPicker is a backend whose CancelAsk is askdrive.Cancel on a pane that
+// shows a real picker capture and never changes — a terminal that does not
+// take the Escape.
+type stuckPicker struct {
+	*windowsBackend
+	screen string
+	sent   []string
+}
+
+func (s *stuckPicker) Capture(context.Context) (string, error) { return s.screen, nil }
+func (s *stuckPicker) Send(_ context.Context, k string) error {
+	s.sent = append(s.sent, k)
+	return nil
+}
+func (s *stuckPicker) AnswerAsk(context.Context, string, []askq.Question, []askq.Choice, *askq.Progress) (int, error) {
+	return 0, errors.New("not answering")
+}
+func (s *stuckPicker) CancelAsk(ctx context.Context, _ string) (bool, error) {
+	return askdrive.Cancel(ctx, s, askdrive.Options{Settle: 100 * time.Millisecond, Poll: 10 * time.Millisecond})
+}
+
+// TestAnEscapeThatDidNotTakeIsSaid: through the real askdrive.Cancel, a picker
+// still on screen after the one Escape comes back as a success with the
+// still-showing note — not as "gone" — and one Escape is all that was sent.
+func TestAnEscapeThatDidNotTakeIsSaid(t *testing.T) {
+	b, err := os.ReadFile("../askdrive/testdata/three-q2.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sp := &stuckPicker{windowsBackend: &windowsBackend{windows: threeWindows}, screen: string(b)}
+	d := newDrivenMuster(t)
+	d.run(t, wrapped{sp}, nil, true)
+	waitUntil(t, "the hello", func() bool { return len(d.of(mirror.TypeHello)) == 1 })
+	d.send(t, mirror.Msg{Type: mirror.TypeCancelAsk, ID: 1, Session: "scratch2", Window: "@7"})
+	waitUntil(t, "the ask-cancelled", func() bool { return len(d.of(mirror.TypeAskCancelled)) == 1 })
+	if a := d.of(mirror.TypeAskCancelled)[0]; a.Error != "" || a.Text != askStillShowingNote {
+		t.Fatalf("an Escape the terminal did not take: %+v, want success with %q", a, askStillShowingNote)
+	}
+	if !reflect.DeepEqual(sp.sent, []string{askdrive.KeyEscape}) {
+		t.Fatalf("sent %q, want one Escape", sp.sent)
+	}
 }
 
 // TestADismissalGoesToTheClaudePaneOnly: the host advertises AskCancel only

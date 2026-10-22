@@ -484,6 +484,42 @@ test.describe('phone 412×915 touch', () => {
     expect(fs.existsSync(pickerFile()), 'the picker is gone').toBe(false);
   });
 
+  // 🔴 AN ESCAPE THE TERMINAL DID NOT TAKE: the picker is still showing after
+  // it. The card says so — and keeps the answer form AND Cancel (no dead end);
+  // a later poll keeps it usable; when the picker finally goes (Cancel again,
+  // the Escape taken), the CLI's record resolves the card.
+  test('an Escape the terminal did not take leaves the card usable', async ({ page }) => {
+    await openView(page);
+    const toolID = 'toolu_e2e_stuck_' + stamp;
+    fs.rmSync(tr + '.picker.keys', { force: true });
+    await registered(toolID);
+    const c = card(page, toolID);
+    await expect(c, `the question is drawn (log:\n${mirrorLog})`).toHaveAttribute('data-ask-state', 'pending', { timeout: 10_000 });
+    fs.writeFileSync(tr + '.picker.stuck', '');
+    await c.getByRole('button', { name: 'Cancel question' }).tap();
+    await c.locator('[data-ask-cancel-dialog]').getByRole('button', { name: 'Send Esc' }).tap();
+    await expect(c, `the note (log:\n${mirrorLog})`).toContainText('Esc sent; the terminal still shows the question.', { timeout: 10_000 });
+    expect(fs.readFileSync(tr + '.picker.keys', 'utf8'), 'one Escape was sent').toBe('1b\n');
+    expect(fs.existsSync(pickerFile()), 'the picker is still up').toBe(true);
+    const usable = async (why: string) => {
+      await expect(c.locator('form[data-ask-form] fieldset'), `${why}: the answer form`).toHaveCount(3);
+      await expect(c.getByRole('button', { name: 'Submit answers' }), `${why}: Submit`).toBeVisible();
+      await expect(c.getByRole('button', { name: 'Cancel question' }), `${why}: Cancel`).toBeVisible();
+    };
+    await usable('after the note');
+    await page.waitForResponse((r) => r.url().includes('/mirror/view/asks'));
+    await page.waitForResponse((r) => r.url().includes('/mirror/view/asks'));
+    await usable('after a poll');
+    await expect(c.locator('[data-ask-sent-note]'), "the poll's card replaced the dismissal's").toHaveCount(0);
+    await expect(c).toHaveAttribute('data-ask-state', 'pending');
+    // The terminal takes the next Escape: the picker goes, the card resolves.
+    fs.rmSync(tr + '.picker.stuck', { force: true });
+    await c.getByRole('button', { name: 'Cancel question' }).tap();
+    await c.locator('[data-ask-cancel-dialog]').getByRole('button', { name: 'Send Esc' }).tap();
+    await expect(c, `resolved (log:\n${mirrorLog})`).toHaveAttribute('data-ask-state', 'declined', { timeout: 15_000 });
+    expect(fs.existsSync(pickerFile()), 'the picker is gone').toBe(false);
+  });
+
   // Cancel, then "Keep it": the dialog closes, nothing is sent, the question
   // stays — on the card and in the terminal.
   test('Cancel question then Keep it sends nothing', async ({ page }) => {

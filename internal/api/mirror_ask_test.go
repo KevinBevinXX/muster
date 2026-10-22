@@ -186,6 +186,7 @@ func TestCancelQuestionIsOneConfirmedEscape(t *testing.T) {
 	// The dismissal, on a STALE sign-in: no step-up.
 	resp, body := cancelReq(t, s, ts, gateTool, staleCookieFor(s), "")
 	if resp.StatusCode != http.StatusOK || resp.Header.Get("X-Ask-State") != ui.AskStatePending || !strings.Contains(body, "Esc sent — the question left the terminal&#39;s screen.") ||
+		!strings.Contains(body, `data-ask-sent="gone"`) ||
 		strings.Contains(body, "Cancel question") || strings.Contains(body, "data-ask-form") {
 		t.Fatalf("the dismissal: %d %s\n%s", resp.StatusCode, resp.Header.Get("X-Ask-State"), body)
 	}
@@ -209,7 +210,10 @@ func TestCancelQuestionIsOneConfirmedEscape(t *testing.T) {
 	amn.amu.Lock()
 	amn.cancelNote = "Esc sent; the terminal still shows the question."
 	amn.amu.Unlock()
-	if resp, body := cancelReq(t, sn, tsn, gateTool, "", ""); resp.StatusCode != http.StatusOK || !strings.Contains(body, "Esc sent; the terminal still shows the question.") {
+	// The question is still the person's: the form and Cancel stay under
+	// the note, and the card is marked so the next poll replaces it.
+	if resp, body := cancelReq(t, sn, tsn, gateTool, "", ""); resp.StatusCode != http.StatusOK || !strings.Contains(body, "Esc sent; the terminal still shows the question.") ||
+		!strings.Contains(body, "data-ask-form") || !strings.Contains(body, "Cancel question") || !strings.Contains(body, `data-ask-sent="showing"`) {
 		t.Errorf("still showing: %d %q", resp.StatusCode, body)
 	}
 	// While an answer is being typed: refused, nothing sent.

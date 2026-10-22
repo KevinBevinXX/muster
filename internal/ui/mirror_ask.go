@@ -185,9 +185,14 @@ type MirrorAskLiveView struct {
 	WindowName string
 	// Sent is a dismissal's note, on the card the dismissal answers with
 	// (not kept: the next poll's card is the server's, and the CLI's record
-	// of the call ending flips it): the Esc was sent. The card then offers no
-	// second Cancel.
-	Sent string
+	// of the call ending flips it): the Esc was sent. SentShowing says the
+	// picker was still on the terminal's screen after it: the card keeps its
+	// form and Cancel under the note; otherwise the picker went, and the
+	// card shows the question read-only. Either is data-ask-sent on the card,
+	// which the page's merge compares with the state, so the next poll's
+	// card replaces it.
+	Sent        string
+	SentShowing bool
 }
 
 // askTerminalLink is the card's link to the window's terminal.
@@ -246,10 +251,18 @@ func MirrorAskLive(v MirrorAskLiveView) g.Node {
 		body = g.Group{askReadOnly(v.Questions, nil), status("text-muted", why, true)}
 	}
 	// An open question the terminal still shows can be dismissed from here.
-	switch {
-	case v.Sent != "":
-		body = g.Group{askReadOnly(v.Questions, nil), P(g.Attr("role", "status"), g.Attr("data-ask-sent", ""), Class("text-xs text-fg2"), g.Text(v.Sent))}
-	case v.CanCancel && (v.State == AskStatePending || v.State == AskStateFailed):
+	sent := ""
+	if v.Sent != "" {
+		note := P(g.Attr("role", "status"), g.Attr("data-ask-sent-note", ""), Class("text-xs text-fg2"), g.Text(v.Sent))
+		if v.SentShowing {
+			sent = "showing"
+			body = g.Group{note, body}
+		} else {
+			sent = "gone"
+			body = g.Group{askReadOnly(v.Questions, nil), note}
+		}
+	}
+	if v.CanCancel && sent != "gone" && (v.State == AskStatePending || v.State == AskStateFailed) {
 		body = g.Group{body, askCancelControl(v)}
 	}
 	return Section(
@@ -257,6 +270,7 @@ func MirrorAskLive(v MirrorAskLiveView) g.Node {
 		g.Attr("data-ask-tool", v.ToolID),
 		g.Attr("data-ask-row", MirrorAskRowID(v.ToolID)),
 		g.Attr("data-ask-state", v.State),
+		g.Attr("data-ask-sent", sent),
 		g.Attr("aria-label", "Claude is asking"),
 		Class(askCardClass),
 		askCardHead(label),
@@ -450,7 +464,11 @@ func askScript() g.Node {
       seen[tool] = true;
       var cur = region.querySelector('[data-ask-live][data-ask-tool="' + CSS.escape(tool) + '"]');
       if (!cur) { region.appendChild(card); return; }
-      if (cur.getAttribute('data-ask-state') === card.getAttribute('data-ask-state')) return;
+      // The same state, and no dismissal's note on either: left alone (what
+      // a person chose stays). A note (data-ask-sent) is the dismissal's
+      // answer only, so the next poll's card replaces it.
+      if (cur.getAttribute('data-ask-state') === card.getAttribute('data-ask-state') &&
+          (cur.getAttribute('data-ask-sent') || '') === (card.getAttribute('data-ask-sent') || '')) return;
       cur.replaceWith(card);
     });
     region.querySelectorAll('[data-ask-live]').forEach(function (c) { if (!seen[c.getAttribute('data-ask-tool')]) c.remove(); });

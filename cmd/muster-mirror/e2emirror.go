@@ -695,7 +695,8 @@ func (f *fakePickerPane) Send(_ context.Context, keys string) error {
 }
 
 // CancelAsk implements mirrorhost.AskCanceller: askdrive.Cancel on the
-// window's picker (see AnswerAsk). When the picker goes, the call and its
+// window's picker (see AnswerAsk); while T.picker.stuck exists the Escape
+// never reaches the picker, which stays on screen. When the picker goes, the call and its
 // result are appended to T as the CLI writes a declined ask — a tool_result
 // with no answers — and the picker file is removed.
 func (w windowFake) CancelAsk(ctx context.Context, pane string) (bool, error) {
@@ -703,7 +704,12 @@ func (w windowFake) CancelAsk(ctx context.Context, pane string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	gone, err := askdrive.Cancel(ctx, &fakePickerPane{p: cur.p, keylog: transcript + ".picker.keys"}, askdrive.Options{})
+	pp := &fakePickerPane{p: cur.p, keylog: transcript + ".picker.keys"}
+	// T.picker.stuck: the terminal does not take the Escape (the picker stays).
+	if _, err := os.Stat(transcript + ".picker.stuck"); err == nil {
+		pp.drop = 1
+	}
+	gone, err := askdrive.Cancel(ctx, pp, askdrive.Options{})
 	if err != nil || !gone {
 		return gone, err
 	}

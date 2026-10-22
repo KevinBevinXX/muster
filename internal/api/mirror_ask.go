@@ -563,11 +563,13 @@ func (s *Server) handleMirrorAskCancel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.logger.Printf("mirror: dismissed a question in %s/%s%s with Escape (%s)", h.Host, e.Session, e.Window, entry.ID)
-	if note == "" {
-		note = "Esc sent — the question left the terminal's screen."
-	}
 	v := questionCard(h, e, entry)
-	v.Sent = note
+	// The host's note says the picker is still showing (the Escape did not
+	// take): the question is still the person's to answer or dismiss.
+	v.Sent, v.SentShowing = note, note != ""
+	if note == "" {
+		v.Sent = "Esc sent — the question left the terminal's screen."
+	}
 	s.writeAskLive(w, http.StatusOK, v)
 }
 
