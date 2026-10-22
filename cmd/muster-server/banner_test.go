@@ -434,6 +434,10 @@ var bannerExempt = map[string]string{
 	envAgentCCAccounts:    "printed on the claude-code arm of the `agent kinds:` line (names only); same reason as " + envAgentCCImage,
 	envAgentCCTokenPrefix: "a PREFIX naming subscription credentials: the banner names the prefix and never a value (TestTheKindsBannerLineNamesAccountsNeverTokens)",
 	envAgentCCStorage:     "an optional size for the claude-code volume; refused at boot without the kind, defaulted with it (agentspec.DefaultClaudeCodeStorage)",
+	envAgentCCCooldown: "an optional limit of the claude-code account pool; refused at boot without the kind, defaulted " +
+		"with it (ccpool.DefaultCooldown, config.ccPoolLimits), so there is no OFF state to announce",
+	envAgentCCMaxJobs: "an optional, opt-in limit of the claude-code account pool (unset is no cap, config.ccPoolLimits); " +
+		"refused at boot without the kind, so there is no OFF state to announce",
 	envAgentHermesImage: "printed on the hermes arm of the `agent kinds:` line; refused at boot when the kind is not " +
 		"enabled (validateKinds), so there is no OFF state to announce. TestTheKindsBannerLineNamesTheHermesImage pins it",
 	envAgentHermesStorage: "an optional size for the hermes volume; refused at boot without the kind, defaulted with it (agentspec.DefaultHermesStorage)",

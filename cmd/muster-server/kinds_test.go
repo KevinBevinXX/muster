@@ -58,6 +58,12 @@ func TestEveryKindsRefusalIsReachedOnItsOwn(t *testing.T) {
 		{"cc storage without the kind", func(c *config) {
 			c.AgentKinds, c.AgentCCImage, c.AgentCCAccountNames, c.AgentCCStorage = nil, "", nil, "2Gi"
 		}, "armed switch"},
+		{"cc job cap without the kind", func(c *config) {
+			c.AgentKinds, c.AgentCCImage, c.AgentCCAccountNames, c.AgentCCMaxJobs = nil, "", nil, 3
+		}, "no Claude account pool for them to limit"},
+		{"cc cooldown without the kind", func(c *config) {
+			c.AgentKinds, c.AgentCCImage, c.AgentCCAccountNames, c.AgentCCCooldown = nil, "", nil, 30*time.Minute
+		}, "no Claude account pool for them to limit"},
 		{"no provisioner", func(c *config) { c.AgentProvisioner = provisionerNone }, "nothing to build it with"},
 		{"no image", func(c *config) { c.AgentCCImage = "" }, "MUSTER_AGENT_CC_IMAGE is not set"},
 		{"unpinned image", func(c *config) { c.AgentCCImage = "registry.example.test:5000/team/claude-code-agent" }, "must pin a tag or a digest"},
@@ -114,6 +120,42 @@ func TestTheAccountListAndTokensAreReadFromTheEnvironment(t *testing.T) {
 	none, _ := loadConfig(func(string) string { return "" })
 	if none.claudeCodeEnabled() || strings.Join(none.agentKinds(), ",") != "gateway" {
 		t.Fatalf("unset kinds resolve to %v", none.agentKinds())
+	}
+}
+
+// TestTheAccountPoolLimitsAreReadDefaultedAndBounded: both knobs read from the
+// environment reach the pool's limits; unset is a 1h cooldown and NO cap (the
+// cap is opt-in); a value out of range — including a written 0, which must not
+// silently mean "no cooldown" or "no cap" — is a boot refusal naming the
+// variable.
+func TestTheAccountPoolLimitsAreReadDefaultedAndBounded(t *testing.T) {
+	env := map[string]string{envAgentCCCooldown: "25m", envAgentCCMaxJobs: "5"}
+	cfg, err := loadConfig(func(k string) string { return env[k] })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.ccPoolLimits(); got != (ccpool.Limits{Cooldown: 25 * time.Minute, MaxConcurrentJobs: 5}) {
+		t.Fatalf("limits = %+v, want 25m and 5", got)
+	}
+	none, err := loadConfig(func(string) string { return "" })
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A literal, not ccpool.DefaultLimits(): a default cap creeping back in
+	// there must fail here rather than be agreed with.
+	if got := none.ccPoolLimits(); got != (ccpool.Limits{Cooldown: time.Hour, MaxConcurrentJobs: 0}) {
+		t.Fatalf("unset limits = %+v, want a 1h cooldown and NO per-account cap (the cap is opt-in)", got)
+	}
+	for _, bad := range []map[string]string{
+		{envAgentCCCooldown: "0"}, {envAgentCCCooldown: "30s"}, {envAgentCCCooldown: "200h"}, {envAgentCCCooldown: "soon"},
+		{envAgentCCMaxJobs: "0"}, {envAgentCCMaxJobs: "65"}, {envAgentCCMaxJobs: "two"},
+	} {
+		_, err := loadConfig(func(k string) string { return bad[k] })
+		for k := range bad {
+			if err == nil || !strings.Contains(err.Error(), "invalid "+k) {
+				t.Errorf("%v: err = %v, want a refusal naming %s", bad, err, k)
+			}
+		}
 	}
 }
 

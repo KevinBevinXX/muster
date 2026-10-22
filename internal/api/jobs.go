@@ -340,11 +340,13 @@ func (s *Server) namedJobAgent(ctx context.Context, name string) (agents.Agent, 
 
 // createPoolJob records n on the member of its worker pool chosen for it
 // (chooseWorker), reading the members, their Claude accounts' marks and their
-// grants first, and their queues inside the store's transaction. Refusals are
-// a *jobRefusal: 404, no agent is a member of the pool; 429, every member that
-// could otherwise take the job is at its cap; 503, none could take it for any
-// other reason, or this deployment cannot read the account marks the choice
-// needs.
+// grants first, and their queues — and those of every other agent on their
+// accounts, for the per-account cap — inside the store's transaction. Refusals
+// are a *jobRefusal: 404, no agent is a member of the pool; 429, every member
+// that could otherwise take the job is at its cap, on an account cooling down
+// after a rate limit, or on an account at its job cap; 503, none could take it
+// for any other reason, or this deployment cannot read the account marks the
+// choice needs.
 //
 // 🔴 THE QUEUES ARE READ, AND THE CHOICE MADE, UNDER THE MEMBERS' LOCKS
 // (jobs.Store.CreateChosen), NOT BEFORE. Read before, every submission arriving
@@ -364,15 +366,32 @@ func (s *Server) createPoolJob(ctx context.Context, n jobs.NewJob) (jobs.Job, bo
 		return refuse(http.StatusInternalServerError, "could not read the agents")
 	}
 	var members []agents.Agent
-	var ids []int64
 	for _, a := range list {
 		if a.WorkerPool == pool {
 			members = append(members, a)
-			ids = append(ids, a.ID)
 		}
 	}
 	if len(members) == 0 {
 		return refuse(http.StatusNotFound, fmt.Sprintf("no worker pool %q: no agent is a member of it", pool))
+	}
+	// peers is every claude-code agent on a member's Claude account, in this
+	// pool or not: the per-account cap counts the account's jobs wherever they
+	// run, so their queues are read (and locked) with the members'.
+	memberAccounts := map[string]bool{}
+	for _, m := range members {
+		if m.CCAccount != "" {
+			memberAccounts[m.CCAccount] = true
+		}
+	}
+	peers := append([]agents.Agent(nil), members...)
+	for _, a := range list {
+		if a.WorkerPool != pool && memberAccounts[a.CCAccount] && agents.ResolveKind(a.Kind) == agents.KindClaudeCode {
+			peers = append(peers, a)
+		}
+	}
+	ids := make([]int64, 0, len(peers))
+	for _, a := range peers {
+		ids = append(ids, a.ID)
 	}
 	// No kinds configured: no Claude account, so every member is skipped as
 	// "not configured" below.
@@ -390,7 +409,7 @@ func (s *Server) createPoolJob(ctx context.Context, n jobs.NewJob) (jobs.Job, bo
 		return refuse(http.StatusInternalServerError, "could not read the workers' connector grants")
 	}
 	return s.ext.Jobs.CreateChosen(ctx, n, ids, func(active map[int64]jobs.ActiveCount) (jobs.NewJob, error) {
-		a, why, full := chooseWorker(pool, members, repo, states, active, github)
+		a, why, full := chooseWorker(pool, members, peers, repo, states, active, github)
 		if why != "" {
 			status := http.StatusServiceUnavailable
 			if full {
@@ -413,10 +432,21 @@ const maxWorkerSkipsNamed = 10
 // is ELIGIBLE when it is a claude-code agent whose stored status is running,
 // works on repo (when the job names one), holds no approved grant reaching GitHub
 // (github: worker id → that grant's connector; jobs_grants.go), runs on a
-// Claude account that is configured and whose current token is not marked
-// auth_failed, and has fewer than jobs.MaxActivePerAgent jobs queued or
-// running. Of the eligible, it
-// prefers, in order:
+// Claude account that is configured, whose current token is not marked
+// auth_failed and which is not cooling down after a rate limit
+// (ccpool.AccountState.CoolingUntil), has fewer than jobs.MaxActivePerAgent
+// jobs queued or running, and would not take its account past the account's
+// cap (ccpool.AccountState.MaxConcurrentJobs).
+//
+// THE CAP COUNTS BUSY WORKERS. Jobs on one worker run one after another
+// (jobLanes), so the jobs an account runs at once are the workers on it with a
+// job queued or running — counted over peers, every claude-code agent on a
+// member's account, in this pool or not (active must hold their counts). A
+// job placed on a worker that is already busy queues behind it and adds
+// nothing to the account's concurrency, so only an IDLE worker can be refused
+// for the cap.
+//
+// Of the eligible, it prefers, in order:
 //
 //  1. a worker with no job queued or running;
 //  2. then the fewest jobs queued;
@@ -426,10 +456,11 @@ const maxWorkerSkipsNamed = 10
 //
 // With none eligible it returns a non-empty reason naming why each member was
 // skipped (at most maxWorkerSkipsNamed of them), and full: whether a member
-// was skipped for its cap alone — every check before the cap is passed — so
-// that every worker eligible but for capacity is at capacity (a 429, where a
-// pool with no such worker is a 503).
-func chooseWorker(pool string, members []agents.Agent, repo string, accounts map[string]ccpool.AccountState,
+// was skipped for capacity alone — its account's cooldown, its own cap or its
+// account's cap, every check before those passed — so that every worker
+// eligible but for capacity is out of it (a 429, where a pool with no such
+// worker is a 503).
+func chooseWorker(pool string, members, peers []agents.Agent, repo string, accounts map[string]ccpool.AccountState,
 	active map[int64]jobs.ActiveCount, github map[int64]string) (chosen agents.Agent, why string, full bool) {
 	type cand struct {
 		a  agents.Agent
@@ -438,6 +469,16 @@ func chooseWorker(pool string, members []agents.Agent, repo string, accounts map
 	}
 	sorted := append([]agents.Agent(nil), members...)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Name < sorted[j].Name })
+	// busy is, per Claude account, how many of its workers have a job queued
+	// or running: the jobs it runs at once. A peer listed twice counts once.
+	busy := map[string]int{}
+	counted := map[int64]bool{}
+	for _, p := range peers {
+		if p.CCAccount != "" && !counted[p.ID] && active[p.ID].Active() > 0 {
+			counted[p.ID] = true
+			busy[p.CCAccount]++
+		}
+	}
 	var cands []cand
 	var skipped []string
 	for _, m := range sorted {
@@ -457,8 +498,16 @@ func chooseWorker(pool string, members []agents.Agent, repo string, accounts map
 			skip = fmt.Sprintf("its Claude account %q is not configured", m.CCAccount)
 		case st.AuthFailed:
 			skip = fmt.Sprintf("its Claude account %q failed authentication", m.CCAccount)
+		case !st.CoolingUntil.IsZero():
+			skip = fmt.Sprintf("its Claude account %q is cooling down after a rate limit until %s",
+				m.CCAccount, st.CoolingUntil.UTC().Format(time.RFC3339))
+			full = true
 		case c.Active() >= jobs.MaxActivePerAgent:
 			skip = fmt.Sprintf("already has %d jobs queued or running (the limit)", c.Active())
+			full = true
+		case c.Active() == 0 && st.MaxConcurrentJobs > 0 && busy[m.CCAccount] >= st.MaxConcurrentJobs:
+			skip = fmt.Sprintf("its Claude account %q is already running %d job(s) at once, its limit",
+				m.CCAccount, busy[m.CCAccount])
 			full = true
 		}
 		if skip != "" {
