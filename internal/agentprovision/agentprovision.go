@@ -419,19 +419,6 @@ func (a *Adapter) UseGitHubGrants(f func(ctx context.Context, agentID int64) (st
 // asked every time the spec is built — Dispatch, Start and ReapplyProfiles — and
 // it FAILS CLOSED: an unreadable grant state, or no lookup wired, is a veto too.
 // Each veto is logged naming the agent.
-// JobBypassDecision is what this adapter decides for ag's job lanes the next
-// time its spec is applied: bypass, or not and the veto ("" when its pool is
-// simply not listed). It asks the same two questions buildSpec does
-// (agentspec.JobBypassListed and jobBypassVeto), over the deployment's spec
-// configuration, so the wiring that feeds them is observable from outside.
-func (a *Adapter) JobBypassDecision(ctx context.Context, ag agents.Agent) (bypass bool, veto string) {
-	if !agentspec.JobBypassListed(ag, a.spec) {
-		return false, ""
-	}
-	veto = a.jobBypassVeto(ctx, ag, a.spec)
-	return veto == "", veto
-}
-
 func (a *Adapter) jobBypassVeto(ctx context.Context, ag agents.Agent, cfg agentspec.Config) string {
 	if !agentspec.JobBypassListed(ag, cfg) {
 		return ""
@@ -449,6 +436,19 @@ func (a *Adapter) jobBypassVeto(ctx context.Context, ag agents.Agent, cfg agents
 			"(MUSTER_AGENT_CC_BYPASS_POOLS) but is started WITHOUT it: %s", ag.Name, ag.WorkerPool, veto)
 	}
 	return veto
+}
+
+// JobBypassDecision is what this adapter decides for ag's job lanes the next
+// time its spec is applied: bypass, or not and the veto ("" when its pool is
+// simply not listed). It asks the same two questions buildSpec does
+// (agentspec.JobBypassListed and jobBypassVeto), over the deployment's spec
+// configuration, so the wiring that feeds them is observable from outside.
+func (a *Adapter) JobBypassDecision(ctx context.Context, ag agents.Agent) (bypass bool, veto string) {
+	if !agentspec.JobBypassListed(ag, a.spec) {
+		return false, ""
+	}
+	veto = a.jobBypassVeto(ctx, ag, a.spec)
+	return veto == "", veto
 }
 
 // New validates the configuration and builds the adapter.
