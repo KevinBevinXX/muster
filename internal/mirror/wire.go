@@ -1234,8 +1234,4 @@ const (
 	// before the picker went out of reading (off the top of the pane); nothing
 	// was submitted.
 	AskRefusalUnreadableTyped = "unreadable-typed"
-	// AskRefusalOwnDifferent: the picker holds part of the answer muster
-	// typed earlier (AskTyping.Prior), which differs from this one. Nothing
-	// was typed.
-	AskRefusalOwnDifferent = "own-different"
 )

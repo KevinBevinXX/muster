@@ -199,27 +199,7 @@ func At(steps []Step, k int) Want {
 func digit(n int) string { return strconv.Itoa(n) }
 
 // Answers is the answers choices give, keyed by question text, as the CLI
-// records them — the review screen's lines and the transcript's toolUseResult:
-// a multi-select answer's options in the question's order, then the text, all
-// joined by ", ".
+// records them (askq.AnswersOf).
 func Answers(qs []askq.Question, choices []Choice) map[string]string {
-	out := make(map[string]string, len(qs))
-	for i, q := range qs {
-		if i >= len(choices) {
-			break
-		}
-		picks := slices.Clone(choices[i].Picks)
-		slices.Sort(picks)
-		var parts []string
-		for _, p := range picks {
-			if p >= 0 && p < len(q.Options) {
-				parts = append(parts, q.Options[p].Label)
-			}
-		}
-		if choices[i].Other != "" {
-			parts = append(parts, choices[i].Other)
-		}
-		out[q.Question] = strings.Join(parts, askq.MultiJoin)
-	}
-	return out
+	return askq.AnswersOf(qs, choices)
 }

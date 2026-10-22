@@ -126,11 +126,11 @@ func TestLiveClaudePicker(t *testing.T) {
 					scr, _ := p.Capture(ctx)
 					t.Fatalf("the first drive: %d keys, %v\n%s", keys, err, scr)
 				}
-				if _, err := tm.AnswerAskFrom(ctx, pane, c.qs, c.cs, &askq.Progress{Choices: c.cs, Keys: keys}); err != nil {
+				if _, err := tm.AnswerAsk(ctx, pane, c.qs, c.cs, &askq.Progress{Choices: c.cs, Keys: keys}); err != nil {
 					scr, _ := p.Capture(ctx)
 					t.Fatalf("the continuing drive: %v\n%s", err, scr)
 				}
-			} else if err := tm.AnswerAsk(ctx, pane, c.qs, c.cs); err != nil {
+			} else if err := answer1(tm, ctx, pane, c.qs, c.cs); err != nil {
 				scr, _ := p.Capture(ctx)
 				t.Fatalf("drive: %v\n%s", err, scr)
 			}

@@ -111,21 +111,21 @@ func TestARetryNeverVouchesForMoreThanMusterTyped(t *testing.T) {
 	}
 }
 
-// TestARetryWithOtherAnswersRefusesMustersEarlierOnes: muster typed question 1
-// as "Red" and was lost; the person now answers question 1 "Blue". The
-// picker holds muster's earlier answer: refused as that (not as someone in
-// the terminal), nothing typed.
-func TestARetryWithOtherAnswersRefusesMustersEarlierOnes(t *testing.T) {
+// TestARetryWithOtherAnswersIsRefused: muster typed question 1 as "Red" and
+// was lost; a retry with question 1 "Blue" (muster's own card never sends
+// one — it resends the recorded answer — but a request could) finds a picker
+// that is neither untouched nor this answer's: refused as touched, nothing
+// typed. The SAME earlier answer continues.
+func TestARetryWithOtherAnswersIsRefused(t *testing.T) {
 	old := []Choice{{Picks: []int{0}}, {Picks: []int{1}}, {Picks: []int{0}}}
 	p := NewFakePicker(three)
 	p.Type("1")
 	fp := &fakePane{p: p}
 	now := []Choice{{Picks: []int{1}}, {Picks: []int{1}}, {Picks: []int{0}}}
 	_, err := DriveFrom(context.Background(), fp, three, now, &Progress{Choices: old, Keys: 1}, fast)
-	if !errors.Is(err, ErrOwnDifferent) || errors.Is(err, ErrNotUntouched) || len(fp.sent) != 0 {
+	if !errors.Is(err, ErrNotUntouched) || len(fp.sent) != 0 {
 		t.Fatalf("muster's earlier answer in the picker: %v, sent %q", err, fp.sent)
 	}
-	// The SAME earlier answer continues.
 	fp = &fakePane{p: p}
 	if _, err := DriveFrom(context.Background(), fp, three, old, &Progress{Choices: old, Keys: 1}, fast); err != nil {
 		t.Fatalf("the same answers again: %v (keys %q)", err, fp.sent)
@@ -135,8 +135,9 @@ func TestARetryWithOtherAnswersRefusesMustersEarlierOnes(t *testing.T) {
 // TestAChangedEarlierAnswerIsNotSubmitted: muster typed question 1 and was
 // lost; someone then changed question 1's answer in the terminal and came
 // back to question 2 — a screen that looks exactly like muster's. The retry
-// continues, but the review lists the other answer, and the submit is never
-// sent.
+// continues, but the review lists the other answer: refused as someone
+// answering in the terminal (not as muster losing track), and the submit is
+// never sent.
 func TestAChangedEarlierAnswerIsNotSubmitted(t *testing.T) {
 	p, keys := lostAfterQ1(t)
 	p.mu.Lock()
@@ -144,7 +145,7 @@ func TestAChangedEarlierAnswerIsNotSubmitted(t *testing.T) {
 	p.mu.Unlock()
 	fp := &fakePane{p: p}
 	_, err := DriveFrom(context.Background(), fp, three, threeChoices, &Progress{Choices: threeChoices, Keys: keys}, fast)
-	if !errors.Is(err, ErrLost) || !strings.Contains(err.Error(), "review") {
+	if !errors.Is(err, ErrNotUntouched) || errors.Is(err, ErrLost) || !strings.Contains(err.Error(), "review") {
 		t.Fatalf("a changed earlier answer: %v", err)
 	}
 	if _, _, done := p.Result(); done {
@@ -227,5 +228,30 @@ func TestPriorForOtherQuestionsIsIgnored(t *testing.T) {
 	_, err := DriveFrom(context.Background(), fp, three, threeChoices, &Progress{Choices: []Choice{{Picks: []int{7}}}, Keys: 1}, fast)
 	if !errors.Is(err, ErrNotUntouched) || len(fp.sent) != 0 {
 		t.Fatalf("a prior for other questions: %v, sent %q", err, fp.sent)
+	}
+}
+
+// TestAnAnswerChangedOnTheReviewIsNotSubmitted: the review showed muster's
+// answers when its key landed, then someone changed one in the terminal before
+// the submit key: the look before that key sees it, and refuses as someone
+// answering in the terminal — the submit is never sent.
+func TestAnAnswerChangedOnTheReviewIsNotSubmitted(t *testing.T) {
+	p := NewFakePicker([]askq.Question{pets})
+	seen := 0
+	lp := &lookPane{fakePane: &fakePane{p: p}, look: func(int) {
+		if Parse(p.Screen()).Kind == Review {
+			if seen++; seen == 2 { // the look before the submit key
+				p.mu.Lock()
+				p.checked[0][2] = true
+				p.mu.Unlock()
+			}
+		}
+	}}
+	_, err := DriveFrom(context.Background(), lp, []askq.Question{pets}, []Choice{{Picks: []int{0, 2}}}, nil, fast)
+	if !errors.Is(err, ErrNotUntouched) || errors.Is(err, ErrLost) || !strings.Contains(err.Error(), "before key") {
+		t.Fatalf("an answer changed on the review: %v", err)
+	}
+	if _, _, done := p.Result(); done {
+		t.Fatalf("submitted: %q", lp.sent)
 	}
 }

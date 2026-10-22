@@ -101,10 +101,6 @@ func Drive(ctx context.Context, p Pane, qs []askq.Question, choices []Choice, op
 // and how many keys of their Plan it sent.
 type Progress = askq.Progress
 
-// ErrOwnDifferent: the picker holds part of an answer muster typed earlier
-// (DriveFrom's prior) that differs from this one. Nothing was sent.
-var ErrOwnDifferent = errors.New("askdrive: the picker holds the answer muster started typing earlier, which differs from this one")
-
 // DriveFrom is Drive for a picker an earlier drive may have left part of an
 // answer in: prior is what that drive sent (nil: nothing). It returns how many
 // keys of choices' Plan the picker has received from muster, this drive's and
@@ -116,7 +112,8 @@ var ErrOwnDifferent = errors.New("askdrive: the picker holds the answer muster s
 // begins with those same k keys, it continues from key k+1. A picker in any
 // other state is refused as before: untouched is required (ErrNotUntouched),
 // and a picker in a state prior's keys reached that choices' plan does not
-// pass through holds muster's earlier, different answer (ErrOwnDifferent).
+// pass through holds muster's earlier, different answer, and is refused the
+// same way (ErrNotUntouched): it is not untouched, and not this answer's.
 //
 // What the screen cannot show — WHICH answer an answered question was given —
 // is what prior vouches for: muster's own keys answered it, and the screen
@@ -147,9 +144,7 @@ func DriveFrom(ctx context.Context, p Pane, qs []askq.Question, choices []Choice
 		if err != nil {
 			return 0, err
 		}
-		if first, err = resumeAt(Parse(scr), qs, steps, prior); err != nil {
-			return 0, err
-		}
+		first = resumeAt(Parse(scr), qs, steps, prior)
 	}
 	want := At(steps, first)
 	act, _ := p.(Activity)
@@ -199,6 +194,9 @@ func DriveFrom(ctx context.Context, p Pane, qs []askq.Question, choices []Choice
 					}
 				} else if s.Kind == Clipped {
 					return i, fmt.Errorf("%w (before key %d, wanted %s): %w: %v", ErrLost, i+1, want, ErrUnreadable, err)
+				}
+				if changedAnswer(s, want, qs, answers) {
+					return i, fmt.Errorf("%w (before key %d, the review screen): %v — someone changed it in the terminal", ErrNotUntouched, i+1, err)
 				}
 				return i, refuse(err)
 			}
@@ -250,6 +248,12 @@ func DriveFrom(ctx context.Context, p Pane, qs []askq.Question, choices []Choice
 			if merr == nil {
 				break
 			}
+			// The review lists every answer; one other than this drive's is
+			// someone's in the terminal (an earlier question changed): not
+			// untouched, and not submitted.
+			if changedAnswer(Parse(scr), st.Want, qs, answers) {
+				return i + 1, fmt.Errorf("%w (after key %d, the review screen): %v — someone changed it in the terminal", ErrNotUntouched, i+1, merr)
+			}
 			if time.Now().After(deadline) {
 				if Parse(scr).Kind == Clipped {
 					return i + 1, fmt.Errorf("%w (after key %d, wanted %s): %w: %v", ErrLost, i+1, st.Want, ErrUnreadable, merr)
@@ -270,13 +274,13 @@ func DriveFrom(ctx context.Context, p Pane, qs []askq.Question, choices []Choice
 // resumeAt is the key a drive of steps starts at, given that the picker shows
 // s and an earlier drive sent prior: the number of keys of prior's plan whose
 // screen s is — the most of them, at most prior.Keys — when steps begin with
-// those same keys; 0 when s is no screen prior's keys led to (the first look
-// then judges it as any picker). ErrOwnDifferent when s is a screen of prior's
-// keys that steps do not pass through.
-func resumeAt(s Screen, qs []askq.Question, steps []Step, prior *Progress) (int, error) {
+// those same keys; 0 otherwise (the first look then judges it as any picker:
+// a screen of prior's keys that steps do not pass through — muster's earlier,
+// different answer — is not untouched).
+func resumeAt(s Screen, qs []askq.Question, steps []Step, prior *Progress) int {
 	old, err := Plan(qs, prior.Choices)
 	if err != nil {
-		return 0, nil // not an answer to these questions: nothing to continue
+		return 0 // not an answer to these questions: nothing to continue
 	}
 	// same is how many keys the two plans share.
 	same := 0
@@ -286,17 +290,29 @@ func resumeAt(s Screen, qs []askq.Question, steps []Step, prior *Progress) (int,
 	// The review screen lists the answers, and prior's are what it must list
 	// to be prior's screen.
 	priorAnswers := Answers(qs, prior.Choices)
-	for k := min(prior.Keys, len(old)); k > 0; k-- {
-		w := At(old, k)
-		if w.Kind == None || Match(s, w, qs, priorAnswers) != nil {
-			continue
+	for k := min(prior.Keys, len(old), same); k > 0; k-- {
+		if w := At(old, k); w.Kind != None && Match(s, w, qs, priorAnswers) == nil {
+			return k
 		}
-		if k > same {
-			return 0, fmt.Errorf("%w: it shows %s", ErrOwnDifferent, w)
-		}
-		return k, nil
 	}
-	return 0, nil
+	return 0
+}
+
+// changedAnswer reports whether s is the review screen w wants for qs in all
+// but an answer: every question in place, and an answer other than answers'
+// — one changed in the terminal.
+func changedAnswer(s Screen, w Want, qs []askq.Question, answers map[string]string) bool {
+	if w.Kind != Review || s.Kind != Review || Match(s, w, qs, answers) == nil {
+		return false
+	}
+	shown := map[string]string{}
+	for i, q := range qs {
+		if i >= len(s.Review) {
+			return false
+		}
+		shown[q.Question] = strings.Join(splitLines(s.Review[i].Answer), " ")
+	}
+	return Match(s, w, qs, shown) == nil
 }
 
 // shownLayout reports why the question screen s is not one of qs as drawn

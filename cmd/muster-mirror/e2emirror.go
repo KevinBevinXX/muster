@@ -564,7 +564,7 @@ func (w windowFake) ServerSocket(context.Context) (string, error) { return E2ETm
 // shows an AskUserQuestion picker while T.picker.json exists —
 // {"toolUseId", "questions"}, written by the spec as the CLI draws its picker —
 // and T.picker.touched, when it also exists as the picker is first drawn, says
-// someone has started answering it in the terminal. AnswerAskFrom drives
+// someone has started answering it in the terminal. AnswerAsk drives
 // askdrive's FakePicker (the picker as measured on Claude Code 2.1.289)
 // through internal/askdrive's verified driver, exactly as the shipped binary
 // drives a pane; when it submits, the call and its result are appended to T
@@ -578,10 +578,6 @@ func (w windowFake) ServerSocket(context.Context) (string, error) { return E2ETm
 // another call. T.picker.drop, when it exists as a drive starts, holds N: that
 // drive's N-th key never reaches the picker (the file is removed) — a key the
 // terminal lost, which the driver waits out and reports lost.
-func (w windowFake) AnswerAsk(ctx context.Context, pane string, qs []askq.Question, cs []askq.Choice) error {
-	_, err := w.AnswerAskFrom(ctx, pane, qs, cs, nil)
-	return err
-}
 
 // e2ePickers is each window's picker on screen, by transcript path.
 var e2ePickers = struct {
@@ -594,8 +590,8 @@ type e2ePicker struct {
 	p    *askdrive.FakePicker
 }
 
-// AnswerAskFrom implements mirrorhost.AskResumer (see AnswerAsk).
-func (w windowFake) AnswerAskFrom(ctx context.Context, pane string, qs []askq.Question, cs []askq.Choice, prior *askq.Progress) (int, error) {
+// AnswerAsk implements mirrorhost.AskBackend (see the comment above).
+func (w windowFake) AnswerAsk(ctx context.Context, pane string, qs []askq.Question, cs []askq.Choice, prior *askq.Progress) (int, error) {
 	ws, err := w.Windows(ctx)
 	if err != nil {
 		return 0, err

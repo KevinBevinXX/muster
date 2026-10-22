@@ -31,35 +31,24 @@ import (
 // nothing and a Backspace as the text "^?"), with -S the bytes arrive as the
 // keys they are. No -p: a bracketed paste is text to the picker, not keys.
 
-// AskBackend answers an AskUserQuestion picker in a pane.
+// AskBackend answers an AskUserQuestion picker in a pane, continuing an
+// answer an earlier one left part-typed in it (askdrive.DriveFrom): prior is
+// what that one sent (nil: nothing), and keys how many keys of choices' plan
+// the picker has received when it returns.
 type AskBackend interface {
-	AnswerAsk(ctx context.Context, pane string, qs []askq.Question, choices []askdrive.Choice) error
+	AnswerAsk(ctx context.Context, pane string, qs []askq.Question, choices []askdrive.Choice, prior *askq.Progress) (keys int, err error)
 }
 
 // AskOf is b's AskBackend, if it has one (through any wrapper).
 func AskOf(b Backend) (AskBackend, bool) { return capabilityOf[AskBackend](b) }
 
-// AskResumer is an AskBackend that can continue an answer an earlier one left
-// part-typed in the picker (askdrive.DriveFrom): prior is what that one sent
-// (nil: nothing), and keys how many keys of choices' plan the picker has
-// received when it returns.
-type AskResumer interface {
-	AnswerAskFrom(ctx context.Context, pane string, qs []askq.Question, choices []askdrive.Choice, prior *askq.Progress) (keys int, err error)
-}
-
-// AnswerAsk implements AskBackend: AnswerAskFrom with nothing typed before.
-func (t Tmux) AnswerAsk(ctx context.Context, pane string, qs []askq.Question, choices []askdrive.Choice) error {
-	_, err := t.AnswerAskFrom(ctx, pane, qs, choices, nil)
-	return err
-}
-
-// AnswerAskFrom implements AskResumer: askdrive.DriveFrom on the pane.
+// AnswerAsk implements AskBackend: askdrive.DriveFrom on the pane.
 //
 // 🔴 ONE DRIVE PER PANE AT A TIME: a second answer for a pane being typed
 // into is refused (ErrPaneBusy) before any key — two drives' keys would
 // interleave in one picker. And a tmux found to lack `paste-buffer -S` is
 // refused (ErrNoRawPaste) before any key: it cannot type a picker's keys.
-func (t Tmux) AnswerAskFrom(ctx context.Context, pane string, qs []askq.Question, choices []askdrive.Choice, prior *askq.Progress) (int, error) {
+func (t Tmux) AnswerAsk(ctx context.Context, pane string, qs []askq.Question, choices []askdrive.Choice, prior *askq.Progress) (int, error) {
 	if !strings.HasPrefix(pane, "%") {
 		return 0, fmt.Errorf("muster-mirror: %q is not a tmux pane id", pane)
 	}
@@ -337,8 +326,6 @@ func (h *hostSide) answer(m mirror.Msg) {
 				ans.Refusal = mirror.AskRefusalUnreadableTyped
 			case errors.Is(err, askdrive.ErrUnreadable):
 				ans.Refusal = mirror.AskRefusalUnreadable
-			case errors.Is(err, askdrive.ErrOwnDifferent):
-				ans.Refusal = mirror.AskRefusalOwnDifferent
 			case errors.Is(err, askdrive.ErrNotUntouched):
 				ans.Refusal = mirror.AskRefusalTouched
 			case errors.Is(err, askdrive.ErrLost):
@@ -381,14 +368,9 @@ func (h *hostSide) answer(m mirror.Msg) {
 		return
 	}
 	reply(h.typeInto(ctx, p.Pane, func() error {
-		// A backend that cannot continue an answer types only into an
-		// untouched picker, whatever muster says was left in it.
-		if r, ok := ab.(AskResumer); ok {
-			var err error
-			keys, err = r.AnswerAskFrom(ctx, p.Pane, m.Ask.Questions, m.Ask.Choices, m.Ask.Prior)
-			return err
-		}
-		return ab.AnswerAsk(ctx, p.Pane, m.Ask.Questions, m.Ask.Choices)
+		var err error
+		keys, err = ab.AnswerAsk(ctx, p.Pane, m.Ask.Questions, m.Ask.Choices, m.Ask.Prior)
+		return err
 	}))
 }
 

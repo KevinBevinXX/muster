@@ -50,9 +50,6 @@ var (
 	// ErrAskNotSent wraps an AnswerWindow error from BEFORE the answer was
 	// sent to the host: nothing can be being typed.
 	ErrAskNotSent = errors.New("mirror: the answer was not sent to the host")
-	// ErrAskOwnDifferent: the picker holds part of an answer muster typed
-	// earlier, which differs from this one. Nothing was typed.
-	ErrAskOwnDifferent = errors.New("mirror: the terminal's picker holds the answer muster started typing earlier, which differs from this one")
 )
 
 // askKeysError is a host's refusal with how many keys of the answer's plan
@@ -94,7 +91,7 @@ func AskOutcomeKnown(err error) bool {
 	if err == nil {
 		return true
 	}
-	for _, e := range []error{ErrAskNotSent, ErrAskNoPicker, ErrAskTouched, ErrAskLost, ErrAskUnsupported, ErrAskUnrecognised, ErrAskBusy, ErrAskUnreadable, ErrAskOwnDifferent, ErrAskRefused,
+	for _, e := range []error{ErrAskNotSent, ErrAskNoPicker, ErrAskTouched, ErrAskLost, ErrAskUnsupported, ErrAskUnrecognised, ErrAskBusy, ErrAskUnreadable, ErrAskRefused,
 		ErrHermesApprovalGone, ErrHermesUnreachable} {
 		if errors.Is(err, e) {
 			return true
@@ -204,8 +201,6 @@ func askAnswerError(why, refusal string) error {
 		return fmt.Errorf("%w: %s", ErrAskUnreadable, why)
 	case AskRefusalUnreadableTyped:
 		return fmt.Errorf("%w: %w: %s", ErrAskUnreadable, ErrAskLost, why)
-	case AskRefusalOwnDifferent:
-		return fmt.Errorf("%w: %s", ErrAskOwnDifferent, why)
 	case AskRefusalHermesGone:
 		return fmt.Errorf("%w: %s", ErrHermesApprovalGone, why)
 	case AskRefusalHermesUnreachable:

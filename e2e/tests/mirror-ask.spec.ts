@@ -371,8 +371,9 @@ test.describe('phone 412×915 touch', () => {
   // three-question answer whose typing is lost after question 1 (the first
   // key of question 2 never reaches the picker) leaves question 1 answered in
   // the terminal; the card says muster lost track — NOT that someone else is
-  // answering — and offers "Try again" with the answers still chosen; trying
-  // again continues from question 2 and the CLI takes the whole answer.
+  // answering — and offers "Try again", which resends the same answer (no
+  // form to change it); trying again continues from question 2 and the CLI
+  // takes the whole answer.
   test('a three-question answer lost after question 1 is finished by trying again', async ({ page }) => {
     await openView(page);
     const toolID = 'toolu_e2e_resume_' + stamp;
@@ -392,11 +393,10 @@ test.describe('phone 412×915 touch', () => {
     await expect(c).not.toContainText('started answering it');
     expect(fs.readFileSync(tr, 'utf8'), 'nothing was submitted').toBe(before);
     expect(fs.existsSync(pickerFile()), "the picker is still on the terminal's screen").toBe(true);
-    // The answers are still chosen, and it can be tried again from here.
-    await expect(c.locator('fieldset').nth(0).getByRole('radio', { name: 'Blue' })).toBeChecked();
-    await expect(c.locator('fieldset').nth(1).getByRole('checkbox', { name: 'Cat' })).toBeChecked();
-    await expect(c.locator('fieldset').nth(1).getByRole('checkbox', { name: 'Fish' })).toBeChecked();
-    await expect(c.locator('fieldset').nth(2).getByRole('radio', { name: 'Beta' })).toBeChecked();
+    // The card shows the answer it was typing, and Try again resends exactly
+    // that: nothing on it can be changed (the picker holds part of it).
+    await expect(c.locator('[data-ask-answer]')).toHaveText(['Answer: Blue', 'Answer: Cat, Fish', 'Answer: Beta']);
+    await expect(c.locator('input[type=radio], input[type=checkbox], textarea'), 'a fixed retry: nothing editable').toHaveCount(0);
     await c.getByRole('button', { name: 'Try again' }).tap();
     await expect(c, `finished (log:\n${mirrorLog})`).toHaveAttribute('data-ask-state', 'answered', { timeout: 15_000 });
     await expect(c).toContainText('Answered here');

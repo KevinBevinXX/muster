@@ -289,22 +289,15 @@ const (
 	// askNoteTouched: the picker is not as muster left it — someone typed in
 	// the terminal.
 	askNoteTouched = "Someone else has started answering it in the terminal — finish it there."
-	// askNoteTouchedUnsure: not as muster's record says, but an earlier
-	// typing's outcome never came back — the keys may be muster's own.
-	askNoteTouchedUnsure = "The terminal's picker is already partly answered — perhaps by muster's earlier attempt, which never reported back — so muster typed nothing. Finish it in the terminal."
-	// askNoteOwnDifferent: the picker holds muster's earlier, different
-	// answer.
-	askNoteOwnDifferent = "The terminal's picker still holds the answer muster started typing earlier, which differs from this one. " +
-		"Submit those answers again to finish it, or change it in the terminal."
 )
 
 // askTypeFailure is what a card says when muster could not type the answer
 // in: what happened, and what to do next — try again here, or answer in the
 // terminal; and, when keys may have been typed before it stopped and muster
 // cannot continue them, that the picker may be partly filled in. resumable
-// says muster recorded what it typed (the next answer continues it); unsure
-// that an earlier typing's outcome never came back.
-func askTypeFailure(err error, resumable, unsure bool) string {
+// says muster recorded what it typed (the next answer continues it); typed
+// that keys of muster's reached the picker before it stopped.
+func askTypeFailure(err error, resumable, typed bool) string {
 	switch {
 	case errors.Is(err, mirror.ErrAskNoPicker):
 		return "The question is no longer on the terminal's screen — it was answered or dismissed there."
@@ -314,10 +307,8 @@ func askTypeFailure(err error, resumable, unsure bool) string {
 		return "Couldn't type it in: the question went off the terminal's screen while typing (its picker is taller than the terminal), and nothing was submitted." + askPartlyFilled
 	case errors.Is(err, mirror.ErrAskUnreadable):
 		return "Couldn't read this question off the terminal's screen as the one muster was sent — answer it in the terminal."
-	case errors.Is(err, mirror.ErrAskOwnDifferent):
-		return askNoteOwnDifferent
-	case errors.Is(err, mirror.ErrAskTouched) && unsure:
-		return askNoteTouchedUnsure
+	case errors.Is(err, mirror.ErrAskTouched) && typed:
+		return askNoteTouched + askPartlyFilled
 	case errors.Is(err, mirror.ErrAskTouched):
 		return askNoteTouched
 	case errors.Is(err, mirror.ErrAskBusy):
@@ -343,22 +334,18 @@ func askTypeFailure(err error, resumable, unsure bool) string {
 // askFailure is how a drive that ended in err (AnswerWindow's) leaves the
 // question: what the card says, whether it can be tried again from muster,
 // and what the picker is known to hold of muster's — choices' first keys
-// (mirror.AskKeys), or, refused as holding an earlier answer, that answer
-// (prior) still. A drive whose outcome is unknown records nothing it may
+// (mirror.AskKeys). A drive whose outcome is unknown records nothing it may
 // have typed (askq.Failure.Settled).
-func askFailure(err error, choices []askq.Choice, prior *askq.Progress, unsure bool) askq.Failure {
+func askFailure(err error, choices []askq.Choice) askq.Failure {
 	f := askq.Failure{Settled: mirror.AskOutcomeKnown(err)}
-	switch {
-	case errors.Is(err, mirror.ErrAskOwnDifferent):
-		f.Left = prior
-	case f.Settled && mirror.AskKeys(err) > 0:
+	if f.Settled && mirror.AskKeys(err) > 0 {
 		f.Left = &askq.Progress{Choices: choices, Keys: mirror.AskKeys(err)}
 	}
-	// Lost part way with what it typed recorded: continue it. Refused as
-	// holding muster's earlier answer: submit that again. Busy: wait.
+	// Lost part way with what it typed recorded: continue it — the card
+	// resends exactly that answer (ui: a fixed retry). Busy: wait.
 	resumable := f.Left != nil && errors.Is(err, mirror.ErrAskLost) && !errors.Is(err, mirror.ErrAskUnreadable)
-	f.Retry = resumable || errors.Is(err, mirror.ErrAskOwnDifferent) || errors.Is(err, mirror.ErrAskBusy)
-	f.Note = askTypeFailure(err, resumable, unsure)
+	f.Retry = resumable || errors.Is(err, mirror.ErrAskBusy)
+	f.Note = askTypeFailure(err, resumable, mirror.AskKeys(err) > 0)
 	return f
 }
 
@@ -376,8 +363,6 @@ func askTypingResult(err error) string {
 		return "unreadable"
 	case errors.Is(err, mirror.ErrAskTouched):
 		return "touched"
-	case errors.Is(err, mirror.ErrAskOwnDifferent):
-		return "own-different"
 	case errors.Is(err, mirror.ErrAskLost):
 		return "lost"
 	case errors.Is(err, mirror.ErrAskUnrecognised):
@@ -472,7 +457,7 @@ func (s *Server) handleMirrorAskAnswer(w http.ResponseWriter, r *http.Request) {
 	metrics.MirrorAskTyping.WithLabelValues(askTypingResult(err)).Inc()
 	if err != nil {
 		s.logger.Printf("mirror: typing an answer into %s/%s%s failed: %v", h.Host, e.Session, e.Window, err)
-		failed, _ := s.asks.TypingFailed(key, askFailure(err, choices, got.Left, got.Unsure))
+		failed, _ := s.asks.TypingFailed(key, askFailure(err, choices))
 		s.writeAskLive(w, http.StatusConflict, questionCard(h, e, failed))
 		return
 	}

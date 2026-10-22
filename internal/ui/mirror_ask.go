@@ -1,7 +1,6 @@
 package ui
 
 import (
-	"slices"
 	"strconv"
 
 	g "maragu.dev/gomponents"
@@ -169,11 +168,12 @@ type MirrorAskLiveView struct {
 	Unanswerable string
 	// Error is a refused submit's reason, drawn above the form.
 	Error string
-	// Retry (failed) says the answer can be tried again from here: the card
-	// draws the form again under its Note, Chosen's answers chosen.
+	// Retry (failed) says the answer can be tried again from here: with
+	// Chosen, that answer is resent as it is (a fixed retry: the picker holds
+	// part of it, and muster continues it); without, the form is drawn again.
 	Retry bool
-	// Chosen is the answers muster was typing (failed), one per question, as
-	// the picker takes them: what a form drawn again starts with.
+	// Chosen is the answer muster typed part of (failed), one choice per
+	// question, as the picker takes them.
 	Chosen []askq.Choice
 }
 
@@ -202,9 +202,13 @@ func MirrorAskLive(v MirrorAskLiveView) g.Node {
 	case AskStateFailed:
 		label = "answer in the terminal"
 		body = g.Group{askReadOnly(v.Questions, nil), status("text-muted", v.Note, true)}
-		if v.Retry && v.Unanswerable == "" {
-			// It can be tried again from here: the form, with what was being
-			// typed chosen, under what happened.
+		switch {
+		case v.Retry && v.Unanswerable == "" && v.Chosen != nil:
+			// The picker holds part of THIS answer: Try again resends it as
+			// it is — never another, which the picker would not take.
+			label = "not typed in yet"
+			body = g.Group{askReadOnly(v.Questions, askq.AnswersOf(v.Questions, v.Chosen)), status("text-muted", v.Note, true), askRetryForm(v)}
+		case v.Retry && v.Unanswerable == "":
 			label = "not typed in yet"
 			body = g.Group{status("text-muted", v.Note, true), askForm(v)}
 		}
@@ -282,17 +286,11 @@ func askForm(v MirrorAskLiveView) g.Node {
 			kind = "checkbox"
 		}
 		name := "a" + idx
-		// chosen is what was being typed for this question (a form drawn
-		// again after a failure); nothing on a fresh one.
-		var chosen askq.Choice
-		if i < len(v.Chosen) {
-			chosen = v.Chosen[i]
-		}
 		opts := make([]g.Node, 0, len(q.Options)+1)
 		for j, o := range q.Options {
 			id := base + "-" + idx + "-" + strconv.Itoa(j)
 			opts = append(opts, Label(For(id), Class("flex min-h-[44px] cursor-pointer items-start gap-2 rounded-lg px-2 py-2 hover:bg-s2"),
-				Input(Type(kind), ID(id), Name(name), Value(o.Label), g.If(slices.Contains(chosen.Picks, j), Checked()),
+				Input(Type(kind), ID(id), Name(name), Value(o.Label),
 					Class("mt-0.5 h-5 w-5 shrink-0 cursor-pointer rounded border-edge bg-s2 text-accent"+focusRing)),
 				Span(Class("flex min-w-0 flex-col"),
 					Span(Class("break-words text-fg"), g.Text(o.Label)),
@@ -306,15 +304,14 @@ func askForm(v MirrorAskLiveView) g.Node {
 			otherID := base + "-" + idx + "-other"
 			opts = append(opts, Div(Class("flex flex-col gap-1 rounded-lg px-2 py-2"),
 				Label(For(otherID), Class("flex min-h-[44px] cursor-pointer items-center gap-2"),
-					Input(Type(kind), ID(otherID), Name(name), Value(askq.OtherValue), g.If(chosen.Other != "", Checked()),
+					Input(Type(kind), ID(otherID), Name(name), Value(askq.OtherValue),
 						Class("h-5 w-5 shrink-0 cursor-pointer rounded border-edge bg-s2 text-accent"+focusRing)),
 					Span(Class("text-fg"), g.Text("Other"))),
 				Textarea(Name("o"+idx), Rows("2"), MaxLength(strconv.Itoa(askq.MaxFreeText)),
 					g.Attr("data-ask-other-text", ""), g.Attr("data-ask-other-for", otherID),
 					g.Attr("aria-label", "Your own answer: "+q.Question),
 					g.Attr("placeholder", "Type your own answer"),
-					Class("w-full min-w-0 resize-y rounded-lg bg-s2 px-3 py-2 text-sm text-fg ring-1 ring-inset ring-line"+focusRing),
-					g.Text(chosen.Other)),
+					Class("w-full min-w-0 resize-y rounded-lg bg-s2 px-3 py-2 text-sm text-fg ring-1 ring-inset ring-line"+focusRing)),
 			))
 		}
 		sets = append(sets, FieldSet(g.Attr("data-ask-question", ""), Class("flex min-w-0 flex-col gap-1"),
@@ -342,6 +339,35 @@ func askForm(v MirrorAskLiveView) g.Node {
 			Button(Type("submit"), g.Attr("data-ask-submit", ""), Class(composerSendClass), g.Text(submit)),
 			Span(Class("text-xs text-muted"), g.Text("The terminal shows this question too — whichever is answered first counts."))),
 	)
+}
+
+// askRetryForm is a fixed retry: Chosen, as hidden fields, and "Try again" —
+// the same answer, posted as a form would post it (askq.FromForm).
+func askRetryForm(v MirrorAskLiveView) g.Node {
+	hidden := func(n, val string) g.Node { return Input(Type("hidden"), Name(n), Value(val)) }
+	var fields []g.Node
+	for i, q := range v.Questions {
+		if i >= len(v.Chosen) {
+			break
+		}
+		idx := strconv.Itoa(i)
+		for _, p := range v.Chosen[i].Picks {
+			if p >= 0 && p < len(q.Options) {
+				fields = append(fields, hidden("a"+idx, q.Options[p].Label))
+			}
+		}
+		if v.Chosen[i].Other != "" {
+			fields = append(fields, hidden("a"+idx, askq.OtherValue), hidden("o"+idx, v.Chosen[i].Other))
+		}
+	}
+	return Form(g.Attr("data-ask-form", ""), g.Attr("data-ask-retry", ""), Method("post"), Action(MirrorAskPath), Class("flex flex-col gap-2"),
+		hidden("host", v.Ref.Host), hidden("session", v.Ref.Session),
+		g.If(v.Ref.Window != "", hidden("window", v.Ref.Window)),
+		hidden("tool", v.ToolID), g.Group(fields),
+		P(g.Attr("data-ask-error", ""), g.Attr("role", "alert"), g.Attr("hidden", ""),
+			Class("break-words rounded-lg bg-danger/15 px-3 py-2 text-xs text-fg")),
+		Div(Class("flex flex-wrap items-center gap-2"),
+			Button(Type("submit"), g.Attr("data-ask-submit", ""), Class(composerSendClass), g.Text("Try again"))))
 }
 
 // askScript polls the window's live region and sends a form's answers.

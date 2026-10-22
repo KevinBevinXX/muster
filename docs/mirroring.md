@@ -616,18 +616,17 @@ How it works:
   answer that arrives after the terminal's is refused, and nothing is typed.
 - **Trying again continues muster's own partial answer.** When muster stopped
   part way (a key whose screen never came), it records how many keys of your
-  answer it typed, and the card shows the form again — your answers still
-  chosen — with **Try again**. Trying again continues from the first key not
-  yet taken, but only when the picker shows exactly what muster's own keys
-  left; anything else is someone else's and is refused as above. Which answer
-  an earlier question was given is not on the screen, so before the final
-  submit muster checks the review screen lists exactly your answers — an
-  earlier answer changed in the terminal is caught there, and nothing is
-  submitted. If you change your answers before trying again, the card says
-  the picker still holds the answer muster started typing; submit that again,
-  or change it in the terminal. A muster restart, or a typing whose outcome
-  the host never reported, records nothing to continue: the picker is then
-  the terminal's to finish.
+  answer it typed, and the card shows that answer with **Try again** — which
+  resends exactly it (nothing on the card can be changed: the picker holds part
+  of it). Trying again continues from the first key not yet taken, but only
+  when the picker shows exactly what muster's own keys left; anything else is
+  someone else's and is refused as above. Which answer an earlier question was
+  given is not on the screen, so before the final submit muster checks the
+  review screen lists exactly your answers — an earlier answer changed in the
+  terminal is caught there, said as someone answering in the terminal, and
+  nothing is submitted. A muster restart, or a typing whose outcome the host
+  never reported, records nothing to continue: the picker is then the
+  terminal's to finish.
 - **Options with previews.** When a question's options carry a `preview`,
   Claude Code draws them in a column with the highlighted option's preview
   boxed beside them, and no row for your own answer (measured, 2.1.289). The

@@ -5,12 +5,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"html"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
 	"reflect"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -724,11 +726,12 @@ func TestAnUnknownOutcomeHoldsTheQuestion(t *testing.T) {
 // TestALostAnswerIsContinuedFromTheCard: the operator's report — a
 // multi-question answer "gets stuck mid answer with 'someone else started
 // answering'". The host typed part of the answer and lost the picker; the card
-// says so (not that someone else is answering), draws the form again with the
-// answers chosen and "Try again"; trying again hands the host what was typed,
-// so it continues. The controls: someone else answering in the terminal is
-// said as that, with no form; muster's own earlier, different answer is said
-// as that, with the form holding it.
+// says so (not that someone else is answering), shows the answer it was
+// typing, and offers "Try again" as a FIXED retry — that answer's fields,
+// nothing editable; trying again posts exactly them and hands the host what
+// was typed, so it continues. The controls: someone else answering in the
+// terminal is said as that, with no form — and, after muster's keys reached
+// the picker, that it may be partly filled in.
 func TestALostAnswerIsContinuedFromTheCard(t *testing.T) {
 	am, s, ts := askServer(t, true)
 	register(t, ts)
@@ -740,19 +743,27 @@ func TestALostAnswerIsContinuedFromTheCard(t *testing.T) {
 	if resp.StatusCode != http.StatusConflict || resp.Header.Get("X-Ask-State") != ui.AskStateFailed {
 		t.Fatalf("a lost typing: %d %s\n%s", resp.StatusCode, resp.Header.Get("X-Ask-State"), body)
 	}
-	for _, want := range []string{"lost track of the terminal", "muster continues from where it stopped", "<form", "Try again",
-		`value="Blue" checked`, `value="Dog" checked`, `value="Fish" checked`} {
+	for _, want := range []string{"lost track of the terminal", "muster continues from where it stopped", "data-ask-retry", "Try again",
+		"Answer: </span>Blue", "Answer: </span>Dog, Fish"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("the lost card lacks %q:\n%s", want, body)
 		}
 	}
-	if strings.Contains(body, "Someone") || strings.Contains(body, `value="Red" checked`) {
-		t.Fatalf("the lost card:\n%s", body)
+	if strings.Contains(body, "Someone") || strings.Contains(body, `type="radio"`) || strings.Contains(body, `type="checkbox"`) || strings.Contains(body, "<textarea") {
+		t.Fatalf("the lost card offers an editable answer:\n%s", body)
+	}
+	// Try again posts the card's own fields.
+	retry := url.Values{}
+	for _, m := range regexp.MustCompile(`<input type="hidden" name="([^"]+)" value="([^"]*)">`).FindAllStringSubmatch(body, -1) {
+		retry.Add(m[1], html.UnescapeString(m[2]))
+	}
+	if !reflect.DeepEqual(retry["a0"], []string{"Blue"}) || !reflect.DeepEqual(retry["a1"], []string{"Dog", "Fish"}) || retry.Get("tool") != gateTool {
+		t.Fatalf("the fixed retry posts %v", retry)
 	}
 	am.amu.Lock()
 	am.typeErr = nil
 	am.amu.Unlock()
-	resp, body = answerReq(t, s, ts, answerForm(gateTool, "a0", "Blue", "a1", "Fish", "a1", "Dog"), "", "")
+	resp, body = answerReq(t, s, ts, retry, "", "")
 	if resp.StatusCode != http.StatusOK || resp.Header.Get("X-Ask-State") != ui.AskStateTyping {
 		t.Fatalf("trying again: %d %s\n%s", resp.StatusCode, resp.Header.Get("X-Ask-State"), body)
 	}
@@ -764,43 +775,20 @@ func TestALostAnswerIsContinuedFromTheCard(t *testing.T) {
 		t.Fatalf("the host was handed %+v then %+v, want nothing then %+v", priors[0], priors[len(priors)-1], want)
 	}
 
-	// Someone else typed in the terminal: said as that, no form.
-	am2, s2, ts2 := askServer(t, true)
-	register(t, ts2)
-	region(t, s2, ts2, `data-ask-state="pending"`)
-	am2.amu.Lock()
-	am2.typeErr = fmt.Errorf("%w: x", mirror.ErrAskTouched)
-	am2.amu.Unlock()
-	_, body = answerReq(t, s2, ts2, answerForm(gateTool, "a0", "Blue", "a1", "Fish"), "", "")
-	if !strings.Contains(body, "Someone else has started answering it in the terminal") || strings.Contains(body, "<form") || strings.Contains(body, "lost track") {
-		t.Fatalf("the touched card:\n%s", body)
-	}
-
-	// Muster's own earlier answer differs: said as that, the form holding it.
-	am3, s3, ts3 := askServer(t, true)
-	register(t, ts3)
-	region(t, s3, ts3, `data-ask-state="pending"`)
-	am3.amu.Lock()
-	am3.typeErr = mirror.WithAskKeys(fmt.Errorf("%w: x", mirror.ErrAskLost), 1)
-	am3.amu.Unlock()
-	_, _ = answerReq(t, s3, ts3, answerForm(gateTool, "a0", "Red", "a1", "Cat"), "", "")
-	am3.amu.Lock()
-	am3.typeErr = fmt.Errorf("%w: x", mirror.ErrAskOwnDifferent)
-	am3.amu.Unlock()
-	_, body = answerReq(t, s3, ts3, answerForm(gateTool, "a0", "Blue", "a1", "Cat"), "", "")
-	if !strings.Contains(body, "still holds the answer muster started typing earlier") || !strings.Contains(body, `value="Red" checked`) ||
-		strings.Contains(body, `value="Blue" checked`) || !strings.Contains(body, "Try again") {
-		t.Fatalf("the own-different card:\n%s", body)
-	}
-	am3.amu.Lock()
-	am3.typeErr = nil
-	am3.amu.Unlock()
-	_, _ = answerReq(t, s3, ts3, answerForm(gateTool, "a0", "Red", "a1", "Cat"), "", "")
-	am3.amu.Lock()
-	last := am3.priors[len(am3.priors)-1]
-	am3.amu.Unlock()
-	if last == nil || last.Keys != 1 || !reflect.DeepEqual(last.Choices, []askq.Choice{{Picks: []int{0}}, {Picks: []int{0}}}) {
-		t.Fatalf("after an own-different refusal the host was handed %+v, want the earlier answer still", last)
+	// Someone else typed in the terminal: said as that, no form; after keys
+	// of muster's reached the picker, that it may be partly filled in.
+	for _, keys := range []int{0, 3} {
+		am2, s2, ts2 := askServer(t, true)
+		register(t, ts2)
+		region(t, s2, ts2, `data-ask-state="pending"`)
+		am2.amu.Lock()
+		am2.typeErr = mirror.WithAskKeys(fmt.Errorf("%w: x", mirror.ErrAskTouched), keys)
+		am2.amu.Unlock()
+		_, body = answerReq(t, s2, ts2, answerForm(gateTool, "a0", "Blue", "a1", "Fish"), "", "")
+		if !strings.Contains(body, "Someone else has started answering it in the terminal") || strings.Contains(body, "data-ask-form") ||
+			strings.Contains(body, "lost track") || strings.Contains(body, "may be partly filled in") != (keys > 0) {
+			t.Fatalf("the touched card after %d keys:\n%s", keys, body)
+		}
 	}
 }
 
@@ -832,12 +820,9 @@ func TestEachFailureSaysWhatTheTerminalHas(t *testing.T) {
 	if got := askTypeFailure(fmt.Errorf("%w: x", mirror.ErrAskLost), true, false); got != askNoteLost {
 		t.Errorf("lost, resumable: %q", got)
 	}
-	// Not as muster left it, after a typing whose outcome never came back.
-	if got := askTypeFailure(fmt.Errorf("%w: x", mirror.ErrAskTouched), false, true); got != askNoteTouchedUnsure {
-		t.Errorf("touched, unsure: %q", got)
-	}
-	if got := askTypeFailure(fmt.Errorf("%w: x", mirror.ErrAskOwnDifferent), false, false); got != askNoteOwnDifferent {
-		t.Errorf("own different: %q", got)
+	// Not as muster left it, after keys of muster's reached the picker.
+	if got := askTypeFailure(fmt.Errorf("%w: x", mirror.ErrAskTouched), false, true); got != askNoteTouched+askPartlyFilled {
+		t.Errorf("touched after muster's keys: %q", got)
 	}
 }
 

@@ -106,7 +106,7 @@ func TestTmuxAnswerAskTypesThroughAReadOnlyViewer(t *testing.T) {
 		v, _ := exec.Command("tmux", "-V").Output()
 		t.Fatalf("send-keys with a read-only viewer on %s: %v %s — the premise of typing by paste-buffer -S does not hold on this tmux", strings.TrimSpace(string(v)), err, out)
 	}
-	if err := b.AnswerAsk(context.Background(), pane, qs, cs); err != nil {
+	if err := answer1(b, context.Background(), pane, qs, cs); err != nil {
 		t.Fatalf("AnswerAsk: %v\n%s", err, r.pane("ask"))
 	}
 	var got map[string]string
@@ -128,7 +128,7 @@ func TestTmuxAnswerAskNeverTypesIntoATouchedPicker(t *testing.T) {
 	}
 	waitFor(t, "the tick", func() bool { return strings.Contains(r.pane("touched"), "[✔] Dog") })
 	before := r.pane("touched")
-	err := b.AnswerAsk(context.Background(), pane, qs, []askq.Choice{{Picks: []int{0}}})
+	err := answer1(b, context.Background(), pane, qs, []askq.Choice{{Picks: []int{0}}})
 	if !errors.Is(err, askdrive.ErrNotUntouched) {
 		t.Fatalf("a touched picker: %v", err)
 	}
@@ -188,7 +188,7 @@ func TestTmuxFocusAndMouseDoNotStopADrive(t *testing.T) {
 		t.Fatalf("a read-only viewer attaching moved the input clock: %v -> %v", before, last)
 	}
 	done := make(chan error, 1)
-	go func() { done <- b.AnswerAsk(context.Background(), pane, qs, []askq.Choice{{Picks: []int{0, 2}}}) }()
+	go func() { done <- answer1(b, context.Background(), pane, qs, []askq.Choice{{Picks: []int{0, 2}}}) }()
 	stop := time.After(2 * time.Second)
 	tick := time.NewTicker(300 * time.Millisecond)
 	defer tick.Stop()
@@ -226,7 +226,7 @@ func TestTmuxAKeystrokeMidDriveStopsIt(t *testing.T) {
 	qs := []askq.Question{{Question: "Which pets do you have?", Header: "Pets", MultiSelect: true, Options: []askq.Option{{Label: "Cat"}, {Label: "Dog"}, {Label: "Fish"}}}}
 	r, b, pane, result, rw := typingRig(t, "keystroke", qs)
 	done := make(chan error, 1)
-	go func() { done <- b.AnswerAsk(context.Background(), pane, qs, []askq.Choice{{Picks: []int{0, 2}}}) }()
+	go func() { done <- answer1(b, context.Background(), pane, qs, []askq.Choice{{Picks: []int{0, 2}}}) }()
 	time.Sleep(600 * time.Millisecond)
 	if _, err := rw.Write([]byte("2")); err != nil {
 		t.Fatal(err)
@@ -273,7 +273,7 @@ func TestTmuxLeftoverBuffersAreDropped(t *testing.T) {
 	if has, known := b.RawPaste(context.Background()); !has || !known {
 		t.Fatalf("this tmux (>= %s) reports paste-buffer -S has=%v known=%v", MinRawPasteTmux, has, known)
 	}
-	if err := b.AnswerAsk(context.Background(), pane, qs, []askq.Choice{{Picks: []int{1}}}); err != nil {
+	if err := answer1(b, context.Background(), pane, qs, []askq.Choice{{Picks: []int{1}}}); err != nil {
 		t.Fatal(err)
 	}
 	got := r.run("list-buffers", "-F", "#{buffer_name}")

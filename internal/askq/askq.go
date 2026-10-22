@@ -20,6 +20,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -180,6 +181,32 @@ func ParseInput(input json.RawMessage) ([]Question, error) {
 		return nil, invalid("the input is not a JSON object: %v", err)
 	}
 	return ParseQuestions(in.Questions)
+}
+
+// AnswersOf is the answers choices give, keyed by question text, as the CLI
+// records them — the review screen's lines and the transcript's toolUseResult:
+// a multi-select answer's options in the question's order, then the text, all
+// joined by MultiJoin.
+func AnswersOf(qs []Question, choices []Choice) map[string]string {
+	out := make(map[string]string, len(qs))
+	for i, q := range qs {
+		if i >= len(choices) {
+			break
+		}
+		picks := slices.Clone(choices[i].Picks)
+		slices.Sort(picks)
+		var parts []string
+		for _, p := range picks {
+			if p >= 0 && p < len(q.Options) {
+				parts = append(parts, q.Options[p].Label)
+			}
+		}
+		if choices[i].Other != "" {
+			parts = append(parts, choices[i].Other)
+		}
+		out[q.Question] = strings.Join(parts, MultiJoin)
+	}
+	return out
 }
 
 // Choice is one question's answer as the picker takes it: the options chosen

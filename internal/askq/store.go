@@ -91,10 +91,7 @@ type Entry struct {
 	// sent (nil: nothing known to be there). A drive that stopped part way
 	// leaves it; the next drive is handed it (BeginTyping) so it can tell
 	// muster's own partial answer from someone else's and continue it.
-	Left *Progress
-	// Unsure says a drive's outcome never came back: the picker may hold
-	// keys muster typed that Left does not record.
-	Unsure   bool
+	Left     *Progress
 	Created  time.Time
 	Resolved time.Time
 }
@@ -444,7 +441,7 @@ func (s *Store) TypingDone(key Key) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if en, ok := s.byID[s.byKey[key]]; ok {
-		en.driveUntil, en.Left, en.Unsure = time.Time{}, nil, false
+		en.driveUntil, en.Left = time.Time{}, nil
 	}
 }
 
@@ -465,7 +462,7 @@ type Failure struct {
 // Typing question becomes Failed, still the terminal's to answer. A question
 // the CLI resolved meanwhile is left as it is. Unsettled, no new typing may
 // begin until MaxDrive after the last began (BeginTyping's ErrBusy), and what
-// the picker holds is not known (Entry.Unsure).
+// the picker holds is not known (no Left).
 func (s *Store) TypingFailed(key Key, f Failure) (Entry, error) {
 	var fire []Entry
 	defer func() { s.notify(fire) }()
@@ -478,11 +475,8 @@ func (s *Store) TypingFailed(key Key, f Failure) (Entry, error) {
 	if f.Settled {
 		en.driveUntil = time.Time{}
 		en.Left = f.Left.clone()
-		if f.Left != nil {
-			en.Unsure = false // it read the picker and knows what it left
-		}
 	} else {
-		en.Left, en.Unsure = nil, true
+		en.Left = nil
 	}
 	if en.State == Typing {
 		en.State, en.Note, en.Retry = Failed, f.Note, f.Retry

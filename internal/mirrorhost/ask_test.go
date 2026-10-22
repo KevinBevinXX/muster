@@ -21,19 +21,28 @@ import (
 // and how each kind of failure is named back.
 
 // askingBackend is windowsBackend that can also type into a picker: it records
-// each AnswerAsk and answers with err.
+// each AnswerAsk (and the prior it was handed), and answers with keys and err.
 type askingBackend struct {
 	*windowsBackend
-	mu    sync.Mutex
-	calls []string
-	err   error
+	mu     sync.Mutex
+	calls  []string
+	priors []*askq.Progress
+	keys   int
+	err    error
 }
 
-func (b *askingBackend) AnswerAsk(_ context.Context, pane string, qs []askq.Question, cs []askq.Choice) error {
+func (b *askingBackend) AnswerAsk(_ context.Context, pane string, qs []askq.Question, cs []askq.Choice, prior *askq.Progress) (int, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.calls = append(b.calls, fmt.Sprintf("%s %s %v", pane, qs[0].Question, cs))
-	return b.err
+	b.priors = append(b.priors, prior)
+	return b.keys, b.err
+}
+
+// answer1 is b's AnswerAsk with nothing typed before, its keys dropped.
+func answer1(b AskBackend, ctx context.Context, pane string, qs []askq.Question, cs []askq.Choice) error {
+	_, err := b.AnswerAsk(ctx, pane, qs, cs, nil)
+	return err
 }
 
 func (b *askingBackend) snapshotCalls() []string {
@@ -42,28 +51,11 @@ func (b *askingBackend) snapshotCalls() []string {
 	return append([]string(nil), b.calls...)
 }
 
-// resumingBackend is askingBackend that can continue an answer
-// (AskResumer): it records the prior each answer was sent with, and answers
-// with keys and err.
-type resumingBackend struct {
-	*askingBackend
-	priors []*askq.Progress
-	keys   int
-}
-
-func (b *resumingBackend) AnswerAskFrom(_ context.Context, pane string, qs []askq.Question, cs []askq.Choice, prior *askq.Progress) (int, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	b.calls = append(b.calls, fmt.Sprintf("%s %s %v", pane, qs[0].Question, cs))
-	b.priors = append(b.priors, prior)
-	return b.keys, b.err
-}
-
 // TestTheHostContinuesWhatMusterSaysWasLeft: the answer's Prior reaches the
-// backend's AnswerAskFrom, and the keys it reports go back with its refusal
+// backend's AnswerAsk, and the keys it reports go back with its refusal
 // (Msg.Keys) — and not with a success, which leaves nothing to continue.
 func TestTheHostContinuesWhatMusterSaysWasLeft(t *testing.T) {
-	b := &resumingBackend{askingBackend: &askingBackend{windowsBackend: &windowsBackend{windows: threeWindows}}}
+	b := &askingBackend{windowsBackend: &windowsBackend{windows: threeWindows}}
 	d := newDrivenMuster(t)
 	d.run(t, wrapped{b}, nil, true)
 	waitUntil(t, "the hello", func() bool { return len(d.of(mirror.TypeHello)) == 1 })
@@ -179,7 +171,6 @@ func TestAnAnswerIsTypedIntoTheClaudePaneOnly(t *testing.T) {
 	}{
 		{fmt.Errorf("x: %w", askdrive.ErrNoPicker), mirror.AskRefusalNoPicker},
 		{fmt.Errorf("x: %w", askdrive.ErrNotUntouched), mirror.AskRefusalTouched},
-		{fmt.Errorf("x: %w", askdrive.ErrOwnDifferent), mirror.AskRefusalOwnDifferent},
 		{fmt.Errorf("x: %w", askdrive.ErrUnreadable), mirror.AskRefusalUnreadable},
 		{fmt.Errorf("%w: %w", askdrive.ErrLost, askdrive.ErrUnreadable), mirror.AskRefusalUnreadableTyped},
 		{fmt.Errorf("x: %w", askdrive.ErrLost), mirror.AskRefusalLost},
@@ -218,15 +209,15 @@ func TestOneDrivePerPane(t *testing.T) {
 	if !ok {
 		t.Fatal("the first drive could not take the pane")
 	}
-	err := tm.AnswerAsk(context.Background(), "%5", hostAskQs, []askq.Choice{{Picks: []int{0}}})
+	err := answer1(tm, context.Background(), "%5", hostAskQs, []askq.Choice{{Picks: []int{0}}})
 	if !errors.Is(err, ErrPaneBusy) {
 		t.Fatalf("a second drive of a busy pane: %v", err)
 	}
-	if err := tm.AnswerAsk(context.Background(), "%6", hostAskQs, []askq.Choice{{Picks: []int{0}}}); errors.Is(err, ErrPaneBusy) {
+	if err := answer1(tm, context.Background(), "%6", hostAskQs, []askq.Choice{{Picks: []int{0}}}); errors.Is(err, ErrPaneBusy) {
 		t.Fatalf("another pane: %v", err)
 	}
 	release()
-	if err := tm.AnswerAsk(context.Background(), "%5", hostAskQs, []askq.Choice{{Picks: []int{0}}}); errors.Is(err, ErrPaneBusy) {
+	if err := answer1(tm, context.Background(), "%5", hostAskQs, []askq.Choice{{Picks: []int{0}}}); errors.Is(err, ErrPaneBusy) {
 		t.Fatalf("the pane once released: %v", err)
 	}
 }
@@ -266,7 +257,7 @@ func TestTheRawPasteProbeReadsTmuxsAnswer(t *testing.T) {
 	}
 	// A tmux known to lack -S is refused before any key.
 	old := fake("old2", "command paste-buffer: unknown flag -S", "tmux 3.4")
-	if err := old.AnswerAsk(context.Background(), "%1", hostAskQs, []askq.Choice{{Picks: []int{0}}}); !errors.Is(err, ErrNoRawPaste) || !errors.Is(err, errCannotAnswer) {
+	if err := answer1(old, context.Background(), "%1", hostAskQs, []askq.Choice{{Picks: []int{0}}}); !errors.Is(err, ErrNoRawPaste) || !errors.Is(err, errCannotAnswer) {
 		t.Fatalf("an old tmux: %v", err)
 	}
 }

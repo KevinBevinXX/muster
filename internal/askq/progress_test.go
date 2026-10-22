@@ -6,7 +6,7 @@ import "testing"
 // drive left in the picker (Left) and whether it can be tried again (Retry);
 // the next BeginTyping returns it — what that drive is handed — and its own
 // outcome replaces it; a success clears it. An unsettled failure records
-// nothing it may have typed, and says so (Unsure).
+// nothing it may have typed.
 func TestWhatADriveLeftIsHandedToTheNext(t *testing.T) {
 	s, c := testStore(t)
 	if _, err := s.Open(key(1), twoQs, ""); err != nil {
@@ -17,7 +17,7 @@ func TestWhatADriveLeftIsHandedToTheNext(t *testing.T) {
 		t.Fatal(err)
 	}
 	e, _ := s.TypingFailed(key(1), Failure{Note: "lost", Settled: true, Left: left, Retry: true})
-	if e.State != Failed || !e.Retry || e.Left == nil || e.Left.Keys != 2 || e.Unsure {
+	if e.State != Failed || !e.Retry || e.Left == nil || e.Left.Keys != 2 {
 		t.Fatalf("a settled failure: %+v", e)
 	}
 	// The record is a copy: the caller's later changes do not reach it.
@@ -31,18 +31,18 @@ func TestWhatADriveLeftIsHandedToTheNext(t *testing.T) {
 	if e.Left != nil || e.Retry {
 		t.Fatalf("a drive that left nothing: %+v", e)
 	}
-	// An unsettled one: nothing recorded, and Unsure.
+	// An unsettled one: nothing recorded.
 	c.add(MaxDrive)
 	_, _, _ = s.BeginTyping(key(1), someAnswers)
 	e, _ = s.TypingFailed(key(1), Failure{Note: "timeout", Settled: false, Left: left})
-	if e.Left != nil || !e.Unsure {
+	if e.Left != nil {
 		t.Fatalf("an unsettled failure: %+v", e)
 	}
 	// A success clears both.
 	c.add(MaxDrive)
 	_, _, _ = s.BeginTyping(key(1), someAnswers)
 	s.TypingDone(key(1))
-	if e, _ := s.Find(key(1)); e.Left != nil || e.Unsure {
+	if e, _ := s.Find(key(1)); e.Left != nil {
 		t.Fatalf("after a success: %+v", e)
 	}
 }

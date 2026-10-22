@@ -265,11 +265,11 @@ func (g guardedBackend) PaneHermes(_ context.Context, pane string) (HermesProc, 
 	return HermesIdentity{Proc: g.proc}.InTree(g.roots[pane])
 }
 
-func (g guardedBackend) AnswerAsk(_ context.Context, pane string, _ []askq.Question, _ []askdrive.Choice) error {
+func (g guardedBackend) AnswerAsk(_ context.Context, pane string, _ []askq.Question, _ []askdrive.Choice, _ *askq.Progress) (int, error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	*g.typed = append(*g.typed, pane)
-	return nil
+	return 0, nil
 }
 
 // TestEveryHostPasteIntoAHermesPaneIsRefusedAndTypesNothing is the host paste
