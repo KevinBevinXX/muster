@@ -314,7 +314,67 @@ func TestTheReporterPostsWorkOnChangeAndHeartbeatsWhileRunning(t *testing.T) {
 // TestTheReporterWithdrawsItsReportWhenCcdStops: ccd shutting down (the agent
 // being stopped) posts a last, empty report when it had something running —
 // best effort, beside muster's own clear on stop.
+//
+// 🔴 THE REPORT IS STILL IN FLIGHT WHEN CCD STOPS: muster has received it (and
+// applies it), but its answer has not reached ccd, so the post ends with the
+// cancellation and ccd never learns it landed. The withdrawal must still be
+// sent — muster may be showing the report. The first post's handler records
+// it, then never answers, so the cancel always lands mid-request.
 func TestTheReporterWithdrawsItsReportWhenCcdStops(t *testing.T) {
+	var mu sync.Mutex
+	var got []mirror.WindowWork
+	received := make(chan struct{}, 8)
+	stop := make(chan struct{})
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		var ww mirror.WindowWork
+		_ = json.Unmarshal(b, &ww)
+		mu.Lock()
+		got = append(got, ww)
+		first := len(got) == 1
+		mu.Unlock()
+		received <- struct{}{}
+		if first {
+			// Applied, but the answer never comes: ccd stops mid-request.
+			select {
+			case <-r.Context().Done():
+			case <-stop:
+			}
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer ts.Close()
+	defer close(stop) // before ts.Close: it waits for the blocked handler
+	r := newWorkReporter(ts.URL, "agent-token", func() cctasks.Work { return cctasks.Work{Subagents: 3, Shells: 2} }, t.Logf)
+	r.interval = time.Hour
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { r.run(ctx); close(done) }()
+	select {
+	case <-received:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the report never reached muster")
+	}
+	cancel() // the report's post is in flight: its handler has not answered
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("ccd did not stop")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	want := []mirror.WindowWork{{Subagents: 3, Shells: 2}, {}}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("posts %+v, want %+v (the report, then its withdrawal)", got, want)
+	}
+}
+
+// TestTheReporterSendsNoWithdrawalAfterItsClearLanded: once a zero report is
+// known to have landed, muster shows nothing, so ccd stopping sends nothing
+// more. (An invariant guard: the pre-fix reporter never violated it; it pins
+// that mayShow is cleared by a landed clear.)
+func TestTheReporterSendsNoWithdrawalAfterItsClearLanded(t *testing.T) {
 	var mu sync.Mutex
 	var got []mirror.WindowWork
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -327,20 +387,47 @@ func TestTheReporterWithdrawsItsReportWhenCcdStops(t *testing.T) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	defer ts.Close()
-	r := newWorkReporter(ts.URL, "agent-token", func() cctasks.Work { return cctasks.Work{Subagents: 3, Shells: 2} }, t.Logf)
-	r.interval = time.Hour
+	var smu sync.Mutex
+	cur := cctasks.Work{Subagents: 3, Shells: 2}
+	samples := 0
+	r := newWorkReporter(ts.URL, "agent-token", func() cctasks.Work {
+		smu.Lock()
+		defer smu.Unlock()
+		samples++
+		return cur
+	}, t.Logf)
+	r.interval = 2 * time.Millisecond
+	posts := func() int { mu.Lock(); defer mu.Unlock(); return len(got) }
+	waitPosts := func(n int) {
+		t.Helper()
+		deadline := time.Now().Add(5 * time.Second)
+		for posts() < n && time.Now().Before(deadline) {
+			time.Sleep(2 * time.Millisecond)
+		}
+		if posts() < n {
+			t.Fatalf("%d posts, want %d", posts(), n)
+		}
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() { r.run(ctx); close(done) }()
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		mu.Lock()
-		n := len(got)
-		mu.Unlock()
-		if n == 1 {
+	waitPosts(1)
+	smu.Lock()
+	cur = cctasks.Work{}
+	smu.Unlock()
+	waitPosts(2)
+	// The clear has reached muster; the reporter samples again only once its
+	// post has returned, so a later sample means ccd has the clear's answer.
+	smu.Lock()
+	n := samples
+	smu.Unlock()
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(time.Millisecond) {
+		smu.Lock()
+		more := samples > n
+		smu.Unlock()
+		if more {
 			break
 		}
-		time.Sleep(2 * time.Millisecond)
 	}
 	cancel()
 	<-done
@@ -348,6 +435,63 @@ func TestTheReporterWithdrawsItsReportWhenCcdStops(t *testing.T) {
 	defer mu.Unlock()
 	want := []mirror.WindowWork{{Subagents: 3, Shells: 2}, {}}
 	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
-		t.Fatalf("posts %+v, want %+v (the report, then its withdrawal)", got, want)
+		t.Fatalf("posts %+v, want %+v (the report and its clear, nothing on stop)", got, want)
+	}
+}
+
+// TestTheReporterWithdrawsWhenMusterNeverAnswers: muster unreachable throughout
+// — every request is taken and never answered, so no report is ever known to
+// have landed. Any of them may have, so ccd stopping still sends the
+// withdrawal, and that attempt is bounded by its own deadline: shutdown does
+// not hang on a muster that does not answer.
+func TestTheReporterWithdrawsWhenMusterNeverAnswers(t *testing.T) {
+	var mu sync.Mutex
+	var got []mirror.WindowWork
+	received := make(chan struct{}, 8)
+	stop := make(chan struct{})
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		var ww mirror.WindowWork
+		_ = json.Unmarshal(b, &ww)
+		mu.Lock()
+		got = append(got, ww)
+		mu.Unlock()
+		received <- struct{}{}
+		select { // never answers
+		case <-r.Context().Done():
+		case <-stop:
+		}
+	}))
+	defer ts.Close()
+	defer close(stop)
+	r := newWorkReporter(ts.URL, "agent-token", func() cctasks.Work { return cctasks.Work{Subagents: 3, Shells: 2} }, t.Logf)
+	r.interval = time.Hour
+	r.withdrawWithin = 100 * time.Millisecond
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { r.run(ctx); close(done) }()
+	select {
+	case <-received:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the report never reached muster")
+	}
+	start := time.Now()
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("ccd's shutdown hung on a muster that never answers")
+	}
+	took := time.Since(start)
+	mu.Lock()
+	defer mu.Unlock()
+	want := []mirror.WindowWork{{Subagents: 3, Shells: 2}, {}}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("posts %+v, want %+v (the report, then a withdrawal attempt)", got, want)
+	}
+	// The withdrawal waited on its own deadline (not the cancelled context,
+	// which would end it at once) and no longer.
+	if took < r.withdrawWithin || took > r.withdrawWithin+2*time.Second {
+		t.Fatalf("shutdown took %v, want about the withdrawal's own deadline %v", took, r.withdrawWithin)
 	}
 }

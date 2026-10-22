@@ -260,16 +260,18 @@ type workReporter struct {
 	client      *http.Client
 	interval    time.Duration
 	heartbeat   time.Duration
-	sample      func() cctasks.Work
-	now         func() time.Time
-	logf        func(format string, args ...any)
+	// withdrawWithin bounds the withdrawal sent as ccd stops.
+	withdrawWithin time.Duration
+	sample         func() cctasks.Work
+	now            func() time.Time
+	logf           func(format string, args ...any)
 }
 
 func newWorkReporter(base, token string, sample func() cctasks.Work, logf func(string, ...any)) *workReporter {
 	return &workReporter{
 		base: strings.TrimRight(base, "/"), token: token,
 		client:   &http.Client{Timeout: 5 * time.Second, CheckRedirect: noRedirects.CheckRedirect},
-		interval: workInterval, heartbeat: workHeartbeat,
+		interval: workInterval, heartbeat: workHeartbeat, withdrawWithin: 2 * time.Second,
 		sample: sample, now: time.Now, logf: logf,
 	}
 }
@@ -277,12 +279,20 @@ func newWorkReporter(base, token string, sample func() cctasks.Work, logf func(s
 func (r *workReporter) run(ctx context.Context) {
 	t := time.NewTicker(r.interval)
 	defer t.Stop()
-	var last cctasks.Work
+	var last cctasks.Work // the last report muster is KNOWN to have taken
 	var sent time.Time
 	failing := false
+	// mayShow: muster may be showing a non-zero report. Set by ATTEMPTING one,
+	// not by its success — a post that fails may still have been applied (its
+	// answer lost, or ccd stopping mid-request cancels it after muster took
+	// it). Cleared only by a zero report known to have landed.
+	mayShow := false
 	for {
 		w := r.sample()
 		if w != last || (w != (cctasks.Work{}) && r.now().Sub(sent) >= r.heartbeat) {
+			if w != (cctasks.Work{}) {
+				mayShow = true
+			}
 			if err := r.post(ctx, w); err != nil {
 				if !failing {
 					r.logf("ccd: reporting work %+v to muster: %v", w, err)
@@ -290,15 +300,21 @@ func (r *workReporter) run(ctx context.Context) {
 				failing = true // retried at the next sample; logged once
 			} else {
 				last, sent, failing = w, r.now(), false
+				if w == (cctasks.Work{}) {
+					mayShow = false
+				}
 			}
 		}
 		select {
 		case <-ctx.Done():
-			// ccd is shutting down (the agent is being stopped): withdraw what it
-			// last reported, best effort — muster also clears a stopped agent's
-			// chip itself, and the TTL ends it if neither reaches it.
-			if last != (cctasks.Work{}) {
-				cctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			// ccd is shutting down (the agent is being stopped): withdraw whatever
+			// muster may be showing, best effort — muster also clears a stopped
+			// agent's chip itself, and the TTL ends it if neither reaches it.
+			// 🔴 On mayShow, not on `last`: the report in flight when ctx was
+			// cancelled fails here, yet muster may have applied it. The withdrawal
+			// runs on its own deadline, never the cancelled ctx.
+			if mayShow {
+				cctx, cancel := context.WithTimeout(context.Background(), r.withdrawWithin)
 				_ = r.post(cctx, cctasks.Work{})
 				cancel()
 			}
