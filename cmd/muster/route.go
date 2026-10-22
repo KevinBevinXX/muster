@@ -18,9 +18,12 @@ import (
 // It posts to POST /api/routes/{route_id}/reply with the host's ordinary muster
 // credential — a personal API token (or the shared hook token), which acts as the
 // OWNER: the route is that owner's, and row-level security answers another
-// owner's route as not found. "reply_to_chief" is the name the routed block
-// gives this answer; there is no such agent tool — only a mirrored session can
-// be routed to (a dispatched agent is not a target).
+// owner's route as not found. It is the FALLBACK: the routed block tells the
+// session to answer with the route_reply tool of its muster MCP server
+// (internal/api/route_reply_tool.go — the same answer path, bound to the
+// route's target session), and to run this only when that tool is not in its
+// list. Only a mirrored session can be routed to (a dispatched agent is not a
+// target).
 
 const routeReplyRoute = "/api/routes/{id}/reply"
 

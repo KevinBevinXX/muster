@@ -40,6 +40,10 @@ type routeMirror struct {
 	claudeSession string
 	label         string
 	pasted        int
+	// otherSession, when set, is a second Claude Code window (@5) on the same
+	// host running that conversation: one of the owner's sessions that is NOT
+	// a route's target.
+	otherSession string
 }
 
 func (m *routeMirror) Hosts(context.Context) []mirror.HostView {
@@ -49,8 +53,13 @@ func (m *routeMirror) Hosts(context.Context) []mirror.HostView {
 	if sid == "" {
 		sid = routeSID
 	}
-	ws := mirror.NormalizeWindows([]mirror.Window{{Session: "work", ID: "@4", Index: 1, Active: true, Claude: true,
-		ClaudeSession: sid, Label: m.label, Status: mirror.StatusIdle, StatusSince: 1}}, 0)
+	raw := []mirror.Window{{Session: "work", ID: "@4", Index: 1, Active: true, Claude: true,
+		ClaudeSession: sid, Label: m.label, Status: mirror.StatusIdle, StatusSince: 1}}
+	if m.otherSession != "" {
+		raw = append(raw, mirror.Window{Session: "work", ID: "@5", Index: 2, Claude: true,
+			ClaudeSession: m.otherSession, Status: mirror.StatusIdle, StatusSince: 1})
+	}
+	ws := mirror.NormalizeWindows(raw, 0)
 	h := mirror.HostView{Host: "tower", Windows: ws, Online: true, Rendered: true, Interactive: m.interactive,
 		PanePaste: m.interactive, StatusReport: m.statusReport}
 	h.Sessions, h.Claude, h.Labels, h.Activity = mirror.SessionsOf(ws)
@@ -418,6 +427,26 @@ func TestATimedOutRouteCancelsItsInjectionAndGoesBackToTheChief(t *testing.T) {
 	// The pass is idempotent: a second one times nothing else out.
 	if n, _ := f.srv.RouteTimeoutPass(context.Background()); n != 0 {
 		t.Fatalf("a second pass timed out %d more", n)
+	}
+}
+
+// TestARouteTakesItsDeadlineFromRoutingTimeout: the deadline a route is created
+// with is Routing.Timeout (MUSTER_ROUTE_TIMEOUT) when set — two values distinct
+// from each other and from the 30m default — and the default when it is 0.
+func TestARouteTakesItsDeadlineFromRoutingTimeout(t *testing.T) {
+	f := newRouteFixture(t)
+	for i, c := range []struct {
+		set, want time.Duration
+	}{{7 * time.Minute, 7 * time.Minute}, {3 * time.Hour, 3 * time.Hour}, {0, DefaultRouteTimeout}} {
+		f.routing.Timeout = c.set
+		id := f.route(t, f.deliveredMessage(t, f.owner, f.chief.ID, "route-deadline-"+strconv.Itoa(i)))
+		r, err := f.plugins.Route(f.asOwner, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := r.TimeoutAt.Sub(r.CreatedAt); got < c.want-5*time.Second || got > c.want+5*time.Second {
+			t.Errorf("Routing.Timeout %v: the route's deadline is %v after it was made, want %v", c.set, got, c.want)
+		}
 	}
 }
 

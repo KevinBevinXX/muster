@@ -731,7 +731,12 @@ block's header cannot reach column 0 or add a session. The titles inside it are
 still a summarizer's output, so the block says to treat them as data. The
 chief's standing instructions tell it to check those sessions, and
 `sessions_overview`, before filing a task or drafting a reply, and to route
-with `route_to_session` only when one is clearly on it.
+with `route_to_session` only when one is clearly on it. When none is and
+the message asks you to do or decide something (a question to you, a request,
+an approval), they tell it not to stop at reading it: it raises an
+`attention_ask` summarising who the message is from and what it asks, so it
+reaches your Attention view. A message that only informs gets no ask: asks
+stay open a day and every agent shares your open-ask limit.
 
 This is pushed rather than left to the chief because a chief that was not
 told called no session tool at all. See [focus](focus.md#why-a-time-window-over-history-and-not-the-current-focus)
@@ -746,7 +751,8 @@ itself. It finds the session by [focus](focus.md) (`focus_search`,
 turn for each message says when to do this.
 
 1. **The route.** muster records a route (`session_routes`, migration `0021`):
-   the message, the chief, the target and a deadline, 30 minutes away. The
+   the message, the chief, the target and a deadline, `MUSTER_ROUTE_TIMEOUT`
+   away (30 minutes unless set; [configuration](configuration.md)). The
    message must be one delivered to that chief, replyable, not already routed,
    and with no reply already approved and on its way.
 2. **Into the session.** Only a **mirrored Claude Code window** can take a
@@ -759,12 +765,30 @@ turn for each message says when to do this.
    and how to answer, then the message behind the fence's content prefix. It
    appears in that window's queue like any queued message, and you can Cancel
    it there.
-3. **The answer.** The session answers with `reply_to_chief`: from a mirrored
-   window, `muster route reply <route_id> --body-file -` (the answer on stdin),
-   which posts to `POST /api/routes/{route_id}/reply` with that host's muster
-   credential — your personal API token, or the hook token. The route must be
-   yours; the same answer again changes nothing; a different second answer is
-   refused.
+3. **The answer.** The session answers with the `route_reply {route_id, body}`
+   tool of its [muster MCP server](attention.md#mirrored-claude-code-sessions)
+   (`POST /mirror/mcp`, the mirror host's token). It is bound to the route's
+   **target**: only a call from the Claude session the route was sent to is
+   taken — another of your sessions is refused even with the route id, and so
+   is every dispatched agent — and only while the route is still waiting (an
+   answered, timed-out or failed route is refused, naming its state). ⚠ Like
+   every `/mirror/mcp` call, the session is the one the caller's pane names on
+   a host the token proves: it keeps one session from answering another's
+   route by mistake, and keeps every other host out, but it is not a boundary
+   between two sessions of one host.
+
+   A session with no muster MCP server falls back to
+   `muster route reply <route_id> --body-file -` (the answer on stdin), which
+   posts to `POST /api/routes/{route_id}/reply` with that host's muster
+   credential — your personal API token, or the hook token. There the route
+   must be yours; the same answer again changes nothing; a different second
+   answer is refused. Both doors record and relay the answer through the same
+   code (`answerRoute`).
+
+   The routed block asks for the reply itself with no credentials or
+   addresses. It no longer asks the session to leave out infrastructure names:
+   the reply screen below still refuses the deployment's own names, with an
+   error the session can act on.
 4. **Back to the sender**, exactly once, as the message's reply draft:
    - when the message's sender is on your allowlist (`MUSTER_ROUTE_RELAY_ALLOW`)
      **for the plugin that delivered it**, and that plugin marked the sender

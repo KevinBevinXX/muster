@@ -390,6 +390,9 @@ var bannerLedger = []string{
 	// and how many owners have an allowlist.
 	envSessionRouting,
 	envRouteRelayAllow,
+	// The route deadline: ON, the line names the value a route waits before it
+	// goes back to the chief; OFF, that it is not read.
+	envRouteTimeout,
 	// 🔴 TASK ROUTING IS LEDGERED: ON, an outside system's task notice reaches
 	// the chief, and with dispatch the chief can start agents on the owner's
 	// credentials, so the log must say which state this is.
@@ -764,7 +767,7 @@ func bannerBothDirections(t *testing.T) (onOut, offOut string) {
 		Plugins:         bannerStubPlugins{},
 		PluginGateway:   bannerStubPluginGateway{},
 		Routes:          bannerStubRoutes{},
-		Routing:         &api.Routing{Allow: bannerAllowlist(t)},
+		Routing:         &api.Routing{Allow: bannerAllowlist(t), Timeout: 45 * time.Minute},
 		TaskRouting:     &api.TaskRouting{DispatchOwners: map[int64]bool{1: true}},
 		SessionRuntimes: []string{"claude-code", "gateway"},
 	}, &pgxpool.Pool{})
