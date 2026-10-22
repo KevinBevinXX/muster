@@ -37,7 +37,7 @@ var (
 	// ErrInteractiveRefused: the host did not advertise interactive attaches.
 	ErrInteractiveRefused = errors.New("mirror: this host is read-only — its muster-mirror was not started with -interactive")
 	// ErrTooManyStreams: the host already has MaxStreamsPerHost terminals open.
-	ErrTooManyStreams = fmt.Errorf("mirror: this host already has %d terminals open; close one first", MaxStreamsPerHost)
+	ErrTooManyStreams = fmt.Errorf("mirror: this host already has %d terminals open; close one first — a view left open in another tab or window may hold one: close that window", MaxStreamsPerHost)
 	// ErrTooManyHosts: the hub already holds MaxHosts connected hosts.
 	ErrTooManyHosts = fmt.Errorf("mirror: muster already has %d mirror hosts connected", MaxHosts)
 )

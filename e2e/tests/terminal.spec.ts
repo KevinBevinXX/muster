@@ -111,8 +111,13 @@ test('a claude-code agent opens its live terminal read-only at phone width', asy
   expect(ob.x + ob.width, 'Terminal button fits the viewport').toBeLessThanOrEqual(412);
   await noHorizontalScroll(page);
 
+  // The switch opens the terminal in a frame over the chat (view_swap.go),
+  // the address following it; its own page, opened at that address, is what
+  // the checks below measure at phone width.
   await open.click();
   await page.waitForURL(origin + '/agents/' + name + '/terminal');
+  await expect(page.frameLocator('iframe[data-muster-view]').locator('#term .xterm-rows')).toContainText('FAKE-TUI mode=ro');
+  await page.goto(origin + '/agents/' + name + '/terminal');
   await expect(screen(page)).toContainText('FAKE-TUI mode=ro');
   await expect(screen(page)).toContainText('agent=' + name);
   await expect(page.locator('#term-status')).toHaveText('Connected');

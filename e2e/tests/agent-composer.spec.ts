@@ -155,13 +155,16 @@ for (const vp of [
       await noHorizontalScroll(page);
 
       // The Terminal: the same switch, the other way round — and a message box.
+      // It opens in a frame over the chat (view_swap.go), the address
+      // following it.
       await toTerm.click();
       await page.waitForURL(origin + '/agents/' + agent.name + '/terminal');
-      await expect(screen(page)).toContainText('FAKE-TUI mode=ro');
-      await expect(page.locator('#view-terminal')).toHaveAttribute('aria-current', 'page');
-      await expect(page.locator('#view-rendered')).toHaveAttribute('href', '/agents/' + agent.name);
-      const input = page.locator('#mv-input');
-      const send = page.locator('#mv-send');
+      const term = page.frameLocator('iframe[data-muster-view]');
+      await expect(term.locator('#term .xterm-rows')).toContainText('FAKE-TUI mode=ro');
+      await expect(term.locator('#view-terminal')).toHaveAttribute('aria-current', 'page');
+      await expect(term.locator('#view-rendered')).toHaveAttribute('href', '/agents/' + agent.name);
+      const input = term.locator('#mv-input');
+      const send = term.locator('#mv-send');
       await expect(input).toBeVisible();
       for (const el of [input, send]) {
         const b = (await el.boundingBox())!;
@@ -173,12 +176,13 @@ for (const vp of [
       // message — the box is there, disabled, and says why.
       await expect(input).toBeDisabled();
       await expect(send).toBeDisabled();
-      await expect(page.locator('#mv-readonly')).toContainText('not running');
+      await expect(term.locator('#mv-readonly')).toContainText('not running');
       await noHorizontalScroll(page);
 
-      // And back.
-      await page.locator('#view-rendered').click();
+      // And back: the chat under the frame.
+      await term.locator('#view-rendered').click();
       await page.waitForURL((u) => u.pathname === '/agents/' + agent.name);
+      await expect(page.locator('iframe[data-muster-view]')).toBeHidden();
       await expect(page.locator('#chat-input')).toBeVisible();
     });
 
@@ -219,9 +223,10 @@ for (const vp of [
       // The rendered view has the message — and, since no pod exists to answer
       // it here, the stored note that it was not answered (which is what shows
       // the turn reached the gateway).
+      // (It opens in a frame over the terminal: view_swap.go.)
       await page.locator('#view-rendered').click();
       await page.waitForURL((u) => u.pathname === '/agents/' + agent.name);
-      const log = page.locator('#chat-log');
+      const log = page.frameLocator('iframe[data-muster-view]').locator('#chat-log');
       await expect(log.locator('[data-bubble="user"]').last()).toContainText(text, { timeout: 30_000 });
       await expect(log).toContainText('This message was not answered', { timeout: 60_000 });
       await noHorizontalScroll(page);

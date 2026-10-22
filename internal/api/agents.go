@@ -1431,6 +1431,11 @@ func (s *Server) handleAgentDetail(w http.ResponseWriter, r *http.Request) {
 		FocusHistory: s.focusHistoryPath(focus.AgentSubject(a.ID)),
 	}
 	view.SendNotice, view.SendNoticeOK = composerNotice(r)
+	// A claude-code agent's chat is the Rendered half of its Rendered |
+	// Terminal switch, which its terminal opens in a frame (ui/view_swap.go).
+	if agents.ResolveKind(view.Kind) == agents.KindClaudeCode {
+		allowSameOriginFrame(w)
+	}
 	formDocument(w)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := ui.RenderAgentDetail(w, view, s.shellFeatures(r.Context())); err != nil {
@@ -1806,6 +1811,10 @@ func (s *Server) handleAgentWS(w http.ResponseWriter, r *http.Request) {
 	}
 	defer c.CloseNow()
 	ctx := r.Context()
+	// The socket's open and end, like a terminal's attached/detached: how many
+	// chat sockets a page really holds (the browser suite counts them).
+	s.logger.Printf("agents: chat %s connected", a.Name)
+	defer s.logger.Printf("agents: chat %s disconnected", a.Name)
 
 	for {
 		_, data, err := c.Read(ctx)

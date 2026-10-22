@@ -94,27 +94,43 @@ const permissionsPolicy = "microphone=(self)"
 // base-uri and form-action hijacking; Referrer-Policy:no-referrer keeps the
 // magic-link token out of the Referer header.
 func securityHeaders(next http.Handler) http.Handler {
-	connectSrc := "'self'"
-	if telemetryConnectSrc != "" {
-		connectSrc += " " + telemetryConnectSrc
-	}
-	csp := "default-src 'self'; " +
-		"script-src 'self' 'unsafe-inline' 'unsafe-eval'; " +
-		"style-src 'self' 'unsafe-inline'; " +
-		"img-src 'self' data:; " +
-		"connect-src " + connectSrc + "; " +
-		"frame-ancestors 'none'; " +
-		"base-uri 'self'; " +
-		"form-action 'self'"
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := w.Header()
-		h.Set("Content-Security-Policy", csp)
+		h.Set("Content-Security-Policy", contentSecurityPolicy("'none'"))
 		h.Set("X-Content-Type-Options", "nosniff")
 		h.Set("X-Frame-Options", "DENY")
 		h.Set("Referrer-Policy", "no-referrer")
 		h.Set("Permissions-Policy", permissionsPolicy)
 		next.ServeHTTP(w, r)
 	})
+}
+
+// contentSecurityPolicy is the CSP, with frameAncestors as its frame-ancestors
+// source: 'none' for every response but allowSameOriginFrame's.
+func contentSecurityPolicy(frameAncestors string) string {
+	connectSrc := "'self'"
+	if telemetryConnectSrc != "" {
+		connectSrc += " " + telemetryConnectSrc
+	}
+	return "default-src 'self'; " +
+		"script-src 'self' 'unsafe-inline' 'unsafe-eval'; " +
+		"style-src 'self' 'unsafe-inline'; " +
+		"img-src 'self' data:; " +
+		"connect-src " + connectSrc + "; " +
+		"frame-ancestors " + frameAncestors + "; " +
+		"base-uri 'self'; " +
+		"form-action 'self'"
+}
+
+// allowSameOriginFrame lets THIS ORIGIN, and only it, frame the response: the
+// four pages of a Rendered | Terminal switch, whose other view is opened in a
+// frame over the one on screen (ui/view_swap.go) — frame-ancestors 'self' and
+// X-Frame-Options SAMEORIGIN in place of the 'none' / DENY every other
+// response keeps. An uploaded file is served with a sandbox CSP, so its origin
+// is opaque, not 'self': it cannot frame these either.
+func allowSameOriginFrame(w http.ResponseWriter) {
+	w.Header().Set("Content-Security-Policy", contentSecurityPolicy("'self'"))
+	w.Header().Set("X-Frame-Options", "SAMEORIGIN")
 }
 
 // accessLog logs one line per request (method, path, status, duration). It skips

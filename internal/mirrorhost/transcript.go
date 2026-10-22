@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strconv"
 	"time"
 
 	"github.com/ZacxDev/muster/internal/cctranscript"
@@ -159,9 +160,20 @@ func (h *hostSide) watch(m mirror.Msg) {
 	}
 	h.watches[m.ID] = cancel
 	h.mu.Unlock()
+	// The watch's open and end, like a terminal's attached/detached: how many
+	// transcript streams a viewer really opened (the browser suite counts them),
+	// and what it asked for — the transcript from the start, or a resume from an
+	// offset. (A resume whose gen the host no longer has starts over with a
+	// Reset; the stream itself says so, not this line.)
+	from := "from the start"
+	if m.Gen != "" && m.Offset > 0 {
+		from = "resuming at " + strconv.FormatInt(m.Offset, 10)
+	}
+	h.c.log.Printf("muster-mirror: watching %q%s (%s, stream %d)", m.Session, windowSuffix(m.Window), from, m.ID)
 	go func() {
 		err := serve(ctx)
 		h.unwatch(m.ID)
+		h.c.log.Printf("muster-mirror: unwatched %q%s (stream %d)", m.Session, windowSuffix(m.Window), m.ID)
 		msg := ""
 		if err != nil && !errors.Is(err, context.Canceled) {
 			msg = err.Error()

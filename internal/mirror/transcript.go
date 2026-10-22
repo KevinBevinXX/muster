@@ -29,7 +29,7 @@ var (
 	// ErrNotClaude: the host does not report Claude Code in the session's pane.
 	ErrNotClaude = errors.New("mirror: the host reports no Claude Code session in this tmux session's pane")
 	// ErrTooManyWatches: the host already has MaxWatchesPerHost views open.
-	ErrTooManyWatches = fmt.Errorf("mirror: this host already has %d rendered views open; close one first", MaxWatchesPerHost)
+	ErrTooManyWatches = fmt.Errorf("mirror: this host already has %d rendered views open; close one first — a view left open in another tab or window may hold one: close that window", MaxWatchesPerHost)
 	// ErrViewOverrun: the browser fell streamBuffer batches behind a view.
 	ErrViewOverrun = errors.New("mirror: the transcript arrived faster than the browser read it; reconnect to resume")
 	// ErrPasteTimeout: the host did not confirm a paste in time.

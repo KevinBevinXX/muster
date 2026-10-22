@@ -195,6 +195,10 @@ export const listUxPort = port + 137;
 // (agent-cards-work.spec.ts): its own server (mirror plugin on), one mirrored
 // host with four windows and an OLDER host that sends neither message.
 export const workCardsPort = port + 145;
+// A mirrored window's Rendered | Terminal switch keeping both views' host
+// streams (view-swap.spec.ts): its own server (mirror plugin on) and one
+// per-window mirrored host with two Claude Code windows.
+export const viewSwapPort = port + 165;
 export const baseURL = `http://localhost:${port}`;
 export const versionA = 'e2e-a';
 export const versionB = 'e2e-b';

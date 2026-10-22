@@ -223,10 +223,11 @@ for (const vp of [
       await expect(page.locator('#mv-note')).toBeHidden();
 
       // Its Terminal is this window's too.
+      // (It opens in a frame over the view: view_swap.go.)
       await page.locator('#view-terminal').click();
       await page.waitForURL((u) => u.pathname === '/mirror/terminal');
       expect(new URL(page.url()).searchParams.get('window')).toBe('@9');
-      await expect(screen(page)).toContainText('FAKE-MIRROR session=scratch2 window=@9 mode=ro');
+      await expect(page.frameLocator('iframe[data-muster-view]').locator('#term .xterm-rows')).toContainText('FAKE-MIRROR session=scratch2 window=@9 mode=ro');
       await noHorizontalScroll(page);
     });
 

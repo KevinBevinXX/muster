@@ -477,6 +477,51 @@ test.describe('the full server', () => {
           console.log(`[cls ${vp.name}] ${label} with a restored draft ${r.total}`);
           if (r.total >= BAR) bad.push(report(`${vp.name} ${label} with a restored draft`, r));
         }
+        // 🔴 THE RENDERED ↔ TERMINAL SWITCH (internal/ui/view_swap.go): the
+        // first tap opens the other view in a frame over the page, later taps
+        // show or hide it. Measured in BOTH documents — the page's and the
+        // frame's (clsInit runs in every frame) — and each tap is started by
+        // SCRIPT (a scripted click is not input), so every shift counts.
+        await page.goto(morigin + view);
+        await expect(page.locator('#mv-log [data-tool-row]')).toHaveCount(1, { timeout: 15_000 });
+        await settle(page);
+        const frame = () => page.frames().find((f) => f !== page.mainFrame() && f.url().includes('/mirror/terminal'));
+        type Cls = { total: number; shifts: unknown[] };
+        const frameCls = async (reset: boolean): Promise<Cls> => {
+          const f = frame();
+          if (!f) {
+            // Before the first switch there is no frame to reset; after it, a
+            // missing frame is a measurement that did not happen, never a 0.
+            if (reset) return { total: 0, shifts: [] };
+            throw new Error('no view frame to measure');
+          }
+          return f.evaluate((r) => {
+            const S = (window as unknown as { __cls: { total: number; shifts: unknown[]; last: number } }).__cls;
+            const out = { total: +S.total.toFixed(5), shifts: S.shifts };
+            if (r) { S.total = 0; S.shifts = []; S.last = performance.now(); }
+            return out;
+          }, reset);
+        };
+        for (const [label, inFrame, link, ready] of [
+          ['switch to the terminal (opens the frame)', false, '#view-terminal', '#term .xterm-rows'],
+          ['switch back to the rendered view (kept)', true, '#view-rendered', '#mv-log [data-tool-row]'],
+          ['switch to the terminal again (kept)', false, '#view-terminal', '#term .xterm-rows'],
+        ] as const) {
+          await resetCls(page);
+          await frameCls(true);
+          const where = inFrame ? page.frameLocator('iframe[data-muster-view]') : page;
+          await where.locator(link).evaluate((a) => (a as HTMLElement).click());
+          const shown = label.includes('terminal') ? page.frameLocator('iframe[data-muster-view]') : page;
+          await expect(shown.locator(ready).first(), `${label} drew its content`).toBeVisible();
+          await settle(page);
+          await page.waitForTimeout(1000);
+          const top = await readCls(page);
+          const fr = await frameCls(false);
+          console.log(`[cls ${vp.name}] ${label} page ${top.total} frame ${fr.total}`);
+          if (top.total >= BAR) bad.push(report(`${vp.name} ${label} (the page)`, top));
+          if (fr.total >= BAR) bad.push(`${vp.name} ${label} (the frame): ${fr.total} ${JSON.stringify(fr.shifts)}`);
+        }
+        await expect(page.locator('iframe[data-muster-view]'), 'one frame: the switch opened it once and kept it').toHaveCount(1);
       } finally {
         await ctx.close();
       }

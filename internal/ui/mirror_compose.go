@@ -315,16 +315,23 @@ func composerPinScript() g.Node {
   var box = document.getElementById('mv-compose');
   if (!box) return;
   var root = document.documentElement;
+  // 🔴 IN THE SWITCH'S FRAME (view_swap.go) THE KEYBOARD IS THE TOP WINDOW'S.
+  // The frame is laid over the whole viewport, so its height is the top
+  // window's — but a keyboard that only overlays the page (iOS) shrinks the TOP
+  // window's visual viewport, never the frame's. Measured against the top
+  // window, the composer still rides on top of it.
+  var vw = window;
+  try { if (window.frameElement && window.frameElement.hasAttribute('` + ViewFrameAttr + `')) vw = window.parent; } catch (e) {}
   var pending = false;
   function measure() {
     pending = false;
-    var vv = window.visualViewport;
-    var bottom = window.innerHeight;
+    var vv = vw.visualViewport;
+    var bottom = vw.innerHeight;
     if (vv) {
       if (Math.abs(vv.scale - 1) > 0.001) return;
-      bottom = Math.min(window.innerHeight, vv.height + vv.offsetTop);
+      bottom = Math.min(vw.innerHeight, vv.height + vv.offsetTop);
     }
-    var kb = Math.max(0, Math.round(window.innerHeight - bottom));
+    var kb = Math.max(0, Math.round(vw.innerHeight - bottom));
     box.style.bottom = kb ? kb + 'px' : '';
     root.style.setProperty('--mv-vh', Math.round(bottom) + 'px');
     root.style.setProperty('--mv-compose-h', Math.ceil(box.getBoundingClientRect().height) + 'px');
@@ -338,9 +345,14 @@ func composerPinScript() g.Node {
   if (typeof ResizeObserver !== 'undefined') { new ResizeObserver(schedule).observe(box); }
   window.addEventListener('resize', schedule);
   window.addEventListener('pageshow', schedule);
-  if (window.visualViewport) {
-    window.visualViewport.addEventListener('resize', schedule);
-    window.visualViewport.addEventListener('scroll', schedule);
+  if (vw.visualViewport) {
+    vw.visualViewport.addEventListener('resize', schedule);
+    vw.visualViewport.addEventListener('scroll', schedule);
+    // A frame that goes away leaves nothing listening on the top window.
+    if (vw !== window) window.addEventListener('pagehide', function () {
+      vw.visualViewport.removeEventListener('resize', schedule);
+      vw.visualViewport.removeEventListener('scroll', schedule);
+    });
   }
 })();
 `))

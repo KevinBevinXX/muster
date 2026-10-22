@@ -177,6 +177,16 @@ show their own conversation.
 The **Terminal** view is one tap away, for every window. It is an xterm.js
 terminal attached through the tunnel.
 
+Switching between a window's Rendered and Terminal views keeps both open. The
+first switch opens the other view over the current one. After that, a switch
+only shows one view and hides the other: the transcript is not read again and
+no new terminal is attached. Both views stay connected for as long as you stay
+on the window. A window with both views open uses one rendered view and one
+terminal of the host's limits below. Opening another window, going back to the
+list or reloading closes both connections. Reloading opens the view you were
+on, and Back leaves the window, because a switch does not add a history entry.
+A dispatched claude-code agent's chat and Terminal switch the same way.
+
 ![A mirrored terminal view with the message box (the screenshot's host is the e2e harness's fake tmux, which prints what reached it)](img/mirror-terminal.png)
 
 Rendered views stream bounded events: at most 300 when opened, taken from the

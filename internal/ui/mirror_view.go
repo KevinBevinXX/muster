@@ -216,24 +216,37 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 
 // viewToggle is the Rendered | Terminal switch in the header of anything that
 // has both views — a mirrored Claude Code window, a claude-code agent: the
-// current view (aria-current, not a link) and a real-load link to the other.
-// The current one's href is unused.
+// current view (aria-current, not a link) and a link to the other. The current
+// one's href is unused.
+//
+// The link is marked data-view-swap with the view it brings: the page's
+// viewFrameScript opens that view in a frame over this one and keeps both, so
+// neither view's socket is torn down by a switch (view_swap.go). It stays a
+// real link — what a switch falls back to — and so does it without script.
 func viewToggle(rendered bool, renderedHref, terminalHref string) g.Node {
-	seg := func(id, label, href string, current bool) g.Node {
+	seg := func(id, view, label, href string, current bool) g.Node {
 		// 44px: a thumb target, like every other control in these headers.
 		cls := "press inline-flex min-h-[44px] items-center px-2.5 text-xs font-semibold transition "
 		if current {
 			return Span(ID(id), g.Attr("aria-current", "page"), Class(cls+"bg-accent text-on-accent"), g.Text(label))
 		}
-		return A(ID(id), Href(href), hx("hx-boost", "false"), Class(cls+"text-fg2 hover:bg-s3"), g.Text(label))
+		return A(ID(id), Href(href), hx("hx-boost", "false"), g.Attr("data-view-swap", view), Class(cls+"text-fg2 hover:bg-s3"), g.Text(label))
 	}
 	return Nav(
 		g.Attr("aria-label", "View"),
 		Class("inline-flex shrink-0 overflow-hidden rounded-lg bg-s2 ring-1 ring-inset ring-line"),
-		seg("view-rendered", "Rendered", renderedHref, rendered),
-		seg("view-terminal", "Terminal", terminalHref, !rendered),
+		seg("view-rendered", ViewRendered, "Rendered", renderedHref, rendered),
+		seg("view-terminal", ViewTerminal, "Terminal", terminalHref, !rendered),
+		// Every page that draws the switch carries what makes it keep both views.
+		viewFrameScript(),
 	)
 }
+
+// The two views' names, as data-view-swap and the view frame spell them.
+const (
+	ViewRendered = "rendered"
+	ViewTerminal = "terminal"
+)
 
 // MirrorOp is one DOM operation the rendered view's page applies:
 //
@@ -785,6 +798,8 @@ func mirrorViewScript() g.Node {
   }
 
   function connect() {
+    // Left (pagehide): a pending retry opens nothing.
+    if (closed) return;
     var base = log.getAttribute('data-ws');
     var url = (location.protocol === 'https:' ? 'wss:' : 'ws:') + '//' + location.host + base +
       (gen ? '&gen=' + encodeURIComponent(gen) + '&offset=' + offset : '');
