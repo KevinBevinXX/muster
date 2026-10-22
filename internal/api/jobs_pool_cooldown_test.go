@@ -14,13 +14,16 @@ import (
 // THE RATE-LIMIT COOLDOWN AND THE PER-ACCOUNT CAP IN THE WORKER CHOICE (M4).
 // ---------------------------------------------------------------------------
 
+// coolingEnd is when a cooling account in these tests is usable again.
+var coolingEnd = time.Date(2000, 1, 1, 11, 0, 0, 0, time.UTC)
+
 // TestChooseWorkerSkipsAWorkerWhoseAccountIsCoolingDown: a-cooling wins every
 // ranking rule (idle, nothing queued, rate-limited longest ago, first by name),
 // but its account is still cooling down, so the job goes to the busy b-ok.
 func TestChooseWorkerSkipsAWorkerWhoseAccountIsCoolingDown(t *testing.T) {
 	members := []agents.Agent{worker(1, "a-cooling", "alpha"), worker(2, "b-ok", "beta")}
 	accounts := map[string]ccpool.AccountState{
-		"alpha": {RateLimitedAt: t0900, CoolingUntil: t1000.Add(time.Hour)},
+		"alpha": {RateLimitedAt: t0900, CoolingUntil: coolingEnd},
 		"beta":  {RateLimitedAt: t1000},
 	}
 	active := map[int64]jobs.ActiveCount{2: {Running: 1, Queued: 2}}
@@ -74,12 +77,12 @@ func TestChooseWorkerIsFullWhenEveryAccountIsCoolingDownOrCapped(t *testing.T) {
 	members := []agents.Agent{worker(1, "a-cooling", "alpha"), worker(2, "b-capped", "beta")}
 	peers := append(append([]agents.Agent(nil), members...), other)
 	accounts := map[string]ccpool.AccountState{
-		"alpha": {MaxConcurrentJobs: 1, RateLimitedAt: t0900, CoolingUntil: t1000.Add(time.Hour)},
+		"alpha": {MaxConcurrentJobs: 1, RateLimitedAt: t0900, CoolingUntil: coolingEnd},
 		"beta":  {MaxConcurrentJobs: 1},
 	}
 	_, why, full := chooseWorker("reviewers", members, peers, "", accounts, map[int64]jobs.ActiveCount{9: {Running: 1}}, nil)
 	const want = `no worker in pool "reviewers" can take the job: ` +
-		`a-cooling (its Claude account "alpha" is cooling down after a rate limit until 2026-10-20T11:00:00Z); ` +
+		`a-cooling (its Claude account "alpha" is cooling down after a rate limit until 2000-01-01T11:00:00Z); ` +
 		`b-capped (its Claude account "beta" is already running 1 job(s) at once, its limit)`
 	if why != want {
 		t.Fatalf("reason = %q\nwant      %q", why, want)
@@ -96,7 +99,7 @@ func TestChooseWorkerIsFullWhenEveryAccountIsCoolingDownOrCapped(t *testing.T) {
 func TestAPoolJobIs429WhileEveryWorkersAccountIsCoolingDown(t *testing.T) {
 	f := newJobFixture(t, testServiceToken)
 	f.gw.reply = "done"
-	until := t1000.Add(time.Hour)
+	until := coolingEnd
 	kinds := &poolKinds{states: map[string]ccpool.AccountState{
 		"alpha": {RateLimitedAt: t0900, CoolingUntil: until, MaxConcurrentJobs: 2},
 		"beta":  {RateLimitedAt: t0900, CoolingUntil: until, MaxConcurrentJobs: 2},
@@ -104,8 +107,8 @@ func TestAPoolJobIs429WhileEveryWorkersAccountIsCoolingDown(t *testing.T) {
 	f.s.ext.Kinds = kinds
 	code, out := f.call(t, http.MethodPost, "/api/jobs", map[string]any{"worker_pool": "reviewers", "prompt": "x"}, true)
 	const want = `no worker in pool "reviewers" can take the job: ` +
-		`rev-a (its Claude account "alpha" is cooling down after a rate limit until 2026-10-20T11:00:00Z); ` +
-		`rev-b (its Claude account "beta" is cooling down after a rate limit until 2026-10-20T11:00:00Z)`
+		`rev-a (its Claude account "alpha" is cooling down after a rate limit until 2000-01-01T11:00:00Z); ` +
+		`rev-b (its Claude account "beta" is cooling down after a rate limit until 2000-01-01T11:00:00Z)`
 	if code != http.StatusTooManyRequests || out["error"] != want {
 		t.Fatalf("every account cooling down = %d %v, want 429 %q", code, out, want)
 	}
