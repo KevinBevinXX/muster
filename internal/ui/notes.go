@@ -12,6 +12,7 @@ import (
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/notes"
 	"github.com/ZacxDev/muster/internal/taskstatus"
+	"github.com/ZacxDev/muster/internal/textplain"
 )
 
 // AgentBrief is the minimal linked-agent info a task card renders: enough to
@@ -692,7 +693,7 @@ func noteCard(v TaskCardView) g.Node {
 			Class("break-words text-base font-semibold leading-snug text-fg"),
 			g.Text(taskDetailHeading(n)),
 		))
-	case strings.TrimSpace(n.Title) != "":
+	case textplain.Title(n.Title) != "":
 		// Display title (migration 0018). Rendered ONLY when the task carries an
 		// explicit `title` — an untitled task shows just the snippet, so the
 		// deliberate 0.7.x declutter (the directory chip was REMOVED) is not undone
@@ -702,7 +703,7 @@ func noteCard(v TaskCardView) g.Node {
 		scannable = append(scannable, H3(
 			g.Attr("data-task-title", ""),
 			Class("break-words text-sm font-semibold leading-snug text-fg"),
-			g.Text(strings.TrimSpace(n.Title)),
+			g.Text(textplain.Title(n.Title)),
 		))
 	}
 	// Snippet: BOARD only — the detail page renders the real body just below.
@@ -1057,7 +1058,7 @@ func taskCardClass(status string) string {
 // no text is the same axe page-has-heading-one violation as having none, and
 // TestEveryDocumentHasExactlyOneH1 asserts both halves.
 func taskDetailHeading(n notes.Note) string {
-	if t := strings.TrimSpace(TaskTitle(n)); t != "" {
+	if t := textplain.Title(TaskTitle(n)); t != "" {
 		return t
 	}
 	return "Task #" + strconv.FormatInt(n.ID, 10)
@@ -1433,7 +1434,7 @@ func TaskTitle(n notes.Note) string {
 // (which the e2e suite pins as `.line-clamp-2`). This is the single biggest
 // remaining line in the collapsed card, so the distinction is worth ~23px.
 func snippetClampClass(n notes.Note) string {
-	if strings.TrimSpace(n.Title) != "" {
+	if textplain.Title(n.Title) != "" {
 		return "line-clamp-1"
 	}
 	return "line-clamp-2"

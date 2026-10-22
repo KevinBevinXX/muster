@@ -223,7 +223,13 @@ const AgentSendFromTerminal = "terminal"
 // size and says so in-band; the page renders that size inside #term-scroll,
 // which scrolls both ways and can be pinch-zoomed, and offers "Fit width".
 func AgentTerminalPage(v AgentTerminalView) g.Node {
-	title := displayOr(v.DisplayName, v.Name)
+	// The page's name as a reader sees it (textplain): its <title>, its header.
+	// 🔴 PLAINED EXACTLY ONCE PER SINK. mirrorTerminalTitle (→ mirrorEntryTitle)
+	// applies the rule itself, so it takes the RAW name; handing it `title` ran
+	// the rule twice, which is not idempotent (`\*\*x\*\*` → "**x**" → "x"),
+	// and the tab and the header disagreed. TestTheTerminalTitleAndHeadingAgree.
+	raw := displayOr(v.DisplayName, v.Name)
+	title := plainOr(v.DisplayName, v.Name)
 	back := v.BackHref
 	if back == "" {
 		back = "/agents/" + url.PathEscape(v.Name)
@@ -236,7 +242,7 @@ func AgentTerminalPage(v AgentTerminalView) g.Node {
 				Meta(Name("color-scheme"), Content("dark light")),
 				ThemeHead(),
 				manifestLink(),
-				TitleEl(g.Text("Terminal · "+mirrorQualified(markdownPlain(title), v.TitleQualifier)+" · muster")),
+				TitleEl(g.Text("Terminal · "+mirrorQualified(title, v.TitleQualifier)+" · muster")),
 				Link(Rel("stylesheet"), Href(web.Asset("/static/app.css"))),
 				Link(Rel("stylesheet"), Href(xtermCSS)),
 				Script(Src(xtermJS)),
@@ -261,10 +267,10 @@ func AgentTerminalPage(v AgentTerminalView) g.Node {
 					Div(
 						Class("min-w-[6rem] flex-1"),
 						H1(Class("truncate text-sm font-semibold"),
-							g.If(v.RawName == "" && v.TitleQualifier == "", g.Text(markdownPlain(title))),
+							g.If(v.RawName == "" && v.TitleQualifier == "", g.Text(title)),
 							// A mirrored entry: its label with the raw session name
 							// beside it, and/or its qualifier — drawn like its card.
-							g.If(v.RawName != "" || v.TitleQualifier != "", mirrorTerminalTitle(markdownPlain(title), v.RawName, v.TitleQualifier)),
+							g.If(v.RawName != "" || v.TitleQualifier != "", mirrorTerminalTitle(raw, v.RawName, v.TitleQualifier)),
 							g.If(v.Badge != "", Span(g.Attr("data-term-badge", ""), Class("ml-2"), mirrorBadge(v.Badge, v.BadgeHost, v.BadgeHostIcon)))),
 						P(ID("term-status"), Class("truncate text-xs text-muted"), g.Attr("aria-live", "polite"), g.Text("Not connected")),
 					),

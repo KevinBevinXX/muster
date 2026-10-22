@@ -11,6 +11,7 @@ import (
 
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/mirror"
+	"github.com/ZacxDev/muster/internal/textplain"
 )
 
 // AgentCardView is the per-agent data the card grid renders.
@@ -309,13 +310,13 @@ func agentRenameForm(a AgentCardView) g.Node {
 // kinds of card cannot drift into two layouts again.
 func agentCard(a AgentCardView) g.Node {
 	ids := strconv.FormatInt(a.ID, 10)
-	// markdownPlain, exactly as agentTitle on the detail page does. A
+	// textplain.Title, exactly as agentTitle on the detail page does. A
 	// task-derived display name routinely carries `**bold**` and `code`, and
 	// this rendered it RAW while the detail header rendered it as markup — one
 	// string, two answers, from the same click. Stripping on both surfaces is
-	// what makes them agree; see markdownPlain for why stripping was chosen over
+	// what makes them agree; see textplain.Title for why stripping was chosen over
 	// rendering markup here.
-	name := markdownPlain(displayOr(a.DisplayName, a.Name))
+	name := plainOr(a.DisplayName, a.Name)
 	// A name past cardTitleMax is drawn in a title row of its own, clamped,
 	// with a "…" button that opens it whole (cardLongTitle).
 	_, long := clampTitle(name)
@@ -1081,6 +1082,8 @@ func DispatchModalTaskBody(v TaskDispatchView) g.Node {
 	if modelStatic == "" {
 		modelStatic = defaultModelShortLabel()
 	}
+	// The task's title, as a reader of it sees it (textplain).
+	taskLabel := textplain.Title(v.Label)
 	repoStatic := v.Repo
 	if repoStatic == "" {
 		repoStatic = "none"
@@ -1092,7 +1095,7 @@ func DispatchModalTaskBody(v TaskDispatchView) g.Node {
 			Div(
 				Class("min-w-0"),
 				H2(Class("text-base font-semibold text-fg"), g.Text("Dispatch · Task #"+ids)),
-				g.If(v.Label != "", P(Class("mt-0.5 truncate text-xs text-muted"), g.Text(v.Label))),
+				g.If(taskLabel != "", P(Class("mt-0.5 truncate text-xs text-muted"), g.Text(taskLabel))),
 			),
 			Span(Class("flex-1")),
 			dispatchCloseButton(),
@@ -1242,7 +1245,7 @@ func repoOptions(repos []RepoView) []ComboOption {
 func noteOptions(notes []NoteOption) []ComboOption {
 	opts := make([]ComboOption, 0, len(notes))
 	for _, n := range notes {
-		opts = append(opts, ComboOption{Value: strconv.FormatInt(n.ID, 10), Label: n.Label})
+		opts = append(opts, ComboOption{Value: strconv.FormatInt(n.ID, 10), Label: textplain.Title(n.Label)})
 	}
 	return opts
 }

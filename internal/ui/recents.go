@@ -58,7 +58,7 @@ func recentItems(list []AgentCardView, mirrors []MirrorCardView, refs []RecentRe
 			if !ok || a.Pinned {
 				continue
 			}
-			out = append(out, recentItem{Href: "/agents/" + a.Name, Title: markdownPlain(displayOr(a.DisplayName, a.Name)), Status: a.Status,
+			out = append(out, recentItem{Href: "/agents/" + a.Name, Title: plainOr(a.DisplayName, a.Name), Status: a.Status,
 				Host: podHost, HostIcon: clusterIcon.Key})
 			continue
 		}
@@ -67,7 +67,7 @@ func recentItems(list []AgentCardView, mirrors []MirrorCardView, refs []RecentRe
 			continue
 		}
 		out = append(out, recentItem{Href: MirrorCardHref(m), Mirror: true, Status: mirrorFields(m).Status,
-			Title: mirrorQualified(displayOr(m.Label, displayOr(m.Title, m.Session)), m.Qualifier), Host: m.Host, HostIcon: m.HostIcon})
+			Title: mirrorQualified(plainOr(displayOr(m.Label, m.Title), m.Session), m.Qualifier), Host: m.Host, HostIcon: m.HostIcon})
 	}
 	return out
 }

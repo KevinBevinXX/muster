@@ -1032,17 +1032,27 @@ func (s *Server) resolveRepoBranch(ctx context.Context, repo, branch string) str
 }
 
 // dispatchDisplayName derives a task-labelled agent display name from a source
-// task: "#<id> · <short title>", where the short title is the task body's first
-// non-empty line trimmed to ~40 runes. Falls back to just "#<id>" when the body
-// has no usable text.
+// task: "#<id> · <title>", where the title is the task body's first non-empty
+// line. Falls back to just "#<id>" when the body has no usable text.
+//
+// 🔴 STORED UNCUT, TO A STORAGE BOUND ONLY. It used to be cut to 40 runes here,
+// which landed mid-markdown — "Fix the [login page](https://example.com…" —
+// and a cut link can never be plained at render. The title rule
+// (internal/textplain) runs on the whole line at render, and the card clamps
+// the PLAIN text (clampTitle). dispatchTitleMaxRunes only keeps a runaway
+// first line out of the row.
 func dispatchDisplayName(noteID int64, noteText string) string {
 	id := strconv.FormatInt(noteID, 10)
-	title := truncate(strings.TrimSpace(firstNonEmptyLine(noteText)), 40)
+	title := truncate(strings.TrimSpace(firstNonEmptyLine(noteText)), dispatchTitleMaxRunes)
 	if title == "" {
 		return "#" + id
 	}
 	return "#" + id + " · " + title
 }
+
+// dispatchTitleMaxRunes bounds the stored task title in a dispatched agent's
+// display name: generous, so a markdown link survives whole for the renderer.
+const dispatchTitleMaxRunes = 300
 
 // createAndDispatchAgent inserts an agent record and provisions it in the
 // background (kickoff sends the note as the first message). Shared by the human

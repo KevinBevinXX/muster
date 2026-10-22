@@ -1211,3 +1211,37 @@ func assertFencedOnly(t *testing.T, turn, marker string) {
 		t.Errorf("the turn does not carry %q at all (positive control):\n%s", marker, turn)
 	}
 }
+
+// TestATaskEventKeepsTheRawTitleAndTheQueueShowsItPlain: a task handed to the
+// chief with a markdown title is STORED as written — the plugin's TaskEvent
+// carries the raw title, because data keeps the raw title — and the one
+// display sink that reads it, the attention queue, shows it plain. Red before:
+// taskLabel applied the title rule for every caller, so the stored event
+// carried "Rotate the key" (plain), not the title as written.
+func TestATaskEventKeepsTheRawTitleAndTheQueueShowsItPlain(t *testing.T) {
+	f := newTaskRouteFixture(t, true, true)
+	tok, p := f.plugin(t)
+	key := "tracker:md" + strconv.FormatInt(time.Now().UnixNano(), 36)
+	const raw = "**Rotate** the `key` for [C#](https://example.com/c)"
+	code, out := f.handoff(t, tok, map[string]any{"key": key, "create": map[string]any{"title": raw, "body": "Rotate it."},
+		"comment": "upstream message 51: assigned", "route_to_chief": true, "notice": "assigned"})
+	if code != http.StatusCreated {
+		t.Fatalf("%d %v", code, out)
+	}
+	evs := f.taskEvents(t, p.ID)
+	if len(evs) != 1 {
+		t.Fatalf("task events = %d, want 1", len(evs))
+	}
+	var ev plugins.TaskEvent
+	if err := json.Unmarshal([]byte(evs[0].Body), &ev); err != nil || ev.Title != raw {
+		t.Errorf("stored TaskEvent.Title = %q (%v), want the raw title %q", ev.Title, err, raw)
+	}
+	items := f.taskItems(t)
+	if len(items) != 1 {
+		t.Fatalf("task items %+v, want 1", items)
+	}
+	html := attentionItemsHTML(items, time.Now())
+	if want := ": Rotate the key for C#</p>"; !strings.Contains(html, want) {
+		t.Errorf("the attention queue does not show the title plain (%q):\n%s", want, html)
+	}
+}

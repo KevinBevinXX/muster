@@ -2,12 +2,12 @@ package ui
 
 import (
 	"strconv"
-	"strings"
 
 	g "maragu.dev/gomponents"
 	. "maragu.dev/gomponents/html"
 
 	"github.com/ZacxDev/muster/internal/notes"
+	"github.com/ZacxDev/muster/internal/textplain"
 )
 
 // --- Task merge (supersede) UI -------------------------------------------------
@@ -217,7 +217,7 @@ func taskSelectControl(n notes.Note) g.Node {
 		return g.Text("")
 	}
 	ids := strconv.FormatInt(n.ID, 10)
-	label := strings.TrimSpace(n.Title)
+	label := textplain.Title(n.Title)
 	if label == "" {
 		label = "#" + ids
 	}

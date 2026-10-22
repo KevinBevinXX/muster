@@ -7,6 +7,7 @@
 //		DATABASE_URL=…_e2e go run ./e2e/pluginfix unconfirmed <message-id>
 //		DATABASE_URL=…_e2e go run ./e2e/pluginfix lapse <draft-id>
 //		DATABASE_URL=…_e2e go run ./e2e/pluginfix label <agent-id> <display-name>
+//		DATABASE_URL=…_e2e go run ./e2e/pluginfix rmagent <owner-id> <name>
 //		DATABASE_URL=…_e2e go run ./e2e/pluginfix cleanup <owner-id> <name>
 //
 //	  - chief: an agent labelled "chief", running, holding token — the owner's
@@ -61,7 +62,7 @@ func run(args []string) error {
 		return err
 	}
 	if len(args) == 0 {
-		return fmt.Errorf("usage: pluginfix chief|agent|delivering|unconfirmed|lapse|label|cleanup …")
+		return fmt.Errorf("usage: pluginfix chief|agent|delivering|unconfirmed|lapse|label|rmagent|cleanup …")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
@@ -168,6 +169,16 @@ func run(args []string) error {
 		}
 		if tag.RowsAffected() != 1 {
 			return fmt.Errorf("no agent %d", agent)
+		}
+	case "rmagent":
+		// Deletes ONE agent and nothing else (cleanup also clears the owner's
+		// plugins, which a spec on the shared server must not do).
+		owner, err := num(1)
+		if err != nil || len(args) != 3 {
+			return fmt.Errorf("usage: rmagent <owner-id> <name>")
+		}
+		if _, err := conn.Exec(ctx, `DELETE FROM agents WHERE owner_id = $1 AND name = $2`, owner, args[2]); err != nil {
+			return err
 		}
 	case "cleanup":
 		owner, err := num(1)

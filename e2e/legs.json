@@ -27,6 +27,7 @@
     "tests/invites.spec.ts": 16.2,
     "tests/api-tokens.spec.ts": 10.5,
     "tests/landing.spec.ts": 1.5,
+    "tests/plain-titles.spec.ts": 5.6,
     "tests/flows.spec.ts": 0.5,
     "tests/mirror-stepup.spec.ts": 20.2,
     "tests/terminal-overflow.spec.ts": 5.3,
@@ -125,7 +126,8 @@
       "tests/attention-delivery.spec.ts",
       "tests/kickoff-wait.spec.ts",
       "tests/host-icons.spec.ts",
-      "tests/hermes-view.spec.ts"
+      "tests/hermes-view.spec.ts",
+      "tests/plain-titles.spec.ts"
     ]
   }
 }

@@ -149,8 +149,14 @@ func TestFocusHistoryRowsRenderEachPageShape(t *testing.T) {
 			}
 			if c.items > 0 {
 				first := allAttr(doc, "data-focus-history-item")[0]
-				if got := focusNodeText(findAttr(first, "data-focus-history-title")); got != `<b>Kernel</b> "upgrade"` {
-					t.Errorf("title %q (escaped text expected)", got)
+				// The title AND the description go through the title rule
+				// (internal/textplain), which removes HTML tags as markup and keeps
+				// the rest as text; neither is ever written as markup (below).
+				if got := focusNodeText(findAttr(first, "data-focus-history-title")); got != `Kernel "upgrade"` {
+					t.Errorf("title %q (the title's plain text expected)", got)
+				}
+				if got := focusNodeText(findAttr(first, "data-focus-history-description")); got != "Draining first." {
+					t.Errorf("description %q (its plain text expected)", got)
 				}
 				if findAttr(first, "data-ts") == nil {
 					t.Error("an entry has no relative time")
@@ -258,6 +264,14 @@ func TestTheAgentPageHasAFocusHistoryDialog(t *testing.T) {
 // what a summarizer could be talked into writing into a focus.
 const escapePayload = `<img src=x onerror="alert(1)">"'&`
 
+// escapeTitlePayload is the same attack for a TITLE (and a focus description,
+// drawn through the same rule). A title is drawn through
+// the title rule (internal/textplain), which removes real HTML elements such as
+// <img> as markup, so escapePayload would reach the escaper as just "'& and
+// this test would stop testing escaping there. <svg> is not on the rule's list
+// of elements it removes, so it arrives whole and must still be escaped.
+const escapeTitlePayload = `<svg onload="alert(1)">"'&`
+
 // TestFocusTextIsEscapedEverywhereItIsDrawn: the payload in a focus title and
 // description is TEXT in a history row, in the card's focus title, in its
 // aria-label, and a URL carrying it is an attribute value in data-href — never
@@ -267,24 +281,25 @@ func TestFocusTextIsEscapedEverywhereItIsDrawn(t *testing.T) {
 	href := FocusHistoryRoute + "?subject=" + escapePayload
 	var b strings.Builder
 	if err := RenderFocusHistoryPage(&b, FocusHistoryPageView{First: true, Next: href,
-		Entries: []FocusHistoryEntry{{Title: escapePayload, Description: escapePayload, At: time.Now()}}}); err != nil {
+		Entries: []FocusHistoryEntry{{Title: escapeTitlePayload, Description: escapeTitlePayload, At: time.Now()}}}); err != nil {
 		t.Fatal(err)
 	}
 	rows := b.String()
 	a := realisticAgent()
-	a.Focus = &FocusView{Title: escapePayload, Description: escapePayload, UpdatedAt: time.Now()}
+	a.Focus = &FocusView{Title: escapeTitlePayload, Description: escapeTitlePayload, UpdatedAt: time.Now()}
 	card := renderNode(t, agentCard(a))
 	for name, markup := range map[string]string{"history rows": rows, "card": card} {
-		if strings.Contains(markup, "<img") || strings.Contains(markup, `onerror="alert`) {
+		if strings.Contains(markup, "<img") || strings.Contains(markup, `onerror="alert`) ||
+			strings.Contains(markup, "<svg onload") || strings.Contains(markup, `onload="alert`) {
 			t.Errorf("%s: the payload is markup:\n%s", name, markup)
 		}
 	}
 	doc := parseFragment(t, rows)
 	item := findAttr(doc, "data-focus-history-item")
-	if got := focusNodeText(findAttr(item, "data-focus-history-title")); got != escapePayload {
+	if got := focusNodeText(findAttr(item, "data-focus-history-title")); got != escapeTitlePayload {
 		t.Errorf("history title reads %q", got)
 	}
-	if got := focusNodeText(findAttr(item, "data-focus-history-description")); got != escapePayload {
+	if got := focusNodeText(findAttr(item, "data-focus-history-description")); got != escapeTitlePayload {
 		t.Errorf("history description reads %q", got)
 	}
 	if got := attrOf(findAttr(doc, "data-focus-history-more"), "data-href"); got != href {
@@ -292,13 +307,15 @@ func TestFocusTextIsEscapedEverywhereItIsDrawn(t *testing.T) {
 	}
 	art := parseArticle(t, card)
 	trigger := findAttr(art, "data-card-focus")
-	if got := focusNodeText(trigger); !strings.HasPrefix(got, escapePayload) {
+	if got := focusNodeText(trigger); !strings.HasPrefix(got, escapeTitlePayload) {
 		t.Errorf("card focus title reads %q", got)
 	}
-	if got := attrOf(trigger, "aria-label"); got != "Focus: "+escapePayload+" — show details" {
+	if got := attrOf(trigger, "aria-label"); got != "Focus: "+escapeTitlePayload+" — show details" {
 		t.Errorf("aria-label reads %q", got)
 	}
-	if n := len(allAttr(art, "onerror")); n != 0 {
-		t.Errorf("%d elements carry an onerror attribute", n)
+	for _, h := range []string{"onerror", "onload"} {
+		if n := len(allAttr(art, h)); n != 0 {
+			t.Errorf("%d elements carry an %s attribute", n, h)
+		}
 	}
 }

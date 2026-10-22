@@ -338,3 +338,27 @@ func TestTouchAndPruneKeepSeenMirrorsAndAgents(t *testing.T) {
 		t.Error("the disabled owner's stale row was kept")
 	}
 }
+
+// TestAFocusTitleIsStoredAsWritten: a title that LOOKS like markdown to a
+// naive stripper — "C#", "a*b", "#123", backticks — goes through Upsert (which
+// runs Clean) into the focus row and its history row unchanged. Markdown is
+// removed at render time (internal/textplain), never in storage. Red before:
+// oneLine deleted every * ` # on the way in, so "C#" was stored as "C".
+func TestAFocusTitleIsStoredAsWritten(t *testing.T) {
+	s, pool := pgStore(t)
+	a := mustAgent(t, pool, 2, "focus-verbatim")
+	sub := AgentSubject(a.ID)
+	const title = "Port C# to a*b for #123 via `cfg`"
+	const desc = "Keeps **bold** and #7 as written."
+	if _, err := s.Upsert(as(2), sub, Write{Title: title, Description: desc, Source: SourceSummarizer}); err != nil {
+		t.Fatal(err)
+	}
+	got, ok, err := s.Get(as(2), sub)
+	if err != nil || !ok || got.Title != title || got.Description != desc {
+		t.Fatalf("stored (%q, %q) (%v %v), want (%q, %q)", got.Title, got.Description, ok, err, title, desc)
+	}
+	page, err := s.History(as(2), sub, "", 5)
+	if err != nil || len(page.Entries) != 1 || page.Entries[0].Title != title {
+		t.Fatalf("history = %+v (%v), want one row titled %q", page.Entries, err, title)
+	}
+}
