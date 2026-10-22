@@ -169,8 +169,9 @@ A job naming a pool runs on the member chosen when it is submitted. A member is
 on the job's `repo` (when it names one), holds no approved grant reaching github.com,
 runs on a Claude account that is configured, whose current token is not
 marked `auth_failed` and that is not cooling down after a `rate_limited`, has
-fewer than 4 jobs queued or running, and would not take its account past
-`MUSTER_AGENT_CC_MAX_CONCURRENT_JOBS` (default 2) jobs at once. Of the
+fewer than 4 jobs queued or running, and — when
+`MUSTER_AGENT_CC_MAX_CONCURRENT_JOBS` is set (unset is no cap) — would not
+take its account past that many jobs at once. Of the
 eligible it prefers, in order:
 
 1. a worker with no job queued or running;
@@ -191,7 +192,8 @@ when the message states none muster can read (no zone, for one),
 `MUSTER_AGENT_CC_RATE_LIMIT_COOLDOWN` (default `1h`) after the mark. It is
 usable again at exactly that time.
 
-**The per-account cap.** Jobs on one worker run one after another, so the jobs
+**The per-account cap** is opt-in (`MUSTER_AGENT_CC_MAX_CONCURRENT_JOBS`;
+unset, there is none). Jobs on one worker run one after another, so the jobs
 an account runs at once are its workers with a job queued or running — in any
 pool, or none. An idle worker whose account already has
 `MUSTER_AGENT_CC_MAX_CONCURRENT_JOBS` such workers is skipped; a busy worker is

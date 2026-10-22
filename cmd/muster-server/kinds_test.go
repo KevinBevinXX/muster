@@ -121,9 +121,10 @@ func TestTheAccountListAndTokensAreReadFromTheEnvironment(t *testing.T) {
 }
 
 // TestTheAccountPoolLimitsAreReadDefaultedAndBounded: both knobs read from the
-// environment reach the pool's limits; unset is ccpool's defaults; a value out
-// of range — including 0, which must not mean "no cooldown" or "no cap" — is a
-// boot refusal naming the variable.
+// environment reach the pool's limits; unset is a 1h cooldown and NO cap (the
+// cap is opt-in); a value out of range — including a written 0, which must not
+// silently mean "no cooldown" or "no cap" — is a boot refusal naming the
+// variable.
 func TestTheAccountPoolLimitsAreReadDefaultedAndBounded(t *testing.T) {
 	env := map[string]string{envAgentCCCooldown: "25m", envAgentCCMaxJobs: "5"}
 	cfg, err := loadConfig(func(k string) string { return env[k] })
@@ -137,8 +138,10 @@ func TestTheAccountPoolLimitsAreReadDefaultedAndBounded(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := none.ccPoolLimits(); got != ccpool.DefaultLimits() {
-		t.Fatalf("unset limits = %+v, want ccpool's defaults %+v", got, ccpool.DefaultLimits())
+	// A literal, not ccpool.DefaultLimits(): a default cap creeping back in
+	// there must fail here rather than be agreed with.
+	if got := none.ccPoolLimits(); got != (ccpool.Limits{Cooldown: time.Hour, MaxConcurrentJobs: 0}) {
+		t.Fatalf("unset limits = %+v, want a 1h cooldown and NO per-account cap (the cap is opt-in)", got)
 	}
 	for _, bad := range []map[string]string{
 		{envAgentCCCooldown: "0"}, {envAgentCCCooldown: "30s"}, {envAgentCCCooldown: "200h"}, {envAgentCCCooldown: "soon"},

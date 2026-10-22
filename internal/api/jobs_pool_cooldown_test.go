@@ -68,6 +68,32 @@ func TestChooseWorkerCapsTheJobsAnAccountRunsAtOnce(t *testing.T) {
 	}
 }
 
+// TestChooseWorkerHasNoAccountCapWhenNoneIsConfigured: the cap is opt-in.
+// Five workers on alpha, in this pool and others, are all busy, and alpha's
+// state carries no cap (MaxConcurrentJobs zero, the default) — so the idle
+// a-idle still takes the job, as it would before any cap existed.
+func TestChooseWorkerHasNoAccountCapWhenNoneIsConfigured(t *testing.T) {
+	members := []agents.Agent{worker(1, "a-idle", "alpha"), worker(2, "b-busy", "alpha")}
+	peers := append([]agents.Agent(nil), members...)
+	active := map[int64]jobs.ActiveCount{2: {Running: 1}}
+	for id := int64(10); id < 14; id++ {
+		w := worker(id, "x-other-"+string(rune('a'+id-10)), "alpha")
+		w.WorkerPool = "other"
+		peers = append(peers, w)
+		active[id] = jobs.ActiveCount{Running: 1, Queued: 2}
+	}
+	accounts := map[string]ccpool.AccountState{"alpha": {}}
+	got, why, full := chooseWorker("reviewers", members, peers, "", accounts, active, nil)
+	if why != "" || full || got.Name != "a-idle" {
+		t.Fatalf("chose %q (%q, full %v), want a-idle: with no cap configured, alpha's 5 busy workers limit nothing", got.Name, why, full)
+	}
+	// The control: the same state with a cap of 5 skips a-idle.
+	accounts["alpha"] = ccpool.AccountState{MaxConcurrentJobs: 5}
+	if got, _, _ := chooseWorker("reviewers", members, peers, "", accounts, active, nil); got.Name != "b-busy" {
+		t.Fatalf("with alpha's cap at 5 chose %q, want b-busy", got.Name)
+	}
+}
+
 // TestChooseWorkerIsFullWhenEveryAccountIsCoolingDownOrCapped: no worker is
 // eligible, and every one was skipped for the cooldown or the cap alone, so
 // the refusal is "full" — the job API's 429, not a 503 and not a silent pick.

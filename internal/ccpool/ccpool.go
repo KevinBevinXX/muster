@@ -34,9 +34,10 @@
 //     the token in the secret therefore clears the mark by itself; nothing else
 //     does. If that leaves nothing, refuse — dispatching onto a token that
 //     already failed authentication builds a pod that cannot answer one turn.
-//  2. Drop every account still COOLING DOWN after a rate_limited mark (see
-//     "The cooldown" below). If that leaves nothing, refuse with the time each
-//     account is usable again.
+//  2. An account still COOLING DOWN after a rate_limited mark (see "The
+//     cooldown" below) ranks after every account that is not. It is NOT
+//     dropped: dispatch never refuses for a cooldown, because an agent keeps
+//     its account for life and outlives any one rate-limit window.
 //  3. Least-recently-rate-limited first: never rate-limited sorts before any
 //     timestamp, then oldest timestamp first.
 //  4. Then fewest LIVE agents (kind claude-code, status pending, provisioning or
@@ -45,19 +46,24 @@
 //
 // # The cooldown and the per-account cap (M4)
 //
-// A `rate_limited` account is NOT selectable until its cooldown ends
-// ([CooldownUntil]): the reset time the CLI's message states ("resets 9:45pm
-// (UTC)", "resets Oct 9, 9am (UTC)") when one can be read, else the mark's time
-// plus [Limits.Cooldown] (default [DefaultCooldown]). It is selectable again at
-// exactly that instant. Before this, a rate-limited account was only ranked
-// last and was still chosen when nothing better was left.
+// After a `rate_limited` mark an account cools down until [CooldownUntil]: the
+// reset time the CLI's message states ("resets 9:45pm (UTC)", "resets Oct 9,
+// 9am (UTC)") when one can be read, else the mark's time plus
+// [Limits.Cooldown] (default [DefaultCooldown]). It is over at exactly that
+// instant.
 //
-// [Limits.MaxConcurrentJobs] (default [DefaultMaxConcurrentJobs]) caps how many
-// JOBS one account runs at once. This package does not count jobs; it carries
-// the cap to the job API's worker choice in [AccountState], and that choice
-// (internal/api chooseWorker) enforces it. Agent dispatch ([Choose]) has no cap:
-// an agent is not a job, and a cap there would refuse dispatches the operator
-// makes on purpose.
+// 🔴 ONLY THE JOB API REFUSES FOR IT. Its worker-pool choice (internal/api
+// chooseWorker, reading [AccountState.CoolingUntil]) skips a worker on a
+// cooling account and answers 429 when every worker is skipped. Agent dispatch
+// ([Choose]) only ranks a cooling account last and still picks it when it is
+// all there is: an agent keeps its account for life, so refusing to create it
+// for a window of hours would buy nothing.
+//
+// [Limits.MaxConcurrentJobs] caps how many JOBS one account runs at once, and
+// is OPT-IN: zero (the default) is no cap, because an account's real capacity
+// is unmeasured. This package does not count jobs; it carries the cap to the
+// job API's worker choice in [AccountState], and that choice enforces it.
+// Agent dispatch has no cap: an agent is not a job.
 //
 // An explicit pin at dispatch bypasses all of these — it is the operator's override,
 // including for an account the pool would skip — but must name a configured
@@ -220,14 +226,13 @@ func (s Static) Accounts(context.Context, int64) (map[string]string, error) {
 	return out, nil
 }
 
-// The defaults of [Limits].
-const (
-	// DefaultCooldown is how long an account rests after a `rate_limited` whose
-	// message states no reset time this package can read.
-	DefaultCooldown = time.Hour
-	// DefaultMaxConcurrentJobs is how many jobs one account may run at once.
-	DefaultMaxConcurrentJobs = 2
-)
+// DefaultCooldown is how long an account rests after a `rate_limited` whose
+// message states no reset time this package can read.
+//
+// ⚠ THERE IS DELIBERATELY NO DEFAULT JOB CAP. The per-account cap is opt-in
+// ([Limits.MaxConcurrentJobs] zero is none): what one account sustains is not
+// known until it is measured, and a guessed default would throttle silently.
+const DefaultCooldown = time.Hour
 
 // Limits are the pool's two knobs: the cooldown after a rate limit, and the
 // per-account job concurrency cap.
@@ -235,13 +240,14 @@ type Limits struct {
 	// Cooldown is the rest after a `rate_limited` whose message carries no
 	// readable reset time. Positive.
 	Cooldown time.Duration
-	// MaxConcurrentJobs caps the jobs one account runs at once. At least 1.
+	// MaxConcurrentJobs caps the jobs one account runs at once. ZERO IS NO CAP
+	// (the default); a cap is at least 1.
 	MaxConcurrentJobs int
 }
 
-// DefaultLimits is [DefaultCooldown] and [DefaultMaxConcurrentJobs].
+// DefaultLimits is [DefaultCooldown] and no job cap.
 func DefaultLimits() Limits {
-	return Limits{Cooldown: DefaultCooldown, MaxConcurrentJobs: DefaultMaxConcurrentJobs}
+	return Limits{Cooldown: DefaultCooldown}
 }
 
 // Pool is selection and marking over a per-owner [Source] and its [Store].
@@ -258,8 +264,8 @@ func New(src Source, store Store) (*Pool, error) {
 }
 
 // NewWithLimits builds a pool with explicit limits. It refuses a non-positive
-// cooldown and a cap below 1: either would be a knob that silently disables
-// the guard it configures.
+// cooldown (a knob that would silently disable the cooldown) and a negative
+// cap; a zero cap is "no cap".
 func NewWithLimits(src Source, store Store, l Limits) (*Pool, error) {
 	if src == nil {
 		return nil, errors.New("ccpool: a Source is required (it says whose accounts an owner may use)")
@@ -270,8 +276,8 @@ func NewWithLimits(src Source, store Store, l Limits) (*Pool, error) {
 	if l.Cooldown <= 0 {
 		return nil, fmt.Errorf("ccpool: the rate-limit cooldown must be positive, got %s", l.Cooldown)
 	}
-	if l.MaxConcurrentJobs < 1 {
-		return nil, fmt.Errorf("ccpool: the per-account job cap must be at least 1, got %d", l.MaxConcurrentJobs)
+	if l.MaxConcurrentJobs < 0 {
+		return nil, fmt.Errorf("ccpool: the per-account job cap must be 0 (no cap) or at least 1, got %d", l.MaxConcurrentJobs)
 	}
 	return &Pool{src: src, store: store, now: time.Now, limits: l}, nil
 }
@@ -380,8 +386,7 @@ type AccountState struct {
 	// read it; zero once it has ended. A non-zero value means "not selectable".
 	CoolingUntil time.Time
 	// MaxConcurrentJobs is the per-account job cap ([Limits.MaxConcurrentJobs]),
-	// the same for every account. States always sets it (at least 1); a zero
-	// here is a hand-built state and means no cap.
+	// the same for every account. ZERO IS NO CAP, which is the default.
 	MaxConcurrentJobs int
 }
 
@@ -519,12 +524,14 @@ func coolingUntil(m Mark, cooldown time.Duration, now time.Time) time.Time {
 }
 
 // Choose is the selection algorithm (see the package doc), pure. now and
-// cooldown decide which rate-limited accounts are still cooling down.
+// cooldown decide which rate-limited accounts are still cooling down; such an
+// account ranks last but is never refused.
 func Choose(now time.Time, cooldown time.Duration, names []string, tokens map[string]string, marks map[string]Mark, live map[string]int) (string, error) {
 	type cand struct {
-		name string
-		rl   time.Time
-		live int
+		name    string
+		cooling bool
+		rl      time.Time
+		live    int
 	}
 	var cands []cand
 	var skipped []string
@@ -534,22 +541,22 @@ func Choose(now time.Time, cooldown time.Duration, names []string, tokens map[st
 			skipped = append(skipped, fmt.Sprintf("%s (auth failed %s: %s)", n, m.AuthFailedAt.UTC().Format(time.RFC3339), m.AuthFailedDetail))
 			continue
 		}
-		if until := coolingUntil(m, cooldown, now); !until.IsZero() {
-			skipped = append(skipped, fmt.Sprintf("%s (rate-limited, cooling down until %s)", n, until.UTC().Format(time.RFC3339)))
-			continue
-		}
-		cands = append(cands, cand{name: n, rl: m.RateLimitedAt, live: live[n]})
+		cooling := !coolingUntil(m, cooldown, now).IsZero()
+		cands = append(cands, cand{name: n, cooling: cooling, rl: m.RateLimitedAt, live: live[n]})
 	}
 	if len(cands) == 0 {
 		if len(skipped) == 0 {
 			return "", fmt.Errorf("%w: the pool is empty", ErrNoUsableAccount)
 		}
-		return "", fmt.Errorf("%w: no account is usable now — %s. A rate-limited account is usable again when its "+
-			"cooldown ends; a failed token's mark clears when the token is replaced (claude setup-token); or pin an "+
-			"account explicitly", ErrNoUsableAccount, strings.Join(skipped, "; "))
+		return "", fmt.Errorf("%w: every account's current token failed authentication — %s. Replace the "+
+			"token (claude setup-token) to clear the mark, or pin an account explicitly",
+			ErrNoUsableAccount, strings.Join(skipped, "; "))
 	}
 	sort.SliceStable(cands, func(i, j int) bool {
 		a, b := cands[i], cands[j]
+		if a.cooling != b.cooling {
+			return !a.cooling
+		}
 		if !a.rl.Equal(b.rl) {
 			if a.rl.IsZero() || b.rl.IsZero() {
 				return a.rl.IsZero()

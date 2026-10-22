@@ -276,8 +276,8 @@ const (
 
 	// The account pool's two limits (internal/ccpool.Limits): how long an
 	// account rests after a `rate_limited` whose message states no readable reset
-	// time, and how many jobs one account may run at once. Unset is the ccpool
-	// default (ccpool.DefaultCooldown, ccpool.DefaultMaxConcurrentJobs).
+	// time, and how many jobs one account may run at once. Unset cooldown is
+	// ccpool.DefaultCooldown; unset cap is NO cap (the cap is opt-in).
 	envAgentCCCooldown = "MUSTER_AGENT_CC_RATE_LIMIT_COOLDOWN"
 	envAgentCCMaxJobs  = "MUSTER_AGENT_CC_MAX_CONCURRENT_JOBS"
 
@@ -759,7 +759,7 @@ type config struct {
 	AgentCCStorage string
 	// AgentCCCooldown and AgentCCMaxJobs are the account pool's limits
 	// (MUSTER_AGENT_CC_RATE_LIMIT_COOLDOWN, MUSTER_AGENT_CC_MAX_CONCURRENT_JOBS);
-	// zero is unset, which ccPoolLimits resolves to ccpool's defaults.
+	// zero is unset: ccpool.DefaultCooldown for the cooldown, and NO cap.
 	AgentCCCooldown time.Duration
 	AgentCCMaxJobs  int
 
@@ -1048,8 +1048,8 @@ func loadConfig(getenv func(string) string) (config, error) {
 	if v := strings.TrimSpace(getenv(envAgentCCMaxJobs)); v != "" {
 		n, err := strconv.Atoi(v)
 		if err != nil || n < 1 || n > 64 {
-			return config{}, fmt.Errorf("invalid %s %q: want an integer 1-64 (unset means %d)",
-				envAgentCCMaxJobs, v, ccpool.DefaultMaxConcurrentJobs)
+			return config{}, fmt.Errorf("invalid %s %q: want an integer 1-64 (unset means no per-account cap)",
+				envAgentCCMaxJobs, v)
 		}
 		c.AgentCCMaxJobs = n
 	}
@@ -1845,16 +1845,15 @@ func (c config) validateKinds() error {
 	return nil
 }
 
-// ccPoolLimits is the account pool's limits: the configured values, ccpool's
-// defaults where unset. It is the one place an unset limit is defaulted.
+// ccPoolLimits is the account pool's limits: the configured values, with
+// ccpool.DefaultCooldown where the cooldown is unset. An unset cap stays zero,
+// which is NO cap: the per-account cap is opt-in.
 func (c config) ccPoolLimits() ccpool.Limits {
 	l := ccpool.DefaultLimits()
 	if c.AgentCCCooldown != 0 {
 		l.Cooldown = c.AgentCCCooldown
 	}
-	if c.AgentCCMaxJobs != 0 {
-		l.MaxConcurrentJobs = c.AgentCCMaxJobs
-	}
+	l.MaxConcurrentJobs = c.AgentCCMaxJobs
 	return l
 }
 
