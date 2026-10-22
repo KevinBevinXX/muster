@@ -12,6 +12,14 @@ queue. A **runner** that you operate claims jobs and reports their results.
 A job moves through these states: `queued` → `running` (held for 2 minutes and
 extended by heartbeats) → `done`, `failed` or `needs_operator`.
 
+A `queued` job that is not claimed before its ttl (`--ttl`, default 15 minutes)
+becomes `expired` and never runs late. Only one job runs at a time on each of
+your browser instances (owner, host, instance), so a job can wait behind a
+running one. **That wait does not count against its ttl.** It is never expired
+while a job on the same instance is running, and when that job finishes (or its
+lease runs out) the time it blocked is added to the queued job's deadline. The
+job's `expiresAt` stays the deadline as enqueued.
+
 Cancelling (`POST /api/flows/jobs/{id}/cancel`, or the button on `/flows`)
 withdraws a `queued` job and dismisses a `needs_operator` one. A `running` job
 answers 409: it is the runner's until it reports, so stop the runner to stop it
