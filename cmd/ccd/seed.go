@@ -37,6 +37,10 @@ import (
 type seedOpts struct {
 	configDir, workspace, settingsTemplate string
 	check                                  bool
+	// jobPermissionMode is CCD_JOB_PERMISSION_MODE as read (jobmode.go): ""
+	// seeds the default posture, "bypassPermissions" the job-lane bypass one
+	// (jobPermissionSettings), anything else is refused.
+	jobPermissionMode string
 }
 
 func runSeed(args []string, stdout, stderr io.Writer) int {
@@ -47,6 +51,7 @@ func runSeed(args []string, stdout, stderr io.Writer) int {
 	fs.StringVar(&o.workspace, "workspace", os.Getenv("CCD_WORKSPACE"), "absolute working directory the CLI runs in")
 	fs.StringVar(&o.settingsTemplate, "settings-template", "", "settings.json template whose top-level keys are imposed")
 	fs.BoolVar(&o.check, "check", false, "verify an existing seed instead of writing one")
+	o.jobPermissionMode = os.Getenv(envJobPermissionMode)
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -76,7 +81,57 @@ func (o seedOpts) validate() error {
 	if o.settingsTemplate == "" {
 		return errors.New("--settings-template is required")
 	}
+	if _, err := jobBypass(o.jobPermissionMode); err != nil {
+		return err
+	}
 	return nil
+}
+
+// settingsSkipBypassPrompt is the user-settings key the pinned CLI reads as
+// consent to bypass mode's disclaimer. MEASURED in the pinned CLI (2.1.296, the
+// linux-x64 binary's bundled source): an interactive start in bypassPermissions
+// mode with this key unset in user, local, flag and policy settings opens the
+// BypassPermissionsModeDialog (accept writes this key; decline exits) — a screen
+// a job's pasted prompt would be consumed by, as the trust dialog's is. Older
+// CLIs kept the consent in .claude.json as bypassPermissionsModeAccepted, which
+// the pinned one migrates to this key. Re-check it when CLAUDE_CODE_VERSION moves.
+const settingsSkipBypassPrompt = "skipDangerousModePermissionPrompt"
+
+// jobPermissionSettings is the template's top-level keys for the job permission
+// mode: the template itself (bypass disabled) by default, and for bypass the
+// template's `permissions` without disableBypassPermissionsMode plus the
+// disclaimer consent (settingsSkipBypassPrompt). The template is not modified.
+// It also returns the keys the seeded file must NOT carry: by default the
+// consent, so an agent taken off a bypass pool keeps none.
+//
+// ⚠ defaultMode and disableAutoMode are kept either way: the primary CLI starts
+// in default mode, and bypass is reached only by the flag on a job lane's argv
+// (lanes.newLane). seed and checkSeed both call this, so they cannot disagree.
+func jobPermissionSettings(tmpl map[string]any, mode string) (want map[string]any, absent []string, err error) {
+	bypass, err := jobBypass(mode)
+	if err != nil {
+		return nil, nil, err
+	}
+	want = make(map[string]any, len(tmpl)+1)
+	for k, v := range tmpl {
+		want[k] = v
+	}
+	if !bypass {
+		return want, []string{settingsSkipBypassPrompt}, nil
+	}
+	perms, ok := tmpl["permissions"].(map[string]any)
+	if !ok {
+		return nil, nil, errors.New("settings template has no `permissions` object to lift the bypass refusal from")
+	}
+	lifted := make(map[string]any, len(perms))
+	for k, v := range perms {
+		if k != "disableBypassPermissionsMode" {
+			lifted[k] = v
+		}
+	}
+	want["permissions"] = lifted
+	want[settingsSkipBypassPrompt] = true
+	return want, nil, nil
 }
 
 func seed(o seedOpts, stderr io.Writer) error {
@@ -121,9 +176,13 @@ func seed(o seedOpts, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
-	var want map[string]any
-	if err := json.Unmarshal(tmpl, &want); err != nil {
+	var raw map[string]any
+	if err := json.Unmarshal(tmpl, &raw); err != nil {
 		return fmt.Errorf("settings template %s: %w", o.settingsTemplate, err)
+	}
+	want, absent, err := jobPermissionSettings(raw, o.jobPermissionMode)
+	if err != nil {
+		return err
 	}
 	setPath := filepath.Join(o.configDir, "settings.json")
 	have, err := readJSONObject(setPath, stderr)
@@ -132,6 +191,9 @@ func seed(o seedOpts, stderr io.Writer) error {
 	}
 	for k, v := range want {
 		have[k] = v
+	}
+	for _, k := range absent {
+		delete(have, k)
 	}
 	stripForbidden(have, setPath, stderr)
 	return writeJSONAtomic(setPath, have)
@@ -316,8 +378,12 @@ func checkSeed(o seedOpts) error {
 	if err != nil {
 		return err
 	}
-	var want map[string]any
-	if err := json.Unmarshal(tmpl, &want); err != nil {
+	var raw map[string]any
+	if err := json.Unmarshal(tmpl, &raw); err != nil {
+		return err
+	}
+	want, absent, err := jobPermissionSettings(raw, o.jobPermissionMode)
+	if err != nil {
 		return err
 	}
 	have, err := readJSONObject(filepath.Join(o.configDir, "settings.json"), nil)
@@ -331,7 +397,7 @@ func checkSeed(o seedOpts) error {
 			return fmt.Errorf("settings.json: key %q differs from the template", k)
 		}
 	}
-	for _, k := range settingsForbidden {
+	for _, k := range append(append([]string{}, settingsForbidden...), absent...) {
 		if _, ok := have[k]; ok {
 			return fmt.Errorf("settings.json: carries %q, which seed removes", k)
 		}

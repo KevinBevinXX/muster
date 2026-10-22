@@ -1412,6 +1412,14 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 					"never logged), per-agent PVC at /data, no ServiceAccount token, turn budget %s.",
 					agents.KindClaudeCode, a.cfg.AgentCCImage, envAgentCCImage, strings.Join(a.cfg.AgentCCAccountNames, ", "),
 					envAgentCCAccounts, envAgentCCTokenPrefix, agents.ClaudeCodeTurnTimeout)
+				// 🔴 The job-lane permission bypass is announced in both states:
+				// ON, a listed pool's job lanes run every tool call unapproved.
+				if len(a.cfg.AgentCCBypassPools) > 0 {
+					line += fmt.Sprintf(" Job lanes run with permissions BYPASSED for worker pools [%s] (%s; applied "+
+						"when an agent is provisioned or started).", strings.Join(a.cfg.AgentCCBypassPools, ", "), envAgentCCBypassPools)
+				} else {
+					line += fmt.Sprintf(" No worker pool bypasses job-lane permissions (%s unset).", envAgentCCBypassPools)
+				}
 			}
 			if a.cfg.hermesEnabled() {
 				line += fmt.Sprintf(" %s: image %s (%s), on the OpenRouter key (%s, or each member's own), "+

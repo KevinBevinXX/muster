@@ -592,7 +592,8 @@ func claudeCodeSpecConfig(cfg config) *agentspec.ClaudeCodeConfig {
 	for k, v := range cfg.AgentCCTokens {
 		accounts[k] = v
 	}
-	return &agentspec.ClaudeCodeConfig{Image: cfg.AgentCCImage, Accounts: accounts, StorageSize: cfg.AgentCCStorage}
+	return &agentspec.ClaudeCodeConfig{Image: cfg.AgentCCImage, Accounts: accounts, StorageSize: cfg.AgentCCStorage,
+		BypassPools: slices.Clone(cfg.AgentCCBypassPools)}
 }
 
 // hermesSpecConfig is the hermes kind's deployment half, or nil when the kind

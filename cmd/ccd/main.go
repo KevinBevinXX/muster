@@ -249,6 +249,18 @@ func serve() error {
 		workspace, _ = os.Getwd()
 	}
 
+	// Fail closed, whether or not this ccd runs lanes: a value that is neither
+	// unset nor exactly bypassPermissions stops ccd here (jobmode.go).
+	bypass, err := jobBypass(os.Getenv(envJobPermissionMode))
+	if err != nil {
+		return fmt.Errorf("ccd: %w", err)
+	}
+	if bypass {
+		log.Printf("ccd: job lanes (a machine job's worktree) start with --permission-mode %s (%s): their tool "+
+			"calls are NOT routed for approval. The primary and workspace lanes keep default permissions",
+			jobPermissionBypass, envJobPermissionMode)
+	}
+
 	co, err := checkoutFromEnv(workspace)
 	if err != nil {
 		return err
@@ -312,7 +324,7 @@ func serve() error {
 				},
 				bin: bin, configDir: configDir, workspace: workspace, max: maxLanes,
 				startTimeout: laneStartTimeout, now: time.Now,
-				set: map[string]*lane{},
+				set: map[string]*lane{}, jobBypass: bypass,
 			})
 		}
 	}

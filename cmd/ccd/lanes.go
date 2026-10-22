@@ -35,7 +35,9 @@ import (
 //   - each lane is a tmux session `cc-<laneID(key)>` on ccd's socket, running
 //     `env CCD_LANE=<id> claude [--model <m>] --session-id <laneUUID(key)>` the
 //     first time and `… --resume <laneUUID(key)>` once its transcript exists —
-//     the same resume-never-fork rule the primary keeps (supervise.go);
+//     the same resume-never-fork rule the primary keeps (supervise.go). A JOB
+//     lane (a machine job's worktree) on a pool muster opted in also gets
+//     `--permission-mode bypassPermissions` (jobmode.go); no other CLI does;
 //   - each lane is its own *server (busy, the pending turn, the turn slot, the
 //     session hooks) and its own *supervisor (restarts, crash loop), so two
 //     lanes run turns at the same time and one lane's turn never answers
@@ -403,6 +405,10 @@ type lanes struct {
 	stuckAfter time.Duration
 	// tweak, when set, adjusts a new lane's supervisor (tests shorten its poll).
 	tweak func(*supervisor)
+	// jobBypass starts JOB lanes (workdir != "") with `--permission-mode
+	// bypassPermissions` (CCD_JOB_PERMISSION_MODE, jobmode.go). Never a lane in
+	// ccd's own workspace, never the primary.
+	jobBypass bool
 
 	mu  sync.Mutex
 	set map[string]*lane // by laneID
@@ -561,6 +567,11 @@ func (l *lanes) newLane(id, key, model, workdir string) *lane {
 		argv := []string{"env", "CCD_LANE=" + id, l.bin}
 		if model != "" {
 			argv = append(argv, "--model", model)
+		}
+		// 🔴 JOB LANES ONLY (a machine job's worktree), and only on a pool muster
+		// opted in (jobmode.go). The seeded settings refuse this flag otherwise.
+		if workdir != "" && l.jobBypass {
+			argv = append(argv, "--permission-mode", jobPermissionBypass)
 		}
 		if transcriptExists(l.configDir, dir, uuid) {
 			return append(argv, "--resume", uuid), modeContinue
