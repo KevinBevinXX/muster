@@ -21,6 +21,19 @@ into a hard failure that names itself. CI sets it; set it locally too.
 
 `MUSTER_TEST_PG_PORT=55433 make test-db` gives a second checkout its own database.
 
+**No Docker?** `scripts/with-test-pg.sh` does the same job with the dev shell's
+own Postgres: it `initdb`s a throwaway cluster in a temp directory, starts it on
+a free loopback port, creates and migrates `muster_test`, exports
+`MUSTER_TEST_DATABASE_URL`, `MUSTER_TEST_PG_PORT` and `MUSTER_TEST_REQUIRE_DB=1`,
+runs your command, and stops Postgres and deletes the directory on exit —
+failure and SIGTERM/SIGINT included (SIGKILL cannot be trapped). It exits with
+the command's own code.
+
+```sh
+nix develop -c scripts/with-test-pg.sh go test -race ./...
+nix develop -c python3 tests/with_test_pg_test.py    # the helper's own tests
+```
+
 **File attachments' object store** (`internal/uploads`, minio-go) is faked in
 process by `internal/uploads/uploadstest` for the service and route tests, and
 its timeouts are tested against a small HTTP fake. Neither checks a signature or
