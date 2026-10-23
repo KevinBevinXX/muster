@@ -374,7 +374,18 @@ func (s *Server) refuseUnauthenticated(w http.ResponseWriter, r *http.Request) {
 }
 
 // isDocumentNavigation reports whether this request is the browser fetching a
-// top-level document, as opposed to an htmx/fetch/XHR call.
+// document — top-level, or into the view swap's frame — as opposed to an
+// htmx/fetch/XHR call.
+//
+// 🔴 `iframe` IS A DOCUMENT TOO. The view swap (ui/view_swap.go) loads the
+// other view of a window into a same-origin frame laid over the whole page,
+// and that frame reloads itself (an expired session's auth gate, the update
+// toast): such a load says Sec-Fetch-Dest: iframe. Answered as an XHR, a
+// signed-out one got `{"error":"not signed in"}` drawn full-screen in the
+// frame — a path the view swap's load check accepts, because it is the
+// frame's own. Answered as a navigation it gets the 303 to sign-in, and the
+// load check hands /login to the TOP window
+// (TestAFramedLoadWithoutASessionIsSentToSignIn).
 //
 // It reads Sec-Fetch-Mode/Sec-Fetch-Dest where present (every browser this app
 // targets sends them) and falls back to "asks for HTML and is not an htmx
@@ -389,7 +400,7 @@ func isDocumentNavigation(r *http.Request) bool {
 		return false
 	}
 	if dest := r.Header.Get("Sec-Fetch-Dest"); dest != "" {
-		return dest == "document"
+		return dest == "document" || dest == "iframe"
 	}
 	if mode := r.Header.Get("Sec-Fetch-Mode"); mode != "" {
 		return mode == "navigate"

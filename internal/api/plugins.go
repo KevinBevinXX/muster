@@ -341,7 +341,7 @@ func (s *Server) renderPluginsPage(w http.ResponseWriter, r *http.Request, code 
   if (/^#draft-[0-9]+$/.test(window.location.hash)) window.location.replace('` + attentionPath + `?` + asksTabParam + `=` + asksTabDrafts + `' + window.location.hash);
 })();
 </script>`)
-	writeAuthDocument(w, code, "Plugins", b.String())
+	s.writeNavDocument(w, r, code, "Plugins", "", true, b.String())
 }
 
 // queuedText is a plugin's undelivered-message count in words.

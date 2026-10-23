@@ -174,7 +174,7 @@ func (s *Server) renderCredentials(w http.ResponseWriter, r *http.Request, code 
 		s.writeCredentialSections(&b, r)
 	}
 	b.WriteString(`<a href="/account" class="inline-flex min-h-[44px] items-center text-sm text-accent underline">Back to account</a></div>`)
-	writeAuthDocument(w, code, "Credentials", b.String())
+	s.writeNavDocument(w, r, code, "Credentials", ui.NavAccount, true, b.String())
 }
 
 func (s *Server) writeCredentialSections(b *strings.Builder, r *http.Request) {

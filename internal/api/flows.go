@@ -724,5 +724,5 @@ func (s *Server) renderFlowsPage(w http.ResponseWriter, r *http.Request, code in
 	b.WriteString(`</ul>
 <a href="/" class="inline-flex min-h-[44px] items-center text-sm text-accent underline">Back to muster</a>
 </section>`)
-	writeAuthDocument(w, code, "Browser flows", b.String())
+	s.writeNavDocument(w, r, code, "Browser flows", "", true, b.String())
 }

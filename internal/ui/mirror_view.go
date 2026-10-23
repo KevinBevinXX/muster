@@ -93,6 +93,10 @@ type MirrorViewView struct {
 	// and their fragment URL (AgentDetailView.Asks).
 	Asks    string
 	AsksSrc string
+	// Nav is the navigation the page draws: an overlay sidebar (sidebarIn's
+	// overlay — this page is sized to the window) and its hamburger, framed
+	// by the view swap or not (nav_layout.go says why).
+	Nav NavChrome
 }
 
 // MirrorReadOnlyNote is what a read-only host's composer says instead of
@@ -142,14 +146,19 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 				manifestLink(),
 				TitleEl(g.Text(mirrorQualified(plainOr(displayOr(v.Label, v.Title), v.Session), v.Qualifier)+" · Mirrored · muster")),
 				Link(Rel("stylesheet"), Href(web.Asset("/static/app.css"))),
+				overlayNavHead(),
 				faroHead(),
 			),
 			Body(
 				// The app shell (only #mv-log scrolls), sized to the visible
 				// viewport and ending above the pinned composer.
 				Class(pinnedShellClass+" bg-bg text-fg antialiased"),
+				// The navigation: position:fixed, so it takes no room in the
+				// column (nothing below moves), and an overlay at every width.
+				overlayNav(v.Nav, "agents"),
 				Header(
 					Class("flex items-center gap-2 border-b border-line px-2 py-1.5"),
+					overlayNavButton(),
 					A(
 						ID("mv-back"),
 						Href("/agents"),
@@ -216,6 +225,7 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 				chatIndexSheet(v.FocusHistory, "mirror-view:"+ref.query()),
 				chatIndexScript(),
 				mirrorComposerScript(),
+				overlayNavScript(v.Nav),
 				pwaChrome(),
 			),
 		),

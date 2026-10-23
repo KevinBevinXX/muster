@@ -11,7 +11,7 @@ import (
 // TestTheSidebarCallsTheQueueAsks: the queue's sidebar entry reads "Asks"
 // (operator decision "Rename to Asks"), still at /attention.
 func TestTheSidebarCallsTheQueueAsks(t *testing.T) {
-	link := renderString(t, attentionLink(Features{Attention: true}))
+	link := renderString(t, attentionLink(Features{Attention: true}, false, false))
 	m := regexp.MustCompile(`<a id="sidebar-attention" href="([^"]*)"[^>]*>.*?<span>([^<]*)</span>`).FindStringSubmatch(link)
 	if m == nil || m[1] != "/attention" || m[2] != "Asks" {
 		t.Fatalf("the sidebar entry: %q; want href /attention labelled Asks", m)

@@ -835,7 +835,7 @@ func (s *Server) renderAsksPage(w http.ResponseWriter, r *http.Request, code int
 		b.WriteString(asksPageScript)
 		b.WriteString(s.draftStepUpHTML(r))
 	}
-	writeAuthDocument(w, code, "Asks", b.String())
+	s.writeNavDocument(w, r, code, "Asks", ui.NavAttention, false, b.String())
 }
 
 // attentionPageScript keeps the queue's list live (ui.AttentionLiveScript).

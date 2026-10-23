@@ -116,18 +116,24 @@ func TestTheMenuIsTheRenderedViewsAlone(t *testing.T) {
 }
 
 // TestBothDocumentsRankWithOneFunction: 🔴 a SEAM guard. The Rendered view is
-// its own document, without appScript, so the menu embeds the ranker — and it
-// must be the SAME text appScript carries, not a second copy that drifts from
+// its own document, and its `/` menu embeds the ranker ITSELF — it must not
+// depend on another script (appScript, which the view also carries for its
+// side nav) having run first. So the view holds two copies, and the guard is
+// that there is no second VERSION: every definition of window.musterRank in
+// the document is a byte-identical rankJS — not a copy that drifts from
 // internal/searchrank's table (which e2e holds each document to).
 func TestBothDocumentsRankWithOneFunction(t *testing.T) {
 	view := renderedView(t, nil, true)
 	app := renderString(t, appScript(Features{}))
-	for name, page := range map[string]string{"rendered view": view, "app shell": app} {
-		if n := strings.Count(page, rankJS); n != 1 {
-			t.Errorf("%s carries rankJS %d times, want exactly 1", name, n)
+	menu := renderString(t, composerMenuScript("/x"))
+	for name, page := range map[string]string{"rendered view": view, "app shell": app, "the menu's own script": menu} {
+		copies, defs := strings.Count(page, rankJS), strings.Count(page, "window.musterRank = function")
+		if copies == 0 {
+			t.Errorf("%s carries no rankJS — its ranking would match nothing", name)
 		}
-		if n := strings.Count(page, "window.musterRank = function"); n != 1 {
-			t.Errorf("%s defines window.musterRank %d times, want 1 (a second definition is a second copy)", name, n)
+		if defs != copies {
+			t.Errorf("%s defines window.musterRank %d times but carries rankJS %d times — a definition that is not "+
+				"rankJS is a second version", name, defs, copies)
 		}
 	}
 }

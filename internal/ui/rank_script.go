@@ -3,8 +3,10 @@ package ui
 // rankJS is the browser's copy of internal/searchrank — window.musterFold and
 // window.musterRank — spelled ONCE and embedded in every document that ranks:
 // the app shell (appScript: the pickers, the Agents filter) and the mirrored
-// Rendered view (composerMenuScript: the message bar's `/` and `:` menu), which
-// is its own document and does not load appScript.
+// Rendered view's `/` and `:` menu (composerMenuScript). The Rendered view
+// carries appScript too (overlayNavScript, for its side nav), so it holds two
+// byte-identical copies; the menu embeds its own anyway, so it never depends
+// on another script having run (TestBothDocumentsRankWithOneFunction).
 //
 // 🔴 ONE SOURCE, BECAUSE TWO COPIES DRIFT. e2e/tests/pickers.spec.ts holds this
 // function to internal/searchrank/testdata/cases.json on the app shell, and

@@ -63,6 +63,11 @@ var QuickKeys = []QuickKey{
 type AgentTerminalView struct {
 	Name        string
 	DisplayName string
+	// Nav is the navigation the page draws: an overlay sidebar (sidebarIn's
+	// overlay — the terminal's width is the far side's geometry, so no rail
+	// takes from it) and its hamburger, framed by the view swap or not
+	// (nav_layout.go says why).
+	Nav NavChrome
 	// Unavailable, when set, is why this deployment cannot attach a terminal;
 	// the page says so instead of opening a socket that would be refused.
 	Unavailable string
@@ -249,16 +254,21 @@ func AgentTerminalPage(v AgentTerminalView) g.Node {
 				Link(Rel("stylesheet"), Href(xtermCSS)),
 				Script(Src(xtermJS)),
 				Script(Src(xtermFitJS)),
+				overlayNavHead(),
 				faroHead(),
 			),
 			Body(
 				Class("flex h-dvh flex-col overflow-hidden bg-bg text-fg antialiased"),
+				// The navigation: position:fixed (no room taken in the column,
+				// so the terminal keeps its size), an overlay at every width.
+				overlayNav(v.Nav, "agents"),
 				Header(
 					// It WRAPS: with the view switch beside Fit width and the
 					// Interactive switch, a phone's width does not hold them all
 					// on one line, and a header that cannot wrap pushes the
 					// document sideways instead.
 					Class("flex flex-wrap items-center gap-x-2 gap-y-1 border-b border-line px-2 py-1.5"),
+					overlayNavButton(),
 					A(
 						ID("term-back"),
 						Href(back),
@@ -366,6 +376,7 @@ func AgentTerminalPage(v AgentTerminalView) g.Node {
 				g.If(v.StepUp != nil, stepUpScript()),
 				agentTerminalScript(),
 				g.If(v.Composer != nil, mirrorComposerScript()),
+				overlayNavScript(v.Nav),
 				pwaChrome(),
 			),
 		),

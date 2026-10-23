@@ -109,11 +109,26 @@ func (s *Server) registerAccountRoutes(mux Mux) {
 }
 
 // renderNotice writes a one-message standalone page.
-func (s *Server) renderNotice(w http.ResponseWriter, code int, heading, body string) {
-	writeAuthDocument(w, code, heading, `<section class="flex flex-col gap-4 rounded-2xl border border-line bg-s1/70 px-5 py-6 ring-1 ring-line">
-<h1 class="text-balance text-base font-semibold text-fg">`+html.EscapeString(heading)+`</h1>
-<p class="text-sm text-fg2">`+html.EscapeString(body)+`</p>
-</section>`)
+//
+// 🔴 WHO IS READING DECIDES WHETHER IT HAS THE SIDE NAV, AND THE REQUEST SAYS.
+// A notice shown to someone with a browser session — "Admins only", "Could not
+// load users", a passkeys failure — is a page inside the app, and draws the
+// nav (writeNavDocument). One shown to someone signed out — a bad or expired
+// link, a sign-in that is not configured, "Sign out everywhere did not finish"
+// (its session is already revoked and its cookies cleared when it is drawn) —
+// stays bare (writeAuthDocument): every nav link there would answer with the
+// sign-in form. The test is the principal requireSession attached, so a
+// caller cannot pick the wrong one: TestANoticeHasTheNavOnlyForASignedInReader.
+func (s *Server) renderNotice(w http.ResponseWriter, r *http.Request, code int, heading, body string) {
+	inner := `<section class="flex flex-col gap-4 rounded-2xl border border-line bg-s1/70 px-5 py-6 ring-1 ring-line">
+<h1 class="text-balance text-base font-semibold text-fg">` + html.EscapeString(heading) + `</h1>
+<p class="text-sm text-fg2">` + html.EscapeString(body) + `</p>
+</section>`
+	if p, ok := authz.From(r.Context()); ok && p.Via == authz.ViaSession {
+		s.writeNavDocument(w, r, code, heading, "", false, inner)
+		return
+	}
+	writeAuthDocument(w, code, heading, inner)
 }
 
 // --- sign-in ------------------------------------------------------------------
@@ -124,7 +139,7 @@ func (s *Server) handleGoTrueLoginPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if s.gt == nil {
-		s.renderNotice(w, http.StatusServiceUnavailable, "Sign-in is not configured",
+		s.renderNotice(w, r, http.StatusServiceUnavailable, "Sign-in is not configured",
 			"This server is in gotrue mode but has no GoTrue configured, so it cannot sign anyone in.")
 		return
 	}
@@ -171,7 +186,7 @@ func (s *Server) handleGoTrueLoginSubmit(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	if s.gt == nil {
-		s.renderNotice(w, http.StatusServiceUnavailable, "Sign-in is not configured",
+		s.renderNotice(w, r, http.StatusServiceUnavailable, "Sign-in is not configured",
 			"This server is in gotrue mode but has no GoTrue configured.")
 		return
 	}
@@ -305,7 +320,7 @@ func (s *Server) handleGoTrueLogout(w http.ResponseWriter, r *http.Request) {
 	}
 	s.clearGoTrueCookies(w)
 	if failed != "" {
-		s.renderNotice(w, http.StatusInternalServerError, "Sign out everywhere did not finish", failed)
+		s.renderNotice(w, r, http.StatusInternalServerError, "Sign out everywhere did not finish", failed)
 		return
 	}
 	http.Redirect(w, r, loginPath, http.StatusSeeOther)
@@ -344,7 +359,7 @@ func (s *Server) handleAccountPage(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Query().Get("reset") == "1" {
 		resetNote = `<p class="text-sm font-semibold text-fg" role="status">` + ResetDoneNote + `</p>`
 	}
-	writeAuthDocument(w, http.StatusOK, "Account", `<div class="flex flex-col gap-4"><section class="flex flex-col gap-4 rounded-2xl border border-line bg-s1/70 px-5 py-6 ring-1 ring-line">
+	s.writeNavDocument(w, r, http.StatusOK, "Account", ui.NavAccount, false, `<div class="flex flex-col gap-4"><section class="flex flex-col gap-4 rounded-2xl border border-line bg-s1/70 px-5 py-6 ring-1 ring-line">
 <h1 class="text-balance text-base font-semibold text-fg">Account</h1>
 `+resetNote+`
 <p class="text-sm text-fg2">Signed in as <span class="font-semibold text-fg">`+html.EscapeString(who)+`</span>.</p>
@@ -408,10 +423,10 @@ func (s *Server) claimRefusal(r *http.Request) (int, string) {
 	return 0, ""
 }
 
-func (s *Server) renderInvalidClaim(w http.ResponseWriter) {
+func (s *Server) renderInvalidClaim(w http.ResponseWriter, r *http.Request) {
 	// ONE page for every way a link can be bad, so it cannot be used to learn
 	// which tokens exist.
-	s.renderNotice(w, http.StatusNotFound, "This link is invalid or expired",
+	s.renderNotice(w, r, http.StatusNotFound, "This link is invalid or expired",
 		"Ask the operator for a new link.")
 }
 
@@ -421,7 +436,7 @@ func (s *Server) handleClaimPage(w http.ResponseWriter, r *http.Request) {
 			http.NotFound(w, r)
 			return
 		}
-		s.renderNotice(w, code, "Open this link at the public address", msg)
+		s.renderNotice(w, r, code, "Open this link at the public address", msg)
 		return
 	}
 	// The token is in the fragment, so the server cannot check it here; the
@@ -454,7 +469,7 @@ func (s *Server) handleClaimSubmit(w http.ResponseWriter, r *http.Request) {
 			http.NotFound(w, r)
 			return
 		}
-		s.renderNotice(w, code, "Open this link at the public address", msg)
+		s.renderNotice(w, r, code, "Open this link at the public address", msg)
 		return
 	}
 	if !s.isSameOrigin(r) {
@@ -468,7 +483,7 @@ func (s *Server) handleClaimSubmit(w http.ResponseWriter, r *http.Request) {
 	ip := clientIP(r)
 	ticket, ok := s.gt.signin.reserve(signinAccount{}, ip, s.gt.now())
 	if !ok {
-		s.renderNotice(w, http.StatusTooManyRequests, "Too many attempts", "Wait a few minutes and try again.")
+		s.renderNotice(w, r, http.StatusTooManyRequests, "Too many attempts", "Wait a few minutes and try again.")
 		return
 	}
 	outcome := outcomeUnjudged
@@ -478,7 +493,7 @@ func (s *Server) handleClaimSubmit(w http.ResponseWriter, r *http.Request) {
 	pw, pw2 := r.FormValue("password"), r.FormValue("password2")
 	if token == "" {
 		outcome = outcomeFailed
-		s.renderInvalidClaim(w)
+		s.renderInvalidClaim(w, r)
 		return
 	}
 	if a, err := mail.ParseAddress(email); err != nil || a.Address != email {
@@ -501,7 +516,7 @@ func (s *Server) handleClaimSubmit(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case errors.Is(err, users.ErrInvalidInvite):
 		outcome = outcomeFailed
-		s.renderInvalidClaim(w)
+		s.renderInvalidClaim(w, r)
 		return
 	case err != nil && createErr != nil:
 		var ae *gotrue.APIError
@@ -524,18 +539,18 @@ func (s *Server) handleClaimSubmit(w http.ResponseWriter, r *http.Request) {
 	sess, err := s.gt.Client.PasswordGrant(r.Context(), ip, email, pw)
 	if err != nil {
 		s.logger.Printf("claim: the new login could not sign in: %v", err)
-		s.renderNotice(w, http.StatusBadGateway, "Claimed, but sign-in failed",
+		s.renderNotice(w, r, http.StatusBadGateway, "Claimed, but sign-in failed",
 			"The account is bound, but signing in with it failed. Try signing in again in a moment.")
 		return
 	}
 	if !s.auth.goTrueMode() {
-		s.renderNotice(w, http.StatusOK, "Admin account claimed",
+		s.renderNotice(w, r, http.StatusOK, "Admin account claimed",
 			"Your sign-in works. This server still uses the operator password; once it is switched to "+
 				"GoTrue sign-in (MUSTER_AUTH_MODE=gotrue) you will sign in with this email and password.")
 		return
 	}
 	if _, problem, code := s.admitFreshSession(r.Context(), sess); problem != "" {
-		s.renderNotice(w, code, "Claimed, but sign-in failed", problem)
+		s.renderNotice(w, r, code, "Claimed, but sign-in failed", problem)
 		return
 	}
 	s.setGoTrueCookies(w, sess)

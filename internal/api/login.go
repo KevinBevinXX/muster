@@ -260,10 +260,14 @@ func problemNode(problem string) string {
 		html.EscapeString(problem) + `</p>`
 }
 
-// writeAuthDocument writes one of the standalone auth pages (sign-in, the
-// gotrue sign-in, the admin claim, the account page, notices): the same bare
-// document, so none of them depends on internal/ui's shell. title is escaped;
-// inner is trusted markup built by this package.
+// writeAuthDocument writes one of the BARE standalone pages — sign-in, the
+// gotrue sign-in, the admin claim, an invite, a password reset, a notice — the
+// same document with no navigation, so none of them depends on internal/ui's
+// shell. title is escaped; inner is trusted markup built by this package.
+//
+// 🔴 ONLY A PAGE A SIGNED-OUT CALLER CAN BE SHOWN BELONGS HERE. A page behind
+// requireSession goes through writeNavDocument, which draws the side nav.
+// TestEveryAPIDocumentIsNavOrNamedBare holds the two sets.
 func writeAuthDocument(w http.ResponseWriter, code int, title, inner string) {
 	doc := `<!doctype html>
 <html class="dark" lang="en">
@@ -282,6 +286,35 @@ func writeAuthDocument(w http.ResponseWriter, code int, title, inner string) {
 </main>
 </body>
 </html>`
+	writeDocumentHeaders(w, code)
+	_, _ = w.Write([]byte(doc))
+}
+
+// writeNavDocument writes a SIGNED-IN server-authored page — Attention,
+// Account, API tokens, Credentials, Passkeys, Plugins, Browser flows, the
+// admin pages — inside the app's navigation: ui.NavDocument, the same sidebar
+// every other signed-in document draws. entry is the nav entry the page
+// belongs to (ui.NavAttention, ui.NavAccount, ui.NavAdmin, or "" for none).
+//
+// The headers are writeAuthDocument's, because the forms on these pages need
+// the same two things: no-store (a token shown once must not be restored from
+// a cache), and same-origin referrers (the sign-out and every operator-write
+// form are refused without a same-origin Origin).
+//
+// secret says the page shows or takes a secret (a minted token, a reset or
+// invite link; an OAuth token or API key typed in; a passkey ceremony): it then
+// loads no telemetry script (ui.NavDocumentView.Secret). Each caller's value is
+// stated in TestEveryNavPageStatesItsTelemetry.
+func (s *Server) writeNavDocument(w http.ResponseWriter, r *http.Request, code int, title, entry string, secret bool, inner string) {
+	writeDocumentHeaders(w, code)
+	if err := ui.RenderNavDocument(w, ui.NavDocumentView{Title: title, Entry: entry, Feat: s.shellFeatures(r.Context()), Main: inner, Secret: secret}); err != nil {
+		s.logger.Printf("render %s: %v", title, err)
+	}
+}
+
+// writeDocumentHeaders is the header set both document writers send, then the
+// status.
+func writeDocumentHeaders(w http.ResponseWriter, code int) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	// A login page must never be cached: a shared or restored cache entry would
 	// show a stale form (or a stale error) to the next person at this origin.
@@ -295,5 +328,4 @@ func writeAuthDocument(w http.ResponseWriter, code int, title, inner string) {
 	// any other site, which is what no-referrer protects (a token in a URL).
 	w.Header().Set("Referrer-Policy", "same-origin")
 	w.WriteHeader(code)
-	_, _ = w.Write([]byte(doc))
 }

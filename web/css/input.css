@@ -363,12 +363,17 @@
    * regardless of the open/closed toggle — and the dimming backdrop never
    * shows. The content column is offset with lg:pl-72 in the markup, and the
    * hamburger is lg:hidden.
+   *
+   * EXCEPT on a page whose sidebar is an overlay at every width
+   * ([data-overlay], sidebarIn in internal/ui/components.go): the full-height
+   * mirrored view and terminal, whose layout is sized to the window. There the
+   * closed/open rules above keep applying on a desktop too.
    */
   @media (min-width: 1024px) {
-    #sidebar-root .sidebar-panel {
+    #sidebar-root:not([data-overlay]) .sidebar-panel {
       transform: translateX(0);
     }
-    #sidebar-root .sidebar-backdrop {
+    #sidebar-root:not([data-overlay]) .sidebar-backdrop {
       display: none;
     }
   }

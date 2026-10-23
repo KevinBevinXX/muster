@@ -57,13 +57,14 @@ func attentionBadgeSlot() g.Node {
 
 // attentionLink is the sidebar's entry, drawn only when the queue is served.
 // A full navigation (hx-boost="false"): /attention is a standalone document,
-// never a body swap of the shell.
-func attentionLink(feat Features) g.Node {
+// never a body swap of the shell. active/current mark it as the entry the
+// page belongs to (the /attention page itself): see sidebar.
+func attentionLink(feat Features, active, current bool) g.Node {
 	if !feat.Attention {
 		return nil
 	}
-	return A(ID("sidebar-attention"), Href("/attention"), hx("hx-boost", "false"),
-		Class("press flex min-h-[44px] w-full items-center gap-3 rounded-lg px-3 text-left text-sm font-medium text-fg2 transition hover:bg-s2 hover:text-fg"),
+	return A(ID("sidebar-attention"), Href("/attention"), hx("hx-boost", "false"), g.If(current, g.Attr("aria-current", "page")),
+		Class("press flex min-h-[44px] w-full items-center gap-3 rounded-lg px-3 text-left text-sm font-medium transition "+navEntryTone(active)),
 		Span(Class("text-base"), g.Text("🔔")), Span(g.Text("Asks")), attentionBadgeSlot())
 }
 

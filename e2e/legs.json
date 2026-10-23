@@ -65,7 +65,8 @@
     "tests/agents-list-ux.spec.ts": 60.0,
     "tests/devices.spec.ts": 3.0,
     "tests/view-swap.spec.ts": 20.0,
-    "tests/agents-idle.spec.ts": 25.0
+    "tests/agents-idle.spec.ts": 25.0,
+    "tests/sidenav.spec.ts": 35.0
   },
   "legs": {
     "1": [
@@ -132,7 +133,8 @@
       "tests/hermes-view.spec.ts",
       "tests/plain-titles.spec.ts",
       "tests/view-swap.spec.ts",
-      "tests/agents-idle.spec.ts"
+      "tests/agents-idle.spec.ts",
+      "tests/sidenav.spec.ts"
     ]
   }
 }

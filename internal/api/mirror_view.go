@@ -93,6 +93,7 @@ func (s *Server) handleMirrorViewPage(w http.ResponseWriter, r *http.Request) {
 	// The window's sessions' open attention asks, answerable here
 	// (attention_asker.go).
 	v.Asks, v.AsksSrc = s.askerAsksBlock(r.Context(), askerRef{mirror: ui.MirrorRef{Host: h.Host, Session: e.Session, Window: e.Window}})
+	v.Nav = ui.NavChrome{Feat: s.shellFeatures(r.Context())}
 	allowSameOriginFrame(w)
 	formDocument(w)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")

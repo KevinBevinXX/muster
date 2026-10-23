@@ -776,7 +776,7 @@ func (s *Server) requireGoTrueSession(w http.ResponseWriter, r *http.Request, ne
 	if err != nil && !endsTheSession(err) {
 		s.logger.Printf("session: could not resolve (cookies kept): %v", err)
 		if isDocumentNavigation(r) {
-			s.renderNotice(w, http.StatusServiceUnavailable, "muster cannot check your sign-in right now",
+			s.renderNotice(w, r, http.StatusServiceUnavailable, "muster cannot check your sign-in right now",
 				"Reload in a moment; you are still signed in.")
 			return
 		}
@@ -845,7 +845,7 @@ const OffBrowserListenerRefusal = "browser sign-in is not served on this port; i
 // here, so "sign in" is not the remedy; going to the public address is.
 func (s *Server) refuseOffBrowserListener(w http.ResponseWriter, r *http.Request) {
 	if isDocumentNavigation(r) {
-		s.renderNotice(w, http.StatusForbidden, "Sign in at the public address",
+		s.renderNotice(w, r, http.StatusForbidden, "Sign in at the public address",
 			"This port serves muster's machine API only. Open muster at its public address to sign in"+
 				s.publicURLSuffix()+".")
 		return
