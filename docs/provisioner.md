@@ -290,9 +290,9 @@ open tabs are told, exactly as for the Agents page's Delete. Like that Delete,
 it leaves the agent's task as it was.
 
 - **The clock** is `agents.stopped_at` (migration 0045): the time the row last
-  moved into `stopped`, stamped by a database trigger whatever wrote the status
-  (Stop, a saved dispatch, or the status reconciler). Saving `stopped` over a
-  row that already is `stopped` does not move it. **Start** moves the row out of
+  moved into `stopped`, stamped by a database trigger (today the writers of
+  `stopped` are Stop and a saved dispatch). Writing `stopped` over a row that
+  already is `stopped` does not move it. **Start** moves the row out of
   `stopped`, so the next Stop starts a new clock: a restarted agent that is
   stopped again waits a full window. Agents already stopped when 0045 was
   applied have their clock started at that moment.
@@ -311,10 +311,20 @@ it leaves the agent's task as it was.
   its first turn, counts as never started until it is Started again.
 - **When:** the reaper rides the idle-task reaper's sweep, every 30 minutes,
   on every pod. Before it starts a teardown it claims the agent with one
-  conditional update that re-checks all of the above and that the agent's
-  `stopped_at` is still the one it read, so two pods never both destroy an
-  agent, and an agent Started after the sweep read it is left alone. A claim
-  excludes other claims for an hour.
+  conditional update that re-checks the stored conditions above (status,
+  pool, ran, window) and that no other claim is live, so two pods never both
+  destroy an agent, and an agent Started after the sweep read it (now
+  `provisioning` or `running`, or stopped again with a fresh `stopped_at`) is
+  left alone. A claim excludes other claims for an hour.
+- **The instance is checked too.** A stored `stopped` is not proof the
+  instance is down: Start brings the instance up before it writes
+  `provisioning`, so a Start whose status write failed leaves a running
+  instance under a `stopped` row. Before claiming anything, each pass reads
+  the provisioner's instances and skips (and logs: `agent-reap: agent <id>
+  (<name>) is stored stopped but its instance reads <status>; not reaped`)
+  any due agent whose instance reads anything but stopped, by the same rule
+  the Agents page uses. No instance at all, or one scaled to zero, counts as
+  stopped. If the instances cannot be read, the pass destroys nothing.
 - **The record** is one server log line per agent whose teardown it started
   (`agent-reap: destroying agent <id> (<name>) of user <owner>, task <id or
   none>: stopped since <time>, longer than <window>`). No task comment and no
@@ -325,9 +335,10 @@ it leaves the agent's task as it was.
 - **Off:** `MUSTER_AGENT_REAP_STOPPED_AFTER=0` (or `off`). The boot log says
   which (`agent reaper: sweeping every …` or `agent reaper: off`).
 
-⚠ A Start brings the instance up before it writes `provisioning`. A claim
-landing in that gap still sees `stopped`, wins, and the teardown removes what
-the Start brought up — the same race as pressing Start and Delete at once.
+⚠ A Start in flight — instance being brought up, `provisioning` not yet
+written — whose instance the pass's read did not yet see as up still reads
+`stopped` on both counts. A claim landing then wins, and the teardown removes
+what the Start brought up: the same race as pressing Start and Delete at once.
 
 ## The chief
 

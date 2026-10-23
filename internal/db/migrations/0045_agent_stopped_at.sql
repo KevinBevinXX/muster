@@ -12,10 +12,11 @@
 -- before the reaper starts the agent's teardown, so two pods sweeping at once
 -- never both destroy it.
 --
--- 🔴 THE TRIGGER, NOT THE APPLICATION, OWNS THE STAMP. A row reaches 'stopped'
--- through several writers — the provisioner's Stop and a saved Dispatch, and
--- the reconciler persisting a computed status (UpdateStatus) — so stamping in
--- each writer would be a rule spelled at every site and missed at the next one.
+-- 🔴 THE TRIGGER, NOT THE APPLICATION, OWNS THE STAMP. Today a row reaches
+-- 'stopped' through the provisioner's Stop and a saved Dispatch (both
+-- agentprovision's setStatus, i.e. agents.PGStore.UpdateStatus); stamping in
+-- the database means a future writer of 'stopped' is stamped too, instead of
+-- being one more site that must remember to.
 -- So on every INSERT, and every UPDATE that writes status: when the status
 -- becomes 'stopped' from anything else (or a row is inserted 'stopped'),
 -- stopped_at := now() and reap_claimed_at := NULL — a fresh clock. Every other write leaves both as the

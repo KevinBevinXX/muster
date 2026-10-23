@@ -180,8 +180,8 @@ func TestOnlyAStoppedNonPoolAgentPastTheWindowIsReapable(t *testing.T) {
 // TestStartResetsTheStoppedClock: a stopped agent 15 days into its window is
 // Started (the provisioner writes `provisioning`, then `running`) and stopped
 // again. It now carries a stopped_at from moments ago, is not listed, and a
-// claim loses. CONTROL: re-persisting
-// `stopped` over a stopped row (the reconciler's write) does NOT move the clock.
+// claim loses. CONTROL: writing `stopped` again over a stopped row does NOT
+// move the clock.
 func TestStartResetsTheStoppedClock(t *testing.T) {
 	f := newReapFixture(t)
 	a := f.agent(t, "reap-restart", StatusStopped, "")
@@ -192,7 +192,7 @@ func TestStartResetsTheStoppedClock(t *testing.T) {
 	}
 	before := f.listed(t, a.ID)
 	if _, ok := before[a.ID]; !ok {
-		t.Fatal("control: re-persisting `stopped` over a stopped row reset its clock")
+		t.Fatal("control: writing `stopped` over a stopped row reset its clock")
 	}
 
 	for _, st := range []string{StatusProvisioning, StatusRunning, StatusStopped} {

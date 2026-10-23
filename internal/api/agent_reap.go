@@ -33,13 +33,17 @@ import (
 //   - an agent Started since the scan read it: the claim re-checks the status
 //     and the window. A Stop after a Start stamps a new stopped_at (migration
 //     0045's trigger), so a restarted agent that is stopped again waits a
-//     fresh window.
+//     fresh window;
+//   - an agent whose INSTANCE is not stopped, whatever its row says: the pass
+//     reads the provisioner's instances first and skips (and logs) any due
+//     agent whose instance reads running, provisioning or error; if the
+//     instances cannot be read, it destroys nothing.
 //
 // ⚠ KNOWN RESIDUAL: Start brings the instance up BEFORE it writes
-// `provisioning` (agentprovision.Adapter.Start). A Start in flight in that gap
-// still reads `stopped`, so a claim landing in it wins and the teardown removes
-// what the Start brought up. The same race exists between the Agents page's
-// Start and Delete today.
+// `provisioning` (agentprovision.Adapter.Start). A Start in flight in that gap,
+// whose instance the pass's read did not yet see as up, still reads `stopped`,
+// so a claim landing in it wins and the teardown removes what the Start brought
+// up. The same race exists between the Agents page's Start and Delete today.
 //
 // The record of a reap is the server log: one line per agent whose teardown
 // was started, naming the agent, its owner, its task and when it stopped. The
@@ -91,9 +95,29 @@ func (s *Server) reapStoppedAgents(ctx context.Context) int {
 		s.logger.Printf("agent-reap: list stopped agents: %v", err)
 		return 0
 	}
+	if len(due) == 0 {
+		return 0
+	}
+	// 🔴 THE STORED STATUS IS CHECKED AGAINST THE BACKEND BEFORE ANYTHING IS
+	// CLAIMED. A stored `stopped` is not proof the instance is down: Start brings
+	// the instance up BEFORE it writes `provisioning`, so a Start whose status
+	// write failed leaves a running instance under a `stopped` row that nothing
+	// corrects. An agent whose instance reads as anything but stopped
+	// (liveStatusIndexed, the one composer the cards use) is skipped and logged.
+	// FAILS CLOSED: when the instances cannot be read (instanceIndex answers
+	// nil, "not observed"), the whole pass destroys nothing.
+	idx := s.instanceIndex(ctx)
+	if idx == nil {
+		s.logger.Printf("agent-reap: live instances could not be read; destroying nothing this pass (%d due)", len(due))
+		return 0
+	}
 	started := 0
 	for _, c := range due {
 		c := c
+		if live := liveStatusIndexed(agents.Agent{Name: c.Name, Status: agents.StatusStopped}, idx); live != agents.StatusStopped {
+			s.logger.Printf("agent-reap: agent %d (%s) is stored stopped but its instance reads %s; not reaped", c.ID, c.Name, live)
+			continue
+		}
 		octx := s.reapPrincipal(ctx, c.OwnerID)
 		// The provisioner is reached in THIS function's closure: the nil check
 		// above is its barrier (provisioner_seam_test.go).

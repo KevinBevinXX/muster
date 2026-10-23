@@ -10,9 +10,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ZacxDev/muster/internal/agentprovision"
 	"github.com/ZacxDev/muster/internal/agents"
+	"github.com/ZacxDev/muster/internal/agentspec"
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/notes"
+	"github.com/ZacxDev/muster/internal/provision"
 )
 
 // The stopped-agent reaper (agent_reap.go) over a real Postgres and the
@@ -373,4 +376,84 @@ func TestTheReaperIsOffAtZero(t *testing.T) {
 	f.reap(t)
 	f.waitGone(t, a.ID)
 	f.destroyedOnly(t, []int64{a.ID}, a.ID)
+}
+
+// TestAStoppedRowOverALiveInstanceIsNotReaped reproduces a Start whose driver
+// call succeeded and whose status write was lost, with the real adapter over
+// the noop driver: the agent is dispatched (its instance created), Stopped
+// (scaled to zero, row `stopped`), then its instance is scaled back up by the
+// driver alone — what Start does before it writes `provisioning`. The row says
+// `stopped`, 15 days old; the instance is running. The pass destroys nothing
+// and says why. CONTROL, same agent: once the instance is scaled to zero again,
+// the next pass destroys it.
+func TestAStoppedRowOverALiveInstanceIsNotReaped(t *testing.T) {
+	f := newReapAPIFixture(t)
+	driver := provision.MustNewNoop()
+	store := agents.NewPG(f.pool)
+	adapter, err := agentprovision.New(agentprovision.Config{Driver: driver, Store: store,
+		Spec:               agentspec.Config{ImageRepo: "registry.example.test/muster/agent-runtime", APIBaseURL: "http://muster.example.test:8105"},
+		KickoffDeliverable: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.srv.ext.Provisioner = adapter
+	a := f.agentOn(t, 1, "rplive", nil)
+	ctx := asUser(1)
+	if err := adapter.Dispatch(ctx, a.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := adapter.Stop(ctx, a.ID); err != nil {
+		t.Fatal(err)
+	}
+	f.ageStopped(t, a.ID, 15)
+	if err := driver.Scale(context.Background(), agents.RefOf(a), 1); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := store.Get(ctx, a.ID); err != nil || got.Status != agents.StatusStopped {
+		t.Fatalf("fixture: the row is %q (%v), want stopped", got.Status, err)
+	}
+
+	f.srv.reapStoppedAgents(authz.System(context.Background()))
+	time.Sleep(300 * time.Millisecond) // a teardown wrongly started would land here
+	if !f.exists(t, a.ID) {
+		t.Fatal("an agent stored stopped whose instance is running was destroyed")
+	}
+	if inst, err := driver.Get(context.Background(), agents.RefOf(a)); err != nil || inst.Replicas != 1 {
+		t.Fatalf("the live instance was touched: %+v %v", inst, err)
+	}
+	want := "agent-reap: agent " + strconv.FormatInt(a.ID, 10) + " (" + a.Name + ") is stored stopped but its instance reads "
+	if logs := f.log.String(); !strings.Contains(logs, want) {
+		t.Errorf("the skip is not logged (%q):\n%s", want, logs)
+	}
+
+	if err := driver.Scale(context.Background(), agents.RefOf(a), 0); err != nil {
+		t.Fatal(err)
+	}
+	f.srv.reapStoppedAgents(authz.System(context.Background()))
+	f.waitGone(t, a.ID)
+}
+
+// blindProv is the destroy fixture's provisioner whose instance list fails.
+type blindProv struct{ *destroyProv }
+
+func (blindProv) Instances(context.Context) ([]provision.Instance, error) {
+	return nil, provision.ErrBlind
+}
+
+// TestTheReaperDestroysNothingWhenInstancesCannotBeRead: a due agent, and a
+// provisioner that cannot list its instances. The pass destroys nothing and
+// says so. (Control: TestTheReaperDestroysOnlyAnAgentStoppedPastTheWindow,
+// whose provisioner lists none.)
+func TestTheReaperDestroysNothingWhenInstancesCannotBeRead(t *testing.T) {
+	f := newReapAPIFixture(t)
+	f.srv.ext.Provisioner = blindProv{f.prov}
+	a := f.agentOn(t, 1, "rpblind", nil)
+	f.stopAged(t, a.ID, 15)
+	if got := f.reap(t); got != 0 {
+		t.Fatalf("a pass that could not read instances started %d teardown(s)", got)
+	}
+	f.destroyedOnly(t, []int64{a.ID})
+	if logs := f.log.String(); !strings.Contains(logs, "agent-reap: live instances could not be read; destroying nothing this pass") {
+		t.Errorf("the refusal is not logged:\n%s", logs)
+	}
 }
