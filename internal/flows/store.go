@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -258,6 +259,23 @@ func enqueueTx(ctx context.Context, tx pgx.Tx, f Flow, r Request, params []byte,
 // race-safe: no other statement can observe the blocker gone and the pause not
 // yet applied.
 
+// MaxTTLPause is the ABSOLUTE ceiling on the ttl credit a queued job earns
+// while blocked (round-2 F-A). Without it a runner that keeps heartbeating a
+// wedged flow — nothing caps how long a job may run — would hold every job
+// behind it forever, and the owner's MaxPendingPerOwner would never clear.
+// Sized from the longest LEGITIMATE hold of one instance, a muse dispatch:
+// the pacing gap waited inside the job (10 min, the muse wrapper's default
+// MUSE_MIN_SEND_GAP_MIN) + MaxWaitSeconds (60 min) + the runner's 240 s slack
+// = 74 min, plus 16 min of headroom = 90 min. A queued job therefore runs no
+// later than expires_at + 90 min, however long it is blocked: the sweep
+// expires it at that point even while the blocker is still running, and the
+// credit added when a blocker finishes is capped at the same 90 min.
+const MaxTTLPause = 90 * time.Minute
+
+// maxTTLPauseSQL is MaxTTLPause as an SQL interval literal (a constant, not
+// input, so it is spliced rather than bound).
+var maxTTLPauseSQL = fmt.Sprintf("interval '%d seconds'", int64(MaxTTLPause.Seconds()))
+
 // blockedBy is the NOT EXISTS body: a running job holds q's browser instance.
 const blockedBy = `SELECT 1 FROM flow_jobs r
 		                        WHERE r.status = 'running' AND r.owner_id = q.owner_id
@@ -266,7 +284,7 @@ const blockedBy = `SELECT 1 FROM flow_jobs r
 // resumeBehind, inside a statement with a CTE `fin` (the rows that just left
 // running, with owner_id, host, instance and claimed_at), adds to each job
 // still queued on the same instance the time that job blocked it.
-const resumeBehind = `UPDATE flow_jobs q SET ttl_paused = q.ttl_paused + greatest(now() - greatest(q.created_at, fin.claimed_at), interval '0')
+var resumeBehind = `UPDATE flow_jobs q SET ttl_paused = least(q.ttl_paused + greatest(now() - greatest(q.created_at, fin.claimed_at), interval '0'), ` + maxTTLPauseSQL + `)
 		  FROM fin
 		 WHERE q.status = 'queued' AND q.owner_id = fin.owner_id
 		   AND q.host = fin.host AND q.instance = fin.instance`
@@ -286,9 +304,12 @@ const resumeBehind = `UPDATE flow_jobs q SET ttl_paused = q.ttl_paused + greates
 func (s *PGStore) sweep(ctx context.Context) error {
 	rows, err := s.pool.Query(ctx, `
 		UPDATE flow_jobs q SET status = 'expired', finished_at = now(),
-		       detail = 'not claimed before its ttl; it will not run late'
-		 WHERE q.status = 'queued' AND q.expires_at + q.ttl_paused <= now()
-		   AND NOT EXISTS (`+blockedBy+`)
+		       detail = CASE WHEN EXISTS (`+blockedBy+`)
+		           THEN 'not claimed within its ttl plus `+strconv.Itoa(int(MaxTTLPause.Minutes()))+` minutes of credit for waiting blocked behind a running job on the same browser; it will not run later than that'
+		           ELSE 'not claimed before its ttl (plus any credit for time spent blocked); it will not run later than that' END
+		 WHERE q.status = 'queued'
+		   AND ((q.expires_at + q.ttl_paused <= now() AND NOT EXISTS (`+blockedBy+`))
+		        OR q.expires_at + `+maxTTLPauseSQL+` <= now())
 		RETURNING q.flow`)
 	if err != nil {
 		return fmt.Errorf("flows: sweep ttl: %w", err)

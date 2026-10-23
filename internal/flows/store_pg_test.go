@@ -373,6 +373,124 @@ func TestALapsedBlockerAlsoResumesTheTTLOfTheJobsBehindIt(t *testing.T) {
 	}
 }
 
+// sys runs owner-level SQL (ttl_paused and claimed_at are not input, so the
+// immutability trigger allows them).
+func sys(t *testing.T, pool *pgxpool.Pool, sql string, args ...any) {
+	t.Helper()
+	if _, err := pool.Exec(authz.System(context.Background()), sql, args...); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func pausedSeconds(t *testing.T, pool *pgxpool.Pool, id int64) float64 {
+	t.Helper()
+	var s float64
+	if err := pool.QueryRow(authz.System(context.Background()),
+		`SELECT extract(epoch FROM ttl_paused) FROM flow_jobs WHERE id = $1`, id).Scan(&s); err != nil {
+		t.Fatal(err)
+	}
+	return s
+}
+
+// insertPoll inserts a queued muse.poll on "personal" created `age` ago with
+// a ttl of `ttl` (inserted directly: created_at and expires_at are input).
+func insertPoll(t *testing.T, pool *pgxpool.Pool, age, ttl time.Duration) int64 {
+	t.Helper()
+	var id int64
+	if err := pool.QueryRow(session(2), `INSERT INTO flow_jobs (flow, class, host, instance, params, requested_via, created_at, expires_at)
+		VALUES ('muse.poll', 'read', 'laptop', 'personal', '{}', 'session',
+		        now() - make_interval(secs => $1), now() - make_interval(secs => $1) + make_interval(secs => $2))
+		RETURNING id`, age.Seconds(), ttl.Seconds()).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	return id
+}
+
+// runningSend enqueues and claims a muse.send on laptop/personal, then backdates
+// its claim by `ago`.
+func runningSend(t *testing.T, s *PGStore, pool *pgxpool.Pool, ago time.Duration) Job {
+	t.Helper()
+	send := mustEnqueue(t, s, session(2), sendReq("laptop", "personal"))
+	if c, ok, err := s.Claim(runner(2), "laptop", []string{"personal"}, 0); err != nil || !ok || c.ID != send.ID {
+		t.Fatalf("claim send: %+v ok=%v %v", c, ok, err)
+	}
+	sys(t, pool, `UPDATE flow_jobs SET claimed_at = now() - make_interval(secs => $2) WHERE id = $1`, send.ID, ago.Seconds())
+	return send
+}
+
+// TestABlockedJobStillExpiresAtTheAbsoluteCeiling (round-2 F-A): a runner that
+// keeps heartbeating a wedged flow must not hold the jobs behind it forever. A
+// poll blocked past expires_at + MaxTTLPause expires even though its blocker
+// is STILL running, and its detail says so truthfully. CONTROL: a poll blocked
+// just inside the ceiling stays queued.
+func TestABlockedJobStillExpiresAtTheAbsoluteCeiling(t *testing.T) {
+	s, pool := pgStore(t)
+	runningSend(t, s, pool, 3*time.Hour)
+	past := insertPoll(t, pool, DefaultTTL+MaxTTLPause+time.Minute, DefaultTTL)
+	inside := insertPoll(t, pool, DefaultTTL+MaxTTLPause-time.Minute, DefaultTTL)
+	got, err := s.Get(session(2), past)
+	if err != nil || got.Status != StatusExpired {
+		t.Fatalf("a poll blocked past the ceiling reads %+v %v; want expired while the blocker still runs", got, err)
+	}
+	if !strings.Contains(got.Detail, "blocked") || strings.HasSuffix(got.Detail, "will not run late") {
+		t.Fatalf("detail %q: want it to name the blocked-wait ceiling, not claim it never runs late", got.Detail)
+	}
+	if got, err := s.Get(session(2), inside); err != nil || got.Status != StatusQueued {
+		t.Fatalf("CONTROL: a poll blocked just inside the ceiling reads %+v %v; want still queued", got, err)
+	}
+}
+
+// TestTheTTLCreditIsCappedAtMaxTTLPause: a poll blocked for longer than the
+// ceiling's credit (but not yet past expires_at + MaxTTLPause) is credited
+// exactly MaxTTLPause when its blocker reports, never more.
+func TestTheTTLCreditIsCappedAtMaxTTLPause(t *testing.T) {
+	s, pool := pgStore(t)
+	send := runningSend(t, s, pool, 3*time.Hour)
+	id := insertPoll(t, pool, MaxTTLPause+10*time.Minute, DefaultTTL) // blocked 100m of a 90m cap
+	if _, err := s.Report(runner(2), send.ID, "laptop", Result{Outcome: OutcomeDone}); err != nil {
+		t.Fatalf("report: %v", err)
+	}
+	if got := pausedSeconds(t, pool, id); got != MaxTTLPause.Seconds() {
+		t.Fatalf("ttl_paused = %.0fs; want exactly the cap %.0fs", got, MaxTTLPause.Seconds())
+	}
+}
+
+// TestTheCreditStartsWhenTheBlockerWasClaimed (round-2 F-B, mutant M4): a poll
+// queued while the runner was offline (its ttl running, nothing blocking it),
+// and only THEN blocked by a newly claimed send, is credited from the
+// blocker's claim — not from its own creation.
+func TestTheCreditStartsWhenTheBlockerWasClaimed(t *testing.T) {
+	s, pool := pgStore(t)
+	// The send was queued first (so it is claimed first) and the poll 20m
+	// ago; the runner was offline until 10m ago, when it claimed the send.
+	send := runningSend(t, s, pool, 10*time.Minute)
+	id := insertPoll(t, pool, 20*time.Minute, 25*time.Minute)
+	if _, err := s.Report(runner(2), send.ID, "laptop", Result{Outcome: OutcomeDone}); err != nil {
+		t.Fatalf("report: %v", err)
+	}
+	if got := pausedSeconds(t, pool, id); got < 600-5 || got > 600+5 {
+		t.Fatalf("ttl_paused = %.0fs; want ~600s (blocked only since the send's claim, not its 1200s age)", got)
+	}
+}
+
+// TestACreditedReadJobWhoseLeaseLapsesIsRequeued (round-2 F-B, mutants M6/M6b):
+// a read job claimed AFTER its raw expires_at — legitimately, on ttl credit —
+// whose lease then lapses is re-queued, not expired: the lease sweep judges it
+// on the effective deadline too.
+func TestACreditedReadJobWhoseLeaseLapsesIsRequeued(t *testing.T) {
+	s, pool := pgStore(t)
+	id := insertPoll(t, pool, 20*time.Minute, 15*time.Minute) // raw deadline passed 5m ago
+	sys(t, pool, `UPDATE flow_jobs SET ttl_paused = interval '15 minutes' WHERE id = $1`, id)
+	if c, ok, err := s.Claim(runner(2), "laptop", []string{"personal"}, 0); err != nil || !ok || c.ID != id {
+		t.Fatalf("claim the credited poll: %+v ok=%v %v", c, ok, err)
+	}
+	lapse(t, pool, id)
+	got, err := s.Get(session(2), id)
+	if err != nil || got.Status != StatusQueued || got.FinishedAt != nil || !strings.Contains(got.Detail, "re-queued") {
+		t.Fatalf("the credited read job whose lease lapsed reads %+v %v; want re-queued", got, err)
+	}
+}
+
 // lapse moves a running job's lease into the past (lease_until is not input,
 // so the immutability trigger allows it).
 func lapse(t *testing.T, pool *pgxpool.Pool, id int64) {

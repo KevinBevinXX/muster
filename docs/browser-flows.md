@@ -20,6 +20,15 @@ while a job on the same instance is running, and when that job finishes (or its
 lease runs out) the time it blocked is added to the queued job's deadline. The
 job's `expiresAt` stays the deadline as enqueued.
 
+That credit has an absolute ceiling, `MaxTTLPause` = **90 minutes**. It is
+sized from the longest legitimate hold of one instance, a muse dispatch: the
+10-minute pacing gap, plus `wait` up to 3600 s, plus 240 s of runner slack, is
+74 minutes, and the rest is headroom. A queued job is expired once it is 90
+minutes past its `expiresAt`, even if the job blocking it is still running (a
+runner can keep heartbeating a wedged flow forever). So no job runs more than
+ttl + 90 minutes after it was queued, and an owner's pending cap (20) always
+clears.
+
 Cancelling (`POST /api/flows/jobs/{id}/cancel`, or the button on `/flows`)
 withdraws a `queued` job and dismisses a `needs_operator` one. A `running` job
 answers 409: it is the runner's until it reports, so stop the runner to stop it
@@ -44,7 +53,7 @@ now.
 
 A dispatch job can stay `running` for a long time and still be healthy: up to
 about 10 minutes waiting out Muse's pacing gap, then `wait`, then 240 seconds.
-Nothing caps how long a job may run. A job is only taken from its runner when
+Nothing caps how long a job may run (the jobs queued behind it still expire at the 90-minute ceiling above). A job is only taken from its runner when
 the runner stops heartbeating and the 2-minute lease runs out.
 
 ## Three ways in
