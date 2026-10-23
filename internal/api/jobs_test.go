@@ -114,7 +114,7 @@ func (m *memJobs) insertLocked(n jobs.NewJob) (jobs.Job, bool, error) {
 	}
 	m.next++
 	j := jobs.Job{ID: m.next, AgentID: n.AgentID, Agent: n.Agent, WorkerPool: n.WorkerPool, Prompt: n.Prompt, Repo: n.Repo, SHA: n.SHA, PR: n.PR,
-		ResultPath: n.ResultPath, TimeoutSeconds: n.TimeoutSeconds, IdempotencyKey: n.IdempotencyKey,
+		ResultPath: n.ResultPath, TimeoutSeconds: n.TimeoutSeconds, IdempotencyKey: n.IdempotencyKey, Model: n.Model, ConfigRef: n.ConfigRef,
 		RequestedBy: n.RequestedBy, Status: jobs.StatusQueued, CreatedAt: time.Now()}
 	m.rows[j.ID] = j
 	return j, true, nil
@@ -243,23 +243,23 @@ func (s *jobAgents) List(context.Context) ([]agents.Agent, error) {
 	return out, nil
 }
 
-func (s *jobAgents) newSession(agentID int64, runtime string) agents.ChatSession {
+func (s *jobAgents) newSession(agentID int64, runtime, model string) agents.ChatSession {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	id := int64(400 + len(s.sessions) + 1)
-	sess := agents.ChatSession{ID: id, AgentID: agentID, SessionKey: "job-key-" + strconv.FormatInt(id, 10), Runtime: runtime}
+	sess := agents.ChatSession{ID: id, AgentID: agentID, SessionKey: "job-key-" + strconv.FormatInt(id, 10), Runtime: runtime, Model: model}
 	s.sessions = append(s.sessions, sess)
 	return sess
 }
 
 func (s *jobAgents) CreateSession(_ context.Context, agentID int64, _ string) (agents.ChatSession, error) {
-	return s.newSession(agentID, ""), nil
+	return s.newSession(agentID, "", ""), nil
 }
 
 // The 0030 half (agents.SessionRuntimeStore), so jobSession takes the explicit
 // claude-code runtime path production's PG store takes.
-func (s *jobAgents) CreateSessionOn(_ context.Context, agentID int64, _, runtime, _ string) (agents.ChatSession, error) {
-	return s.newSession(agentID, runtime), nil
+func (s *jobAgents) CreateSessionOn(_ context.Context, agentID int64, _, runtime, model string) (agents.ChatSession, error) {
+	return s.newSession(agentID, runtime, model), nil
 }
 func (s *jobAgents) DefaultSession(context.Context, int64, string) (agents.ChatSession, error) {
 	return agents.ChatSession{}, errors.New("jobAgents: not expected")
@@ -291,6 +291,8 @@ type jobGateway struct {
 	// panics makes the turn panic.
 	panics bool
 	turns  []string
+	// models is each turn's agents.HeaderCCModel ("" when it carried none).
+	models []string
 	// echo plays ccd's answer header (agents.HeaderCCWorkdirUsed) on an
 	// explicit session's turn: "" echoes the workdir the turn named, as ccd
 	// does; noEcho plays a ccd from before job worktrees, which sends none.
@@ -306,6 +308,7 @@ func (g *jobGateway) Chat(ctx context.Context, a agents.Agent, key, msg string, 
 	}
 	g.mu.Lock()
 	g.turns = append(g.turns, turn+" "+msg)
+	g.models = append(g.models, route.Header.Get(agents.HeaderCCModel))
 	reply, err, block, release, panics := g.reply, g.err, g.block, g.release, g.panics
 	echo, noEcho := g.echo, g.noEcho
 	g.mu.Unlock()
@@ -374,10 +377,14 @@ func (w *jobWorkspace) RemoveUntrackedWorkspaceFile(_ context.Context, _ agents.
 	return true, nil
 }
 
-func (w *jobWorkspace) PrepareJobWorktree(_ context.Context, a agents.Agent, jobID int64, repo string, pr int, sha string) (string, error) {
+func (w *jobWorkspace) PrepareJobWorktree(_ context.Context, a agents.Agent, jobID int64, repo string, pr int, sha, configRef string) (string, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	w.worktrees = append(w.worktrees, a.Name+"#"+strconv.FormatInt(jobID, 10)+" "+repo+"#"+strconv.Itoa(pr)+"@"+sha)
+	made := a.Name + "#" + strconv.FormatInt(jobID, 10) + " " + repo + "#" + strconv.Itoa(pr) + "@" + sha
+	if configRef != "" {
+		made += " config=" + configRef
+	}
+	w.worktrees = append(w.worktrees, made)
 	if w.prepareErr != nil {
 		return "", w.prepareErr
 	}

@@ -24,8 +24,9 @@ import (
 // submits a one-shot job — "run this prompt on this agent, optionally at this
 // commit, and give me the result" — and polls for its outcome.
 //
-//	POST /api/jobs       {agent | worker_pool, prompt, repo?, sha?, pr?, result_path?, timeout_s?, idempotency_key?}
-//	                     → 202 {job_id, status: "queued", …}  (200 + deduplicated:true on a repeated key)
+//	POST /api/jobs       {agent | worker_pool, prompt, repo?, sha?, pr?, config_ref?, model?, result_path?, timeout_s?, idempotency_key?}
+//	                     → 202 {job_id, status: "queued", …}  (200 + deduplicated:true on a repeated key;
+//	                       409 when that key's job has a different model or config_ref)
 //	GET  /api/jobs/{id}  → {job_id, status, result?, reason?, error?, started_at, finished_at, agent, cc_account, …}
 //
 // 🔴 ASYNCHRONOUS OVER THE EXISTING SYNCHRONOUS TURN, NOT NEW ccd PLUMBING. A
@@ -110,6 +111,14 @@ type jobRequest struct {
 	ResultPath     string `json:"result_path"`
 	TimeoutS       *int   `json:"timeout_s"`
 	IdempotencyKey string `json:"idempotency_key"`
+	// Model is the Claude model the job's own session runs on (absent: the
+	// CLI's default), held to the pattern a Claude Code chat session's model is
+	// (agents.ValidateSessionRuntime).
+	Model string `json:"model"`
+	// ConfigRef is the commit, reachable from the default branch, that a sha
+	// job's worktree takes its agent configuration from (absent: the default
+	// branch's tip, origin/HEAD).
+	ConfigRef string `json:"config_ref"`
 }
 
 // jobBodyLimit bounds the request body: the prompt's cap plus room for the rest.
@@ -151,9 +160,7 @@ func (s *Server) handleJobCreate(w http.ResponseWriter, r *http.Request) {
 	if n.IdempotencyKey != "" {
 		j, err := s.ext.Jobs.ByIdempotencyKey(ctx, n.IdempotencyKey)
 		if err == nil {
-			v := jobView(j)
-			v["deduplicated"] = true
-			s.writeJSON(w, http.StatusOK, v)
+			s.writeJobReplay(w, j, n)
 			return
 		}
 		if !errors.Is(err, jobs.ErrNotFound) {
@@ -215,9 +222,7 @@ func (s *Server) handleJobCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !created {
-		v := jobView(j)
-		v["deduplicated"] = true
-		s.writeJSON(w, http.StatusOK, v)
+		s.writeJobReplay(w, j, n)
 		return
 	}
 	// The run outlives the request: detached from its cancellation, keeping its
@@ -231,6 +236,44 @@ func (s *Server) handleJobCreate(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, http.StatusAccepted, jobView(j))
 }
 
+// writeJobReplay answers a submission whose idempotency key already names job
+// j: that job, with 200 and deduplicated:true — unless the submission asks for
+// a different model or config_ref (replayMismatch), which is a 409 naming the
+// fields, recording and running nothing.
+//
+// 🔴 ONLY THOSE TWO FIELDS ARE COMPARED. Before they existed the key was
+// compared with nothing (docs/jobs.md, "Idempotency"), and a caller may rely on
+// that for the rest of the body; but a caller that changes the model or the
+// configuration a review runs with and gets the OLD job back would record a
+// result produced by a model or prompt it did not ask for.
+func (s *Server) writeJobReplay(w http.ResponseWriter, j jobs.Job, n jobs.NewJob) {
+	if why := replayMismatch(j, n); why != "" {
+		v := jobView(j)
+		v["error"] = "idempotency_key " + strconv.Quote(n.IdempotencyKey) + " already names job " +
+			strconv.FormatInt(j.ID, 10) + ", which " + why + "; use a new key for a different job"
+		v["idempotency_mismatch"] = true
+		s.writeJSON(w, http.StatusConflict, v)
+		return
+	}
+	v := jobView(j)
+	v["deduplicated"] = true
+	s.writeJSON(w, http.StatusOK, v)
+}
+
+// replayMismatch is "" when submission n may be answered with job j (its
+// idempotency key's), else how they differ: the model and the config_ref, each
+// as recorded (absent and "" are the same).
+func replayMismatch(j jobs.Job, n jobs.NewJob) string {
+	var diffs []string
+	if j.Model != n.Model {
+		diffs = append(diffs, fmt.Sprintf("has model %q, not %q", j.Model, n.Model))
+	}
+	if j.ConfigRef != n.ConfigRef {
+		diffs = append(diffs, fmt.Sprintf("has config_ref %q, not %q", j.ConfigRef, n.ConfigRef))
+	}
+	return strings.Join(diffs, " and ")
+}
+
 // validateJobRequest checks the request's own fields — everything that needs no
 // lookup — and returns the job to record, or an HTTP status and a reason.
 func validateJobRequest(req jobRequest) (jobs.NewJob, int, string) {
@@ -241,6 +284,7 @@ func validateJobRequest(req jobRequest) (jobs.NewJob, int, string) {
 		ResultPath:     strings.TrimSpace(req.ResultPath),
 		TimeoutSeconds: jobs.DefaultTimeoutSeconds,
 		IdempotencyKey: req.IdempotencyKey,
+		ConfigRef:      strings.TrimSpace(req.ConfigRef),
 	}
 	agent, pool := strings.TrimSpace(req.Agent), strings.TrimSpace(req.WorkerPool)
 	switch {
@@ -277,7 +321,19 @@ func validateJobRequest(req jobRequest) (jobs.NewJob, int, string) {
 		return n, http.StatusBadRequest, fmt.Sprintf("idempotency_key is over %d bytes", jobs.MaxIdempotencyKeyBytes)
 	case req.IdempotencyKey != "" && strings.TrimSpace(req.IdempotencyKey) != req.IdempotencyKey:
 		return n, http.StatusBadRequest, "idempotency_key has leading or trailing whitespace"
+	case n.ConfigRef != "" && !jobs.ValidSHA(n.ConfigRef):
+		return n, http.StatusBadRequest, "config_ref must be a full commit id: 40 lowercase hex characters"
+	case n.ConfigRef != "" && n.SHA == "":
+		return n, http.StatusBadRequest, "config_ref is only for a job with a sha: only a sha job's worktree " +
+			"takes its agent configuration from the default branch"
 	}
+	// The same check a Claude Code chat session's model gets: it becomes the
+	// CLI's --model argument.
+	model, err := agents.ValidateSessionRuntime(agents.SessionRuntimeClaudeCode, req.Model)
+	if err != nil {
+		return n, http.StatusBadRequest, "model: " + err.Error()
+	}
+	n.Model = model
 	if req.PR != nil {
 		n.PR = *req.PR
 	}
@@ -581,6 +637,8 @@ func jobView(j jobs.Job) map[string]any {
 		"pr":          j.PR,
 		"result_path": j.ResultPath,
 		"timeout_s":   j.TimeoutSeconds,
+		"model":       j.Model,
+		"config_ref":  j.ConfigRef,
 		"created_at":  jobTime(j.CreatedAt),
 		"started_at":  jobTime(j.StartedAt),
 		"finished_at": jobTime(j.FinishedAt),
@@ -845,7 +903,7 @@ func (s *Server) runJob(ctx context.Context, j jobs.Job) {
 		finish(jobs.Failed(jobs.ReasonAgentUnavailable, fmt.Sprintf("agent %q could not be loaded: %v", j.Agent, err)))
 		return
 	}
-	sess, err := s.jobSession(ctx, a)
+	sess, err := s.jobSession(ctx, a, j.Model)
 	if err != nil {
 		s.logger.Printf("jobs: %d: open a chat session on %q: %v", j.ID, a.Name, err)
 		finish(jobs.Failed(jobs.ReasonInternal, "could not open a chat session on the agent"))
@@ -874,9 +932,13 @@ func (s *Server) runJob(ctx context.Context, j jobs.Job) {
 // runs it in a Claude Code session of its own rather than the agent's primary
 // conversation. The prompt and reply are stored in it like any other turn, so
 // the job is readable on the agent's page.
-func (s *Server) jobSession(ctx context.Context, a agents.Agent) (agents.ChatSession, error) {
+//
+// model ("" = the CLI's default) is the session's, so the turn's route carries
+// it as agents.HeaderCCModel (withSessionRoute) and ccd starts THIS session's
+// CLI with --model; no other session of the agent is touched.
+func (s *Server) jobSession(ctx context.Context, a agents.Agent, model string) (agents.ChatSession, error) {
 	if st, ok := s.sessionRuntimeStore(); ok {
-		return st.CreateSessionOn(ctx, a.ID, a.Name, agents.SessionRuntimeClaudeCode, "")
+		return st.CreateSessionOn(ctx, a.ID, a.Name, agents.SessionRuntimeClaudeCode, model)
 	}
 	return s.ext.Agents.CreateSession(ctx, a.ID, a.Name)
 }
@@ -894,16 +956,28 @@ func (s *Server) runJobTurn(ctx context.Context, a agents.Agent, sess agents.Cha
 	// echo is the working directory ccd says the turn's CLI used
 	// (agents.HeaderCCWorkdirUsed), for a sha job.
 	var echo workdirEcho
+	// 🔴 A model JOB MUST BE ANSWERED FROM A SESSION CLI OF ITS OWN. ccd sends
+	// agents.HeaderCCWorkdirUsed only from such a CLI (a "lane", started with
+	// the job's --model); a ccd from before lanes ignores the session and model
+	// headers and answers from the agent's primary CLI, on that CLI's model,
+	// without it. So the echo is recorded for every model job, and its absence
+	// fails the job below (model_unconfirmed).
+	if j.Model != "" {
+		turnCtx = withTurnEcho(turnCtx, &echo)
+	}
+	// 🔴 A sha JOB OR A model JOB ONLY IN A SESSION OF ITS OWN. A turn with no
+	// explicit Claude Code session goes to the agent's primary CLI, which works
+	// in the agent's checkout — exactly where a commit's own configuration must
+	// not run — and which a job's model must never reach (the model travels as
+	// the job session's, jobSession). A job with neither still runs there, as
+	// it always has.
+	if (j.SHA != "" || j.Model != "") && sess.Runtime != agents.SessionRuntimeClaudeCode {
+		return jobs.Failed(jobs.ReasonInternal, JobNoOwnSessionError)
+	}
 	if j.SHA != "" {
-		// 🔴 ONLY IN A SESSION OF ITS OWN. A turn with no explicit Claude Code
-		// session goes to the agent's primary CLI, which works in the agent's
-		// checkout — exactly where a commit's own configuration must not run.
-		if sess.Runtime != agents.SessionRuntimeClaudeCode {
-			return jobs.Failed(jobs.ReasonInternal, JobNoOwnSessionError)
-		}
 		// Registered BEFORE the worktree is made, so a half-made one goes too.
 		defer func() { o = s.removeJobWorktree(ctx, a, j, o) }()
-		dir, err := s.ext.JobWorkspace.PrepareJobWorktree(ctx, a, j.ID, j.Repo, j.PR, j.SHA)
+		dir, err := s.ext.JobWorkspace.PrepareJobWorktree(ctx, a, j.ID, j.Repo, j.PR, j.SHA, j.ConfigRef)
 		if err != nil {
 			if expired() {
 				return jobs.TimedOut("the job's timeout elapsed while creating its worktree at " + j.SHA + ": " + err.Error())
@@ -940,6 +1014,11 @@ func (s *Server) runJobTurn(ctx context.Context, a agents.Agent, sess agents.Cha
 				"output was discarded; update the agent's image", echo.want, got))
 		}
 	}
+	if j.Model != "" {
+		if _, ok := echo.get(); !ok {
+			return jobs.Failed(jobs.ReasonModelUnconfirmed, JobModelUnconfirmedError)
+		}
+	}
 	if j.ResultPath != "" {
 		o = s.readJobResult(ctx, a, worktree, j)
 		if worktree != 0 {
@@ -954,10 +1033,17 @@ func (s *Server) runJobTurn(ctx context.Context, a agents.Agent, sess agents.Cha
 	return o
 }
 
-// JobNoOwnSessionError is a sha job's error when the chat store cannot open a
-// Claude Code session of the job's own (agents.SessionRuntimeStore).
+// JobModelUnconfirmedError is a model job's error when its turn's answer did
+// not come from a session CLI of the job's own (no agents.HeaderCCWorkdirUsed).
+const JobModelUnconfirmedError = "the agent's runtime did not confirm it ran the turn in a Claude Code session of " +
+	"the job's own (no " + agents.HeaderCCWorkdirUsed + "), so it may have run in the agent's own session on that " +
+	"session's model; the turn's output was discarded; update the agent's image"
+
+// JobNoOwnSessionError is a sha or model job's error when the chat store
+// cannot open a Claude Code session of the job's own
+// (agents.SessionRuntimeStore).
 const JobNoOwnSessionError = "this deployment's chat store cannot open a Claude Code session of the job's own, " +
-	"so the turn could not be kept out of the agent's checkout; nothing was run"
+	"so the turn could not be kept out of the agent's checkout and session; nothing was run"
 
 // workdirEcho records the working directory ccd answered with for a turn.
 type workdirEcho struct {
@@ -993,6 +1079,14 @@ func withJobWorkdir(ctx context.Context, dir string, echo *workdirEcho) context.
 	h.Set(agents.HeaderCCWorkdir, dir)
 	r.Header = h
 	echo.want = dir
+	r.OnResponse = echo.record
+	return agents.WithTurnRoute(ctx, r)
+}
+
+// withTurnEcho is ctx with the turn's route recording into echo the directory
+// ccd answers its session CLI used (agents.HeaderCCWorkdirUsed), naming none.
+func withTurnEcho(ctx context.Context, echo *workdirEcho) context.Context {
+	r, _ := agents.TurnRouteFrom(ctx)
 	r.OnResponse = echo.record
 	return agents.WithTurnRoute(ctx, r)
 }

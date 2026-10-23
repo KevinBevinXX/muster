@@ -145,7 +145,7 @@ const overlayJobID = 41
 // fixture's pull request, fetched from the fixture's origin.
 func prepareJob(a *Adapter, r worktreetest.Repo, sha string) (string, error) {
 	a.anonGitBase = r.AnonBase
-	return a.PrepareJobWorktree(context.Background(), workspaceAgent, overlayJobID, worktreetest.RepoName, worktreetest.PR, sha)
+	return a.PrepareJobWorktree(context.Background(), workspaceAgent, overlayJobID, worktreetest.RepoName, worktreetest.PR, sha, "")
 }
 
 // overlayPaths are every path the overlay decides, as the fixture lays them
@@ -351,25 +351,25 @@ func TestAJobWorktreeIsRefusedWithoutATrustedDefaultBranch(t *testing.T) {
 		a, d := newWorkspaceAdapter(t)
 		before := d.count()
 		sha := strings.Repeat("a", 40)
-		if _, err := a.PrepareJobWorktree(context.Background(), workspaceAgent, overlayJobID, worktreetest.RepoName, 7, "HEAD~1"); err == nil {
+		if _, err := a.PrepareJobWorktree(context.Background(), workspaceAgent, overlayJobID, worktreetest.RepoName, 7, "HEAD~1", ""); err == nil {
 			t.Error("a non-hex sha was accepted")
 		}
-		if _, err := a.PrepareJobWorktree(context.Background(), workspaceAgent, overlayJobID, worktreetest.RepoName, 7, sha[:8]); err == nil {
+		if _, err := a.PrepareJobWorktree(context.Background(), workspaceAgent, overlayJobID, worktreetest.RepoName, 7, sha[:8], ""); err == nil {
 			t.Error("an abbreviated sha was accepted")
 		}
-		if _, err := a.PrepareJobWorktree(context.Background(), workspaceAgent, 0, worktreetest.RepoName, 7, sha); err == nil {
+		if _, err := a.PrepareJobWorktree(context.Background(), workspaceAgent, 0, worktreetest.RepoName, 7, sha, ""); err == nil {
 			t.Error("job id 0 was accepted")
 		}
-		if _, err := a.PrepareJobWorktree(context.Background(), agents.Agent{Name: "no-repo", Kind: agents.KindClaudeCode}, overlayJobID, worktreetest.RepoName, 7, sha); err == nil {
+		if _, err := a.PrepareJobWorktree(context.Background(), agents.Agent{Name: "no-repo", Kind: agents.KindClaudeCode}, overlayJobID, worktreetest.RepoName, 7, sha, ""); err == nil {
 			t.Error("an agent with no repository was given a worktree")
 		}
 		for _, pr := range []int{0, -1} {
-			if _, err := a.PrepareJobWorktree(context.Background(), workspaceAgent, overlayJobID, worktreetest.RepoName, pr, sha); err == nil {
+			if _, err := a.PrepareJobWorktree(context.Background(), workspaceAgent, overlayJobID, worktreetest.RepoName, pr, sha, ""); err == nil {
 				t.Errorf("pull request %d was accepted", pr)
 			}
 		}
 		for _, repo := range []string{"", "acme", "acme/widgets/x", "../widgets", "acme/..", "-x/y y"} {
-			if _, err := a.PrepareJobWorktree(context.Background(), workspaceAgent, overlayJobID, repo, 7, sha); err == nil {
+			if _, err := a.PrepareJobWorktree(context.Background(), workspaceAgent, overlayJobID, repo, 7, sha, ""); err == nil {
 				t.Errorf("repository %q was accepted", repo)
 			}
 		}
@@ -393,7 +393,7 @@ func TestTheFetchNamesThePublicURLAndThePullRequest(t *testing.T) {
 	}
 	a, d := newWorkspaceAdapter(t)
 	sha := strings.Repeat("c", 40)
-	if _, err := a.PrepareJobWorktree(context.Background(), workspaceAgent, overlayJobID, "acme/widgets", 7, sha); err == nil {
+	if _, err := a.PrepareJobWorktree(context.Background(), workspaceAgent, overlayJobID, "acme/widgets", 7, sha, ""); err == nil {
 		t.Fatal("prepare with no checkout succeeded")
 	}
 	d.mu.Lock()
@@ -402,7 +402,7 @@ func TestTheFetchNamesThePublicURLAndThePullRequest(t *testing.T) {
 		t.Fatalf("%d execs, want 1", len(d.cmds))
 	}
 	want := []string{"muster-job-worktree", "/data/workspace/widgets", "/data/workspace/.muster-jobs/41", sha,
-		"https://github.com/acme/widgets", "7", "CLAUDE.md", "CLAUDE.local.md", "AGENTS.md", ".mcp.json"}
+		"https://github.com/acme/widgets", "7", "", "CLAUDE.md", "CLAUDE.local.md", "AGENTS.md", ".mcp.json"}
 	if got := d.cmds[0][3:]; strings.Join(got, "|") != strings.Join(want, "|") {
 		t.Fatalf("worktree command args = %q\nwant                    %q", got, want)
 	}
@@ -482,7 +482,7 @@ func TestAShaNotOnThePullRequestIsRefused(t *testing.T) {
 	}
 
 	a.anonGitBase = r.AnonBase
-	if _, err := a.PrepareJobWorktree(context.Background(), workspaceAgent, overlayJobID, worktreetest.RepoName, 8, r.Commit); err == nil ||
+	if _, err := a.PrepareJobWorktree(context.Background(), workspaceAgent, overlayJobID, worktreetest.RepoName, 8, r.Commit, ""); err == nil ||
 		!strings.Contains(err.Error(), PullFetchMessage) {
 		t.Fatalf("pull request 8 (none): prepare = %v, want an error carrying %q", err, PullFetchMessage)
 	}

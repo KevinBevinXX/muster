@@ -135,8 +135,9 @@ var gitRunsNoRepoCommands = func() string {
 }()
 
 // jobOverlayScript prepares job worktree $2 of the checkout $1 at commit $3,
-// of pull request $5 of the repository at the anonymous URL $4, the remaining
-// arguments being JobOverlayRootFiles:
+// of pull request $5 of the repository at the anonymous URL $4, taking the
+// agent configuration from commit $6 ("" = the default branch's tip), the
+// remaining arguments being JobOverlayRootFiles:
 //
 //  1. resolve the default branch, refs/remotes/origin/HEAD (asking origin with
 //     `git remote set-head --auto` only when the ref is missing), and fail
@@ -145,15 +146,28 @@ var gitRunsNoRepoCommands = func() string {
 //  2. fetch refs/pull/$5/head ANONYMOUSLY from $4 into refs/muster-jobs/<job
 //     id> (see below), and refuse (NotOnPullRequestMessage) unless $3 is that
 //     head or an ancestor of it;
-//  3. refuse (SymlinkOverlayMessage) when the default branch carries a symlink
-//     among the overlaid paths: a symlink restored from it could point at a
-//     file the commit controls;
-//  4. `git worktree add --detach` the commit at $2 — the agent's own checkout,
+//  3. with a config ref $6, refuse (ConfigRefNotOnDefaultBranchMessage)
+//     unless it is reachable from the default branch: from the checkout's
+//     origin/HEAD, or else from the default branch's tip as fetched — the same
+//     anonymous fetch as the pull request's, of $4's HEAD, into
+//     refs/muster-jobs/<job id>-config. The overlay's SOURCE is then $6, not
+//     the default branch's tip;
+//  4. refuse (SymlinkOverlayMessage) when the source carries a symlink among
+//     the overlaid paths: a symlink restored from it could point at a file the
+//     commit controls;
+//  5. `git worktree add --detach` the commit at $2 — the agent's own checkout,
 //     its HEAD, branch and working tree, is not touched;
-//  5. THE OVERLAY: remove every `.claude` directory (or file) anywhere in the
-//     worktree, then restore every `.claude` the default branch has, at the
-//     same paths; remove each root file in JobOverlayRootFiles, then restore
-//     the default branch's copy where it has one.
+//  6. THE OVERLAY: remove every `.claude` directory (or file) anywhere in the
+//     worktree, then restore every `.claude` the source has, at the same
+//     paths; remove each root file in JobOverlayRootFiles, then restore the
+//     source's copy where it has one.
+//
+// 🔴 WHY A CONFIG REF MUST BE ON THE DEFAULT BRANCH. Its purpose is to pin
+// WHICH trusted configuration a job runs with (the caller recorded a version of
+// it before submitting, and the default branch may have moved since). Any
+// other commit would let a caller name the pull request's own commit — fetched
+// into this very checkout a step earlier — and so give the commit under review
+// its own configuration back: exactly what the overlay exists to prevent.
 //
 // 🔴 WHY `.claude` AT EVERY DEPTH, NOT ONLY AT THE ROOT. The root `.claude/`
 // holds the project settings (hooks: commands the CLI runs), agents and
@@ -198,8 +212,8 @@ var gitRunsNoRepoCommands = func() string {
 // COMMIT's configuration from configuring the reviewer; it does not make the
 // commit's code safe to execute.
 var jobOverlayScript = gitRunsNoRepoCommands + `export LC_ALL=C
-main=$1 wt=$2 sha=$3 url=$4 pr=$5
-shift 5
+main=$1 wt=$2 sha=$3 url=$4 pr=$5 cfg=$6
+shift 6
 cd "$main" || exit 1
 def=$(git rev-parse --verify --quiet 'refs/remotes/origin/HEAD^{commit}') ||
 	{ git remote set-head origin --auto >/dev/null 2>&1 &&
@@ -221,10 +235,24 @@ if [ "$sha" != "$head" ] && ! git merge-base --is-ancestor "$sha" "$head" 2>/dev
 	echo "` + NotOnPullRequestMessage + ` (pull request $pr's head is $head)" >&2
 	exit 6
 fi
+src=$def
+if [ -n "$cfg" ]; then
+	if ! git merge-base --is-ancestor "$cfg" "$def" 2>/dev/null; then
+		GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0 \
+			git -c credential.helper= -c http.extraHeader= fetch --quiet --no-tags "$url" "+HEAD:$ref-config" ||
+			{ echo "` + DefaultBranchFetchMessage + `" >&2; exit 10; }
+		tip=$(git rev-parse --verify --quiet "$ref-config^{commit}") || exit 1
+		if ! git merge-base --is-ancestor "$cfg" "$tip" 2>/dev/null; then
+			echo "` + ConfigRefNotOnDefaultBranchMessage + ` (the default branch is at $tip)" >&2
+			exit 9
+		fi
+	fi
+	src=$cfg
+fi
 tab=$(printf '\t')
-links=$(git ls-tree -r -z "$def" | grep -azE "^120000 [^$tab]*$tab(.*/)?\.claude(/|\$)" | tr '\0' '\n')
+links=$(git ls-tree -r -z "$src" | grep -azE "^120000 [^$tab]*$tab(.*/)?\.claude(/|\$)" | tr '\0' '\n')
 for p in "$@"; do
-	case $(git ls-tree "$def" -- "$p") in
+	case $(git ls-tree "$src" -- "$p") in
 	120000\ *) links="$links
 $p" ;;
 	esac
@@ -241,12 +269,12 @@ find . -name .git -prune -o -name .claude -prune -exec rm -rf {} + || exit 1
 for p in "$@"; do
 	rm -rf ./"$p" || exit 1
 done
-git ls-tree -r -z --name-only "$def" | grep -azE '(^|/)\.claude(/|$)' |
+git ls-tree -r -z --name-only "$src" | grep -azE '(^|/)\.claude(/|$)' |
 	sed -zE 's#^((.*/)?\.claude)(/.*)?$#\1#' | sort -zu |
-	xargs -0r -n1 sh -c 'git --literal-pathspecs checkout --quiet "$1" -- "$2" || exit 255' sh "$def" || exit 1
+	xargs -0r -n1 sh -c 'git --literal-pathspecs checkout --quiet "$1" -- "$2" || exit 255' sh "$src" || exit 1
 for p in "$@"; do
-	if git cat-file -e "$def:$p" 2>/dev/null; then
-		git --literal-pathspecs checkout --quiet "$def" -- "$p" || exit 1
+	if git cat-file -e "$src:$p" 2>/dev/null; then
+		git --literal-pathspecs checkout --quiet "$src" -- "$p" || exit 1
 	fi
 done`
 
@@ -267,6 +295,16 @@ const PullFetchMessage = "the pull request's head could not be fetched anonymous
 // request; the pull request's head follows it.
 const NotOnPullRequestMessage = "the job's sha is neither the pull request's head nor an ancestor of it, so it was not checked out; nothing was run"
 
+// ConfigRefNotOnDefaultBranchMessage opens the error of a job whose
+// config_ref is not reachable from the repository's default branch; the
+// default branch's tip follows it.
+const ConfigRefNotOnDefaultBranchMessage = "the job's config_ref is not reachable from the repository's default branch, so its agent configuration is not trusted; nothing was run"
+
+// DefaultBranchFetchMessage opens the error of a job whose config_ref is not
+// on the checkout's origin/HEAD and whose default branch could then not be
+// fetched anonymously to look for it there.
+const DefaultBranchFetchMessage = "the job's config_ref is not on the checkout's origin/HEAD, and the repository's default branch could not be fetched anonymously to look for it; nothing was run"
+
 // DefaultAnonymousGitBase is the anonymous fetch base: the public GitHub.
 const DefaultAnonymousGitBase = "https://github.com/"
 
@@ -277,12 +315,13 @@ const SymlinkOverlayMessage = "the repository's default branch has a symlink amo
 // jobRemoveScript removes job worktree $2 of the checkout $1: `git worktree
 // remove --force --force` (twice: a locked worktree too), then the directory
 // itself if git left it (it was not a registered worktree, or git refused),
-// then `git worktree prune`, and the job's fetched pull-request ref. It fails
-// only when the directory is still there.
+// then `git worktree prune`, and the job's fetched pull-request and
+// default-branch refs. It fails only when the directory is still there.
 var jobRemoveScript = gitRunsNoRepoCommands + `cd "$1" 2>/dev/null && git worktree remove --force --force "$2" >/dev/null 2>&1
 rm -rf "$2"
 cd "$1" 2>/dev/null && git worktree prune >/dev/null 2>&1
 cd "$1" 2>/dev/null && git update-ref -d "refs/muster-jobs/${2##*/}" >/dev/null 2>&1
+cd "$1" 2>/dev/null && git update-ref -d "refs/muster-jobs/${2##*/}-config" >/dev/null 2>&1
 if [ -e "$2" ] || [ -L "$2" ]; then
 	echo "the job's worktree $2 could not be removed" >&2
 	exit 1
@@ -320,13 +359,17 @@ func AnonymousFetchURL(base, repo string) string {
 
 // PrepareJobWorktree creates job jobID's worktree of ag's repository at sha,
 // which must be pull request pr's head of repo (owner/name) or an ancestor of
-// it — fetched anonymously (jobOverlayScript) — with the overlay, and returns
-// its absolute path in the instance. ag's own checkout is not moved. On an
+// it — fetched anonymously (jobOverlayScript) — with the overlay taken from
+// configRef ("" = the default branch's tip; else a full commit id the default
+// branch must reach), and returns its absolute path in the instance. ag's own checkout is not moved. On an
 // error a partly made worktree may be left; RemoveJobWorktree removes it
 // either way.
-func (a *Adapter) PrepareJobWorktree(ctx context.Context, ag agents.Agent, jobID int64, repo string, pr int, sha string) (string, error) {
+func (a *Adapter) PrepareJobWorktree(ctx context.Context, ag agents.Agent, jobID int64, repo string, pr int, sha, configRef string) (string, error) {
 	if !jobs.ValidSHA(sha) {
 		return "", fmt.Errorf("agentprovision: %q is not a full commit id (40 lowercase hex)", sha)
+	}
+	if configRef != "" && !jobs.ValidSHA(configRef) {
+		return "", fmt.Errorf("agentprovision: config ref %q is not a full commit id (40 lowercase hex)", configRef)
 	}
 	if pr <= 0 {
 		return "", fmt.Errorf("agentprovision: pull request %d is not positive", pr)
@@ -340,7 +383,7 @@ func (a *Adapter) PrepareJobWorktree(ctx context.Context, ag agents.Agent, jobID
 	}
 	var out bytes.Buffer
 	cmd := append([]string{"sh", "-c", jobOverlayScript, "muster-job-worktree", main, wt, sha,
-		AnonymousFetchURL(a.anonGitBase, repo), strconv.Itoa(pr)}, JobOverlayRootFiles...)
+		AnonymousFetchURL(a.anonGitBase, repo), strconv.Itoa(pr), configRef}, JobOverlayRootFiles...)
 	if err := provision.Exec(ctx, a.driver, agents.RefOf(ag), cmd, nil, &out, &out); err != nil {
 		return "", fmt.Errorf("create the worktree %s at %s: %w: %s", wt, sha, err, strings.TrimSpace(capString(out.String(), 1024)))
 	}
