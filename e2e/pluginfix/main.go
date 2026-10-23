@@ -74,7 +74,7 @@ func run(args []string) error {
 		return err
 	}
 	if len(args) == 0 {
-		return fmt.Errorf("usage: pluginfix chief|agent|delivering|unconfirmed|lapse|label|rmagent|cleanup|ask|draft|rmplugin …")
+		return fmt.Errorf("usage: pluginfix chief|agent|delivering|unconfirmed|lapse|label|linknote|rmagent|cleanup|ask|draft|rmplugin …")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
@@ -176,6 +176,24 @@ func run(args []string) error {
 			return fmt.Errorf("usage: label <agent-id> <display-name>")
 		}
 		tag, err := conn.Exec(ctx, `UPDATE agents SET display_name = $2 WHERE id = $1`, agent, args[2])
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() != 1 {
+			return fmt.Errorf("no agent %d", agent)
+		}
+	case "linknote":
+		// Links an agent to a task, as a dispatch from that task does: the agent
+		// page's title becomes the task-detail button.
+		agent, err := num(1)
+		if err != nil {
+			return err
+		}
+		note, err := num(2)
+		if err != nil {
+			return err
+		}
+		tag, err := conn.Exec(ctx, `UPDATE agents SET note_id = $2 WHERE id = $1`, agent, note)
 		if err != nil {
 			return err
 		}

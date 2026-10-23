@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	g "maragu.dev/gomponents"
 	. "maragu.dev/gomponents/html"
@@ -402,15 +403,67 @@ func agentsFilterChips() g.Node {
 // cardTitleMax is the most characters (runes) of a title a card draws.
 const cardTitleMax = 60
 
-// clampTitle is s as a card draws it: whole when it fits, else its first
-// cardTitleMax runes (trailing space trimmed) and true.
+// clampTitle is s as a card (and the agent page header) draws it: whole when
+// it fits, else at most its first cardTitleMax runes (trailing space trimmed)
+// and true.
+//
+// The cut is moved BACK to a grapheme-cluster boundary (graphemeJoins), so a
+// clamp never ends on half of what a reader sees as one character: a family
+// emoji (ZWJ sequence), a flag (regional-indicator pair), a letter with a
+// combining accent, a skin-tone or variation-selector modifier.
 func clampTitle(s string) (string, bool) {
 	r := []rune(s)
 	if len(r) <= cardTitleMax {
 		return s, false
 	}
-	return strings.TrimRight(string(r[:cardTitleMax]), " \t"), true
+	n := cardTitleMax
+	for n > 0 && graphemeJoins(r, n) {
+		n--
+	}
+	if n == 0 { // one cluster longer than the budget: cut it rather than draw nothing
+		n = cardTitleMax
+	}
+	return strings.TrimRight(string(r[:n]), " \t"), true
 }
+
+// graphemeJoins reports whether r[n-1] and r[n] belong to ONE extended
+// grapheme cluster, so a cut between them would split it. It covers the
+// clusters a title realistically carries — Extend/SpacingMark (combining
+// marks, variation selectors, emoji modifiers, tag characters), ZWJ
+// sequences and regional-indicator pairs — not the whole of UAX #29 (no
+// Hangul jamo or Prepend rules), which would need a dependency this module
+// does not have.
+func graphemeJoins(r []rune, n int) bool {
+	a, b := r[n-1], r[n]
+	if graphemeExtends(b) || a == '\u200d' {
+		return true
+	}
+	if isRegionalIndicator(a) && isRegionalIndicator(b) {
+		// Pairs are counted from the start of the run: the cut splits a flag
+		// when an ODD number of indicators precede it.
+		k := 0
+		for i := n - 1; i >= 0 && isRegionalIndicator(r[i]); i-- {
+			k++
+		}
+		return k%2 == 1
+	}
+	return false
+}
+
+// graphemeExtends is a rune that attaches to the one before it.
+func graphemeExtends(c rune) bool {
+	switch {
+	case c == '\u200d', // ZWJ
+		c >= 0xFE00 && c <= 0xFE0F, // variation selectors
+		c >= 0xE0100 && c <= 0xE01EF,
+		c >= 0x1F3FB && c <= 0x1F3FF, // emoji skin-tone modifiers
+		c >= 0xE0020 && c <= 0xE007F: // tag characters (subdivision flags)
+		return true
+	}
+	return unicode.In(c, unicode.Mn, unicode.Me, unicode.Mc)
+}
+
+func isRegionalIndicator(c rune) bool { return c >= 0x1F1E6 && c <= 0x1F1FF }
 
 // cardTitleRow is a card's title row: heading(short) — the title clamped by
 // clampTitle, drawn by the caller (a link to the card for a name, the popover
@@ -428,18 +481,49 @@ func cardTitleRow(slot, pop, full, pad, reserve string, heading func(short strin
 		cardSlot(slot),
 		Class("flex items-start gap-0.5 px-4 "+pad+" "+reserve),
 		heading(short),
-		g.If(clamped, Button(
-			Type("button"),
-			g.Attr("data-title-more", ""),
-			g.Attr("popovertarget", pop),
-			g.Attr("aria-haspopup", "dialog"),
-			g.Attr("aria-controls", pop),
-			g.Attr("aria-expanded", "false"),
-			g.Attr("aria-label", "Show the full title"),
-			Class("press -my-1.5 inline-flex h-11 min-w-[44px] shrink-0 items-start justify-center rounded-lg pt-1.5 text-base font-semibold leading-tight text-muted transition hover:bg-s2 hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus aria-expanded:bg-s2"),
-			g.Text("…"),
-		)),
+		g.If(clamped, titleMoreButton(pop, "-my-1.5 items-start pt-1.5 text-base")),
 		popover,
+	)
+}
+
+// titleMoreButton is THE "…" control that opens a clamped title's popover —
+// the cards' (cardTitleRow) and the agent page header's (agentTitle). fit is
+// only how it sits in its row (a card's top-aligned title row vs the header's
+// centred one); the control, its name and its ARIA are the same everywhere.
+//
+// extra is appended to the button (the agent header passes `hidden` while its
+// title is not clipped; see agentTitleFitScript).
+func titleMoreButton(pop, fit string, extra ...g.Node) g.Node {
+	return Button(
+		Type("button"),
+		g.Group(extra),
+		g.Attr("data-title-more", ""),
+		g.Attr("popovertarget", pop),
+		g.Attr("aria-haspopup", "dialog"),
+		g.Attr("aria-controls", pop),
+		g.Attr("aria-expanded", "false"),
+		g.Attr("aria-label", "Show the full title"),
+		Class("press inline-flex h-11 min-w-[44px] shrink-0 justify-center rounded-lg font-semibold leading-tight text-muted transition hover:bg-s2 hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus aria-expanded:bg-s2 "+fit),
+		g.Text("…"),
+	)
+}
+
+// fullTitlePopover is THE popover holding a clamped title whole: a native
+// popover="auto" (top layer; an outside tap or Escape closes it) placed by
+// floatingMenuScript ([data-floating-menu]). The text wraps anywhere — a
+// 600-character token with no break opportunity included — and a title too
+// long for the viewport scrolls inside the panel instead of running off it
+// (floatingMenuScript's place() sets the height cap, from the viewport).
+func fullTitlePopover(pop, full string) g.Node {
+	return Div(
+		ID(pop),
+		g.Attr("popover", "auto"),
+		g.Attr("role", "dialog"),
+		g.Attr("aria-label", "Full title"),
+		g.Attr("data-floating-menu", ""),
+		g.Attr("data-title-full", ""),
+		Class("invisible hidden [&:popover-open]:flex m-0 w-72 max-w-[calc(100vw-16px)] overflow-y-auto overscroll-contain flex-col gap-1.5 rounded-xl border border-line bg-s1 p-3 text-fg shadow-2xl ring-1 ring-black/20"),
+		Span(Class("[overflow-wrap:anywhere] text-sm font-semibold"), g.Text(full)),
 	)
 }
 
@@ -468,16 +552,7 @@ func cardLongTitle(cardID, href, full string, subtitle bool, reserve string, ext
 				g.Group(extra),
 			)
 		},
-		Div(
-			ID(pop),
-			g.Attr("popover", "auto"),
-			g.Attr("role", "dialog"),
-			g.Attr("aria-label", "Full title"),
-			g.Attr("data-floating-menu", ""),
-			g.Attr("data-title-full", ""),
-			Class("invisible hidden [&:popover-open]:flex m-0 w-72 max-w-[calc(100vw-16px)] flex-col gap-1.5 rounded-xl border border-line bg-s1 p-3 text-fg shadow-2xl ring-1 ring-black/20"),
-			Span(Class("break-words text-sm font-semibold"), g.Text(full)),
-		))
+		fullTitlePopover(pop, full))
 }
 
 // titledBodyClass is the nav anchor's box under a title row: like a focus

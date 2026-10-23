@@ -11,12 +11,21 @@ import (
 //
 // The rule, in order:
 //   - right-aligned to the trigger, just below it;
-//   - flipped ABOVE the trigger when below would cross the viewport bottom, and
-//     pinned to the bottom edge when neither side fits;
-//   - clamped horizontally inside an 8px edge. ⚠ DEFENSIVE, AND UNEXERCISED: the
-//     only trigger today sits at a card's right edge, where right-alignment can
-//     never leave the viewport, so no test reaches the clamp (a mutant deleting
-//     it survives the suite). It is kept for a trigger placed somewhere else.
+//   - flipped ABOVE the trigger when below would cross the viewport bottom;
+//   - when NEITHER side holds it whole, put on the ROOMIER side and capped to
+//     that side's height (it scrolls inside), so it never covers its own
+//     trigger — the agent header's full-title popover on a landscape phone
+//     (844×390) is taller than the space on either side of its "…". Only when
+//     both sides are under minSide (a trigger scrolled to an edge) is it
+//     pinned to the bottom edge as before;
+//   - clamped horizontally inside an 8px edge. EXERCISED by the agent header's
+//     "…" (agentTitle): at 390px it sits mid-row, and right-aligning the 288px
+//     panel to it would start left of the screen
+//     (e2e/tests/agent-long-title.spec.ts asserts the panel's box is inside
+//     the viewport).
+//
+// The height cap is THIS function's (maxHeight, inline); a popover carries no
+// max-height class of its own, which this inline style would silently beat.
 //
 // 🔴 IT RE-PLACES WHENEVER THE MENU CAN HAVE MOVED, GROWN, OR LOST ITS POSITION,
 // NOT ONLY ON OPEN. Three separate causes, each with its own observer because
@@ -81,7 +90,7 @@ func floatingMenuScript() g.Node {
 (function () {
   if (window.__musterFloatingMenu) return;
   window.__musterFloatingMenu = true;
-  var GAP = 4, EDGE = 8;
+  var GAP = 4, EDGE = 8, MIN_SIDE = 120;
   function isOpen(m) { try { return m.matches(':popover-open'); } catch (e) { return false; } }
   function place(m) {
     if (!m || !m.id || !isOpen(m)) return;
@@ -96,10 +105,20 @@ func floatingMenuScript() g.Node {
     m.style.overflowY = 'auto';
     var w = m.offsetWidth, h = m.offsetHeight;
     var left = Math.max(EDGE, Math.min(r.right - w, vw - w - EDGE));
-    var top = r.bottom + GAP;
-    if (top + h > vh - EDGE) {
-      var above = r.top - GAP - h;
-      top = above >= EDGE ? above : Math.max(EDGE, vh - h - EDGE);
+    var below = vh - EDGE - (r.bottom + GAP), above = r.top - GAP - EDGE;
+    var top;
+    if (h <= below) {
+      top = r.bottom + GAP;
+    } else if (h <= above) {
+      top = r.top - GAP - h;
+    } else if (Math.max(below, above) >= MIN_SIDE) {
+      // Neither side holds it: the roomier side, capped, so it does not cover
+      // its trigger.
+      m.style.maxHeight = Math.max(below, above) + 'px';
+      h = m.offsetHeight;
+      top = below >= above ? r.bottom + GAP : r.top - GAP - h;
+    } else {
+      top = Math.max(EDGE, vh - h - EDGE);
     }
     m.style.left = left + 'px';
     m.style.top = top + 'px';
