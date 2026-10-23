@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -232,11 +233,22 @@ func TestARestartedAgentWaitsAFreshWindow(t *testing.T) {
 type hookedReapStore struct {
 	*agents.PGStore
 	afterList func()
+	// only, when set, keeps just that agent in the scan's result.
+	only int64
 }
 
 func (h *hookedReapStore) ListReapableStopped(ctx context.Context, after time.Duration) ([]agents.StoppedAgent, error) {
 	out, err := h.PGStore.ListReapableStopped(ctx, after)
 	h.afterList()
+	if h.only != 0 {
+		kept := out[:0]
+		for _, a := range out {
+			if a.ID == h.only {
+				kept = append(kept, a)
+			}
+		}
+		out = kept
+	}
 	return out, err
 }
 
@@ -398,6 +410,9 @@ func TestAStoppedRowOverALiveInstanceIsNotReaped(t *testing.T) {
 	}
 	f.srv.ext.Provisioner = adapter
 	a := f.agentOn(t, 1, "rplive", nil)
+	// The scan is narrowed to THIS agent, so the pass's count below is about
+	// it alone and not about whatever else the package's shared database holds.
+	f.srv.ext.Agents = &hookedReapStore{PGStore: store, afterList: func() {}, only: a.ID}
 	ctx := asUser(1)
 	if err := adapter.Dispatch(ctx, a.ID, true); err != nil {
 		t.Fatal(err)
@@ -413,8 +428,12 @@ func TestAStoppedRowOverALiveInstanceIsNotReaped(t *testing.T) {
 		t.Fatalf("fixture: the row is %q (%v), want stopped", got.Status, err)
 	}
 
-	f.srv.reapStoppedAgents(authz.System(context.Background()))
-	time.Sleep(300 * time.Millisecond) // a teardown wrongly started would land here
+	// reapStoppedAgents counts a teardown as it starts it, before it returns,
+	// so zero here means none was started — no waiting on the background
+	// teardown to find out.
+	if n := f.srv.reapStoppedAgents(authz.System(context.Background())); n != 0 {
+		t.Fatalf("the pass started %d teardown(s) for an agent stored stopped whose instance is running", n)
+	}
 	if !f.exists(t, a.ID) {
 		t.Fatal("an agent stored stopped whose instance is running was destroyed")
 	}
@@ -449,11 +468,100 @@ func TestTheReaperDestroysNothingWhenInstancesCannotBeRead(t *testing.T) {
 	f.srv.ext.Provisioner = blindProv{f.prov}
 	a := f.agentOn(t, 1, "rpblind", nil)
 	f.stopAged(t, a.ID, 15)
+	f.srv.ext.Agents = &hookedReapStore{PGStore: agents.NewPG(f.pool), afterList: func() {}, only: a.ID}
 	if got := f.reap(t); got != 0 {
 		t.Fatalf("a pass that could not read instances started %d teardown(s)", got)
 	}
 	f.destroyedOnly(t, []int64{a.ID})
 	if logs := f.log.String(); !strings.Contains(logs, "agent-reap: live instances could not be read; destroying nothing this pass") {
 		t.Errorf("the refusal is not logged:\n%s", logs)
+	}
+}
+
+// stallProv is the destroy fixture's provisioner whose instance list blocks
+// until its context ends (or, with forever, until the test ends), counting
+// the calls.
+type stallProv struct {
+	*destroyProv
+	calls   atomic.Int32
+	stall   bool
+	forever chan struct{}
+}
+
+func (p *stallProv) Instances(ctx context.Context) ([]provision.Instance, error) {
+	p.calls.Add(1)
+	if !p.stall {
+		return nil, nil
+	}
+	if p.forever != nil {
+		<-p.forever
+		return nil, nil
+	}
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+// TestAStalledInstanceReadEndsThePassAndDestroysNothing: a due agent, and a
+// provisioner whose instance list does not answer — one that waits for its
+// context, and one that ignores it. With the read bounded at 100ms, each pass
+// returns within a few seconds, starts no teardown, and says why.
+func TestAStalledInstanceReadEndsThePassAndDestroysNothing(t *testing.T) {
+	for name, forever := range map[string]bool{"honours its context": false, "ignores its context": true} {
+		t.Run(name, func(t *testing.T) {
+			f := newReapAPIFixture(t)
+			p := &stallProv{destroyProv: f.prov, stall: true}
+			if forever {
+				p.forever = make(chan struct{})
+				t.Cleanup(func() { close(p.forever) })
+			}
+			f.srv.ext.Provisioner = p
+			f.srv.reapInstancesWithin = 100 * time.Millisecond
+			a := f.agentOn(t, 1, "rpstall", nil)
+			f.stopAged(t, a.ID, 15)
+			done := make(chan int, 1)
+			go func() { done <- f.srv.reapStoppedAgents(authz.System(context.Background())) }()
+			select {
+			case n := <-done:
+				if n != 0 {
+					t.Fatalf("a pass whose instance read stalled started %d teardown(s)", n)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("a pass whose instance read stalled did not return")
+			}
+			if p.calls.Load() != 1 {
+				t.Fatalf("instance reads = %d, want 1 (the stall was not exercised)", p.calls.Load())
+			}
+			if logs := f.log.String(); !strings.Contains(logs, "agent-reap: live instances could not be read; destroying nothing this pass") {
+				t.Errorf("the refusal is not logged:\n%s", logs)
+			}
+		})
+	}
+}
+
+// emptyReapStore is the agents store whose reaper scan finds nothing due.
+type emptyReapStore struct{ *agents.PGStore }
+
+func (emptyReapStore) ListReapableStopped(context.Context, time.Duration) ([]agents.StoppedAgent, error) {
+	return nil, nil
+}
+
+// TestAPassWithNothingDueReadsNoInstances: the instance read is paid only when
+// something is due. With nothing due, a pass makes no Instances call; CONTROL:
+// with one agent due, it makes exactly one.
+func TestAPassWithNothingDueReadsNoInstances(t *testing.T) {
+	f := newReapAPIFixture(t)
+	p := &stallProv{destroyProv: f.prov}
+	f.srv.ext.Provisioner = p
+	f.srv.ext.Agents = emptyReapStore{agents.NewPG(f.pool)}
+	f.srv.reapStoppedAgents(authz.System(context.Background()))
+	if got := p.calls.Load(); got != 0 {
+		t.Fatalf("a pass with nothing due read the instances %d time(s)", got)
+	}
+	f.srv.ext.Agents = agents.NewPG(f.pool)
+	a := f.agentOn(t, 1, "rpnothing", nil)
+	f.stopAged(t, a.ID, 15)
+	f.reap(t)
+	if got := p.calls.Load(); got != 1 {
+		t.Fatalf("control: a pass with one agent due read the instances %d time(s), want 1", got)
 	}
 }

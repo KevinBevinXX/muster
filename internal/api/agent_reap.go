@@ -17,9 +17,12 @@ import (
 // destroyAgent, the teardown the Agents page's Delete and the agent_destroy
 // tool take.
 //
-// It rides the idle-task reaper's loop (RunTaskReap, every TaskReapInterval),
-// and like it runs on every pod. What keeps two pods from destroying one agent
-// twice is the claim, not a leader: each due agent is claimed by one
+// It rides the idle-task reaper's loop (RunTaskReap, every TaskReapInterval).
+// That loop consults a leader gate (leadsTaskLoops), but cmd/muster-server
+// installs none (SetTaskLeaderGate has no caller there; see its
+// startBackgroundLoops and doc_seams.go item 4), and a nil gate runs the body
+// on every pod. So it runs on every pod, and what keeps two pods from
+// destroying one agent twice is the claim, not a leader: each due agent is claimed by one
 // conditional UPDATE (agents.PGStore.ClaimStoppedReap) after destroyAgent's
 // chief check and before anything is torn down, and only the winner starts the
 // teardown.
@@ -51,6 +54,11 @@ import (
 // the row with status `error` when the instance could not be removed, so such
 // an agent is not retried.
 // ---------------------------------------------------------------------------
+
+// defaultAgentReapInstancesWithin bounds the reaper's read of the
+// provisioner's instances. It runs in a background loop, not behind a page, so
+// it can wait longer than a render does; it only has to end.
+const defaultAgentReapInstancesWithin = 30 * time.Second
 
 // DefaultAgentReapStoppedAfter is how long an agent may stay stopped before the
 // reaper destroys it, when MUSTER_AGENT_REAP_STOPPED_AFTER is unset.
@@ -106,7 +114,13 @@ func (s *Server) reapStoppedAgents(ctx context.Context) int {
 	// (liveStatusIndexed, the one composer the cards use) is skipped and logged.
 	// FAILS CLOSED: when the instances cannot be read (instanceIndex answers
 	// nil, "not observed"), the whole pass destroys nothing.
-	idx := s.instanceIndex(ctx)
+	//
+	// 🔴 THE READ IS BOUNDED (s.reapInstancesWithin). The Kubernetes
+	// client carries no timeout of its own, so an unbounded List that stalls
+	// would hang this pass, and with it the idle-task reaper sharing the loop.
+	// Past the bound instanceIndexWithin answers nil, which is the same
+	// fail-closed path as an error.
+	idx := s.instanceIndexWithin(ctx, s.reapInstancesWithin)
 	if idx == nil {
 		s.logger.Printf("agent-reap: live instances could not be read; destroying nothing this pass (%d due)", len(due))
 		return 0

@@ -52,7 +52,11 @@ func TestOnlyAnAgentTheAdapterBroughtUpIsReapable(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		t.Cleanup(func() { _, _ = pool.Exec(ctx, `DELETE FROM agents WHERE id = $1`, ag.ID) })
+		// Its own context: ctx is cancelled when the test function returns,
+		// before cleanups run, so a DELETE on it would silently do nothing.
+		t.Cleanup(func() {
+			_, _ = pool.Exec(dbtest.AsOperator(context.Background()), `DELETE FROM agents WHERE id = $1`, ag.ID)
+		})
 		return ag
 	}
 	must := func(what string, err error) {

@@ -240,6 +240,9 @@ type Server struct {
 	// agentReapStoppedAfter is how long an agent may stay stopped before the
 	// stopped-agent reaper destroys it (agent_reap.go); <= 0 is off.
 	agentReapStoppedAfter time.Duration
+	// reapInstancesWithin bounds the stopped-agent reaper's read of the
+	// provisioner's instances (agent_reap.go).
+	reapInstancesWithin time.Duration
 
 	// taskLeader is the cross-process singleton gate for the background loops.
 	taskLeader LeaderGate
@@ -410,6 +413,7 @@ func New(bus *sse.Broadcaster, authCfg AuthConfig, logger *log.Logger) *Server {
 		taskDoneNotified:        make(map[int64]bool),
 		taskReapAfter:           defaultTaskReapAfter,
 		agentReapStoppedAfter:   DefaultAgentReapStoppedAfter,
+		reapInstancesWithin:     defaultAgentReapInstancesWithin,
 	}
 }
 

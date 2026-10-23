@@ -310,7 +310,8 @@ it leaves the agent's task as it was.
   every other row, including a stopped agent that was started but never got
   its first turn, counts as never started until it is Started again.
 - **When:** the reaper rides the idle-task reaper's sweep, every 30 minutes,
-  on every pod. Before it starts a teardown it claims the agent with one
+  on every pod (`muster-server` installs no leader gate for these loops; see
+  [limits.md](limits.md#deployment)). Before it starts a teardown it claims the agent with one
   conditional update that re-checks the stored conditions above (status,
   pool, ran, window) and that no other claim is live, so two pods never both
   destroy an agent, and an agent Started after the sweep read it (now
@@ -324,7 +325,8 @@ it leaves the agent's task as it was.
   (<name>) is stored stopped but its instance reads <status>; not reaped`)
   any due agent whose instance reads anything but stopped, by the same rule
   the Agents page uses. No instance at all, or one scaled to zero, counts as
-  stopped. If the instances cannot be read, the pass destroys nothing.
+  stopped. If the instances cannot be read, or the read has not answered
+  within 30 seconds, the pass destroys nothing.
 - **The record** is one server log line per agent whose teardown it started
   (`agent-reap: destroying agent <id> (<name>) of user <owner>, task <id or
   none>: stopped since <time>, longer than <window>`). No task comment and no
