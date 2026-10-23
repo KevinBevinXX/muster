@@ -164,3 +164,75 @@ test('the operator answers the chief on /attention and the chief\'s session rece
   await expect(log).toContainText(`your owner answered attention #${id}`, { timeout: 15_000 });
   await expect(log).toContainText(REPLY);
 });
+
+// ANSWERED ON THE CHIEF'S OWN PAGE (attention_asker.go): the notification's
+// URL, /attention/open/<key>, resolves the chief's ask to /agents/<chief> when
+// tapped (attention_push_target.go). The page shows the ask with
+// the queue's own buttons; the operator taps one there, lands back on the
+// chief's page, the ask leaves it, and the chief's session receives the
+// answer as a turn — once.
+for (const vp of [
+  { name: 'phone', use: { viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true } },
+  { name: 'desktop', use: { viewport: { width: 1280, height: 800 }, hasTouch: false, isMobile: false } },
+]) {
+  test.describe(`on a ${vp.name}`, () => {
+    test.use(vp.use);
+    test('the operator answers the chief on the chief\'s own page and the chief receives it', async ({ page }) => {
+      test.setTimeout(120_000);
+      await page.goto(origin + '/login');
+      await page.fill('#muster-password', password);
+      await Promise.all([page.waitForURL((u) => !u.pathname.startsWith('/login')), page.click('button[type=submit]')]);
+
+      const asked = await mcpCall('attention_ask', { question: `Who takes task 43 (${vp.name})?`, options: ['forward it', 'dispatch a new agent'] });
+      expect(asked.isError, asked.text).toBe(false);
+      const { id } = JSON.parse(asked.text) as { id: number };
+
+      const onChief = (u: URL) => u.pathname === '/agents/' + chiefName;
+      // The notification's URL (the tap route) resolves to the chief's page.
+      await page.goto(origin + `/attention/open/ask-${id}`);
+      await page.waitForURL(onChief);
+      const item = page.locator(`#asker-asks #ask-${id}`);
+      await expect(item.locator('[data-attention-text]')).toHaveText(`Who takes task 43 (${vp.name})?`);
+      // The composer is still reachable below the block.
+      const size = page.viewportSize()!;
+      const input = (await page.locator('#chat-input').boundingBox())!;
+      expect(input.y + input.height, 'the chat input is on screen').toBeLessThanOrEqual(size.height + 1);
+
+      // LIVE, both ways, with no reload: a second ask arrives on the open page,
+      // and leaves it when answered somewhere else (here: the queue's own
+      // answer route, as the /attention page or another device would post it);
+      // the shell's badge follows.
+      let navigations = 0;
+      page.on('framenavigated', (f) => {
+        if (f === page.mainFrame()) navigations++;
+      });
+      const badge = page.locator('#attention-badge');
+      const second = await mcpCall('attention_ask', { question: `And task 44 (${vp.name})?` });
+      const id2 = (JSON.parse(second.text) as { id: number }).id;
+      await expect(page.locator(`#asker-asks #ask-${id2}`)).toBeVisible({ timeout: 15_000 });
+      await expect(badge).toHaveAttribute('data-count', '2', { timeout: 15_000 });
+      const answered = await page.request.post(origin + `/attention/asks/${id2}/answer`, {
+        form: { answer: 'later' },
+        headers: { Origin: origin },
+        maxRedirects: 0,
+      });
+      expect(answered.status()).toBe(303);
+      await expect(page.locator(`#ask-${id2}`)).toHaveCount(0, { timeout: 15_000 });
+      await expect(badge).toHaveAttribute('data-count', '1', { timeout: 15_000 });
+      expect(navigations, 'the page was not reloaded').toBe(0);
+
+      await Promise.all([
+        page.waitForURL((u) => onChief(u) && u.searchParams.has('session')),
+        item.getByRole('button', { name: 'dispatch a new agent' }).click(),
+      ]);
+      await expect(page.locator(`#ask-${id}`)).toHaveCount(0);
+      // The chief has nothing else open: the block takes no room.
+      await expect(page.locator('#asker-asks')).toBeHidden();
+      await expect
+        .poll(() => turns.filter((b) => b.includes(`your owner answered attention #${id}`)).length, { timeout: 30_000 })
+        .toBe(1);
+      const carrying = turns.find((b) => b.includes(`your owner answered attention #${id}`))!;
+      expect(carrying).toContain('dispatch a new agent');
+    });
+  });
+}

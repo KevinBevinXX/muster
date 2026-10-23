@@ -74,10 +74,23 @@ func safeReturnTo(v string) string {
 	u, err := url.Parse(v)
 	// The DECODED path must pass the same test: "/%2F%2Fevil.example" and
 	// "/%5Cevil" decode to a second slash or a backslash.
-	if err != nil || u.Scheme != "" || u.Host != "" || u.Opaque != "" || u.User != nil || !localPath(u.Path) {
+	if err != nil || u.Scheme != "" || u.Host != "" || u.Opaque != "" || u.User != nil || !localPath(u.Path) || dotSegment(u.Path) {
 		return "/"
 	}
 	return v
+}
+
+// dotSegment reports whether the DECODED path p has a "." or ".." segment
+// ("/agents/../tasks", and so "/agents/%2e%2e/tasks"): a browser resolves it
+// to another path than the one a prefix check read, so a return address that
+// names one is refused rather than normalised.
+func dotSegment(p string) bool {
+	for _, seg := range strings.Split(p, "/") {
+		if seg == "." || seg == ".." {
+			return true
+		}
+	}
+	return false
 }
 
 // localPath reports whether p is a path on THIS origin: one leading "/", no

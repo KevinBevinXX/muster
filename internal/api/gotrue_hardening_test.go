@@ -256,12 +256,15 @@ func TestSafeReturnToRefusesEveryOffOriginShape(t *testing.T) {
 		"", "x", "//evil.example", "/\\evil.example", "/\t/evil.example/x", "/\n/evil.example", "/\r/evil.example",
 		"/ /evil", "/\x00/evil", "/\x7f/evil", "/%2F%2Fevil.example", "/%2f/evil.example", "/%5Cevil.example",
 		"/%09/evil.example", "/%0A/evil.example", "https://evil.example/", "http:evil.example", "\t//evil.example",
+		// Dot segments, which a browser resolves to ANOTHER path than the one
+		// read: raw and percent-encoded.
+		"/agents/../tasks", "/agents/%2e%2e/tasks", "/agents/%2E%2E/x", "/a/./b", "/a/%2e/b", "/..", "/a/..",
 	} {
 		if got := safeReturnTo(bad); got != "/" {
 			t.Errorf("safeReturnTo(%q) = %q, want /", bad, got)
 		}
 	}
-	for _, good := range []string{"/", "/tasks", "/tasks?tab=x&next=%2Fy", "/agents/keen-wren", "/a/b#frag"} {
+	for _, good := range []string{"/", "/tasks", "/tasks?tab=x&next=%2Fy", "/agents/keen-wren", "/a/b#frag", "/agents/v1.2", "/a/...b", "/f/x..y"} {
 		if got := safeReturnTo(good); got != good {
 			t.Errorf("safeReturnTo(%q) = %q, want it kept", good, got)
 		}

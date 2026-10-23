@@ -119,6 +119,10 @@ var routeVias = map[authz.Via][]string{
 		"GET /attention",
 		"GET /attention/items",
 		"GET /attention/drafts",
+		// A session page's asks block (attention_asker.go).
+		"GET /attention/asker",
+		// A notification's tap: its item's target, resolved when tapped.
+		"GET /attention/open/{key}",
 		"GET /attention/badge",
 		"POST /attention/asks/{id}/answer",
 		"POST /attention/asks/{id}/cancel",

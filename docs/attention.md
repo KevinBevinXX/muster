@@ -92,7 +92,26 @@ waiting. **A notification says WHO and WHERE, never WHAT** — a lock screen sho
 it to anyone holding the phone: `<asker> is asking` for a question, `Waiting:
 <tool name> · <window> @ <host>` for a session (no command, path or URL). The
 question, the command and the message are on the page. Each item has one tag, so a
-notification is replaced, never stacked. A session is not re-notified:
+notification is replaced, never stacked. **A tap opens the item's session**
+when it has one, on the browser and the paired phone alike, decided when you
+tap, not when it was sent (the notification opens `/attention/open/<key>`,
+which resolves it then — a window that closed, an agent that was destroyed or
+an ask answered meanwhile opens its item on `/attention` instead of a dead
+page): a waiting window or
+a held question opens that window's rendered view; a dispatched agent's question
+opens the agent's page (`/agents/<name>`); a mirrored Claude session's question
+opens the window running that session, found when the notification is sent.
+Everything else opens its item on `/attention`: a question muster raised itself,
+a Hermes window that names no conversation, an asking agent that cannot be read,
+and an asking session no listed window runs at that moment
+(`internal/api/attention_push_target.go`, the one rule). **The session's page
+shows the asker's open questions with the same answer form as `/attention`**
+(its option buttons — a chief's task actions included — free text, Dismiss): an
+agent's page lists that agent's open asks, a window's rendered view the asks of
+the Claude sessions it runs, never another asker's. Answering there sends you
+back to that page; the list follows the queue live (an ask answered anywhere
+leaves it, a new one arrives, never replacing an answer you are typing)
+(`internal/api/attention_asker.go`). A session is not re-notified:
 
 - when muster restarts or a host reconnects: the first time this process sees
   a host — and again each time it comes back after disconnecting — its
