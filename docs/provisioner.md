@@ -278,6 +278,48 @@ host and session are in muster's server log only.
 
 A task becoming `complete` **stops** (never destroys) the agent the chief started for it: see [plugins.md](plugins.md#completing-a-task-stops-the-chiefs-agent).
 
+### Reaping stopped agents
+
+An agent whose stored status has been `stopped` for
+`MUSTER_AGENT_REAP_STOPPED_AFTER` (default `336h`, 14 days) is destroyed by
+the **stopped-agent reaper**, through the same teardown as the two doors above
+(`destroyAgent`, acting as the agent's owner): the chief is refused, then the
+provisioner's `Destroy` removes the instance and then the row, and after a
+successful teardown the chief's start on the agent's task is released and your
+open tabs are told, exactly as for the Agents page's Delete. Like that Delete,
+it leaves the agent's task as it was.
+
+- **The clock** is `agents.stopped_at` (migration 0045): the time the row last
+  moved into `stopped`, stamped by a database trigger whatever wrote the status
+  (Stop, a saved dispatch, or the status reconciler). Saving `stopped` over a
+  row that already is `stopped` does not move it. **Start** moves the row out of
+  `stopped`, so the next Stop starts a new clock: a restarted agent that is
+  stopped again waits a full window. Agents already stopped when 0045 was
+  applied have their clock started at that moment.
+- **Never reaped:** the chief (either kind, [below](#the-chief)); an agent in
+  any other status, `error` included; a [pool worker](jobs.md#worker-pools)
+  (`worker_pool` set). A saved agent that was never started is `stopped`, so
+  it is reaped like any other.
+- **When:** the reaper rides the idle-task reaper's sweep, every 30 minutes,
+  on every pod. Before it starts a teardown it claims the agent with one
+  conditional update that re-checks all of the above and that the agent's
+  `stopped_at` is still the one it read, so two pods never both destroy an
+  agent, and an agent Started after the sweep read it is left alone. A claim
+  excludes other claims for an hour.
+- **The record** is one server log line per agent whose teardown it started
+  (`agent-reap: destroying agent <id> (<name>) of user <owner>, task <id or
+  none>: stopped since <time>, longer than <window>`). No task comment and no
+  audit row are written. A teardown that could not remove the instance is
+  logged and keeps the row with status `error` (rule 2 below), so it is not
+  retried; one that removed the instance but not the row leaves it `stopped`,
+  and it is claimed again once the hour has passed.
+- **Off:** `MUSTER_AGENT_REAP_STOPPED_AFTER=0` (or `off`). The boot log says
+  which (`agent reaper: sweeping every …` or `agent reaper: off`).
+
+⚠ A Start brings the instance up before it writes `provisioning`. A claim
+landing in that gap still sees `stopped`, wins, and the teardown removes what
+the Start brought up — the same race as pressing Start and Delete at once.
+
 ## The chief
 
 The **chief** is an ordinary agent row: your fleet agent. Its slug is `chief` for

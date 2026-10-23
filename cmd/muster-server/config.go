@@ -115,6 +115,10 @@ const (
 
 	envTagAutoDispatch = "MUSTER_TAG_AUTODISPATCH"
 	envTaskReapAfter   = "MUSTER_TASK_REAP_AFTER"
+	// The stopped-agent reaper (internal/api agent_reap.go): how long an agent
+	// may stay stopped before it is destroyed. A Go duration, 336h when unset,
+	// "0"/"off" turns the reaper off, refused below 1h otherwise.
+	envAgentReapStoppedAfter = "MUSTER_AGENT_REAP_STOPPED_AFTER"
 	// The send queue (internal/sendqueue): how long a target must have been idle
 	// before a queued message is sent to it. A Go duration, 30s when unset,
 	// refused outside 1s–1h.
@@ -525,6 +529,9 @@ type config struct {
 
 	TagAutoDispatch bool
 	TaskReapAfter   time.Duration
+	// AgentReapStoppedAfter is MUSTER_AGENT_REAP_STOPPED_AFTER
+	// (api.DefaultAgentReapStoppedAfter when unset; 0 = the reaper is off).
+	AgentReapStoppedAfter time.Duration
 	// SendQueueIdle is MUSTER_SEND_QUEUE_IDLE (sendqueue.DefaultIdleFor when
 	// unset).
 	SendQueueIdle time.Duration
@@ -1172,6 +1179,11 @@ func loadConfig(getenv func(string) string) (config, error) {
 		}
 		c.TaskReapAfter = d
 	}
+	d, err := parseAgentReapStoppedAfter(getenv(envAgentReapStoppedAfter))
+	if err != nil {
+		return config{}, err
+	}
+	c.AgentReapStoppedAfter = d
 	c.SendQueueIdle = sendqueue.DefaultIdleFor
 	if v := strings.TrimSpace(getenv(envSendQueueIdle)); v != "" {
 		d, err := time.ParseDuration(v)
@@ -2078,3 +2090,30 @@ func imagePinned(ref string) bool {
 // osGetenv is os.Getenv as a value, so main() can hand loadConfig the real
 // environment and tests can hand it a map.
 func osGetenv(name string) string { return os.Getenv(name) }
+
+// minAgentReapStoppedAfter is the shortest stopped window accepted. The reaper
+// DESTROYS what it selects, so a value meant as days but written as minutes
+// ("14m") is refused at boot rather than destroying every stopped agent on the
+// next sweep.
+const minAgentReapStoppedAfter = time.Hour
+
+// parseAgentReapStoppedAfter reads MUSTER_AGENT_REAP_STOPPED_AFTER: unset is
+// api.DefaultAgentReapStoppedAfter, "0" or "off" is 0 (the reaper is off), and
+// anything else must be a Go duration of at least minAgentReapStoppedAfter.
+func parseAgentReapStoppedAfter(raw string) (time.Duration, error) {
+	v := strings.TrimSpace(raw)
+	switch strings.ToLower(v) {
+	case "":
+		return api.DefaultAgentReapStoppedAfter, nil
+	case "0", "off":
+		return 0, nil
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil {
+		return 0, fmt.Errorf("invalid %s %q: %w (want a Go duration, e.g. 336h, or 0/off)", envAgentReapStoppedAfter, v, err)
+	}
+	if d < minAgentReapStoppedAfter {
+		return 0, fmt.Errorf("invalid %s %q: must be at least %s (or 0/off to turn the reaper off)", envAgentReapStoppedAfter, v, minAgentReapStoppedAfter)
+	}
+	return d, nil
+}

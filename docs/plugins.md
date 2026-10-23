@@ -511,7 +511,10 @@ agent you started yourself, an agent already stopped or in `error`, and every
 agent of a task set to `ready_for_review` (it must stay reachable through
 `task_forward`). The task's one start stays **spent**: a stop is not a destroy
 and records no release, so `task_dispatch` on the task still answers
-`already_dispatched`. A stopped agent is not live, so it frees its slot under
+`already_dispatched`. A stopped agent left stopped for
+`MUSTER_AGENT_REAP_STOPPED_AFTER` (14 days by default) is then destroyed by
+the [stopped-agent reaper](provisioner.md#reaping-stopped-agents), which does
+record the release. A stopped agent is not live, so it frees its slot under
 guard 10.
 
 ⚠ The live cap reads the stored status, so an agent whose instance died while

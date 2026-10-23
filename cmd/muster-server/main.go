@@ -575,6 +575,7 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 	if cfg.TaskReapAfter > 0 {
 		srv.SetTaskReapAfter(cfg.TaskReapAfter)
 	}
+	srv.SetAgentReapStoppedAfter(cfg.AgentReapStoppedAfter)
 	if a.pool != nil {
 		// Readiness pings the database, so a pod whose Postgres is unreachable is
 		// pulled from rotation rather than serving 500s. It runs AFTER the wiring

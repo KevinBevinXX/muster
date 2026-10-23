@@ -237,6 +237,9 @@ type Server struct {
 
 	// taskReapAfter is the idle window the stale-task reaper uses.
 	taskReapAfter time.Duration
+	// agentReapStoppedAfter is how long an agent may stay stopped before the
+	// stopped-agent reaper destroys it (agent_reap.go); <= 0 is off.
+	agentReapStoppedAfter time.Duration
 
 	// taskLeader is the cross-process singleton gate for the background loops.
 	taskLeader LeaderGate
@@ -406,6 +409,7 @@ func New(bus *sse.Broadcaster, authCfg AuthConfig, logger *log.Logger) *Server {
 		taskProvisionedNotified: make(map[int64]bool),
 		taskDoneNotified:        make(map[int64]bool),
 		taskReapAfter:           defaultTaskReapAfter,
+		agentReapStoppedAfter:   DefaultAgentReapStoppedAfter,
 	}
 }
 
@@ -869,7 +873,8 @@ func (s *Server) taskRetentionPass(ctx context.Context) {
 	s.reapIdleTasks(ctx, now)
 }
 
-// RunTaskReap drives the idle-task reaper until ctx is cancelled.
+// RunTaskReap drives the idle-task reaper, and the stopped-agent reaper
+// (agent_reap.go), until ctx is cancelled.
 //
 // 🔴 It is a SEPARATE loop from RunTaskRetention, and that is a fixed bug rather
 // than a preference — see TaskReapInterval.
@@ -882,6 +887,13 @@ func (s *Server) RunTaskReap(ctx context.Context, interval time.Duration) {
 	// indistinguishability is what let the ticker defect hide for the whole of the
 	// feature's production life upstream.
 	s.logger.Printf("task reaper: sweeping every %s for tasks idle for >%s", interval, s.taskReapAfter)
+	// The stopped-agent reaper rides this loop (agent_reap.go), announced here
+	// for the same reason.
+	if s.agentReapStoppedAfter > 0 {
+		s.logger.Printf("agent reaper: sweeping every %s for agents stopped for >%s", interval, s.agentReapStoppedAfter)
+	} else {
+		s.logger.Printf("agent reaper: off (MUSTER_AGENT_REAP_STOPPED_AFTER)")
+	}
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
@@ -893,6 +905,7 @@ func (s *Server) RunTaskReap(ctx context.Context, interval time.Duration) {
 				continue
 			}
 			s.reapIdleTasks(ctx, s.now())
+			s.reapStoppedAgents(ctx)
 		}
 	}
 }

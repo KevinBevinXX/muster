@@ -31,6 +31,9 @@ scripts write them through the JSON API and the [CLI](cli.md).
 - **The idle reaper:** a task idle longer than `MUSTER_TASK_REAP_AFTER` (default
   7 days) is tagged `stale`, with a system comment. The sweep runs every 30
   minutes.
+- **Reaping stopped agents:** the same sweep destroys an agent that has been
+  `stopped` for `MUSTER_AGENT_REAP_STOPPED_AFTER` (default 14 days); its task is
+  left as it was. See [provisioner.md](provisioner.md#reaping-stopped-agents).
 - **Retention:** a daily pass prunes connector audit rows and chat messages older
   than 90 days.
 
