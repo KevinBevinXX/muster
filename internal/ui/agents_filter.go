@@ -502,6 +502,7 @@ func agentsFilterScript() g.Node {
   // copy) would move anything in view — d has a box now (it would leave its
   // place), or c would get one (it would appear in its new place).
   function sectWouldMove(d, c) {
+    if (c.hasAttribute('data-pinned-chip')) return false;
     if (d.getClientRects().length) return true;
     if (curSel && !c.matches(curSel)) return false;
     return !inSect(c) || sectOpen();
@@ -532,6 +533,65 @@ func agentsFilterScript() g.Node {
       if (typeof list.moveBefore === 'function') list.moveBefore(head, first); else list.insertBefore(head, first);
       if (focused && focused !== document.activeElement && focused.isConnected) focused.focus({ preventScroll: true });
     }
+  }
+  // THE PINNED ROW'S "Edit pins" TOGGLE (pinned_chips.go): pressed, it shows a
+  // × on every chip (the stylesheet keys it on <html>'s
+  // data-agents-pins-editing, so a list refresh keeps it). Not remembered: a
+  // load starts with it off, as the server drew it.
+  function togglePinsEdit() {
+    var r = document.documentElement;
+    r.toggleAttribute('data-agents-pins-editing', !r.hasAttribute('data-agents-pins-editing'));
+  }
+  // syncPinsHead keeps the toggle true after a refresh (which redraws it
+  // unpressed) and marks it data-pins-empty while the filter shows no chip —
+  // which hides it, and the line break after the chips (web/css/input.css).
+  function syncPinsHead(list) {
+    var head = el('` + pinnedChipsHeadID + `');
+    if (!head || head.parentNode !== list) return;
+    var n = list.querySelectorAll(':scope > article[data-pinned-chip]:not([data-held])' + curSel).length;
+    if (head.hasAttribute('data-pins-empty') !== !n) head.toggleAttribute('data-pins-empty', !n);
+    var b = el('` + pinsEditToggleID + `'), on = String(document.documentElement.hasAttribute('data-agents-pins-editing'));
+    if (b && b.getAttribute('aria-pressed') !== on) b.setAttribute('aria-pressed', on);
+  }
+  // UNPIN FOCUS. A chip's × is removed with its chip when the list re-renders
+  // (the entry becomes a card again), which leaves focus on <body> — a
+  // keyboard reader would start over from the top. So the × remembers where
+  // focus should go next: the next shown chip's ×, else the previous one's,
+  // else the "Edit pins" toggle, else the search box; refocusAfterUnpin
+  // moves it there once the list has settled, only if focus was lost.
+  var unpinFocus = null;
+  function noteUnpin(btn) {
+    var chip = btn.closest('#agents-list > article[data-pinned-chip]');
+    if (!chip) return;
+    var list = chip.parentNode;
+    var chips = [].slice.call(list.querySelectorAll(':scope > article[data-pinned-chip]')).filter(function (c) {
+      return c !== chip && c.getClientRects().length;
+    });
+    var all = [].slice.call(list.querySelectorAll(':scope > article[data-pinned-chip]'));
+    var i = all.indexOf(chip);
+    var after = chips.filter(function (c) { return all.indexOf(c) > i; });
+    var before = chips.filter(function (c) { return all.indexOf(c) < i; });
+    unpinFocus = { from: chip.id, ids: after.map(function (c) { return c.id; }).concat(before.reverse().map(function (c) { return c.id; })) };
+  }
+  // Only the swap that took the chip away answers it: a background refresh
+  // that settles first (an SSE nudge) leaves the chip — and the wait — as is.
+  function refocusAfterUnpin() {
+    if (!unpinFocus) return;
+    var from = document.getElementById(unpinFocus.from);
+    if (from && from.hasAttribute('data-pinned-chip')) return;
+    var ids = unpinFocus.ids;
+    unpinFocus = null;
+    var a = document.activeElement;
+    if (a && a !== document.body && a.isConnected) return;
+    for (var i = 0; i < ids.length; i++) {
+      var c = document.getElementById(ids[i]);
+      var x = c && c.hasAttribute('data-pinned-chip') && c.querySelector('[data-pinned-chip-unpin]');
+      if (x && x.getClientRects().length) { x.focus({ preventScroll: true }); return; }
+    }
+    var t = el('` + pinsEditToggleID + `');
+    if (t && t.getClientRects().length) { t.focus({ preventScroll: true }); return; }
+    var box = el('agents-search');
+    if (box) box.focus({ preventScroll: true });
   }
   // reorder MOVES the cards into rank order for the first free-text term — the
   // DOM itself, so Tab and a screen reader follow the ranking, not only the
@@ -576,9 +636,11 @@ func agentsFilterScript() g.Node {
     var keyed = cards.map(function (c) {
       // s: the Idle section's cards after the rest, so the DOM (Tab, a screen
       // reader) follows the sections the stylesheet draws.
-      return { c: c, h: c.hasAttribute('data-held') ? 1 : 0, s: inSect(c) ? 1 : 0, r: w ? cardRank(c, w) : 0, i: +c.getAttribute('data-list-i') };
+      // p: the pinned chips ahead of every card (pinned_chips.go): the
+      // stylesheet draws them first, and the DOM follows.
+      return { c: c, h: c.hasAttribute('data-held') ? 1 : 0, p: c.hasAttribute('data-pinned-chip') ? 0 : 1, s: inSect(c) ? 1 : 0, r: w ? cardRank(c, w) : 0, i: +c.getAttribute('data-list-i') };
     });
-    keyed.sort(function (a, b) { return a.h - b.h || a.s - b.s || a.r - b.r || a.i - b.i; });
+    keyed.sort(function (a, b) { return a.h - b.h || a.p - b.p || a.s - b.s || a.r - b.r || a.i - b.i; });
     arrange(list, cards, keyed.map(function (k) { return k.c; }));
   }
   // arrange puts cards (in DOM order now) into order (the same nodes), and
@@ -687,7 +749,7 @@ func agentsFilterScript() g.Node {
       if (!v || seen[v]) return;
       seen[v] = true;
       // The host's icon (host_icons.go), as its first drawn card draws it: the
-      // tab leads with the same one.
+      // tab leads with the same one. (A pinned chip carries it undrawn.)
       var ic = a.querySelector('[data-host-icon]');
       icons[v] = ic;
       hosts.push({ v: v, l: a.getAttribute('data-l-host') || v, i: ic ? ic.getAttribute('data-host-icon') : '' });
@@ -788,6 +850,7 @@ func agentsFilterScript() g.Node {
     // entries); the reader's open/closed choice is left as it was.
     document.documentElement.toggleAttribute('data-agents-searching', ts.length > 0);
     syncIdleHead(list);
+    syncPinsHead(list);
     var style = el('agents-filter-style');
     if (!style) {
       style = document.createElement('style');
@@ -860,7 +923,10 @@ func agentsFilterScript() g.Node {
     var chip = t.closest('#agents-chips [data-chip]');
     if (chip) { toggleChip(chip); apply(); return; }
     if (t.closest('#agents-chips-clear')) { clearChips(); apply(); return; }
-    if (t.closest('#agents-idle-toggle')) { toggleIdleOpen(); apply(); }
+    if (t.closest('#agents-idle-toggle')) { toggleIdleOpen(); apply(); return; }
+    if (t.closest('#` + pinsEditToggleID + `')) { togglePinsEdit(); apply(); return; }
+    var x = t.closest('#agents-list [data-pinned-chip-unpin]');
+    if (x) noteUnpin(x);
   });
   // The host tabs' keys, as tabs.go's: Left/Right (wrapping), Home and End
   // move to a tab AND choose it.
@@ -1160,11 +1226,19 @@ func agentsFilterScript() g.Node {
     // card that would ENTER or LEAVE the section while it is drawn — or would
     // become drawn — keeps the drawn section and the move waits for the tap
     // (pendingSect): moving it would move every card between its two places.
+    // A card that becomes a chip (or a chip a card) — pinned or unpinned,
+    // here or in another tab — is applied at once, never held: a held chip
+    // would keep its card's drawn place and section while the stylesheet draws
+    // it in the pinned row (pinned_chips.go).
+    var kindChange = false;
     if (background(e)) {
       var changed = false;
       arts.forEach(function (c) {
         var d = document.getElementById(c.id);
         if (!d || d.parentNode !== e.target) { delete pendingSect[c.id]; return; }
+        if (d.hasAttribute('data-pinned-chip') !== c.hasAttribute('data-pinned-chip')) kindChange = true;
+        // A chip is never in the Idle section: nothing about one is held.
+        if (c.hasAttribute('data-pinned-chip')) { delete pendingSect[c.id]; delete pendingIdle[c.id]; return; }
         var drawnIdle = d.getAttribute('data-idle') || '', srv = c.getAttribute('data-idle') || '';
         if (curSel && drawnIdle !== srv) {
           setIdle(c, drawnIdle);
@@ -1179,7 +1253,7 @@ func agentsFilterScript() g.Node {
       // The reader's own refresh applies everything, the section included.
       pendingSect = {};
     }
-    swapPlan = { live: live, apply: decide(e, live, function (id) { return byId[id]; }) };
+    swapPlan = { live: live, apply: kindChange || decide(e, live, function (id) { return byId[id]; }) };
     if (!swapPlan.apply) keepDrawnOrder(e, drawn.map(function (c) { return c.id; }));
   });
   document.addEventListener('htmx:afterSwap', function (e) {
@@ -1187,6 +1261,9 @@ func agentsFilterScript() g.Node {
   });
   document.addEventListener('htmx:afterSettle', function (e) {
     if (e.target && e.target.id === 'agents-list') settled();
+  });
+  document.addEventListener('htmx:afterSettle', function (e) {
+    if (e.target && e.target.id === 'agents-list') refocusAfterUnpin();
   });
   document.addEventListener('htmx:load', boot);
   // Back on the Agents tab (switchTab pushed a bare /agents): put the filter's

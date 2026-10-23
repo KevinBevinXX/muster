@@ -526,6 +526,57 @@
 }
 
 /*
+ * The Agents list's layout (internal/ui/agents.go, pinned_chips.go). The list
+ * is a wrapping flex row: every child takes the whole row — a card, the Idle
+ * header, the empty state — and from lg up a card takes half of it (the two
+ * columns the list's grid drew). A PINNED CHIP takes only its own width, so
+ * the chips sit side by side in rows; `order` draws them (and the "Edit pins"
+ * toggle that leads them) before every card whatever the DOM order. The chip's
+ * rule names the list's id twice so that no Idle-section rule below can
+ * outrank its `order`, and the Idle rules exclude chips besides.
+ */
+#agents-list > * {
+  flex: 0 0 100%;
+  min-width: 0;
+}
+@media (min-width: 1024px) {
+  #agents-list > article:not([data-pinned-chip]) {
+    flex-basis: calc(50% - 0.375rem);
+  }
+}
+#agents-list > [data-pins-head] {
+  flex: 0 0 auto;
+  order: -2;
+}
+#agents-list#agents-list > article[data-pinned-chip] {
+  flex: 0 1 auto;
+  order: -1;
+}
+/* The "Edit pins" toggle while the filter shows no chip (syncPinsHead). */
+#agents-list > [data-pins-head][data-pins-empty] {
+  display: none;
+}
+/*
+ * The line break after the chips: a full-width, zero-height item drawn after
+ * the last chip (order -1, after them in DOM order), so no card ever shares the
+ * chips' line — from lg up, a half-width card fitted beside short chips and
+ * stretched them to its height. Only while a chip is SHOWN — keyed on the
+ * "Edit pins" toggle, which syncPinsHead marks data-pins-empty when the filter
+ * hides every chip — so a list with no pins, or none in view, has no gap.
+ */
+#agents-list:has(> [data-pins-head]:not([data-pins-empty]))::after {
+  content: "";
+  flex: 0 0 100%;
+  height: 0;
+  order: -1;
+}
+/* A chip's edit controls (its ×; an agent's rename and ⋯ menu) show only while
+ * the viewer edits pins (pinsEditToggle). */
+html:not([data-agents-pins-editing]) [data-pinned-chip-edit] {
+  display: none;
+}
+
+/*
  * The Agents list's Idle section (internal/ui/idle_section.go). Outside every
  * @layer, like the rules above, so no utility can outrank it.
  *
@@ -535,15 +586,15 @@
  * in its section. COLLAPSED unless <html> carries data-agents-idle-open (this
  * viewer opened it; set from localStorage by the head script before the first
  * paint) or data-agents-searching (a term in the search box: a search finds
- * idle entries).
+ * idle entries). A pinned chip is never in the section, whatever it carries.
  */
 #agents-list > [data-idle-head] {
   order: 1;
 }
-#agents-list > article[data-idle-section] {
+#agents-list > article[data-idle-section]:not([data-pinned-chip]) {
   order: 2;
 }
-html:not([data-agents-idle-open]):not([data-agents-searching]) #agents-list > article[data-idle-section] {
+html:not([data-agents-idle-open]):not([data-agents-searching]) #agents-list > article[data-idle-section]:not([data-pinned-chip]) {
   display: none !important;
 }
 html[data-agents-idle-open] [data-idle-chevron],

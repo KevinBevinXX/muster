@@ -153,33 +153,47 @@ for (const vp of [
       await expect.poll(domOrder, { message: 'clearing restores the order' }).toEqual(['mqtail', 'old-qdock', 'qbase']);
     });
 
-    test('pins keep their place within a rank, and never lift a card above a better match', async ({ page }) => {
+    // PINNED ENTRIES ARE CHIPS (internal/ui/pinned_chips.go), drawn in a row
+    // above every card: the rank orders the chips among themselves and the
+    // cards among themselves, and never moves a card above a chip — in the
+    // boxes AND in the DOM (Tab meets the chips first, where the eye does).
+    test('pinned chips rank among themselves, ahead of every card, in the boxes and the DOM', async ({ page }) => {
       await rig.login(page);
       await rig.waitListed(page, 'mqtail');
       await page.goto(rig.origin + '/agents');
-      const card = (s: string) => page.locator(`#agents-list > article[data-f-session="${s}"]`);
+      const entry = (s: string) => page.locator(`#agents-list > article[data-f-session="${s}"]`);
+      const domOrder = () =>
+        page.locator('#agents-list > article').evaluateAll((els, ns) =>
+          els.map((e) => e.getAttribute('data-f-session') || '').filter((n) => (ns as string[]).includes(n)), names);
       const pin = async (s: string, on: boolean) => {
-        const t = card(s).locator('[data-pin-toggle]');
-        if ((await t.getAttribute('aria-pressed')) !== String(on)) await t.click();
-        await expect(card(s).locator('[data-pin-toggle]')).toHaveAttribute('aria-pressed', String(on));
+        const r = await page.request.post(rig.origin + (on ? '/agents/pins' : '/agents/pins/delete'), {
+          form: { kind: 'mirror', host: rig.host, session: s, window: '@' + (names.indexOf(s) + 1) },
+          headers: { Origin: rig.origin },
+        });
+        expect(r.status(), `${on ? 'pin' : 'unpin'} ${s}`).toBe(200);
       };
       try {
         // "a" is on every one of the three (the host's name is e2e-search-…), in
         // no title as a start: ONE rank, so the list's own order decides.
         await type(page, 'a');
         await expect.poll(() => shown(page), { message: 'a tie keeps the list order' }).toEqual(['mqtail', 'old-qdock', 'qbase']);
-        // Pin the substring match and the oldest: they lead the list…
+        // Pin the substring match and the oldest: they become the chips…
         await pin('mqtail', true);
         await pin('qbase', true);
         await page.reload();
         await type(page, '');
-        await expect.poll(() => shown(page), { message: 'pinned first' }).toEqual(['mqtail', 'qbase', 'old-qdock']);
-        // …and lead a tie, in their pinned order…
+        await expect(entry('mqtail')).toHaveAttribute('data-pinned-chip', 'mirror');
+        await expect(entry('qbase')).toHaveAttribute('data-pinned-chip', 'mirror');
+        await expect.poll(() => shown(page), { message: 'the chips first' }).toEqual(['mqtail', 'qbase', 'old-qdock']);
+        // …a tie keeps their pinned order…
         await type(page, 'a');
         await expect.poll(() => shown(page), { message: 'a tie keeps the pinned order' }).toEqual(['mqtail', 'qbase', 'old-qdock']);
-        // …but a pin never beats a better match.
+        // …and "q" ranks the chips among themselves (qbase a prefix, mqtail a
+        // substring) while the card, a better match than mqtail, stays a card
+        // below them.
         await type(page, 'q');
-        await expect.poll(() => shown(page), { message: 'the pinned substring match stays last' }).toEqual(['qbase', 'old-qdock', 'mqtail']);
+        await expect.poll(() => shown(page), { message: 'chips ranked, then the cards' }).toEqual(['qbase', 'mqtail', 'old-qdock']);
+        await expect.poll(domOrder, { message: 'the DOM follows the boxes' }).toEqual(['qbase', 'mqtail', 'old-qdock']);
       } finally {
         await type(page, '');
         await pin('mqtail', false);

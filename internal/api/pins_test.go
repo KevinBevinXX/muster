@@ -187,20 +187,31 @@ func TestPinnedCardsRenderFirstInTheirOriginalOrder(t *testing.T) {
 		t.Fatalf("two pinned agents = %s, want %s", strings.Join(got, ","), want)
 	}
 
-	// The pinned cards say so, and offer Unpin; the others offer Pin.
-	if n := strings.Count(body, `data-pinned-glyph`); n != 2 {
-		t.Errorf("%d pinned glyphs, want 2 (one per pinned card)", n)
+	// The pinned entries are CHIPS (ui pinned_chips.go: the operator ask "pinned
+	// agents should show only the label, not the full card"), each offering
+	// Unpin for itself; the others are cards offering Pin.
+	if n := strings.Count(body, `data-pinned-chip="`); n != 2 {
+		t.Errorf("%d pinned chips, want 2 (one per pinned entry)", n)
+	}
+	if n := strings.Count(body, `data-pinned-glyph`); n != 0 {
+		t.Errorf("%d pinned glyphs, want 0: a pinned entry is a chip, not a card", n)
 	}
 	card7 := body[strings.Index(body, `<article id="agent-7"`):strings.Index(body, `<article id="mirror-`)]
-	if !strings.Contains(card7, `action="/agents/pins/delete"`) || !strings.Contains(card7, ">Unpin<") {
-		t.Errorf("the pinned agent's menu does not offer Unpin:\n%s", card7)
+	if !strings.Contains(card7, `data-pinned-chip="agent"`) || !strings.Contains(card7, `action="/agents/pins/delete"`) ||
+		!strings.Contains(card7, `aria-label="Unpin idle-newest"`) {
+		t.Errorf("the pinned agent is not a chip offering Unpin:\n%s", card7)
 	}
 	card5 := body[strings.Index(body, `<article id="agent-5"`):strings.Index(body, `<article id="agent-6"`)]
 	if !strings.Contains(card5, `action="/agents/pins"`) || !strings.Contains(card5, ">Pin to top<") {
 		t.Errorf("an unpinned agent's menu does not offer Pin to top:\n%s", card5)
 	}
-	if !strings.Contains(body, `aria-pressed="true"`) || !strings.Contains(body, `aria-pressed="false"`) {
-		t.Errorf("the mirrored cards' pin toggles are not pressed/unpressed by pin state")
+	// The unpinned window's card has its toggle, unpressed; no card is drawn
+	// pressed, because a pinned window has no card.
+	if !strings.Contains(body, `data-pin-toggle="" aria-label="Pin to top"`) {
+		t.Errorf("the unpinned mirrored card has no unpressed pin toggle")
+	}
+	if strings.Contains(body, `aria-label="Unpin" title="Unpin" aria-pressed="true"`) {
+		t.Errorf("a pressed pin toggle is drawn: the pinned window was drawn as a card")
 	}
 }
 
