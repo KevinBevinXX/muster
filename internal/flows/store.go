@@ -311,8 +311,8 @@ var resumeBehind = `UPDATE flow_jobs q SET ttl_paused = q.ttl_paused + least(gre
 // claim sweeps first, under the caller's principal, so no background loop needs
 // authz.System to act across users, and a job's displayed state is never stale
 // by more than the request that shows it. The claim's own WHERE clause refuses
-// an expired job regardless, so "never runs late" does not depend on a sweep
-// having happened.
+// an expired job regardless, so "never claimed past its deadline" (ttl plus
+// its blocked-time credit) does not depend on a sweep having happened.
 func (s *PGStore) sweep(ctx context.Context) error {
 	rows, err := s.pool.Query(ctx, `
 		UPDATE flow_jobs q SET status = 'expired', finished_at = now(),

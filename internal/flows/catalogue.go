@@ -204,9 +204,14 @@ func ValidInstance(instance string) error {
 	return nil
 }
 
-// TTL bounds. A queued job not claimed within its TTL becomes `expired` and
-// never runs late: a Muse message composed for "now" is wrong an hour later,
-// for the same reason the host-side send lock refuses rather than queues.
+// TTL bounds. A queued job not claimed within its TTL becomes `expired`, but
+// time it spends blocked behind another job on the same browser does not
+// count, up to MaxTTLPause (90 min) per blocker (store.go). So a queued job
+// runs within its TTL plus its blocked time; behind a chain of dispatches
+// that can be hours. That is intended, because a dispatch chain is queued,
+// not refused. A send composed for a specific moment (a Muse message meant
+// for "now") should therefore be enqueued with a short TTL on an idle
+// instance.
 const (
 	DefaultTTL = 15 * time.Minute
 	MinTTL     = time.Minute

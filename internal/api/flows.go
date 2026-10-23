@@ -577,7 +577,7 @@ func (s *Server) renderFlowsPage(w http.ResponseWriter, r *http.Request, code in
 	var b strings.Builder
 	b.WriteString(`<section class="flex flex-col gap-4 rounded-2xl border border-line bg-s1/70 px-5 py-6 ring-1 ring-line" data-testid="flows-page">
 <h1 class="text-balance text-base font-semibold text-fg">Browser flows</h1>
-<p class="text-sm text-fg2">Queue a named flow for one of your hosts' browsers. That host's runner claims it, runs it, and reports here. A job not claimed before its time limit expires and never runs late.</p>
+<p class="text-sm text-fg2">Queue a named flow for one of your hosts' browsers. That host's runner claims it, runs it, and reports here. A job not claimed within its time limit expires. Time spent waiting behind another job on the same browser does not count, up to 90 minutes per job it waits behind, so a queued job can run well after you queued it. For a message meant for a specific moment, use a short time limit on an idle browser.</p>
 `)
 	b.WriteString(problemNode(problem))
 	if minted != "" {

@@ -62,8 +62,11 @@ takes thread and task. session is a Muse thread uuid (lowercase),
 exclusive with thread; marker (md-<6 hex>) needs session, and the send
 completes only when the reply's last line is "DONE <marker>"; wait is the
 seconds to await the reply (1..3600). A job
-not claimed within --ttl (default 15m, 1m..24h) becomes "expired" and never
-runs late. Prints the job; follow it with ` + "`flow status <id>`" + `.`,
+not claimed within --ttl (default 15m, 1m..24h) becomes "expired". Time it
+spends blocked behind another job on the same browser does not count, up to
+90 minutes per blocking job, so it can run well after it was queued. Use a
+short --ttl on an idle instance for a send meant for a specific moment.
+Prints the job; follow it with ` + "`flow status <id>`" + `.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			b.Flow = strings.TrimSpace(args[0])

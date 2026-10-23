@@ -510,8 +510,11 @@ func TestTheCurrentBlockersCreditIsTheTimeItHasBlocked(t *testing.T) {
 	s, pool := pgStore(t)
 	runningSend(t, s, pool, 10*time.Minute)
 	id := insertPoll(t, pool, 30*time.Minute, DefaultTTL) // deadline -15m + 10m blocked = -5m
-	if got, err := s.Get(session(2), id); err != nil || got.Status != StatusExpired {
-		t.Fatalf("a poll whose own ttl ran out before the blocker came reads %+v %v; want expired", got, err)
+	// It IS blocked, but its blocker has not run past the ceiling, so the
+	// plain detail is the true one (an EXISTS(blocker) test would pick the
+	// blocked message here).
+	if got, err := s.Get(session(2), id); err != nil || got.Status != StatusExpired || got.Detail != wantPlainExpiry {
+		t.Fatalf("a poll whose own ttl ran out before the blocker came reads %+v %v; want expired with %q", got, err, wantPlainExpiry)
 	}
 }
 
