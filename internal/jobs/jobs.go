@@ -187,8 +187,13 @@ type Job struct {
 	ResultPath     string
 	TimeoutSeconds int
 	IdempotencyKey string
-	RequestedBy    string
-	Status         string
+	// Model is the Claude model the job's turn runs on ("" = the CLI's default).
+	Model string
+	// ConfigRef is the commit a sha job's worktree takes its agent
+	// configuration from ("" = the default branch).
+	ConfigRef   string
+	RequestedBy string
+	Status      string
 	// Result is set only on a succeeded job (HasResult), verbatim.
 	Result    string
 	HasResult bool
@@ -219,6 +224,8 @@ type NewJob struct {
 	ResultPath     string
 	TimeoutSeconds int
 	IdempotencyKey string
+	Model          string
+	ConfigRef      string
 	RequestedBy    string
 }
 
@@ -376,7 +383,7 @@ type PGStore struct{ pool *pgxpool.Pool }
 func NewPG(pool *pgxpool.Pool) *PGStore { return &PGStore{pool: pool} }
 
 const jobColumns = `id, coalesce(agent_id, 0), agent_name, worker_pool, prompt, repo, sha, pr, result_path, timeout_s,
-	coalesce(idempotency_key, ''), requested_by, status, result, reason, error, cc_account,
+	coalesce(idempotency_key, ''), model, config_ref, requested_by, status, result, reason, error, cc_account,
 	coalesce(session_id, 0), created_at, started_at, finished_at`
 
 func scanJob(row pgx.Row) (Job, error) {
@@ -384,7 +391,7 @@ func scanJob(row pgx.Row) (Job, error) {
 	var result *string
 	var started, finished *time.Time
 	if err := row.Scan(&j.ID, &j.AgentID, &j.Agent, &j.WorkerPool, &j.Prompt, &j.Repo, &j.SHA, &j.PR, &j.ResultPath, &j.TimeoutSeconds,
-		&j.IdempotencyKey, &j.RequestedBy, &j.Status, &result, &j.Reason, &j.Error, &j.CCAccount,
+		&j.IdempotencyKey, &j.Model, &j.ConfigRef, &j.RequestedBy, &j.Status, &result, &j.Reason, &j.Error, &j.CCAccount,
 		&j.SessionID, &j.CreatedAt, &started, &finished); err != nil {
 		return Job{}, err
 	}
@@ -507,10 +514,10 @@ func (s *PGStore) create(ctx context.Context, n NewJob, lockIDs []int64, choose 
 		}
 	}
 	j, err := scanJob(tx.QueryRow(ctx, `INSERT INTO jobs (agent_id, agent_name, worker_pool, prompt, repo, sha, pr, result_path,
-		timeout_s, idempotency_key, requested_by) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+		timeout_s, idempotency_key, requested_by, model, config_ref) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
 		ON CONFLICT (owner_id, idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING
 		RETURNING `+jobColumns,
-		agentID, n.Agent, n.WorkerPool, n.Prompt, n.Repo, n.SHA, n.PR, n.ResultPath, n.TimeoutSeconds, key, n.RequestedBy))
+		agentID, n.Agent, n.WorkerPool, n.Prompt, n.Repo, n.SHA, n.PR, n.ResultPath, n.TimeoutSeconds, key, n.RequestedBy, n.Model, n.ConfigRef))
 	if err == nil {
 		if err := tx.Commit(ctx); err != nil {
 			return Job{}, false, fmt.Errorf("jobs: create: commit: %w", err)

@@ -287,9 +287,10 @@ type JobWorkspace interface {
 	// PrepareJobWorktree creates job jobID's own git worktree of the agent's
 	// repository at sha — which must be pull request pr's head of repo, or an
 	// ancestor of it, fetched anonymously — outside the agent's checkout, with
-	// the agent configuration overlaid from the default branch, and returns its
-	// path. The agent's checkout is not moved.
-	PrepareJobWorktree(ctx context.Context, a agents.Agent, jobID int64, repo string, pr int, sha string) (string, error)
+	// the agent configuration overlaid from the default branch (from commit
+	// configRef of it when non-empty, refused unless the default branch reaches
+	// it), and returns its path. The agent's checkout is not moved.
+	PrepareJobWorktree(ctx context.Context, a agents.Agent, jobID int64, repo string, pr int, sha, configRef string) (string, error)
 	// RemoveJobWorktree removes that worktree; one that is not there is not an
 	// error.
 	RemoveJobWorktree(ctx context.Context, a agents.Agent, jobID int64) error

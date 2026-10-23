@@ -71,7 +71,7 @@ func TestRealCLIRunsNoHookOrMCPServerFromAJobsCommit(t *testing.T) {
 
 	control := agents.JobWorktreeDir(ws, 1)
 	r.PlainWorktree(t, control)
-	job, err := a.PrepareJobWorktree(context.Background(), ag, 2, worktreetest.RepoName, worktreetest.PR, r.Commit)
+	job, err := a.PrepareJobWorktree(context.Background(), ag, 2, worktreetest.RepoName, worktreetest.PR, r.Commit, "")
 	if err != nil {
 		t.Fatalf("prepare: %v", err)
 	}
@@ -176,7 +176,7 @@ func TestRealCLIPullRequestFetchBypassesTheProxyRouting(t *testing.T) {
 		t.Fatal(err)
 	}
 	ag := agents.Agent{ID: 8, Name: "keen-wren", Kind: agents.KindClaudeCode, Repo: publicRepo}
-	dir, err := a.PrepareJobWorktree(context.Background(), ag, 3, publicRepo, publicPR, publicSHA)
+	dir, err := a.PrepareJobWorktree(context.Background(), ag, 3, publicRepo, publicPR, publicSHA, "")
 	if err != nil {
 		t.Fatalf("prepare: %v", err)
 	}

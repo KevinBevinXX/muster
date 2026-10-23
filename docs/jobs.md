@@ -22,7 +22,8 @@ it names, or one muster chooses from a named **worker pool**.
 >   own, outside the agent's checkout, in a fresh Claude Code session whose CLI
 >   starts in that worktree. Before the turn, these paths are removed and the
 >   repository's default branch's copies (`origin/HEAD`) put back where it has
->   them: every `.claude/` directory at any depth (settings with their hooks —
+>   them — or, with `config_ref`, that commit's copies, which must be on the
+>   default branch: every `.claude/` directory at any depth (settings with their hooks —
 >   commands the CLI runs — agents, and skills, which the CLI also finds in
 >   subdirectories); the root `CLAUDE.md`, `CLAUDE.local.md` and `AGENTS.md`
 >   (the instructions it loads at launch, `CLAUDE.local.md` being its personal
@@ -87,6 +88,8 @@ POST /api/jobs
   "repo": "owner/name",            // optional: must be the agent's repository (required with worker_pool and sha)
   "sha": "0123456789abcdef0123456789abcdef01234567", // optional: a full 40-hex commit id
   "pr": 42,                        // required with sha (and only with it): the pull request the commit is on
+  "config_ref": "89abcdef0123456789abcdef0123456789abcdef", // optional, only with sha: the default-branch commit the agent configuration comes from
+  "model": "sonnet",               // optional: the Claude model the job's own session runs on
   "result_path": "out/review.md",  // optional: relative to the job's working directory
   "timeout_s": 1800,               // optional: 1-2100, default 1800
   "idempotency_key": "review-42"   // optional, at most 128 bytes
@@ -100,9 +103,9 @@ job that returns the wrong thing.
 
 | answer | when |
 |---|---|
-| 400 | a missing or malformed field — including both or neither of `agent` and `worker_pool`, a `worker_pool` with a `sha` but no `repo`, a `sha` without a `pr` (or a `pr` without a `sha`), a `repo` that is not `owner/name`, and an abbreviated `sha`: only a full 40-character id is accepted |
+| 400 | a missing or malformed field — including both or neither of `agent` and `worker_pool`, a `worker_pool` with a `sha` but no `repo`, a `sha` without a `pr` (or a `pr` without a `sha`), a `repo` that is not `owner/name`, and an abbreviated `sha`: only a full 40-character id is accepted; a `config_ref` that is not a full 40-character id, or one without a `sha`; a `model` outside the pattern below |
 | 404 | no agent by that name; no agent is a member of that `worker_pool` |
-| 409 | the agent is not `claude-code`; `repo` is not the agent's repository; `sha` on an agent with no repository |
+| 409 | the agent is not `claude-code`; `repo` is not the agent's repository; `sha` on an agent with no repository; an `idempotency_key` already used with a different `model` or `config_ref` (below) |
 | 429 | the agent already has 4 jobs queued or running (the per-agent limit); for a `worker_pool`, every member that could otherwise take the job has 4, or runs on a Claude account that is cooling down after a rate limit or already running its limit of concurrent jobs (`error` names each, and when a cooldown ends). Submit again once one finishes or the cooldown ends |
 | 501 | `sha` / `result_path` on a deployment with no provisioner |
 | 503 | no database, no agent gateway, or the service tier is unarmed; or, for a `worker_pool`, no member can take the job for a reason other than the limits above (`error` says why for each) |
@@ -110,8 +113,54 @@ job that returns the wrong thing.
 **Idempotency.** A second submission with an `idempotency_key` already used
 records nothing and answers the first job, with **200** and
 `"deduplicated": true` — before any agent is looked up or worker chosen, so a
-retry is answered even when its pool now has no eligible worker. The key is not
-compared with the rest of the body.
+retry is answered even when its pool now has no eligible worker.
+
+The key is compared with `model` and `config_ref` and with nothing else in the
+body. If either differs from the first job's — including one sent where the
+first had none, or left out where it had one — the answer is **409** with
+`"idempotency_mismatch": true`, the first job's fields, and an `error` naming
+the first job and each difference
+(`idempotency_key "review-42" already names job 17, which has model "opus", not "sonnet"; use a new key for a different job`).
+Nothing is recorded or run. Use a new key to run the job with the new values.
+
+### `model`
+
+The Claude model the job's turn runs on. Absent, the CLI's default, as before.
+
+- **Accepted:** an alias (`opus`, `sonnet`, `haiku`) or a full model id,
+  optionally with the CLI's `[1m]` suffix: 1-80 characters of `[a-z0-9.-]`,
+  starting with a letter or digit, then optionally `[1m]`
+  (`^[a-z0-9][a-z0-9.-]{0,79}(\[1m\])?$`). This is the check a Claude Code
+  chat session's model gets, and ccd checks it again before it starts a CLI.
+  muster does not check that the account can use the model: a model the CLI
+  refuses fails the job with ccd's reason.
+- **Where it goes:** the job's own Claude Code session is opened with it, so
+  ccd starts that session's CLI with `--model`. The agent's main session and
+  every other session are not touched. On a deployment whose chat store cannot
+  open a session of the job's own, a job with a `model` fails `internal`
+  before its turn, rather than run in the agent's own session.
+- **Read back:** `model` on the job (`""` when none was given).
+
+### `config_ref`
+
+The commit a `sha` job's worktree takes its agent configuration from (the
+overlay above), instead of the default branch's tip. Absent, the default
+branch's tip (`origin/HEAD`), as before. A caller that recorded the version of
+the configuration it reviews with — a hash of a `.claude/agents/` file, say —
+sends the commit it read it at, so a merge to the default branch between its
+read and the job's start does not change what the job runs with.
+
+- **Accepted:** a full 40-character lowercase hex commit id, on a job with a
+  `sha` only (a job without one has no worktree and no overlay).
+- **Refused when it is not on the default branch.** The commit must be the
+  checkout's `origin/HEAD` or an ancestor of it. If it is not, the default
+  branch is fetched anonymously, the same way as the pull request (`HEAD` of
+  `https://github.com/<repo>`, into a ref of the job's own, deleted with the
+  worktree), and the commit must be its tip or an ancestor. Otherwise the job
+  fails `checkout_failed`, and nothing is run. Any other commit — the pull
+  request's own head, above all — would hand the commit under review its own
+  configuration back.
+- **Read back:** `config_ref` on the job (`""` when none was given).
 
 ## Worker pools
 
@@ -223,6 +272,7 @@ GET /api/jobs/{id}
   "finished_at": "…",
   "created_at": "…",
   "repo": "", "sha": "", "result_path": "", "timeout_s": 1800,
+  "model": "", "config_ref": "",
   "session_id": 412
 }
 ```
@@ -280,20 +330,21 @@ kept — the job keeps its status and `error` says
 | other ccd types | `busy`, `capacity`, `not_ready`, `empty_reply`, `turn_failed`, … — ccd's vocabulary, passed through unchanged |
 | `timeout` | the job's `timeout_s` elapsed (status `timed_out`) |
 | `turn_timeout` | ccd's own turn budget elapsed (status `timed_out`) |
-| `checkout_failed` | the job's worktree could not be made: the pull request's head could not be fetched anonymously (a private repository, no such pull request, no network), the `sha` is neither that head nor an ancestor of it, the checkout's own git configuration rewrites the fetch URL or adds a header or credential to it, the default branch (`origin/HEAD`) could not be resolved, the default branch has a symlink among the overlaid paths (it could point at a file the commit controls), or git failed; `error` says which |
+| `checkout_failed` | the job's worktree could not be made: the pull request's head could not be fetched anonymously (a private repository, no such pull request, no network), the `sha` is neither that head nor an ancestor of it, the checkout's own git configuration rewrites the fetch URL or adds a header or credential to it, the default branch (`origin/HEAD`) could not be resolved, the `config_ref` is not on the default branch (or the default branch could not be fetched to look for it), the default branch has a symlink among the overlaid paths (it could point at a file the commit controls), or git failed; `error` says which |
 | `workdir_unconfirmed` | a `sha` job's turn succeeded, but the agent's runtime did not confirm it ran in the job's worktree (its image predates job worktrees); the reply was discarded — update the agent's image |
 | `result_read_failed` | the turn succeeded but `result_path` could not be returned |
 | `empty_reply` | the turn produced no reply text and no `result_path` was asked for |
 | `agent_unavailable` | the agent could not be loaded when the job was due to start |
 | `interrupted` | nothing finished the job by its deadline, so the reaper failed it: the server running it stopped, crashed or could not record the outcome (see [restarts](#what-it-does-not-do)) |
-| `internal` | muster failed around the turn — including a `sha` job on a deployment whose chat store cannot open a Claude Code session of the job's own, which is refused rather than run in the agent's own session |
+| `internal` | muster failed around the turn — including a `sha` job, or a job with a `model`, on a deployment whose chat store cannot open a Claude Code session of the job's own, which is refused rather than run in the agent's own session |
 
 ## How a job runs
 
 1. The job waits for its agent: jobs on one agent run one at a time.
-2. A new chat session is opened on the agent, on the `claude-code` runtime, so
-   ccd runs the job in a Claude Code CLI of its own (a fresh conversation)
-   rather than the agent's main one. The prompt and the reply are stored in
+2. A new chat session is opened on the agent, on the `claude-code` runtime
+   and with the job's `model` if it has one, so ccd runs the job in a Claude
+   Code CLI of its own (a fresh conversation, started with `--model` when there
+   is a model) rather than the agent's main one. The prompt and the reply are stored in
    it, so the job is readable on the agent's page (`session_id`).
 3. With `sha`, through the provisioner's exec in the agent's instance:
    - `refs/remotes/origin/HEAD` is resolved (asking `origin` once if the ref is
@@ -306,6 +357,9 @@ kept — the job keeps its status and `error` says
      own configuration would still rewrite that URL or add a header or
      credential, or if the `sha` is neither the fetched head nor an ancestor
      of it. `repo` is the agent's repository when the request names none;
+   - with `config_ref`, the commit is checked to be on the default branch
+     (fetching the default branch anonymously when the checkout's
+     `origin/HEAD` does not reach it), and becomes the overlay's source;
    - `git worktree add --detach` creates the job's worktree at
      `<the agent's workspace>/.muster-jobs/<job_id>` — beside the agent's
      checkout, on its volume — and the overlay above is applied to it.
@@ -321,7 +375,7 @@ kept — the job keeps its status and `error` says
 5. With `result_path`, the file is read back through the provisioner's exec.
 6. A `sha` job's worktree is removed (`git worktree remove --force`, the
    directory if git left it, `git worktree prune`), and its fetched
-   pull-request ref deleted. For a job without a
+   pull-request and default-branch refs deleted. For a job without a
    `sha`, the result file is deleted as above.
 
 The job's `timeout_s` covers steps 3–5, not the wait in step 1; the removal in
