@@ -35,6 +35,7 @@ type flowEnqueueBody struct {
 	Instance   string            `json:"instance"`
 	Params     map[string]string `json:"params,omitempty"`
 	TTLSeconds int               `json:"ttlSeconds,omitempty"`
+	Approval   int64             `json:"approval,omitempty"`
 }
 
 func newFlowCmd(a *app) *cobra.Command {
@@ -66,7 +67,9 @@ not claimed within --ttl (default 15m, 1m..24h) becomes "expired". Time it
 spends blocked behind another job on the same browser does not count, up to
 90 minutes per blocking job, so it can run well after it was queued. Use a
 short --ttl on an idle instance for a send meant for a specific moment.
-Prints the job; follow it with ` + "`flow status <id>`" + `.`,
+A muse dispatch (muse.send with a marker) needs --approval: the id of a
+human-only ask (` + "`attention ask`" + `) the operator approved whose payload is
+exactly the job's text; it is spent by this one job. Prints the job; follow it with ` + "`flow status <id>`" + `.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			b.Flow = strings.TrimSpace(args[0])
@@ -98,6 +101,7 @@ Prints the job; follow it with ` + "`flow status <id>`" + `.`,
 	cmd.Flags().StringVar(&b.Instance, "instance", "personal", "the browser instance (Brave profile) on that host")
 	cmd.Flags().StringArrayVar(&params, "param", nil, "flow parameter name=value (repeatable)")
 	cmd.Flags().DurationVar(&ttl, "ttl", 0, "how long the job may wait to be claimed (default 15m)")
+	cmd.Flags().Int64Var(&b.Approval, "approval", 0, "an approved human-only ask (required for a muse dispatch)")
 	return cmd
 }
 

@@ -63,6 +63,27 @@ about 10 minutes waiting out Muse's pacing gap, then `wait`, then 240 seconds.
 Nothing caps how long a job may run (the jobs queued behind it still expire once it has held them past the 90-minute per-blocker ceiling above). A job is only taken from its runner when
 the runner stops heartbeating and the 2-minute lease runs out.
 
+## A muse dispatch needs a human approval
+
+A **muse dispatch** is a `muse.send` that carries a `marker`. The store
+enqueues one only together with an approval:
+
+- **What counts as an approval.** It must be an approved, unexpired, unused
+  [human-only ask](attention.md#human-only-approvals) whose payload digest is
+  sha256 of the job's `text`.
+- **It is spent in the same transaction as the insert**, so one approval
+  queues at most one job. A unique index on `flow_jobs.approval_ask_id` states
+  the same thing again.
+- **When there is no usable approval**, the enqueue is refused (403 on the API,
+  and on the `/flows` form, which has no approval field). The error gives the
+  reason: missing, not answered yet, denied, expired, already used, not
+  human-only, or a text that is not the one approved.
+- **Why it lives in the store.** The personal token can call this API
+  directly, so the check could not live in a client.
+- **A plain `muse.send` with no marker is unaffected.** That covers the
+  operator's own form send, and any other job. Naming an approval on a job that
+  is not a dispatch is refused as invalid.
+
 ## Three ways in
 
 | door | who | routes |

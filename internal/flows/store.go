@@ -18,6 +18,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/ZacxDev/muster/internal/attention"
 	"github.com/ZacxDev/muster/internal/metrics"
 )
 
@@ -75,6 +76,10 @@ var (
 	ErrState = errors.New("flows: the job is not in a state that allows this")
 	// ErrPendingCap: the owner already has MaxPendingPerOwner unfinished jobs.
 	ErrPendingCap = errors.New("flows: too many unfinished jobs")
+	// ErrNotApproved: a muse dispatch without a usable human approval (missing,
+	// still open, denied, not human-only, expired, already used, or for a
+	// different text). Its text says which.
+	ErrNotApproved = errors.New("flows: this muse dispatch is not approved")
 	// ErrBadRunnerToken: unknown, revoked, or its owner is disabled.
 	ErrBadRunnerToken = errors.New("flows: unknown or revoked runner token")
 )
@@ -241,11 +246,85 @@ func enqueueTx(ctx context.Context, tx pgx.Tx, f Flow, r Request, params []byte,
 	if pending >= MaxPendingPerOwner {
 		return Job{}, fmt.Errorf("%w: %d queued or running (the limit is %d)", ErrPendingCap, pending, MaxPendingPerOwner)
 	}
-	return scanJob(tx.QueryRow(ctx, `
-		INSERT INTO flow_jobs (flow, class, host, instance, params, requested_via, requested_by, expires_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, now() + make_interval(secs => $8))
+	dispatch := IsDispatch(f, r.Params)
+	if dispatch && r.Approval <= 0 {
+		return Job{}, fmt.Errorf("%w: a muse dispatch needs the id of a human-only attention ask the operator approved (none was given)", ErrNotApproved)
+	}
+	var approval any
+	if dispatch {
+		approval = r.Approval
+	}
+	j, err := scanJob(tx.QueryRow(ctx, `
+		INSERT INTO flow_jobs (flow, class, host, instance, params, requested_via, requested_by, expires_at, approval_ask_id)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, now() + make_interval(secs => $8), $9)
 		RETURNING `+jobCols,
-		f.Name, string(f.Class), r.Host, r.Instance, params, via, truncateRunes(by, 100), r.TTL.Seconds()))
+		f.Name, string(f.Class), r.Host, r.Instance, params, via, truncateRunes(by, 100), r.TTL.Seconds(), approval))
+	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == "flow_jobs_one_job_per_approval" {
+			return Job{}, fmt.Errorf("%w: approval %d has already queued a job", ErrNotApproved, r.Approval)
+		}
+		return Job{}, err
+	}
+	if dispatch {
+		if err := approvalTx(ctx, tx, r.Approval, j.ID, r.Params["text"]); err != nil {
+			return Job{}, err
+		}
+	}
+	return j, nil
+}
+
+// approvalTx CONSUMES approval ask id for job jobID inside the enqueue's tx —
+// one conditional UPDATE, so an approval queues at most one job and only:
+// a human-only ask (0045), answered on a human surface (answered_via NULL)
+// with exactly attention.ApproveAnswer, not yet consumed, not past its expiry,
+// whose payload digest is sha256(text). Row-level security keeps it to the
+// caller's own asks. On a refusal the caller's tx rolls back, the job with it.
+func approvalTx(ctx context.Context, tx pgx.Tx, id, jobID int64, text string) error {
+	digest := attention.PayloadSHA256(text)
+	tag, err := tx.Exec(ctx, `UPDATE attention_asks SET consumed_at = now(), consumed_job_id = $2
+		WHERE id = $1 AND human_only AND status = 'answered' AND answer = $3 AND answered_via IS NULL
+		  AND consumed_at IS NULL AND expires_at > now() AND payload_sha256 = $4`,
+		id, jobID, attention.ApproveAnswer, digest)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 1 {
+		return nil
+	}
+	var (
+		found, humanOnly, consumed, expired bool
+		status, answer, via, stored         string
+	)
+	err = tx.QueryRow(ctx, `SELECT true, human_only, status, coalesce(answer, ''), coalesce(answered_via, ''),
+		  consumed_at IS NOT NULL, expires_at <= now(), coalesce(payload_sha256, '')
+		FROM attention_asks WHERE id = $1`, id).Scan(&found, &humanOnly, &status, &answer, &via, &consumed, &expired, &stored)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return fmt.Errorf("%w: approval %d is not one of your attention asks", ErrNotApproved, id)
+	}
+	if err != nil {
+		return err
+	}
+	why := "it was not approved"
+	switch {
+	case !humanOnly:
+		why = "it is not a human-only approval"
+	case consumed:
+		why = "it has already queued a job"
+	case status == "open" && !expired:
+		why = "it has not been answered yet"
+	case expired || status == "expired":
+		why = "it has expired"
+	case status != "answered":
+		why = "it was " + status
+	case via != "":
+		why = "it was not answered by a person"
+	case answer != attention.ApproveAnswer:
+		why = "it was denied"
+	case stored != digest:
+		why = "the job's text is not the text that was approved"
+	}
+	return fmt.Errorf("%w: approval %d: %s", ErrNotApproved, id, why)
 }
 
 // 🔴 THE TTL DOES NOT RUN WHILE A JOB IS BLOCKED (migration 0044, PR #228

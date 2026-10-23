@@ -17,6 +17,7 @@ The verb set is pinned in two places:
 | an agent's own task | `agent task get`, `agent task comment`, `agent task status` |
 | agents | `agent ls`, `agent messages`, `agent resolve`, `chief ask`, `chief replace` ([replacing the chief](chief.md#replacing-the-chief-on-another-kind)) |
 | browser flows | `flow enqueue`, `flow ls`, `flow status`, `flow cancel` |
+| human-only approvals | `attention ask`, `attention get`, `attention wait` |
 | credentials | `token ls`, `token revoke`, `whoami` |
 | session routing | `route reply` (a mirrored session's answer to a [routed message](plugins.md#routing-a-message-to-a-session)) |
 | plugins | `plugins retry <message-id>` ([retry an unconfirmed message](plugins.md#retrying-an-unconfirmed-message)) |

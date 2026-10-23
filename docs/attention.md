@@ -372,3 +372,34 @@ message. Only your own messages count: a message routed by the chief, the
 chief's hand-back turn, a message over the machine door
 (`POST /api/agents/{name}/messages`) and anything an agent sends do not. A
 reply draft decided outside muster is not cleared by this (it is not an ask).
+
+## Human-only approvals
+
+Some decisions have to be a person's, never an agent's. A muse dispatch, the
+brief typed into Meta's Muse, is one of them. A **human-only ask** (migration
+0045) is how muster asks for that:
+
+- **Raised through the personal-token API.**
+  - `POST /api/attention/asks {title, payload, timeoutSeconds?}` creates the
+    ask (CLI: `muster attention ask --title T --payload-file F`).
+  - `GET /api/attention/asks/{id}` reads it back (`muster attention get`, or
+    `muster attention wait`, which exits 0 only when it was approved).
+- **What it shows.** The card shows the title and the payload verbatim. The
+  server computes the payload's sha256 (`payloadSha256`). The options are
+  always **Approve** and **Deny**, and only the exact answer Approve approves.
+- **The phone is notified** like any other ask. As always the lock screen
+  shows only "api token (…) is asking", and the brief itself is behind the
+  sign-in.
+- **Only a person can answer it**: on the `/attention` page in a browser
+  session, which is also what the phone's notification opens.
+  - `attention_answer` from a mirrored session is refused, from any host.
+  - A message to an asker never settles it.
+  - No token route answers any ask.
+  - The store refuses the other paths, and 0045's CHECK states the rule again.
+
+  So the holder of the personal token can raise an approval but cannot give
+  one.
+- **Spending it.** An approval is used by `POST /api/flows/jobs {"approval": id}`
+  (`muster flow enqueue --approval id`) on a muse dispatch (see
+  [browser-flows.md](browser-flows.md#a-muse-dispatch-needs-a-human-approval)).
+

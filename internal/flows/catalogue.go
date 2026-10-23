@@ -226,6 +226,18 @@ type Request struct {
 	Params   map[string]string
 	// TTL is how long the job may wait to be claimed; zero means DefaultTTL.
 	TTL time.Duration
+	// Approval is the human-only attention ask (migration 0045) that approves
+	// this job. A muse.send carrying `marker` (a muse dispatch) needs one, and
+	// no other job may name one. It is NOT a param: the runner never sees it.
+	Approval int64
+}
+
+// IsDispatch reports whether a validated job is a muse dispatch: a muse.send
+// carrying `marker`. Such a job is enqueued only with a human approval
+// (store.go, approvalTx). A plain muse.send — the operator's own form send —
+// is not one and is unaffected.
+func IsDispatch(f Flow, params map[string]string) bool {
+	return f.Name == "muse.send" && params["marker"] != ""
 }
 
 // Validate checks r against the catalogue and returns the flow it names, with
@@ -275,6 +287,9 @@ func Validate(r *Request) (Flow, error) {
 	}
 	if clean["marker"] != "" && clean["session"] == "" {
 		return Flow{}, invalidf("parameter \"marker\" needs \"session\" (a dispatch targets its thread by uuid)")
+	}
+	if r.Approval < 0 || (r.Approval > 0 && !IsDispatch(f, clean)) {
+		return Flow{}, invalidf("an approval is only for a muse dispatch (a muse.send with a marker)")
 	}
 	r.Params = clean
 	return f, nil

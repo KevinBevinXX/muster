@@ -357,6 +357,8 @@ var isolationClasses = map[string]routeClass{
 	"GET /api/flows/jobs/{id}":          classAPIToken,
 	"POST /api/flows/jobs":              classAPIToken,
 	"POST /api/flows/jobs/{id}/cancel":  classAPIToken,
+	"POST /api/attention/asks":          classAPIToken,
+	"GET /api/attention/asks/{id}":      classAPIToken,
 	"POST /runner/flows/claim":          classRunner,
 	"POST /runner/flows/{id}/heartbeat": classRunner,
 	"POST /runner/flows/{id}/result":    classRunner,
@@ -1269,7 +1271,7 @@ func (w *isoWorld) fill(pattern string, o isoObjs, actor isoUser) (method, path,
 		id = strconv.FormatInt(o.pluginMsg, 10)
 	case strings.HasPrefix(path, "/uploads/{id}") || strings.HasPrefix(path, "/f/{id}"):
 		id = o.upload
-	case strings.HasPrefix(path, "/attention/asks/{id}"):
+	case strings.HasPrefix(path, "/attention/asks/{id}") || strings.HasPrefix(path, "/api/attention/asks/{id}"):
 		id = strconv.FormatInt(o.ask, 10)
 	}
 	name := o.agentName

@@ -556,6 +556,8 @@ func (s *Server) registerAll(mux Mux) {
 	s.registerPluginRoutes(mux)
 	// The attention queue (attention.go): /attention, its list and its badge; 404 without a store.
 	s.registerAttentionRoutes(mux)
+	// Human-only approvals through the personal token (attention_api.go).
+	s.registerAttentionAPIRoutes(mux)
 	// The mirrored sessions' MCP door (mirror_mcp.go): a host's token, its own sessions; 404 without the mirror plugin.
 	s.registerMirrorMCPRoutes(mux)
 	// muster-native Web Push (push_routes.go): the subscribe flow and the

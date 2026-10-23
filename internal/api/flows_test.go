@@ -539,18 +539,29 @@ func TestFlowCancelOverTheAPI(t *testing.T) {
 		}
 	}
 	const sess, marker = "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d", "md-0f9e8d"
+	var before []flows.Job
+	_ = json.Unmarshal(do("GET", "/api/flows/jobs", "", aTok, 0).Body.Bytes(), &before)
+	// A DISPATCH (a marker) through the form is refused: the form carries no
+	// approval, and a dispatch is queued only through an approved human-only
+	// ask (migration 0045) — nothing is queued.
 	rec = do("POST", "/flows/jobs", url.Values{"flow": {"muse.send"}, "host": {host}, "instance": {"personal"},
 		"param_text": {"dispatch body"}, "param_session": {sess}, "param_marker": {marker}, "param_wait": {"613"}}.Encode(), "", a)
+	if rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), "approv") {
+		t.Fatalf("form enqueue of a dispatch: %d %s; want 403 (needs an approval)", rec.Code, truncate(rec.Body.String(), 300))
+	}
+	// A plain send (no marker) with a session and a wait still lands, as before.
+	rec = do("POST", "/flows/jobs", url.Values{"flow": {"muse.send"}, "host": {host}, "instance": {"personal"},
+		"param_text": {"plain body"}, "param_session": {sess}, "param_wait": {"613"}}.Encode(), "", a)
 	if rec.Code != http.StatusSeeOther {
-		t.Fatalf("form enqueue of a dispatch: %d %s", rec.Code, truncate(rec.Body.String(), 300))
+		t.Fatalf("form enqueue of a plain send: %d %s", rec.Code, truncate(rec.Body.String(), 300))
 	}
 	var list []flows.Job
-	if err := json.Unmarshal(do("GET", "/api/flows/jobs", "", aTok, 0).Body.Bytes(), &list); err != nil || len(list) == 0 ||
-		list[0].Params["session"] != sess || list[0].Params["marker"] != marker || list[0].Params["wait"] != "613" {
-		t.Fatalf("the form's dispatch job: %+v (%v)", list, err)
+	if err := json.Unmarshal(do("GET", "/api/flows/jobs", "", aTok, 0).Body.Bytes(), &list); err != nil || len(list) != len(before)+1 ||
+		list[0].Params["session"] != sess || list[0].Params["marker"] != "" || list[0].Params["wait"] != "613" {
+		t.Fatalf("the form's plain send: %+v (%v); want exactly one new job", list, err)
 	}
 	page = do("GET", "/flows", "", "", a).Body.String()
-	for _, want := range []string{"session: " + sess, "marker: " + marker, "wait: 613"} {
+	for _, want := range []string{"session: " + sess, "wait: 613"} {
 		if !strings.Contains(page, want) {
 			t.Errorf("the job card does not show %q", want)
 		}

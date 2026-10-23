@@ -290,6 +290,8 @@ func (s *Server) toolAttentionAnswer(ctx context.Context, c toolCaller, argument
 	case err == nil:
 	case errors.Is(err, attention.ErrNotFound):
 		return toolErr("no such ask: %d", id)
+	case errors.Is(err, attention.ErrHumanOnly):
+		return toolErr("ask %d is a human-only approval: only your owner answers it, on the Attention page or the phone it notified", id)
 	case errors.Is(err, attention.ErrSameHost):
 		return toolErr("ask %d was raised by a mirrored session on this host (%s): no session answers an ask raised on its own host; your owner answers it on the Attention view or from another host", id, src.Host)
 	case errors.Is(err, attention.ErrNotOpen):

@@ -216,6 +216,9 @@ type flowEnqueueBody struct {
 	Instance   string            `json:"instance"`
 	Params     map[string]string `json:"params"`
 	TTLSeconds int               `json:"ttlSeconds"`
+	// Approval: a human-only attention ask the operator approved — required
+	// for a muse dispatch (a muse.send with a marker), refused on anything else.
+	Approval int64 `json:"approval"`
 }
 
 func (s *Server) handleFlowEnqueueAPI(w http.ResponseWriter, r *http.Request) {
@@ -236,7 +239,7 @@ func (s *Server) handleFlowEnqueueAPI(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	j, err := s.enqueueFlow(r.Context(), flows.Request{Flow: b.Flow, Host: b.Host, Instance: b.Instance,
-		Params: b.Params, TTL: time.Duration(b.TTLSeconds) * time.Second}, by)
+		Params: b.Params, TTL: time.Duration(b.TTLSeconds) * time.Second, Approval: b.Approval}, by)
 	s.writeFlowResult(w, j, err, http.StatusCreated)
 }
 
@@ -337,6 +340,8 @@ func (s *Server) writeFlowResult(w http.ResponseWriter, j flows.Job, err error, 
 		s.writeJSON(w, http.StatusConflict, map[string]any{"error": "the job is not in a state that allows this"})
 	case errors.Is(err, flows.ErrPendingCap):
 		s.writeJSON(w, http.StatusTooManyRequests, map[string]any{"error": err.Error()})
+	case errors.Is(err, flows.ErrNotApproved):
+		s.writeJSON(w, http.StatusForbidden, map[string]any{"error": err.Error()})
 	default:
 		s.logger.Printf("flows: %v", err)
 		s.writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "the flow request failed"})
@@ -369,6 +374,10 @@ func (s *Server) handleFlowEnqueueForm(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, flowsPath, http.StatusSeeOther)
 	case errors.Is(err, flows.ErrInvalid), errors.Is(err, flows.ErrPendingCap):
 		s.renderFlowsPage(w, r, http.StatusBadRequest, "", err.Error())
+	case errors.Is(err, flows.ErrNotApproved):
+		// The form has no approval field: a dispatch (a muse.send with a
+		// marker) is queued by `muse dispatch`, through an approved ask.
+		s.renderFlowsPage(w, r, http.StatusForbidden, "", err.Error())
 	default:
 		s.logger.Printf("flows: enqueue: %v", err)
 		s.renderFlowsPage(w, r, http.StatusInternalServerError, "", "The flow could not be queued.")

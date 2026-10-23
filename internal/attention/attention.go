@@ -30,6 +30,8 @@ package attention
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -126,7 +128,28 @@ var (
 	ErrSameHost = errors.New("attention: a mirrored session cannot answer an ask raised by a session on its own host")
 	// ErrTooMany: the owner already has MaxOpenPerOwner open asks.
 	ErrTooMany = fmt.Errorf("attention: there are already %d open asks; wait for some to be answered", MaxOpenPerOwner)
+	// ErrHumanOnly: a mirrored session (attention_answer) tried to answer a
+	// human-only ask, which only a human surface may answer (migration 0045).
+	ErrHumanOnly = errors.New("attention: this ask can only be answered by a person on the Attention page (or the phone it notified)")
 )
+
+// The human-only approval (migration 0045). Such an ask always offers exactly
+// these two options, and only the exact answer ApproveAnswer approves it: a
+// typed answer, "Deny", or anything else is not an approval.
+const (
+	ApproveAnswer = "Approve"
+	DenyAnswer    = "Deny"
+	// MaxPayloadRunes bounds a human-only ask's payload (0045's CHECK allows
+	// 8000; a muse.send text is at most 4000).
+	MaxPayloadRunes = 8000
+)
+
+// PayloadSHA256 is the hex sha256 of payload's UTF-8 bytes — the digest a
+// human-only ask stores and a dispatch's text must match.
+func PayloadSHA256(payload string) string {
+	sum := sha256.Sum256([]byte(payload))
+	return hex.EncodeToString(sum[:])
+}
 
 // SystemAskerLabel is the label of an ask muster itself raised.
 const SystemAskerLabel = "muster"
@@ -200,6 +223,19 @@ type Ask struct {
 	// attention view (migration 0034): the zero value for the view (and for
 	// every answer recorded before 0034).
 	AnsweredVia AnswerSource `json:"-"`
+	// HumanOnly (migration 0045): only a human surface may answer it. Payload is
+	// the exact text its approval covers, PayloadSHA256 that text's digest;
+	// ConsumedJobID the flow job its approval queued (0 = unused).
+	HumanOnly     bool   `json:"human_only,omitempty"`
+	Payload       string `json:"payload,omitempty"`
+	PayloadSHA256 string `json:"payload_sha256,omitempty"`
+	ConsumedJobID int64  `json:"consumed_job_id,omitempty"`
+}
+
+// Approved reports whether a is a human-only ask a person approved (answered,
+// on a human surface, with exactly ApproveAnswer).
+func (a Ask) Approved() bool {
+	return a.HumanOnly && a.Status == Answered && a.Answer == ApproveAnswer && !a.AnsweredVia.ViaSession()
 }
 
 // Delivery is where an answer stands on its way to the asker (migration 0031).
@@ -245,6 +281,12 @@ type New struct {
 	// Timeout is how long the ask waits; 0 is DefaultTimeout, and anything
 	// else is clamped to [MinTimeout, MaxTimeout].
 	Timeout time.Duration
+	// HumanOnly with Payload (migration 0045): an approval only a human
+	// surface can give, of exactly Payload. Its options are forced to
+	// [ApproveAnswer, DenyAnswer]; only muster's personal-token API sets it,
+	// with a System asker.
+	HumanOnly bool
+	Payload   string
 }
 
 // Clean validates and normalises n: the question and options trimmed, blank
@@ -281,6 +323,20 @@ func Clean(n New) (New, error) {
 		return n, fmt.Errorf("%w: at most %d options", ErrInvalid, MaxOptions)
 	}
 	n.Options = opts
+	if n.HumanOnly {
+		if !n.Asker.System {
+			return n, fmt.Errorf("%w: a human-only ask is raised by muster itself", ErrInvalid)
+		}
+		if strings.TrimSpace(n.Payload) == "" {
+			return n, fmt.Errorf("%w: a human-only ask needs the payload it approves", ErrInvalid)
+		}
+		if utf8.RuneCountInString(n.Payload) > MaxPayloadRunes {
+			return n, fmt.Errorf("%w: the payload is longer than %d characters", ErrInvalid, MaxPayloadRunes)
+		}
+		n.Options = []string{ApproveAnswer, DenyAnswer}
+	} else if n.Payload != "" {
+		return n, fmt.Errorf("%w: only a human-only ask carries a payload", ErrInvalid)
+	}
 	switch {
 	case n.Timeout <= 0:
 		n.Timeout = DefaultTimeout
@@ -418,7 +474,8 @@ const cols = `id, owner_id, coalesce(agent_id, 0), coalesce(mirror_host, ''), co
 	coalesce(answer, ''), coalesce(answered_by, ''), created_at, expires_at, resolved_at,
 	coalesce(delivery, ''), delivery_detail, delivery_attempts, coalesce(delivered_session_id, 0), delivery_queued_at,
 	coalesce(task_id, 0),
-	coalesce(answered_via, ''), coalesce(answered_via_host, ''), coalesce(answered_via_session, '')`
+	coalesce(answered_via, ''), coalesce(answered_via_host, ''), coalesce(answered_via_session, ''),
+	human_only, coalesce(payload, ''), coalesce(payload_sha256, ''), coalesce(consumed_job_id, 0)`
 
 func scan(row pgx.Row) (Ask, error) {
 	var a Ask
@@ -428,7 +485,8 @@ func scan(row pgx.Row) (Ask, error) {
 	if err := row.Scan(&a.ID, &a.Owner, &a.Asker.AgentID, &a.Asker.MirrorHost, &a.Asker.MirrorSession, &a.Asker.System, &a.Asker.Label,
 		&a.Question, &opts, &status, &a.Answer, &a.AnsweredBy, &a.CreatedAt, &a.ExpiresAt, &resolved,
 		&delivery, &a.DeliveryDetail, &a.DeliveryAttempts, &a.DeliveredSession, &queued, &a.TaskID,
-		&a.AnsweredVia.Via, &a.AnsweredVia.Host, &a.AnsweredVia.Session); err != nil {
+		&a.AnsweredVia.Via, &a.AnsweredVia.Host, &a.AnsweredVia.Session,
+		&a.HumanOnly, &a.Payload, &a.PayloadSHA256, &a.ConsumedJobID); err != nil {
 		return Ask{}, err
 	}
 	if queued != nil {
@@ -509,9 +567,15 @@ func (s *PGStore) Create(ctx context.Context, n New) (Ask, error) {
 	if n.TaskID > 0 {
 		task = n.TaskID
 	}
-	a, err := scan(tx.QueryRow(ctx, `INSERT INTO attention_asks (agent_id, mirror_host, mirror_session, system_asker, asker_label, question, options, expires_at, task_id)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, now() + make_interval(secs => $8), $9)
-		RETURNING `+cols, agent, nullable(n.Asker.MirrorHost), nullable(n.Asker.MirrorSession), n.Asker.System, n.Asker.Label, n.Question, opts, n.Timeout.Seconds(), task))
+	var payload, digest any
+	if n.HumanOnly {
+		payload, digest = n.Payload, PayloadSHA256(n.Payload)
+	}
+	a, err := scan(tx.QueryRow(ctx, `INSERT INTO attention_asks (agent_id, mirror_host, mirror_session, system_asker, asker_label, question, options, expires_at, task_id,
+		  human_only, payload, payload_sha256)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, now() + make_interval(secs => $8), $9, $10, $11, $12)
+		RETURNING `+cols, agent, nullable(n.Asker.MirrorHost), nullable(n.Asker.MirrorSession), n.Asker.System, n.Asker.Label, n.Question, opts, n.Timeout.Seconds(), task,
+		n.HumanOnly, payload, digest))
 	if err != nil {
 		return Ask{}, err
 	}
@@ -578,12 +642,17 @@ func (s *PGStore) settle(ctx context.Context, id int64, q string, args ...any) (
 // (ErrSameHost says why the host, not the session). An agent's, the chief's
 // or a system ask has no mirror_host, so it is unaffected; an answer from
 // the view ($4 NULL) is unaffected. 0034's CHECK states the same rule again.
+//
+// 🔴 NO MCP ANSWER TO A HUMAN-ONLY ASK (migration 0045): with $4 set (an
+// attention_answer) the row must not be human_only; the view's answer ($4
+// NULL) is the human surface. 0045's CHECK states the same rule again.
 const answerSQL = `UPDATE attention_asks SET status = 'answered', answer = $2, answered_by = $3, resolved_at = now(),
 	  delivery = CASE WHEN agent_id IS NOT NULL THEN 'queued' WHEN mirror_session IS NOT NULL THEN 'pull' END,
 	  delivery_queued_at = CASE WHEN agent_id IS NOT NULL THEN now() END,
 	  answered_via = $4::text, answered_via_host = $5::text, answered_via_session = $6::text
 	WHERE id = $1 AND status = 'open' AND expires_at > now()
 	  AND ($4::text IS NULL OR mirror_host IS DISTINCT FROM $5::text)
+	  AND ($4::text IS NULL OR NOT human_only)
 	RETURNING ` + cols
 
 func (s *PGStore) Answer(ctx context.Context, id int64, answer string) (Ask, error) {
@@ -611,6 +680,9 @@ func (s *PGStore) AnswerFromSession(ctx context.Context, id int64, answer, host,
 	a, err := s.settle(ctx, id, answerSQL, id, answer, ByOperator, ViaMCP, host, session)
 	// Only a STILL-OPEN ask is refused for its host: one already answered,
 	// cancelled or expired says so (ErrNotOpen), whoever asked.
+	if errors.Is(err, ErrNotOpen) && a.Status == Open && a.HumanOnly {
+		return a, ErrHumanOnly
+	}
 	if errors.Is(err, ErrNotOpen) && a.Status == Open && a.Asker.MirrorHost == host {
 		return a, ErrSameHost
 	}
@@ -747,7 +819,7 @@ func (s *PGStore) AnswerInSession(ctx context.Context, asker Asker, message stri
 	}
 	return collect(s.pool.Query(ctx, `UPDATE attention_asks SET status = 'answered_in_session', answer = $1, answered_by = $2, resolved_at = now(),
 		  answer_queue_id = $6::bigint
-		WHERE status = 'open' AND expires_at > now() AND created_at < statement_timestamp()
+		WHERE status = 'open' AND expires_at > now() AND created_at < statement_timestamp() AND NOT human_only
 		  AND agent_id IS NOT DISTINCT FROM $3::bigint AND mirror_host IS NOT DISTINCT FROM $4::text AND mirror_session IS NOT DISTINCT FROM $5::text
 		RETURNING `+cols, message, ByOperator, agent, nullable(asker.MirrorHost), nullable(asker.MirrorSession), queue))
 }

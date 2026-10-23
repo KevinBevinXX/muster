@@ -243,7 +243,13 @@ func askerLabel(a attention.Ask) string {
 }
 
 func askItem(a attention.Ask) attentionItem {
-	it := attentionItem{Key: attentionAskKey(a.ID), Kind: attentionKindAsk, Source: askerLabel(a), Text: a.Question,
+	text := a.Question
+	if a.HumanOnly {
+		// A human-only approval shows EXACTLY what Approve covers: the payload,
+		// verbatim, and its digest (migration 0045).
+		text += "\n\nApprove queues exactly this text:\n\n" + a.Payload + "\n\nsha256 " + a.PayloadSHA256
+	}
+	it := attentionItem{Key: attentionAskKey(a.ID), Kind: attentionKindAsk, Source: askerLabel(a), Text: text,
 		Options: a.Options, Since: a.CreatedAt, Link: attentionPath + "#" + attentionAskKey(a.ID), AskID: a.ID}
 	switch {
 	case a.Asker.AgentID > 0:
