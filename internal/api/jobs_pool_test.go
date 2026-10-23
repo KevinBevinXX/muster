@@ -82,7 +82,7 @@ func TestChooseWorkerPrefersTheIdleThenTheLeastQueuedThenTheMostRested(t *testin
 			healthy, map[int64]jobs.ActiveCount{1: {Running: 4}, 2: {Running: 1, Queued: 1}}, nil, "b-room"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got, why, full := chooseWorker("reviewers", tc.members, "", tc.accounts, tc.active, tc.github)
+			got, why, full := chooseWorker("reviewers", tc.members, tc.members, "", tc.accounts, tc.active, tc.github)
 			if why != "" || full || got.Name != tc.want {
 				t.Fatalf("chose %q (%q, full %v), want %q", got.Name, why, full, tc.want)
 			}
@@ -102,7 +102,7 @@ func TestChooseWorkerSaysWhyNoWorkerIsEligible(t *testing.T) {
 	members := []agents.Agent{worker(6, "f-full", "beta"), other, gw, stopped, worker(1, "a-dead", "alpha"), worker(5, "e-unknown", "zeta")}
 	accounts := map[string]ccpool.AccountState{"alpha": {AuthFailed: true}, "beta": {}}
 	members = append(members, worker(7, "g-granted", "beta"))
-	_, why, full := chooseWorker("reviewers", members, "acme/widgets", accounts, map[int64]jobs.ActiveCount{6: {Running: 1, Queued: 3}},
+	_, why, full := chooseWorker("reviewers", members, members, "acme/widgets", accounts, map[int64]jobs.ActiveCount{6: {Running: 1, Queued: 3}},
 		map[int64]string{7: "github"})
 	const want = `no worker in pool "reviewers" can take the job: a-dead (its Claude account "alpha" failed authentication); ` +
 		`b-stopped (status stopped); c-gateway (kind gateway); d-other (works on repository "acme/other"); ` +
@@ -117,7 +117,7 @@ func TestChooseWorkerSaysWhyNoWorkerIsEligible(t *testing.T) {
 		t.Fatal("f-full alone could take the job but for its cap, and the refusal is not full")
 	}
 	// Without it, no member is eligible even with room: not full (a 503).
-	if _, why, full := chooseWorker("reviewers", members[1:], "acme/widgets", accounts, nil, map[int64]string{7: "github"}); why == "" || full {
+	if _, why, full := chooseWorker("reviewers", members[1:], members[1:], "acme/widgets", accounts, nil, map[int64]string{7: "github"}); why == "" || full {
 		t.Fatalf("without f-full: reason %q, full %v; want a reason and not full", why, full)
 	}
 }
@@ -276,6 +276,18 @@ func (g *grantStore) CreateConnector(_ context.Context, nc connectors.NewConnect
 	return c, nil
 }
 func (g *grantStore) ListPendingGrants(context.Context) ([]connectors.Grant, error) { return nil, nil }
+
+// An approval is shared (shareApproval): the stub records a standing grant and
+// matches none, so nothing here is approved automatically.
+func (g *grantStore) CreateStandingGrant(_ context.Context, connector, source, repo string, origin int64) (connectors.StandingGrant, bool, error) {
+	return connectors.StandingGrant{ID: 1, Connector: connector, Source: source, Repo: repo, OriginGrantID: origin}, true, nil
+}
+func (g *grantStore) MatchStandingGrant(context.Context, int64, string, string, string) (connectors.StandingGrant, error) {
+	return connectors.StandingGrant{}, connectors.ErrNotFound
+}
+func (g *grantStore) ListStandingGrants(context.Context) ([]connectors.StandingGrant, error) {
+	return nil, nil
+}
 func (g *grantStore) ListAudit(context.Context, int) ([]connectors.AuditEntry, error) {
 	return nil, nil
 }
@@ -331,7 +343,7 @@ func TestAGitHubGrantIsNeverApprovedForAPoolWorker(t *testing.T) {
 	f.s.ext.Connectors = st
 	ctx := context.Background()
 	for _, id := range []int64{1, 2} {
-		_, err := f.s.decideConnectorGrant(ctx, id, true, connectors.DecisionSource{})
+		_, _, err := f.s.decideConnectorGrant(ctx, id, true, connectors.DecisionSource{})
 		var refused errPoolWorkerGitHubGrant
 		if !errors.As(err, &refused) {
 			t.Errorf("approving grant %d of pool worker rev-a = %v, want errPoolWorkerGitHubGrant", id, err)
@@ -344,7 +356,7 @@ func TestAGitHubGrantIsNeverApprovedForAPoolWorker(t *testing.T) {
 		id      int64
 		approve bool
 	}{{1, false}, {3, true}, {4, true}} {
-		if _, err := f.s.decideConnectorGrant(ctx, c.id, c.approve, connectors.DecisionSource{}); err != nil {
+		if _, _, err := f.s.decideConnectorGrant(ctx, c.id, c.approve, connectors.DecisionSource{}); err != nil {
 			t.Errorf("grant %d approve=%v: %v", c.id, c.approve, err)
 		}
 	}

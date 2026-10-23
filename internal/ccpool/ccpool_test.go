@@ -22,11 +22,14 @@ var (
 	names  = []string{"alpha", "beta", "gamma"}
 	tokens = map[string]string{"alpha": tokAlpha, "beta": tokBeta, "gamma": tokGamma}
 	t0     = time.Date(2000, 1, 1, 12, 0, 0, 0, time.UTC)
+	// rested is a "now" long after every mark the ranking tests write, so no
+	// account in them is still cooling down and the ranking alone decides.
+	rested = t0.Add(30 * 24 * time.Hour)
 )
 
 func choose(t *testing.T, marks map[string]Mark, live map[string]int) string {
 	t.Helper()
-	got, err := Choose(names, tokens, marks, live)
+	got, err := Choose(rested, DefaultCooldown, names, tokens, marks, live)
 	if err != nil {
 		t.Fatalf("Choose: %v", err)
 	}
@@ -95,7 +98,7 @@ func TestChooseRefusesWhenEveryAccountsTokenFailedAuth(t *testing.T) {
 	for n, tok := range tokens {
 		marks[n] = Mark{AuthFailedAt: t0, AuthFailedToken: Fingerprint(tok), AuthFailedDetail: "OAuth token invalid"}
 	}
-	_, err := Choose(names, tokens, marks, nil)
+	_, err := Choose(rested, DefaultCooldown, names, tokens, marks, nil)
 	if !errors.Is(err, ErrNoUsableAccount) {
 		t.Fatalf("err = %v, want ErrNoUsableAccount", err)
 	}

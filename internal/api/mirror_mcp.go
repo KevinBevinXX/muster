@@ -29,7 +29,8 @@ import (
 // their asks through their own session, and connector_requests_list /
 // connector_request_decide, the operator deciding one of their agents'
 // connector requests through it (connector_decide_tools.go), which no
-// dispatched agent gets.
+// dispatched agent gets — and, with session routing on, route_reply: the
+// answer to a message the chief routed to THAT session (route_reply_tool.go).
 //
 // 🔴 A MIRROR TOKEN NOW OPENS A SECOND ROUTE, AND THIS ONE IS NARROW. Until this
 // door, mmt_ opened /mirror/connect and nothing else. Here it opens exactly
@@ -191,6 +192,11 @@ func (s *Server) mirrorTools() []agents.ToolDef {
 	if s.connectorDecideToolsOn() {
 		out = append(out, connectorDecideToolDefs()...)
 	}
+	// route_reply — a routed session's answer (route_reply_tool.go) — with
+	// session routing on.
+	if routingOn(s.ext) {
+		out = append(out, routeReplyToolDef())
+	}
 	return out
 }
 
@@ -221,6 +227,11 @@ func (s *Server) handleMirrorMCP(w http.ResponseWriter, r *http.Request) {
 					t.Host, sid, mirrorSessionHeader)
 			}
 			c := toolCaller{asker: attention.Asker{MirrorHost: t.Host, MirrorSession: sid, Label: e.DisplayTitle() + " @ " + t.Host}}
+			// route_reply is this door's alone: it is not in dispatchCallerTool,
+			// which a gateway agent reaches naming any tool.
+			if name == routeReplyToolName {
+				return s.toolRouteReply(r.Context(), c, args)
+			}
 			if text, ok := s.dispatchCallerTool(r.Context(), c, name, args); ok {
 				return text
 			}

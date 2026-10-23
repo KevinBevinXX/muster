@@ -4,8 +4,11 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	g "maragu.dev/gomponents"
+
+	"github.com/ZacxDev/muster/internal/textplain"
 )
 
 // markdown.go — a small, dependency-free, escape-FIRST markdown renderer used to
@@ -300,45 +303,53 @@ func renderMarkdown(src string) g.Node {
 	return g.Raw(markdownHTML(src))
 }
 
-// mdStripRe removes the most common inline/block markdown markers for a clean
-// plain-text snippet (the collapsed-card preview). It is intentionally lossy: it
-// is NOT a parser, just a cosmetic strip so the one-liner reads as prose.
-var (
-	mdStripFence   = regexp.MustCompile("(?s)```.*?```")
-	mdStripMarkers = regexp.MustCompile("[`*_#>]+")
-	mdStripBullet  = regexp.MustCompile(`(?m)^\s*([-*]|\d+\.)\s+`)
-	mdStripSpace   = regexp.MustCompile(`\s+`)
-)
-
-// markdownPlain strips markdown markers and collapses a body to one line of
-// plain text. Fenced blocks are dropped, list/emphasis/heading markers removed,
-// whitespace collapsed.
+// plainOr is s through the title rule (internal/textplain), or fallback —
+// drawn AS WRITTEN — when s is empty or is nothing but markup.
 //
-// 🔴 IT IS THE ONE STRIP, AND BOTH ITS CALLERS EXIST BECAUSE A STRING WAS BEING
-// RENDERED TWO WAYS. An agent's display name is derived from its task title, so
-// it routinely carries `**bold**` and `code`. The agents LIST rendered it as
-// plain text (raw `**` and backticks on the card) while the DETAIL header
-// rendered it as inline markdown — one string, two answers, from the same click.
-// Stripping on both is what makes them agree; rendering markup on both was the
-// other option and it was rejected, because the card's title sits inside the
-// card's own <a> and the marked-up path can emit an anchor (see mdLinkify),
-// which is invalid nested HTML that browsers resolve by closing the outer link.
-//
-// It is intentionally lossy and is NOT a parser — just a cosmetic strip so a
-// one-liner reads as prose.
-func markdownPlain(src string) string {
-	s := mdStripFence.ReplaceAllString(src, " ")
-	s = mdStripBullet.ReplaceAllString(s, "")
-	s = mdStripMarkers.ReplaceAllString(s, "")
-	s = mdStripSpace.ReplaceAllString(s, " ")
-	return strings.TrimSpace(s)
+// 🔴 THE FALLBACK IS NEVER PLAINED. It is an identifier the operator types: an
+// agent's slug, a raw tmux session name ("tmux attach -t my__proj"). Running
+// the title rule over it would show a name that does not exist. And a title
+// that plains to "" (a lone "**") falls back rather than drawing an empty
+// heading. TestTheTitleSinkLedger treats plainOr as an application of the
+// rule and checks it applies Title to s.
+func plainOr(s, fallback string) string {
+	if p := textplain.Title(s); p != "" {
+		return p
+	}
+	return fallback
 }
 
 // markdownSnippet returns a clean, single-line plain-text preview of a markdown
-// body, truncated to n runes — markdownPlain plus the cap. Returns "" for an
+// body, truncated to n runes — textplain.Title plus the cap. Returns "" for an
 // all-markup/empty body so the caller can omit the snippet line.
+//
+// 🔴 textplain.Title IS THE ONE STRIP. It replaced this file's markdownPlain,
+// which removed every ` * _ # > anywhere (mangling snake_case, "#123", "C#")
+// and left links, strikethrough and HTML tags in. Every title sink in this
+// package calls textplain.Title directly; TestTheTitleSinkLedger
+// (internal/textplain) fails on one that does not.
+//
+// ⚡ IT PLAINS ONLY THE FIRST LINES, enough to fill the snippet. The card shows
+// n runes; plaining a 100KB body whole to show 120 of them cost ~25ms per card
+// per board render (BenchmarkMarkdownSnippet). It plains the first k lines,
+// doubling k until their plain text runs past n, then plains k+1 — the extra
+// line is the separator row that decides whether line k is a table header
+// (textplain reads tables locally, so no line's reading depends on anything
+// further down). TestTheSnippetEqualsTheWholeBodysPlainText holds the result to
+// "plain the whole body, then cut".
 func markdownSnippet(src string, n int) string {
-	return truncate(markdownPlain(src), n)
+	return truncate(snippetPlain(src, n), n)
+}
+
+// snippetPlain is textplain.Title(src) as far as its first n runes go.
+func snippetPlain(src string, n int) string {
+	lines := strings.Split(src, "\n")
+	for k := 8; k < len(lines); k *= 2 {
+		if utf8.RuneCountInString(textplain.Title(strings.Join(lines[:k], "\n"))) > n {
+			return textplain.Title(strings.Join(lines[:k+1], "\n"))
+		}
+	}
+	return textplain.Title(src)
 }
 
 // --- GFM pipe tables ---------------------------------------------------------

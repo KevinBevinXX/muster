@@ -249,6 +249,7 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 
 	ext := api.Extensions{
 		TagAutoDispatch: cfg.TagAutoDispatch,
+		AgentsIdleAfter: cfg.AgentsIdleAfter,
 		// 🔴 THE SAME FIELD THE DRIVER GETS, AND THAT IS THE WHOLE POINT.
 		// k8sDriverConfig hands cfg.AgentNamespacePrefix to the driver as
 		// k8s.Config.NamespacePrefix (where the instance goes); this hands the same
@@ -315,7 +316,7 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		// old pod is still running its jobs while this one boots.
 		ext.Jobs = jobs.NewPG(pool)
 
-		if len(cfg.ConnectorEncKey) > 0 {
+		if cfg.connectorStoreConfigured() {
 			cs, err := connectors.NewPG(pool, cfg.ConnectorEncKey)
 			if err != nil {
 				a.Close()
@@ -448,6 +449,12 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		// The job API's sha checkout and result_path read exec through the
 		// same adapter (internal/api jobs.go).
 		ext.JobWorkspace = prov
+		// The job-lane bypass veto (wireGitHubGrantVeto): after the connector
+		// store is built, or boot is refused.
+		if err := wireGitHubGrantVeto(cfg, prov, ext.Connectors); err != nil {
+			a.Close()
+			return nil, err
+		}
 	}
 	if gw != nil {
 		ext.Gateway = gw
@@ -488,7 +495,7 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		// half, and the allowlist whose routed answers relay without approval.
 		if cfg.SessionRouting {
 			ext.Routes = pluginStore
-			ext.Routing = &api.Routing{Allow: cfg.RouteRelayAllow}
+			ext.Routing = sessionRouting(cfg)
 		}
 		// Task routing (MUSTER_TASK_ROUTING=1): a plugin may hand a task it files
 		// to the chief; a non-empty MUSTER_CHIEF_DISPATCH_OWNERS also lets the chief
@@ -651,6 +658,13 @@ func approvalGateFor(cfg config) api.GatePort {
 		return p
 	}
 	return nil
+}
+
+// sessionRouting is session routing's configuration from cfg: the relay
+// allowlist and the route deadline (MUSTER_ROUTE_TIMEOUT). buildApp wires it
+// when MUSTER_SESSION_ROUTING=1 and the plugin interface is on.
+func sessionRouting(cfg config) *api.Routing {
+	return &api.Routing{Allow: cfg.RouteRelayAllow, Timeout: cfg.RouteTimeout}
 }
 
 // buildSessionLiveness decides what answers "does this session still have a
@@ -975,8 +989,26 @@ func (a *app) Close() {
 // BYTE-IDENTICAL IN THE LOG. An operator debugging a 503 needs to know whether
 // the door was ever armed, and "no line about it" answers neither question. Each
 // line below is printed whether the thing is on or off.
+// displayOrDefault is a variable's value as the banner prints it: as set, or
+// "unset (the default)".
+func displayOrDefault(v string) string {
+	if v == "" {
+		return "unset (the default)"
+	}
+	return v
+}
+
 func (a *app) logBanner(ext api.Extensions, port router.Port) {
 	l := a.logger
+
+	// The Agents list's Idle section (internal/ui/idle_section.go), in both
+	// directions: the threshold in force, or OFF.
+	if a.cfg.AgentsIdleAfter > 0 {
+		l.Printf("agents list: idle section ON — entries with no activity for more than %s (%s) are drawn under a collapsed \"Idle\" header (%s=%s)",
+			ui.IdleSectionAfterLabel(a.cfg.AgentsIdleAfter), a.cfg.AgentsIdleAfter, envAgentsIdleAfter, displayOrDefault(a.cfg.AgentsIdleAfterRaw))
+	} else {
+		l.Printf("agents list: idle section OFF (%s=0) — every entry is drawn in the one list", envAgentsIdleAfter)
+	}
 
 	if a.pool != nil {
 		l.Printf("persistence: Postgres (%s set); task and agent stores wired", envDatabase)
@@ -1170,8 +1202,8 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 		l.Printf("session routing: ON (%s=1) — the chief may hand a plugin message to one of its owner's sessions "+
 			"(route_to_session); a mirrored window gets it through the send queue, its row marked and gated on its ROUTE "+
 			"instead of a sign-in (see internal/api/session_routes.go); %d owner(s) have plugin-bound senders whose verified "+
-			"answers relay without approval (%s)",
-			envSessionRouting, ext.Routing.Allow.Owners(), envRouteRelayAllow)
+			"answers relay without approval (%s); a route unanswered after %s goes back to the chief (%s)",
+			envSessionRouting, ext.Routing.Allow.Owners(), envRouteRelayAllow, ext.Routing.Timeout, envRouteTimeout)
 		if a.cfg.HookToken == "" {
 			l.Printf("WARNING — session routing: %s is unset, so a session answers a route (POST /api/routes/{id}/reply) "+
 				"ONLY with a personal API token; a host on the shared hook credential is refused (503) and its routes time "+
@@ -1181,7 +1213,7 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 		l.Printf("session routing: INERT — %s=1 but the plugin interface is off, so nothing is routed", envSessionRouting)
 	default:
 		l.Printf("session routing: OFF — %s is unset, so the chief has no route_to_session and POST /api/routes/{id}/reply "+
-			"answers 404 (%s is not read)", envSessionRouting, envRouteRelayAllow)
+			"answers 404 (%s and %s are not read)", envSessionRouting, envRouteRelayAllow, envRouteTimeout)
 	}
 	switch {
 	case ext.TaskRouting != nil && len(ext.TaskRouting.DispatchOwners) > 0:
@@ -1393,6 +1425,20 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 					"never logged), per-agent PVC at /data, no ServiceAccount token, turn budget %s.",
 					agents.KindClaudeCode, a.cfg.AgentCCImage, envAgentCCImage, strings.Join(a.cfg.AgentCCAccountNames, ", "),
 					envAgentCCAccounts, envAgentCCTokenPrefix, agents.ClaudeCodeTurnTimeout)
+				// 🔴 The job-lane permission bypass is announced in both states, as
+				// CONFIGURATION: a pod gets it only when its spec is applied
+				// (dispatch, Start, ReapplyProfiles), so a running agent keeps the
+				// mode it was started with until then.
+				if len(a.cfg.AgentCCBypassPools) > 0 {
+					line += fmt.Sprintf(" Job-lane permission bypass CONFIGURED for worker pools [%s] (%s): applied "+
+						"when an agent's spec is applied (dispatch, Start, reapply), never to an agent holding an "+
+						"approved GitHub grant; running agents keep the mode they were started with until then.",
+						strings.Join(a.cfg.AgentCCBypassPools, ", "), envAgentCCBypassPools)
+				} else {
+					line += fmt.Sprintf(" No worker pool is configured for job-lane permission bypass (%s unset); "+
+						"a running agent keeps its mode until its spec is re-applied (Start or reapply), and leaving "+
+						"bypass means destroying and recreating the agent.", envAgentCCBypassPools)
+				}
 			}
 			if a.cfg.hermesEnabled() {
 				line += fmt.Sprintf(" %s: image %s (%s), on the OpenRouter key (%s, or each member's own), "+

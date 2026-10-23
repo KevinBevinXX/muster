@@ -39,8 +39,8 @@ func gateQuestions(t *testing.T) []Question {
 func TestParseInputReadsTheRealCall(t *testing.T) {
 	qs := gateQuestions(t)
 	want := []Question{
-		{Question: "Which color do you prefer?", Header: "Color", Options: []Option{{"Red", "Red"}, {"Blue", "Blue"}, {"Green", "Green"}}},
-		{Question: "Which pets do you have?", Header: "Pets", Options: []Option{{"Cat", "Cat"}, {"Dog", "Dog"}, {"Fish", "Fish"}}, MultiSelect: true},
+		{Question: "Which color do you prefer?", Header: "Color", Options: []Option{{Label: "Red", Description: "Red"}, {Label: "Blue", Description: "Blue"}, {Label: "Green", Description: "Green"}}},
+		{Question: "Which pets do you have?", Header: "Pets", Options: []Option{{Label: "Cat", Description: "Cat"}, {Label: "Dog", Description: "Dog"}, {Label: "Fish", Description: "Fish"}}, MultiSelect: true},
 	}
 	if !reflect.DeepEqual(qs, want) {
 		t.Fatalf("got %+v", qs)

@@ -596,11 +596,14 @@ test('a mirrored Claude pane opens in the rendered view: collapsed tool rows, li
 
   // The Terminal is one tap away, and back.
   await expect(page.locator('#view-rendered')).toHaveAttribute('aria-current', 'page');
+  // (It opens in a frame over the view, the address following it:
+  // view_swap.go.)
   await page.locator('#view-terminal').click();
   await page.waitForURL((u) => u.pathname === '/mirror/terminal');
-  await expect(screen(page)).toContainText('FAKE-MIRROR session=main mode=ro');
-  await expect(page.locator('#view-terminal')).toHaveAttribute('aria-current', 'page');
-  await page.locator('#view-rendered').click();
+  const term = page.frameLocator('iframe[data-muster-view]');
+  await expect(term.locator('#term .xterm-rows')).toContainText('FAKE-MIRROR session=main mode=ro');
+  await expect(term.locator('#view-terminal')).toHaveAttribute('aria-current', 'page');
+  await term.locator('#view-rendered').click();
   await page.waitForURL((u) => u.pathname === '/mirror/view');
   await expect(log.locator('[data-tool-row]')).toHaveCount(2);
   await noHorizontalScroll(page);

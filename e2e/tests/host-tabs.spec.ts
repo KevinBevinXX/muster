@@ -71,7 +71,10 @@ test.beforeAll(async () => {
   writeTo(filesB, windowsB());
   // Host C's one window is the OLDEST on the list, so its arrival lands at the
   // end and is drawn at once rather than held behind the pill.
-  writeTo(filesC, [line('citrus', '@1', 90 * 86400)]);
+  // Nine days: the oldest window on the list, and still short of the Idle
+  // section's 14 days (internal/ui/idle_section.go) — past it, the card would be
+  // collapsed under "Idle (1)" and this spec is about the tabs, not the section.
+  writeTo(filesC, [line('citrus', '@1', 9 * 86400)]);
   // Host D's one window is the NEWEST, so its arrival lands on top, among the
   // cards in view, and is held behind the "N new ↑" pill.
   filesD = rig.transcript('', 'windows-d');

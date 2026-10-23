@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"path"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/ZacxDev/muster/internal/agents"
@@ -153,6 +154,29 @@ type ClaudeCodeConfig struct {
 	Accounts map[string]string
 	// StorageSize is the /data volume's size. Empty means [DefaultClaudeCodeStorage].
 	StorageSize string
+	// BypassPools names the worker pools whose agents' JOB lanes run with
+	// permissions bypassed (MUSTER_AGENT_CC_BYPASS_POOLS): see [JobBypassListed].
+	// Empty is none, the default.
+	BypassPools []string
+}
+
+// JobBypassListed reports whether agent a's worker pool is configured for
+// job-lane permission bypass: ONLY a pooled agent (a.WorkerPool set) whose pool
+// BypassPools lists, and never a chief, whatever its row says. It is the
+// CONFIGURATION half; Build also needs Options.JobBypassVeto to be empty before
+// the pod gets [EnvCCDJobPermissionMode] = [CCDJobPermissionBypass].
+//
+// 🔴 THE ENVIRONMENT IS WRITTEN WHEN THE SPEC IS BUILT, i.e. when the agent is
+// provisioned or started. An agent's pool is fixed at creation
+// (agents.Agent.WorkerPool), but the deployment's list is not: a pool added to or
+// removed from MUSTER_AGENT_CC_BYPASS_POOLS reaches an agent already running only
+// at its next Stop -> Start, which re-applies the spec.
+func JobBypassListed(a agents.Agent, cfg Config) bool {
+	cc := cfg.ClaudeCode
+	if cc == nil || a.WorkerPool == "" || agents.IsChiefName(a.Name) {
+		return false
+	}
+	return slices.Contains(cc.BypassPools, a.WorkerPool)
 }
 
 // buildClaudeCode is Build for a claude-code row. Pure, like Build.
@@ -244,7 +268,7 @@ func buildClaudeCode(a agents.Agent, cfg Config, opts Options) (provision.Spec, 
 		// into CCD_WORKSPACE, and ccd starts the CLI there
 		// (images/claude-code-agent/entrypoint.sh).
 		Runtime: provision.Runtime{Image: cc.Image},
-		Env:     claudeCodeEnv(cfg, sidecar != nil, repo),
+		Env:     claudeCodeEnv(cfg, sidecar != nil, repo, JobBypassListed(a, cfg) && opts.JobBypassVeto == ""),
 		// 🔴 THE ONLY PLACE EnvClaudeOAuthToken IS EVER WRITTEN.
 		//
 		// 🔴 NO EnvGatewayToken (HOOKS_TOKEN): ccd takes its bearer from
@@ -303,7 +327,11 @@ func buildClaudeCode(a agents.Agent, cfg Config, opts Options) (provision.Spec, 
 // overrides the image's CCD_WORKSPACE): see podRepo. Without one, none of
 // the three is set and the pod is exactly what it was before repositories
 // existed for this kind (TestAClaudeCodeSpecWithoutARepoIsUnchanged).
-func claudeCodeEnv(cfg Config, gatewaySidecar bool, repo provision.Repo) []provision.EnvVar {
+//
+// With bypassJobs ([JobBypassListed] and no Options.JobBypassVeto), ccd is told to start the pod's JOB lanes with
+// permissions bypassed ([EnvCCDJobPermissionMode]). Without it the variable is
+// absent, never set to some "off" value: ccd refuses every value but the one.
+func claudeCodeEnv(cfg Config, gatewaySidecar bool, repo provision.Repo, bypassJobs bool) []provision.EnvVar {
 	env := []provision.EnvVar{
 		{Name: EnvAPIURL, Value: cfg.APIBaseURL},
 		{Name: EnvGitTerminalPrompt, Value: "0"},
@@ -321,8 +349,25 @@ func claudeCodeEnv(cfg Config, gatewaySidecar bool, repo provision.Repo) []provi
 		}
 		env = append(env, provision.EnvVar{Name: EnvCCDWorkspace, Value: repo.Path})
 	}
+	if bypassJobs {
+		env = append(env, provision.EnvVar{Name: EnvCCDJobPermissionMode, Value: CCDJobPermissionBypass})
+	}
 	return env
 }
+
+// EnvCCDJobPermissionMode tells ccd how to start the pod's JOB lanes (a machine
+// job's worktree). Its one value is [CCDJobPermissionBypass]; ccd refuses any
+// other (cmd/ccd/jobmode.go), and TestCcdReadsTheJobPermissionModeAgentspecWrites
+// pins both spellings on both sides.
+//
+// 🔴 WHAT IT GRANTS: a job lane on such a pod runs every tool call without
+// approval, on the code the job hands it — and can read anything ccd's user can
+// in the pod, the agent's own Claude setup-token included. It is for pools that
+// review trusted members' PRs only.
+const (
+	EnvCCDJobPermissionMode = "CCD_JOB_PERMISSION_MODE"
+	CCDJobPermissionBypass  = "bypassPermissions"
+)
 
 // The variables that hand a claude-code pod its repository. ccd reads them
 // (cmd/ccd/checkout.go); TestCcdReadsTheRepositoryVariablesAgentspecWrites pins

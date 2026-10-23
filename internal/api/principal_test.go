@@ -183,6 +183,7 @@ var routeVias = map[authz.Via][]string{
 		// AskUserQuestion: the live region and the answers (mirror_ask.go).
 		"GET /mirror/view/asks",
 		"POST /mirror/view/ask",
+		"POST /mirror/view/ask/cancel",
 		"GET /agents/{name}/send",
 		"POST /agents/{name}/send",
 		// Dictation: the session tier only (requireOperatorWrite), like a send.
@@ -193,6 +194,7 @@ var routeVias = map[authz.Via][]string{
 		"GET /uploads/{id}/file",
 		"POST /uploads/{id}/revoke",
 		"DELETE /connector-grants/{id}",
+		"DELETE /connector-standing-grants/{id}",
 		"DELETE /connectors/{name}",
 		"DELETE /tasks/{id}",
 		"DELETE /tasks/{id}/comments/{cid}",

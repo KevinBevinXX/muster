@@ -195,6 +195,17 @@ export const listUxPort = port + 137;
 // (agent-cards-work.spec.ts): its own server (mirror plugin on), one mirrored
 // host with four windows and an OLDER host that sends neither message.
 export const workCardsPort = port + 145;
+// A mirrored window's Rendered | Terminal switch keeping both views' host
+// streams (view-swap.spec.ts): its own server (mirror plugin on) and one
+// per-window mirrored host with two Claude Code windows.
+export const viewSwapPort = port + 165;
+// The long Agents list's layout shift (cls.spec.ts "a long Agents list"): its
+// own server (the e2eterm binary, mirror plugin on) and one mirrored host with
+// sixty-odd windows. Clear of the offsets above and of the specs beside them.
+export const clsListPort = port + 170;
+// The Agents list's Idle section (agents-idle.spec.ts): its own server (the
+// e2eterm binary, mirror plugin on) and one mirrored host.
+export const agentsIdlePort = port + 175;
 export const baseURL = `http://localhost:${port}`;
 export const versionA = 'e2e-a';
 export const versionB = 'e2e-b';

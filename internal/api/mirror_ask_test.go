@@ -5,12 +5,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"html"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
 	"reflect"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -45,8 +47,16 @@ type askMirror struct {
 	amu      sync.Mutex
 	nudges   map[int64]int
 	typed    []string
+	priors   []*askq.Progress
 	typeErr  error
 	noAnswer bool // the host does not advertise AskAnswer
+	// cancels records each CancelAsk (host session window), answered with
+	// cancelNote and cancelErr; noCancel: the host does not advertise
+	// AskCancel.
+	cancels    []string
+	cancelNote string
+	cancelErr  error
+	noCancel   bool
 	// hold, when set, keeps AnswerWindow typing until it is closed (or the
 	// call's ctx ends, which is then its error); typingCtx is the last call's
 	// ctx.
@@ -68,8 +78,169 @@ func (a *askMirror) Hosts(ctx context.Context) []mirror.HostView {
 	defer a.amu.Unlock()
 	for i := range hs {
 		hs[i].AskAnswer = hs[i].Online && hs[i].Interactive && !a.noAnswer
+		hs[i].AskCancel = hs[i].Online && hs[i].Interactive && !a.noCancel
 	}
 	return hs
+}
+
+func (a *askMirror) CancelAsk(ctx context.Context, host, session, window string) (string, error) {
+	a.amu.Lock()
+	defer a.amu.Unlock()
+	a.cancels = append(a.cancels, host+" "+session+" "+window)
+	return a.cancelNote, a.cancelErr
+}
+
+func (a *askMirror) cancelsSoFar() []string {
+	a.amu.Lock()
+	defer a.amu.Unlock()
+	return append([]string(nil), a.cancels...)
+}
+
+// cancelReq posts a card's dismissal, as answerReq posts its answers.
+func cancelReq(t *testing.T, s *Server, ts *httptest.Server, tool, cookie, origin string) (*http.Response, string) {
+	t.Helper()
+	form := url.Values{"host": {"ws"}, "session": {"main"}, "window": {"@1"}, "tool": {tool}}
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+ui.MirrorAskCancelPath, strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	if cookie == "" {
+		cookie = sessionCookieFor(s)
+	}
+	req.Header.Set("Cookie", cookie)
+	if origin == "" {
+		origin = ts.URL
+	}
+	req.Header.Set("Origin", origin)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	return resp, string(b)
+}
+
+// TestCancelQuestionIsOneConfirmedEscape: the card offers "Cancel question"
+// with a dialog naming the window; the dismissal goes to the host for exactly
+// this window — with NO step-up (an operator decision), a stale sign-in
+// dismisses — the card says Esc was sent (or the host's note: still showing)
+// and offers no second Cancel, and the CLI's record of the call ending
+// unanswered resolves it as any dismissal. The gates, each sent nothing:
+// another origin, another owner, a read-only host, a host that does not
+// advertise it (no control either), a question being typed into, one already
+// resolved; a host's refusal is said as what happened.
+func TestCancelQuestionIsOneConfirmedEscape(t *testing.T) {
+	am, s, ts := askServer(t, true)
+	register(t, ts)
+	card := region(t, s, ts, `data-ask-state="pending"`)
+	for _, want := range []string{"Cancel question", "data-ask-cancel-dialog", "Send Esc to main:0? The question is dismissed.", `action="` + ui.MirrorAskCancelPath + `"`} {
+		if !strings.Contains(card, want) {
+			t.Fatalf("the pending card lacks %q:\n%s", want, card)
+		}
+	}
+	for _, c := range []struct {
+		name, origin string
+		status       int
+	}{{"another origin", "https://evil.example", http.StatusForbidden}} {
+		if resp, body := cancelReq(t, s, ts, gateTool, "", c.origin); resp.StatusCode != c.status {
+			t.Errorf("%s: %d %q", c.name, resp.StatusCode, body)
+		}
+	}
+	if resp, _ := cancelReq(t, s, ts, "toolu_9", "", ""); resp.StatusCode != http.StatusNotFound {
+		t.Errorf("an unknown call: %d", resp.StatusCode)
+	}
+	// Another owner, same-origin: not found.
+	form := url.Values{"host": {"ws"}, "session": {"main"}, "window": {"@1"}, "tool": {gateTool}}
+	req := httptest.NewRequest(http.MethodPost, ui.MirrorAskCancelPath, strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	s.handleMirrorAskCancel(rec, req.WithContext(authz.WithPrincipal(context.Background(), authz.Principal{UserID: 2, Role: authz.RoleMember, Via: authz.ViaSession})))
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("user 2's dismissal: %d", rec.Code)
+	}
+	// A host that does not advertise it: no control, and refused.
+	am.amu.Lock()
+	am.noCancel = true
+	am.amu.Unlock()
+	if _, c := mirrorGet(t, s, ts, asksPath); strings.Contains(c, "Cancel question") {
+		t.Fatalf("a host that cannot dismiss is offered Cancel:\n%s", c)
+	}
+	if resp, body := cancelReq(t, s, ts, gateTool, "", ""); resp.StatusCode != http.StatusConflict || !strings.Contains(body, "cannot dismiss a question") {
+		t.Errorf("a host that cannot dismiss: %d %q", resp.StatusCode, body)
+	}
+	am.amu.Lock()
+	am.noCancel = false
+	am.amu.Unlock()
+	// A host's refusal: said as what happened.
+	am.amu.Lock()
+	am.cancelErr = fmt.Errorf("%w: x", mirror.ErrAskBusy)
+	am.amu.Unlock()
+	if resp, body := cancelReq(t, s, ts, gateTool, "", ""); resp.StatusCode != http.StatusConflict || !strings.Contains(body, "An answer is being typed into this terminal — nothing was sent.") {
+		t.Errorf("a host's refusal: %d %q", resp.StatusCode, body)
+	}
+	am.amu.Lock()
+	am.cancelErr = nil
+	am.amu.Unlock()
+	if got := am.cancelsSoFar(); len(got) != 1 {
+		t.Fatalf("dismissals sent: %q, want only the refused one", got)
+	}
+	// The dismissal, on a STALE sign-in: no step-up.
+	resp, body := cancelReq(t, s, ts, gateTool, staleCookieFor(s), "")
+	if resp.StatusCode != http.StatusOK || resp.Header.Get("X-Ask-State") != ui.AskStatePending || !strings.Contains(body, "Esc sent — the question left the terminal&#39;s screen.") ||
+		!strings.Contains(body, `data-ask-sent="gone"`) ||
+		strings.Contains(body, "Cancel question") || strings.Contains(body, "data-ask-form") {
+		t.Fatalf("the dismissal: %d %s\n%s", resp.StatusCode, resp.Header.Get("X-Ask-State"), body)
+	}
+	if got := am.cancelsSoFar(); len(got) != 2 || got[1] != "ws main @1" {
+		t.Fatalf("dismissals sent: %q", got)
+	}
+	am.feed(gateTool, gateQs(t), nil)
+	card = region(t, s, ts, `data-ask-state="declined"`)
+	if strings.Contains(card, "Cancel question") {
+		t.Fatalf("the dismissed card:\n%s", card)
+	}
+	// Resolved: refused with the card, nothing sent.
+	if resp, _ := cancelReq(t, s, ts, gateTool, "", ""); resp.StatusCode != http.StatusConflict || resp.Header.Get("X-Ask-State") != ui.AskStateDeclined {
+		t.Fatalf("a resolved question: %d %s", resp.StatusCode, resp.Header.Get("X-Ask-State"))
+	}
+	// The picker still showing after the Escape: a success, with the host's
+	// note (no second Escape is the host's: askdrive.Cancel).
+	amn, sn, tsn := askServer(t, true)
+	register(t, tsn)
+	region(t, sn, tsn, `data-ask-state="pending"`)
+	amn.amu.Lock()
+	amn.cancelNote = "Esc sent; the terminal still shows the question."
+	amn.amu.Unlock()
+	// The question is still the person's: the form and Cancel stay under
+	// the note, and the card is marked so the next poll replaces it.
+	if resp, body := cancelReq(t, sn, tsn, gateTool, "", ""); resp.StatusCode != http.StatusOK || !strings.Contains(body, "Esc sent; the terminal still shows the question.") ||
+		!strings.Contains(body, "data-ask-form") || !strings.Contains(body, "Cancel question") || !strings.Contains(body, `data-ask-sent="showing"`) {
+		t.Errorf("still showing: %d %q", resp.StatusCode, body)
+	}
+	// While an answer is being typed: refused, nothing sent.
+	am2, s2, ts2 := askServer(t, true)
+	register(t, ts2)
+	region(t, s2, ts2, `data-ask-state="pending"`)
+	am2.amu.Lock()
+	am2.hold = make(chan struct{})
+	am2.amu.Unlock()
+	go func() { _, _ = answerReq(t, s2, ts2, answerForm(gateTool, "a0", "Red", "a1", "Cat"), "", "") }()
+	region(t, s2, ts2, `data-ask-state="typing"`)
+	if resp, _ := cancelReq(t, s2, ts2, gateTool, "", ""); resp.StatusCode != http.StatusConflict || resp.Header.Get("X-Ask-State") != ui.AskStateTyping {
+		t.Errorf("while typing: %d %s", resp.StatusCode, resp.Header.Get("X-Ask-State"))
+	}
+	close(am2.hold)
+	if got := am2.cancelsSoFar(); len(got) != 0 {
+		t.Fatalf("dismissed while typing: %q", got)
+	}
+	// A read-only host: refused, nothing sent, no control.
+	am3, s3, ts3 := askServer(t, false)
+	register(t, ts3)
+	if c := region(t, s3, ts3, `data-ask-state="pending"`); strings.Contains(c, "Cancel question") {
+		t.Fatalf("a read-only host is offered Cancel:\n%s", c)
+	}
+	if resp, _ := cancelReq(t, s3, ts3, gateTool, "", ""); resp.StatusCode != http.StatusConflict || len(am3.cancelsSoFar()) != 0 {
+		t.Fatalf("a read-only host: %d", resp.StatusCode)
+	}
 }
 
 func (a *askMirror) AuthenticateHost(w http.ResponseWriter, r *http.Request) (int64, string, bool) {
@@ -85,10 +256,11 @@ func (a *askMirror) AuthenticateHost(w http.ResponseWriter, r *http.Request) (in
 	return 0, "", false
 }
 
-func (a *askMirror) AnswerWindow(ctx context.Context, host, session, window string, qs []askq.Question, cs []askq.Choice) error {
+func (a *askMirror) AnswerWindow(ctx context.Context, host, session, window string, qs []askq.Question, cs []askq.Choice, prior *askq.Progress) error {
 	b, _ := json.Marshal(cs)
 	a.amu.Lock()
 	a.typed = append(a.typed, host+" "+session+" "+window+" "+string(b))
+	a.priors = append(a.priors, prior)
 	hold, err := a.hold, a.typeErr
 	a.typingCtx = ctx
 	a.amu.Unlock()
@@ -369,7 +541,7 @@ func TestTheTerminalWinsTheRace(t *testing.T) {
 	am2.amu.Unlock()
 	resp, body = answerReq(t, s2, ts2, answerForm(gateTool, "a0", "Red", "a1", "Cat"), "", "")
 	if resp.StatusCode != http.StatusConflict || resp.Header.Get("X-Ask-State") != ui.AskStateFailed ||
-		!strings.Contains(body, "no longer on the terminal") || strings.Contains(body, "<form") {
+		!strings.Contains(body, "no longer on the terminal") || strings.Contains(body, "data-ask-form") {
 		t.Fatalf("a typing with no picker: %d %s\n%s", resp.StatusCode, resp.Header.Get("X-Ask-State"), body)
 	}
 	am2.feed(gateTool, gateQs(t), map[string]string{"Which color do you prefer?": "Blue", "Which pets do you have?": "Cat"})
@@ -719,6 +891,94 @@ func TestAnUnknownOutcomeHoldsTheQuestion(t *testing.T) {
 	}
 }
 
+// TestALostAnswerIsContinuedFromTheCard: the operator's report — a
+// multi-question answer "gets stuck mid answer with 'someone else started
+// answering'". The host typed part of the answer and lost the picker; the card
+// says so (not that someone else is answering), shows the answer it was
+// typing, and offers "Try again" as a FIXED retry — that answer's fields,
+// nothing editable; trying again posts exactly them and hands the host what
+// was typed, so it continues. The controls: someone else answering in the
+// terminal is said as that, with no form — and, after muster's keys reached
+// the picker, that it may be partly filled in.
+func TestALostAnswerIsContinuedFromTheCard(t *testing.T) {
+	am, s, ts := askServer(t, true)
+	register(t, ts)
+	region(t, s, ts, `data-ask-state="pending"`)
+	am.amu.Lock()
+	am.typeErr = mirror.WithAskKeys(fmt.Errorf("%w: after key 5", mirror.ErrAskLost), 4)
+	am.amu.Unlock()
+	resp, body := answerReq(t, s, ts, answerForm(gateTool, "a0", "Blue", "a1", "Fish", "a1", "Dog"), "", "")
+	if resp.StatusCode != http.StatusConflict || resp.Header.Get("X-Ask-State") != ui.AskStateFailed {
+		t.Fatalf("a lost typing: %d %s\n%s", resp.StatusCode, resp.Header.Get("X-Ask-State"), body)
+	}
+	for _, want := range []string{"lost track of the terminal", "muster continues from where it stopped", "data-ask-retry", "Try again",
+		"Answer: </span>Blue", "Answer: </span>Dog, Fish"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("the lost card lacks %q:\n%s", want, body)
+		}
+	}
+	if strings.Contains(body, "Someone") || strings.Contains(body, `type="radio"`) || strings.Contains(body, `type="checkbox"`) || strings.Contains(body, "<textarea") {
+		t.Fatalf("the lost card offers an editable answer:\n%s", body)
+	}
+	// Try again posts the card's own fields.
+	retry := url.Values{}
+	for _, m := range regexp.MustCompile(`<input type="hidden" name="([^"]+)" value="([^"]*)">`).FindAllStringSubmatch(body, -1) {
+		retry.Add(m[1], html.UnescapeString(m[2]))
+	}
+	if !reflect.DeepEqual(retry["a0"], []string{"Blue"}) || !reflect.DeepEqual(retry["a1"], []string{"Dog", "Fish"}) || retry.Get("tool") != gateTool {
+		t.Fatalf("the fixed retry posts %v", retry)
+	}
+	am.amu.Lock()
+	am.typeErr = nil
+	am.amu.Unlock()
+	resp, body = answerReq(t, s, ts, retry, "", "")
+	if resp.StatusCode != http.StatusOK || resp.Header.Get("X-Ask-State") != ui.AskStateTyping {
+		t.Fatalf("trying again: %d %s\n%s", resp.StatusCode, resp.Header.Get("X-Ask-State"), body)
+	}
+	am.amu.Lock()
+	priors := append([]*askq.Progress(nil), am.priors...)
+	am.amu.Unlock()
+	want := &askq.Progress{Choices: []askq.Choice{{Picks: []int{1}}, {Picks: []int{1, 2}}}, Keys: 4}
+	if len(priors) != 2 || priors[0] != nil || !reflect.DeepEqual(priors[1], want) {
+		t.Fatalf("the host was handed %+v then %+v, want nothing then %+v", priors[0], priors[len(priors)-1], want)
+	}
+
+	// A retry that types nothing (busy: another drive has the pane) keeps the
+	// record: the next retry is still handed it, and continues.
+	am4, s4, ts4 := askServer(t, true)
+	register(t, ts4)
+	region(t, s4, ts4, `data-ask-state="pending"`)
+	form := answerForm(gateTool, "a0", "Blue", "a1", "Fish", "a1", "Dog")
+	for _, e := range []error{mirror.WithAskKeys(fmt.Errorf("%w: x", mirror.ErrAskLost), 4), fmt.Errorf("%w: x", mirror.ErrAskBusy), nil} {
+		am4.amu.Lock()
+		am4.typeErr = e
+		am4.amu.Unlock()
+		_, _ = answerReq(t, s4, ts4, form, "", "")
+	}
+	am4.amu.Lock()
+	p4 := append([]*askq.Progress(nil), am4.priors...)
+	am4.amu.Unlock()
+	if len(p4) != 3 || !reflect.DeepEqual(p4[1], want) || !reflect.DeepEqual(p4[2], want) {
+		t.Fatalf("after a busy retry the host was handed %+v, want %+v again", p4, want)
+	}
+
+	// Someone else typed in the terminal: said as that, no form; after keys
+	// of muster's reached the picker, that it may be partly filled in.
+	for _, keys := range []int{0, 3} {
+		am2, s2, ts2 := askServer(t, true)
+		register(t, ts2)
+		region(t, s2, ts2, `data-ask-state="pending"`)
+		am2.amu.Lock()
+		am2.typeErr = mirror.WithAskKeys(fmt.Errorf("%w: x", mirror.ErrAskTouched), keys)
+		am2.amu.Unlock()
+		_, body = answerReq(t, s2, ts2, answerForm(gateTool, "a0", "Blue", "a1", "Fish"), "", "")
+		if !strings.Contains(body, "Someone else has started answering it in the terminal") || strings.Contains(body, "data-ask-form") ||
+			strings.Contains(body, "lost track") || strings.Contains(body, "may be partly filled in") != (keys > 0) {
+			t.Fatalf("the touched card after %d keys:\n%s", keys, body)
+		}
+	}
+}
+
 // TestEachFailureSaysWhatTheTerminalHas: the card's note for every outcome —
 // "partly filled in" exactly where keys may have been typed.
 func TestEachFailureSaysWhatTheTerminalHas(t *testing.T) {
@@ -728,20 +988,28 @@ func TestEachFailureSaysWhatTheTerminalHas(t *testing.T) {
 		partial bool
 	}{
 		{fmt.Errorf("%w: x", mirror.ErrAskNoPicker), "no longer on the terminal's screen", false},
-		{fmt.Errorf("%w: x", mirror.ErrAskTouched), "Someone has started answering it", false},
+		{fmt.Errorf("%w: x", mirror.ErrAskTouched), "Someone else has started answering it in the terminal", false},
 		{fmt.Errorf("%w: x", mirror.ErrAskUnreadable), "Couldn't read this question off the terminal's screen as the one muster was sent — answer it in the terminal.", false},
 		{fmt.Errorf("%w: %w: x", mirror.ErrAskUnreadable, mirror.ErrAskLost), "the question went off the terminal's screen while typing", true},
 		{fmt.Errorf("%w: x", mirror.ErrAskBusy), "Another answer is being typed into this terminal", false},
 		{fmt.Errorf("%w: x", mirror.ErrAskUnrecognised), "Couldn't recognise the terminal's picker (Claude Code may have changed) — answer it in the terminal.", false},
-		{fmt.Errorf("%w: x", mirror.ErrAskLost), "changed while typing", true},
+		{fmt.Errorf("%w: x", mirror.ErrAskLost), "lost track of the terminal's picker while typing", true},
 		{fmt.Errorf("%w: %w", mirror.ErrAskNotSent, mirror.ErrHostOffline), "The host is offline", false},
 		{mirror.ErrHostDisconnected, "went offline while typing", true},
 		{mirror.ErrAskTimeout, "Couldn't type it in.", true},
 	} {
-		got := askTypeFailure(c.err)
+		got := askTypeFailure(c.err, false, false)
 		if !strings.Contains(got, c.says) || strings.Contains(got, "partly filled in") != c.partial {
 			t.Errorf("%v: %q", c.err, got)
 		}
+	}
+	// Lost with what was typed recorded: try again, it continues.
+	if got := askTypeFailure(fmt.Errorf("%w: x", mirror.ErrAskLost), true, false); got != askNoteLost {
+		t.Errorf("lost, resumable: %q", got)
+	}
+	// Not as muster left it, after keys of muster's reached the picker.
+	if got := askTypeFailure(fmt.Errorf("%w: x", mirror.ErrAskTouched), false, true); got != askNoteTouched+askPartlyFilled {
+		t.Errorf("touched after muster's keys: %q", got)
 	}
 }
 

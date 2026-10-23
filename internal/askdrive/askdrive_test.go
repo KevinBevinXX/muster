@@ -288,7 +288,9 @@ func TestDriveNeverTypesIntoAPickerItDoesNotExpect(t *testing.T) {
 }
 
 // TestTheReviewMustShowTheAnswersBeforeTheSubmit: a review listing other
-// answers (the person changed one in the terminal) is not submitted.
+// answers (the person changed one in the terminal) is not submitted, and is
+// said as that: someone answering in the terminal (ErrNotUntouched), not
+// muster losing track (ErrLost).
 func TestTheReviewMustShowTheAnswersBeforeTheSubmit(t *testing.T) {
 	p := NewFakePicker([]askq.Question{pets})
 	fp := &fakePane{p: p}
@@ -300,7 +302,7 @@ func TestTheReviewMustShowTheAnswersBeforeTheSubmit(t *testing.T) {
 		}
 	}
 	err := Drive(context.Background(), fp, []askq.Question{pets}, []Choice{{Picks: []int{0, 2}}}, fast)
-	if !errors.Is(err, ErrLost) || !strings.Contains(err.Error(), "review") {
+	if !errors.Is(err, ErrNotUntouched) || errors.Is(err, ErrLost) || !strings.Contains(err.Error(), "review") {
 		t.Fatalf("a review with other answers: %v", err)
 	}
 	if _, _, done := p.Result(); done {

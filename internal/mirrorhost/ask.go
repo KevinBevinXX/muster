@@ -31,34 +31,37 @@ import (
 // nothing and a Backspace as the text "^?"), with -S the bytes arrive as the
 // keys they are. No -p: a bracketed paste is text to the picker, not keys.
 
-// AskBackend answers an AskUserQuestion picker in a pane.
+// AskBackend answers an AskUserQuestion picker in a pane, continuing an
+// answer an earlier one left part-typed in it (askdrive.DriveFrom): prior is
+// what that one sent (nil: nothing), and keys how many keys of choices' plan
+// the picker has received when it returns.
 type AskBackend interface {
-	AnswerAsk(ctx context.Context, pane string, qs []askq.Question, choices []askdrive.Choice) error
+	AnswerAsk(ctx context.Context, pane string, qs []askq.Question, choices []askdrive.Choice, prior *askq.Progress) (keys int, err error)
 }
 
 // AskOf is b's AskBackend, if it has one (through any wrapper).
 func AskOf(b Backend) (AskBackend, bool) { return capabilityOf[AskBackend](b) }
 
-// AnswerAsk implements AskBackend: askdrive.Drive on the pane.
+// AnswerAsk implements AskBackend: askdrive.DriveFrom on the pane.
 //
 // 🔴 ONE DRIVE PER PANE AT A TIME: a second answer for a pane being typed
 // into is refused (ErrPaneBusy) before any key — two drives' keys would
 // interleave in one picker. And a tmux found to lack `paste-buffer -S` is
 // refused (ErrNoRawPaste) before any key: it cannot type a picker's keys.
-func (t Tmux) AnswerAsk(ctx context.Context, pane string, qs []askq.Question, choices []askdrive.Choice) error {
+func (t Tmux) AnswerAsk(ctx context.Context, pane string, qs []askq.Question, choices []askdrive.Choice, prior *askq.Progress) (int, error) {
 	if !strings.HasPrefix(pane, "%") {
-		return fmt.Errorf("muster-mirror: %q is not a tmux pane id", pane)
+		return 0, fmt.Errorf("muster-mirror: %q is not a tmux pane id", pane)
 	}
 	release, ok := lockPane(strings.Join(append(t.server(), pane), " "))
 	if !ok {
-		return ErrPaneBusy
+		return 0, ErrPaneBusy
 	}
 	defer release()
 	if has, known := t.RawPaste(ctx); known && !has {
-		return ErrNoRawPaste
+		return 0, ErrNoRawPaste
 	}
 	t.dropLeftoverBuffers(ctx)
-	return askdrive.Drive(ctx, tmuxPane{t: t, id: pane}, qs, choices, askdrive.Options{})
+	return askdrive.DriveFrom(ctx, tmuxPane{t: t, id: pane}, qs, choices, prior, askdrive.Options{})
 }
 
 // ErrPaneBusy: another answer is being typed into the pane.
@@ -296,7 +299,8 @@ func (h *hostSide) askAnswer() bool {
 // runs Claude Code NOW (re-resolved here, as for a paste to the rendered view),
 // through typeInto and so the Hermes paste guard.
 // The driver itself refuses to touch a picker that is not this question,
-// untouched (internal/askdrive).
+// untouched — or exactly as muster's own earlier typing left it (m.Ask.Prior;
+// internal/askdrive's DriveFrom).
 func (h *hostSide) answer(m mirror.Msg) {
 	if m.Runtime == mirror.RuntimeHermes {
 		// A Hermes approval: answered through Hermes's gateway, never by
@@ -304,10 +308,13 @@ func (h *hostSide) answer(m mirror.Msg) {
 		h.answerHermes(m)
 		return
 	}
+	// keys is how many keys of the answer's plan the picker has received
+	// (Msg.Keys): what muster hands the next answer, if this one stops.
+	keys := 0
 	reply := func(err error) {
 		ans := mirror.Msg{Type: mirror.TypeAnswered, ID: m.ID}
 		if err != nil {
-			ans.Error = err.Error()
+			ans.Error, ans.Keys = err.Error(), keys
 			switch {
 			case errors.Is(err, askdrive.ErrNoPicker):
 				ans.Refusal = mirror.AskRefusalNoPicker
@@ -360,7 +367,11 @@ func (h *hostSide) answer(m mirror.Msg) {
 		reply(fmt.Errorf("%w: %v", askdrive.ErrNoPicker, errNotClaudeNow))
 		return
 	}
-	reply(h.typeInto(ctx, p.Pane, func() error { return ab.AnswerAsk(ctx, p.Pane, m.Ask.Questions, m.Ask.Choices) }))
+	reply(h.typeInto(ctx, p.Pane, func() error {
+		var err error
+		keys, err = ab.AnswerAsk(ctx, p.Pane, m.Ask.Questions, m.Ask.Choices, m.Ask.Prior)
+		return err
+	}))
 }
 
 // errCannotAnswer marks a refusal that means this host cannot type answers at

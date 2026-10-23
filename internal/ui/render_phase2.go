@@ -2,6 +2,7 @@ package ui
 
 import (
 	"io"
+	"time"
 
 	g "maragu.dev/gomponents"
 
@@ -66,8 +67,10 @@ func RenderAgentsCards(w io.Writer, list []AgentCardView) error {
 // (AgentsCardsWithMirrors) — plus, out of
 // band, the recently-viewed strip resolved against those same cards
 // (recentStrip). recent is the viewer's recently opened entries, newest first.
-func RenderAgentsList(w io.Writer, list []AgentCardView, mirrors []MirrorCardView, recent []RecentRef) error {
-	return g.Group{AgentsCardsWithMirrors(list, mirrors), recentStrip(recentItems(list, mirrors, recent), true)}.Render(w)
+//
+// idleAfter is the Idle section's threshold, for its header's hint (0 = none).
+func RenderAgentsList(w io.Writer, list []AgentCardView, mirrors []MirrorCardView, recent []RecentRef, idleAfter time.Duration) error {
+	return g.Group{agentsListBody(list, mirrors, idleAfter), recentStrip(recentItems(list, mirrors, recent), true)}.Render(w)
 }
 
 // RenderDispatchModal writes the /ui/agents/new partial (the FAB dispatch form

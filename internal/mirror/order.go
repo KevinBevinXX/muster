@@ -27,8 +27,10 @@ type SessionView struct {
 	Label string
 	// Command is what runs in the window's active pane, "" for unknown.
 	Command string
-	// Activity is when the entry was last active on its host (Unix seconds,
-	// floored to ActivityBucket); 0 = the host did not say.
+	// Activity is when the entry was last active (Unix seconds, floored to
+	// ActivityBucket); 0 = the host did not say. For a Claude window it is its
+	// last message when the host reported one (Window.CardActivity), else tmux's
+	// window activity.
 	Activity int64
 	// Online, Interactive, Rendered, PanePaste, PaneScroll: the host's
 	// (HostView). Claude:
@@ -265,7 +267,10 @@ func (h HostView) Entries() []SessionView {
 		for _, w := range h.Windows {
 			e := base
 			e.Session, e.Window, e.Index, e.Active = w.Session, w.ID, w.Index, w.Active
-			e.Label, e.Command, e.Activity, e.Claude, e.ClaudeSession = w.Label, w.Command, w.Activity, w.Claude, w.ClaudeSession
+			// CardActivity: a Claude window's last MESSAGE when its host says,
+			// else tmux's window activity — the one number the list orders by,
+			// prints and decides the Idle section by.
+			e.Label, e.Command, e.Activity, e.Claude, e.ClaudeSession = w.Label, w.Command, w.CardActivity(), w.Claude, w.ClaudeSession
 			e.Runtime, e.AgentSession = w.Runtime, w.AgentSession
 			e.Repo = h.Repos[w.ID]
 			e.Work, e.Color = h.Work[w.ID], h.Colors[w.ID]

@@ -367,6 +367,20 @@ func WireWindows(windows []WindowInfo, codenames map[string]string, claude bool,
 			Activity: w.Activity, Command: w.Command, Claude: claude && w.Claude != nil}
 		if m.Claude {
 			m.Status, m.StatusSince, m.ClaudeSession, m.Pending = w.Claude.Status, w.Claude.StatusSince, w.Claude.Gen, w.Claude.Pending
+			m.LastMessage = w.Claude.LastMessage
+			// 🔴 BUSY COUNTS AS ACTIVE (operator decision). Claude Code writes no
+			// transcript row while a tool runs, while it waits on the person (a
+			// permission prompt, an AskUserQuestion picker) or while a background
+			// shell it started runs — so by its last message alone a window that
+			// is WORKING read "active 40m ago" and sank down the list. While it is,
+			// its card activity is this host's now; once idle, the last message
+			// rules again. NormalizeWindows floors it to the minute, so a busy
+			// window moves its time once a minute at most — the same cadence
+			// tmux's activity of a busy pane always had, through the same
+			// throttled activity-only nudge (mirror.Hub.activityMoved).
+			if claudeWorking(w.Claude) {
+				m.LastMessage = now.Unix()
+			}
 		} else if claude && w.Agent != nil {
 			m.Runtime, m.AgentSession, m.Status, m.StatusSince, m.Pending = w.Agent.Runtime, w.Agent.Gen, w.Agent.Status, w.Agent.StatusSince, w.Agent.Pending
 		}
@@ -381,6 +395,13 @@ func WireWindows(windows []WindowInfo, codenames map[string]string, claude bool,
 		out = append(out, m)
 	}
 	return mirror.NormalizeWindows(out, now.Unix())
+}
+
+// claudeWorking reports whether the Claude Code session in a pane is working:
+// a turn running, waiting on the person, or a background shell of its own still
+// running (the sessions file's raw "shell").
+func claudeWorking(c *ClaudePane) bool {
+	return c.Status == mirror.StatusBusy || c.Status == mirror.StatusWaiting || c.RawStatus == mirror.ClaudeStatusShell
 }
 
 // viewSessionPattern is a name viewSessionName makes — and the ONLY shape of

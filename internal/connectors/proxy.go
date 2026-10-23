@@ -186,6 +186,14 @@ type Proxy struct {
 	// OnGrantRequested is called (synchronously; keep it cheap) when a proxied
 	// request files a NEW pending grant, so the operator can be prompted.
 	OnGrantRequested func(context.Context, Grant)
+	// AutoApprove, when set, is offered every request a check FILES, BEFORE
+	// OnGrantRequested: it returns the grant approved and true when an owner's
+	// standing grant covers it (the api package's approveFromStanding, the one
+	// rule every door shares), and the owner is then not prompted. false leaves
+	// the grant as it was. A grant RE-OPENED because its connector's credential
+	// source changed is not offered: that change asks the owner again (0033),
+	// and their approval is then shared as any other.
+	AutoApprove func(context.Context, Grant) (Grant, bool)
 	// StreamsEnd is the server's shutdown signal for streams: once it is done, a
 	// proxied GET EVENT STREAM in flight ends, and one that starts later ends at
 	// once (endsAtShutdown says which exchanges, and why only GET).
@@ -279,11 +287,23 @@ func (p *Proxy) CheckAccess(ctx context.Context, caller Caller, connector, reaso
 	}
 	if created {
 		p.recordGrantEvent(ctx, ng, "requested")
-		if p.OnGrantRequested != nil {
-			p.OnGrantRequested(ctx, ng)
-		}
+		ng = p.pending(ctx, ng)
 	}
 	return Access{Grant: ng, Usable: ng.Usable(), Filed: created}, nil
+}
+
+// pending handles a request this check filed: approved by a standing grant
+// (AutoApprove), or else the owner prompted (OnGrantRequested).
+func (p *Proxy) pending(ctx context.Context, g Grant) Grant {
+	if p.AutoApprove != nil {
+		if ag, ok := p.AutoApprove(ctx, g); ok {
+			return ag
+		}
+	}
+	if p.OnGrantRequested != nil {
+		p.OnGrantRequested(ctx, g)
+	}
+	return g
 }
 
 func (p *Proxy) recordGrantEvent(ctx context.Context, g Grant, detail string) {

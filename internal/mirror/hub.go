@@ -37,7 +37,7 @@ var (
 	// ErrInteractiveRefused: the host did not advertise interactive attaches.
 	ErrInteractiveRefused = errors.New("mirror: this host is read-only — its muster-mirror was not started with -interactive")
 	// ErrTooManyStreams: the host already has MaxStreamsPerHost terminals open.
-	ErrTooManyStreams = fmt.Errorf("mirror: this host already has %d terminals open; close one first", MaxStreamsPerHost)
+	ErrTooManyStreams = fmt.Errorf("mirror: this host already has %d terminals open; close one first — a view left open in another tab or window may hold one: close that window", MaxStreamsPerHost)
 	// ErrTooManyHosts: the hub already holds MaxHosts connected hosts.
 	ErrTooManyHosts = fmt.Errorf("mirror: muster already has %d mirror hosts connected", MaxHosts)
 )
@@ -124,6 +124,10 @@ type HostView struct {
 	// AskUserQuestion picker (Msg.AskAnswer) and is -interactive. False for an
 	// older or read-only muster-mirror and for an offline host.
 	AskAnswer bool
+	// AskCancel: the host advertised that it dismisses an AskUserQuestion
+	// picker with one Escape (Msg.AskCancel) and is -interactive. False for an
+	// older or read-only muster-mirror and for an offline host.
+	AskCancel bool
 	// Repos is the short repo name per WINDOW ID the host last sent
 	// (TypeRepos, repos.go), restricted to its windows when it arrived; nil when
 	// it sent none (an older muster-mirror, a per-session host). Display and
@@ -342,6 +346,9 @@ type hostConn struct {
 	// askAnswer: the host advertised Msg.AskAnswer, speaks v2 and is
 	// -interactive.
 	askAnswer bool
+	// askCancel: the host advertised Msg.AskCancel, speaks v2 and is
+	// -interactive.
+	askCancel bool
 	// hermesSend: the host advertised Msg.HermesSend, speaks v2 and is
 	// -interactive — the server half of the hermesSend switch (PasteWindow).
 	hermesSend bool
@@ -407,7 +414,7 @@ func (h *Hub) Hosts(owner int64) []HostView {
 		hc.mu.Lock()
 		out = append(out, HostView{Host: k.host, Sessions: append([]string(nil), hc.sessions...), Windows: slices.Clone(hc.windows),
 			Claude: append([]string(nil), hc.claude...), Labels: maps.Clone(hc.labels), Activity: maps.Clone(hc.activity), Repos: maps.Clone(hc.repos), Work: maps.Clone(hc.work), Colors: maps.Clone(hc.colors), Rendered: hc.version >= 2, Online: true, Interactive: hc.interactive, PanePaste: hc.panePaste, PaneScroll: hc.paneScroll,
-			StatusReport: hc.statusReport, AskAnswer: hc.askAnswer, HermesSend: hc.hermesSend, HermesAnswer: hc.hermesAnswer})
+			StatusReport: hc.statusReport, AskAnswer: hc.askAnswer, AskCancel: hc.askCancel, HermesSend: hc.hermesSend, HermesAnswer: hc.hermesAnswer})
 		hc.mu.Unlock()
 	}
 	now := h.now()
@@ -535,7 +542,7 @@ func (hc *hostConn) list(m Msg, now int64) (sessions []string, windows []Window,
 }
 
 // sameWindows reports whether a and b are the same windows in everything but
-// Activity. Activity is compared on its own, as the card prints it (listed):
+// Activity (and LastMessage, its Claude-window stand-in: Window.CardActivity). Activity is compared on its own, as the card prints it (listed):
 // it moves all the time, and a change in it is shown — in the card's "active …
 // ago" — but is throttled (activityMoved) rather than nudged at once.
 // Status and StatusSince are ignored too: no card draws them and they move
@@ -547,7 +554,7 @@ func sameWindows(a, b []Window) bool {
 	// OtherClaude is ignored too: no card draws it (the MCP door reads it). So
 	// is Pending: only the attention queue draws it (waitingWindows nudges it).
 	card := func(w Window) Window {
-		w.Activity, w.Status, w.StatusSince, w.OtherClaude, w.Pending = 0, "", 0, nil, nil
+		w.Activity, w.LastMessage, w.Status, w.StatusSince, w.OtherClaude, w.Pending = 0, 0, "", 0, nil, nil
 		return w
 	}
 	for i := range a {
@@ -669,6 +676,8 @@ func (h *Hub) ServeConn(ctx context.Context, owner int64, host string, ws *webso
 		hc.subagentReport = hello.SubagentReport
 		// Typing an answer is a write into the pane: -interactive hosts only.
 		hc.askAnswer = hello.AskAnswer && hello.Interactive
+		// So is the Escape that dismisses a picker.
+		hc.askCancel = hello.AskCancel && hello.Interactive
 		// The hermesSend switch: a paste into a Hermes window is a write into
 		// the pane like any other, so -interactive hosts only.
 		hc.hermesSend = hello.HermesSend && hello.Interactive
@@ -885,7 +894,11 @@ func (h *Hub) ServeConn(ctx context.Context, owner int64, host string, ws *webso
 				}
 			case TypeAnswered:
 				if hc.version >= 2 {
-					hc.answered(m.ID, m.Error, m.Refusal)
+					hc.answered(m.ID, m.Error, m.Refusal, m.Keys)
+				}
+			case TypeAskCancelled:
+				if hc.version >= 2 {
+					hc.cancelled(m.ID, m.Error, m.Refusal, m.Text)
 				}
 			case TypeClosed:
 				var why error

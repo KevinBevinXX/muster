@@ -127,7 +127,7 @@ func TestNoSecondDriveUntilTheFirstsOutcomeIsKnown(t *testing.T) {
 	_, _ = s.Open(key(1), twoQs, "")
 	_, _, _ = s.BeginTyping(key(1), someAnswers)
 	c.add(10 * time.Second)
-	if e, _ := s.TypingFailed(key(1), "the host did not report", false); e.State != Failed {
+	if e, _ := s.TypingFailed(key(1), Failure{Note: "the host did not report", Settled: false}); e.State != Failed {
 		t.Fatalf("an unsettled failure: %+v", e)
 	}
 	if _, _, err := s.BeginTyping(key(1), otherAnswers); !errors.Is(err, ErrBusy) {
@@ -141,7 +141,7 @@ func TestNoSecondDriveUntilTheFirstsOutcomeIsKnown(t *testing.T) {
 	s, _ = testStore(t)
 	_, _ = s.Open(key(1), twoQs, "")
 	_, _, _ = s.BeginTyping(key(1), someAnswers)
-	_, _ = s.TypingFailed(key(1), "no picker", true)
+	_, _ = s.TypingFailed(key(1), Failure{Note: "no picker", Settled: true})
 	if _, _, err := s.BeginTyping(key(1), otherAnswers); err != nil {
 		t.Fatalf("a retry after a reported failure: %v", err)
 	}
@@ -151,7 +151,7 @@ func TestNoSecondDriveUntilTheFirstsOutcomeIsKnown(t *testing.T) {
 	_, _ = s.Open(key(1), twoQs, "")
 	_, _, _ = s.BeginTyping(key(1), someAnswers)
 	s.TypingDone(key(1))
-	_, _ = s.TypingFailed(key(1), "late", false)
+	_, _ = s.TypingFailed(key(1), Failure{Note: "late", Settled: false})
 	if _, _, err := s.BeginTyping(key(1), otherAnswers); err != nil {
 		t.Fatalf("a retry after the host reported it typed: %v", err)
 	}
@@ -267,7 +267,7 @@ func TestTypingFailedLeavesItToTheTerminal(t *testing.T) {
 	s, _ := testStore(t)
 	_, _ = s.Open(key(1), twoQs, "")
 	_, _, _ = s.BeginTyping(key(1), someAnswers)
-	e, err := s.TypingFailed(key(1), "no picker", true)
+	e, err := s.TypingFailed(key(1), Failure{Note: "no picker", Settled: true})
 	if err != nil || e.State != Failed || e.Note != "no picker" {
 		t.Fatalf("failed: %+v %v", e, err)
 	}
@@ -280,7 +280,7 @@ func TestTypingFailedLeavesItToTheTerminal(t *testing.T) {
 	_, _ = s.Open(key(1), twoQs, "")
 	_, _, _ = s.BeginTyping(key(1), someAnswers)
 	_, _ = resolve(s, 1, otherAnswers)
-	if e, _ := s.TypingFailed(key(1), "late", true); e.State != Answered {
+	if e, _ := s.TypingFailed(key(1), Failure{Note: "late", Settled: true}); e.State != Answered {
 		t.Fatalf("a late failure overwrote the result: %+v", e)
 	}
 }
@@ -361,7 +361,7 @@ func TestOnChangeSeesEveryTransition(t *testing.T) {
 	s.OnChange(func(e Entry) { mu.Lock(); seen = append(seen, e.State); mu.Unlock() })
 	_, _ = s.Open(key(1), twoQs, "")
 	_, _, _ = s.BeginTyping(key(1), someAnswers)
-	_, _ = s.TypingFailed(key(1), "x", true)
+	_, _ = s.TypingFailed(key(1), Failure{Note: "x", Settled: true})
 	_, _ = resolve(s, 1, otherAnswers)
 	k := key(1)
 	k.ToolUseID = "toolu_2"

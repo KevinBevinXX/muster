@@ -13,6 +13,7 @@ import (
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/cctranscript"
 	"github.com/ZacxDev/muster/internal/notes"
+	"github.com/ZacxDev/muster/internal/textplain"
 	"github.com/ZacxDev/muster/internal/uploads"
 	"github.com/ZacxDev/muster/web"
 )
@@ -183,7 +184,7 @@ func AgentDetailPage(v AgentDetailView, feat Features) g.Node {
 				// Stripped too: it is the same string on the same document, and a tab
 				// title reading `**fix** the `+"`chip`"+` row · muster` is the same defect in
 				// a third place.
-				TitleEl(g.Text(markdownPlain(displayOr(v.DisplayName, v.Name))+" · muster")),
+				TitleEl(g.Text(plainOr(v.DisplayName, v.Name)+" · muster")),
 				Link(Rel("stylesheet"), Href(web.Asset("/static/app.css"))),
 				Script(Src(web.Asset("/static/vendor/htmx.min.js")), Defer()),
 				Script(Src(web.Asset("/static/vendor/sse.js")), Defer()),
@@ -325,12 +326,12 @@ func agentDetailHeader(v AgentDetailView) g.Node {
 // button opening the task-detail modal; otherwise a plain H1. Both render the
 // title as inline markdown.
 func agentTitle(v AgentDetailView) g.Node {
-	// markdownPlain, the SAME treatment agentCard gives this string in the list.
+	// textplain.Title, the SAME treatment agentCard gives this string in the list.
 	// It used to be mdInlineNode — inline markdown — which is how the list and the
 	// detail page came to render one name two ways (raw `**` on the card, bold
 	// here, and a backtick that survived on both). Stripping on both is the fix;
-	// see markdownPlain.
-	title := g.Text(markdownPlain(displayOr(v.DisplayName, v.Name)))
+	// see textplain.Title.
+	title := g.Text(plainOr(v.DisplayName, v.Name))
 	if v.NoteID == nil {
 		return H1(Class("mr-auto break-all text-sm font-medium"), title)
 	}
@@ -845,7 +846,9 @@ func sessionDrawer(v AgentDetailView) g.Node {
 
 	links := make([]g.Node, 0, len(v.Sessions))
 	for _, sess := range v.Sessions {
-		title := sess.Title
+		// A chat title is LLM- or user-written and routinely carries markdown;
+		// the drawer shows what a reader of it would see (textplain).
+		title := textplain.Title(sess.Title)
 		if title == "" {
 			title = "New chat"
 		}

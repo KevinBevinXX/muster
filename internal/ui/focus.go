@@ -5,6 +5,8 @@ import (
 
 	g "maragu.dev/gomponents"
 	. "maragu.dev/gomponents/html"
+
+	"github.com/ZacxDev/muster/internal/textplain"
 )
 
 // FocusView is a session's FOCUS (internal/focus) as a card shows it: what the
@@ -49,7 +51,12 @@ func focusHaystack(f *FocusView) []string {
 // headed by its focus; the focus text stays in data-filter, as before.
 
 // cardHasFocusTitle reports whether a card is headed by its focus.
-func cardHasFocusTitle(f *FocusView) bool { return f != nil && f.Title != "" }
+//
+// The focus title is an LLM summary and routinely carries markdown, so every
+// read of it here goes through textplain.Title — including this one, so a
+// title that is ALL markup ("**") counts as no title rather than heading the
+// card with nothing.
+func cardHasFocusTitle(f *FocusView) bool { return f != nil && textplain.Title(f.Title) != "" }
 
 // cardTitleClass is a card's heading as it was (no focus); cardSubtitleClass
 // is that same text demoted under a focus title.
@@ -99,7 +106,8 @@ func cardFocusTitle(cardID string, f *FocusView, reserve string) g.Node {
 		return g.Text("")
 	}
 	pop := cardID + "-focus"
-	return cardTitleRow("focus", pop, f.Title, "pt-3", reserve,
+	title := textplain.Title(f.Title)
+	return cardTitleRow("focus", pop, title, "pt-3", reserve,
 		func(short string) g.Node {
 			return Button(
 				Type("button"),
@@ -109,7 +117,7 @@ func cardFocusTitle(cardID string, f *FocusView, reserve string) g.Node {
 				g.Attr("aria-haspopup", "dialog"),
 				g.Attr("aria-controls", pop),
 				g.Attr("aria-expanded", "false"),
-				g.Attr("aria-label", "Focus: "+f.Title+" — show details"),
+				g.Attr("aria-label", "Focus: "+title+" — show details"),
 				Class("press group/focus -ml-2 inline-flex min-h-[44px] min-w-0 max-w-full items-center gap-1.5 rounded-lg px-2 py-1 text-left text-base font-semibold leading-tight text-fg transition hover:bg-s2 hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus aria-expanded:bg-s2"),
 				Span(Class("min-w-0 break-words"), g.Text(short)),
 				g.If(f.Problem != "", Span(g.Attr("data-focus-stale-mark", ""),
@@ -134,7 +142,7 @@ func cardFocusTitle(cardID string, f *FocusView, reserve string) g.Node {
 // anchor, so a tap opens the popover and never the card; and it is a 44px tap
 // target, because a phone has no hover to show a tooltip with.
 func cardFocus(cardID string, f *FocusView) g.Node {
-	if f == nil || f.Title != "" || f.Problem == "" {
+	if f == nil || cardHasFocusTitle(f) || f.Problem == "" {
 		return g.Text("")
 	}
 	pop := cardID + "-focus"
@@ -160,8 +168,9 @@ func cardFocus(cardID string, f *FocusView) g.Node {
 // "updated … ago", and — when the latest refresh failed — why ("No focus: …"
 // with no title, "Last refresh failed: …" over a stale one).
 func focusPopover(pop string, f *FocusView) g.Node {
+	title := textplain.Title(f.Title)
 	problem := "Last refresh failed: "
-	if f.Title == "" {
+	if title == "" {
 		problem = "No focus: "
 	}
 	return Div(
@@ -172,8 +181,8 @@ func focusPopover(pop string, f *FocusView) g.Node {
 		g.Attr("data-floating-menu", ""),
 		g.Attr("data-focus-popover", ""),
 		Class("invisible hidden [&:popover-open]:flex m-0 w-72 max-w-[calc(100vw-16px)] flex-col gap-1.5 rounded-xl border border-line bg-s1 p-3 text-fg shadow-2xl ring-1 ring-black/20"),
-		g.If(f.Title != "", Span(g.Attr("data-focus-title", ""), Class("break-words text-sm font-semibold"), g.Text(f.Title))),
-		g.If(f.Description != "", P(g.Attr("data-focus-description", ""), Class("break-words text-sm text-fg2"), g.Text(f.Description))),
+		g.If(title != "", Span(g.Attr("data-focus-title", ""), Class("break-words text-sm font-semibold"), g.Text(title))),
+		g.If(textplain.Title(f.Description) != "", P(g.Attr("data-focus-description", ""), Class("break-words text-sm text-fg2"), g.Text(textplain.Title(f.Description)))),
 		g.If(!f.UpdatedAt.IsZero(), Span(
 			g.Attr("data-focus-updated", ""),
 			Class("inline-flex items-center gap-1 text-xs text-muted"),

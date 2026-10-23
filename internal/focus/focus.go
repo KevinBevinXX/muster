@@ -217,7 +217,7 @@ type Hit struct {
 var ErrEmpty = errors.New("focus: a focus needs a title")
 
 // Clean is a title and description ready to store: control and format
-// characters dropped, whitespace folded, markdown emphasis stripped, the title
+// characters dropped, whitespace folded, the title
 // to one line (cut only past the MaxTitleRunes storage guard), the description to at most
 // MaxDescriptionSentences sentences and MaxDescriptionRunes runes. A title that
 // is empty after that is ErrEmpty.
@@ -230,7 +230,14 @@ func Clean(title, description string) (string, string, error) {
 	return title, description, nil
 }
 
-// oneLine folds s to plain single-line text.
+// oneLine folds s to single-line text: line breaks to spaces, control and
+// format characters dropped, whitespace collapsed.
+//
+// 🔴 IT DOES NOT STRIP MARKDOWN, AND MUST NOT. It feeds Clean, whose output is
+// STORED; it used to delete every * ` # here, so a stored focus title "C#" came
+// back "C" and "#123" came back "123" — data rewritten, irreversibly, by a
+// cosmetic rule. Markdown is removed at RENDER time by internal/textplain.Title
+// (the one title rule), which knows C# and #123 from markup.
 func oneLine(s string) string {
 	if !utf8.ValidString(s) {
 		s = strings.ToValidUTF8(s, "")
@@ -241,8 +248,6 @@ func oneLine(s string) string {
 		case r == '\n' || r == '\r' || r == '\t':
 			b.WriteRune(' ')
 		case unicode.IsControl(r) || unicode.Is(unicode.Cf, r):
-		case r == '*' || r == '`' || r == '#':
-			// Markdown emphasis and headings: a card shows plain text.
 		default:
 			b.WriteRune(r)
 		}

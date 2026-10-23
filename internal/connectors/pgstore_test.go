@@ -29,7 +29,7 @@ func testPool(t *testing.T) (context.Context, *pgxpool.Pool) {
 		t.Fatalf("connect: %v", err)
 	}
 	t.Cleanup(pool.Close)
-	dbtest.OwnerExec(t, dsn, `TRUNCATE connectors, connector_grants, connector_audit RESTART IDENTITY`)
+	dbtest.OwnerExec(t, dsn, `TRUNCATE connectors, connector_grants, connector_standing_grants, connector_audit RESTART IDENTITY`)
 	return ctx, pool
 }
 

@@ -34,6 +34,7 @@ DELETE /api/tasks/{id}
 DELETE /api/tasks/{id}/comments/{cid}
 DELETE /api/tokens/{id}
 DELETE /connector-grants/{id}
+DELETE /connector-standing-grants/{id}
 DELETE /connectors/{name}
 DELETE /tasks/{id}
 DELETE /tasks/{id}/comments/{cid}
@@ -221,6 +222,7 @@ POST /mirror/mcp
 POST /mirror/terminal/scroll
 POST /mirror/terminal/send
 POST /mirror/view/ask
+POST /mirror/view/ask/cancel
 POST /mirror/view/send
 POST /plugin/v1/drafts/claim
 POST /plugin/v1/drafts/{id}/result

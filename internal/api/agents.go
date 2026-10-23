@@ -199,7 +199,7 @@ func (s *Server) handleAgentsContent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := ui.RenderAgentsList(w, cards, mirrors, s.recentRefs(ctx)); err != nil {
+	if err := ui.RenderAgentsList(w, cards, mirrors, s.recentRefs(ctx), s.ext.AgentsIdleAfter); err != nil {
 		s.logger.Printf("agents: render: %v", err)
 	}
 }
@@ -211,12 +211,19 @@ func (s *Server) handleAgentsContent(w http.ResponseWriter, r *http.Request) {
 //
 // Every card carries its attention badge (withCardAttention).
 func (s *Server) agentsListCards(ctx context.Context) ([]ui.AgentCardView, []ui.MirrorCardView, error) {
+	return s.agentsListCardsWithin(ctx, 0)
+}
+
+// agentsListCardsWithin is agentsListCards with the provisioner's instance read
+// bounded by instancesWithin (0 = unbounded): past it the cards are drawn with
+// their STORED status (a nil index, liveStatusIndexed). See shellData.
+func (s *Server) agentsListCardsWithin(ctx context.Context, instancesWithin time.Duration) ([]ui.AgentCardView, []ui.MirrorCardView, error) {
 	list, err := s.ext.Agents.List(ctx)
 	if err != nil {
 		return nil, nil, err
 	}
 
-	instIdx := s.instanceIndex(ctx)
+	instIdx := s.instanceIndexWithin(ctx, instancesWithin)
 	// 🔴 MOST RECENTLY ACTIVE FIRST, BY agents.LastActivity — the same definition
 	// GET /api/agents publishes as lastActivityAt. The store's own order
 	// (created_at DESC) is left alone because the machine read documents
@@ -243,6 +250,10 @@ func (s *Server) agentsListCards(ctx context.Context) ([]ui.AgentCardView, []ui.
 	// them with the agents by activity (ui.AgentsCardsWithMirrors).
 	mirrors := s.mirrorCards(ctx, pinned, focused)
 	s.withCardAttention(ctx, cards, mirrors)
+	// The Idle section (ui.InIdleSection), with the server's clock, after the
+	// pins are marked: decided on every build, so an entry active again leaves
+	// it on the next refresh.
+	ui.MarkIdle(cards, mirrors, s.now(), s.ext.AgentsIdleAfter)
 	return cards, mirrors, nil
 }
 
@@ -1032,17 +1043,27 @@ func (s *Server) resolveRepoBranch(ctx context.Context, repo, branch string) str
 }
 
 // dispatchDisplayName derives a task-labelled agent display name from a source
-// task: "#<id> · <short title>", where the short title is the task body's first
-// non-empty line trimmed to ~40 runes. Falls back to just "#<id>" when the body
-// has no usable text.
+// task: "#<id> · <title>", where the title is the task body's first non-empty
+// line. Falls back to just "#<id>" when the body has no usable text.
+//
+// 🔴 STORED UNCUT, TO A STORAGE BOUND ONLY. It used to be cut to 40 runes here,
+// which landed mid-markdown — "Fix the [login page](https://example.com…" —
+// and a cut link can never be plained at render. The title rule
+// (internal/textplain) runs on the whole line at render, and the card clamps
+// the PLAIN text (clampTitle). dispatchTitleMaxRunes only keeps a runaway
+// first line out of the row.
 func dispatchDisplayName(noteID int64, noteText string) string {
 	id := strconv.FormatInt(noteID, 10)
-	title := truncate(strings.TrimSpace(firstNonEmptyLine(noteText)), 40)
+	title := truncate(strings.TrimSpace(firstNonEmptyLine(noteText)), dispatchTitleMaxRunes)
 	if title == "" {
 		return "#" + id
 	}
 	return "#" + id + " · " + title
 }
+
+// dispatchTitleMaxRunes bounds the stored task title in a dispatched agent's
+// display name: generous, so a markdown link survives whole for the renderer.
+const dispatchTitleMaxRunes = 300
 
 // createAndDispatchAgent inserts an agent record and provisions it in the
 // background (kickoff sends the note as the first message). Shared by the human
@@ -1421,6 +1442,11 @@ func (s *Server) handleAgentDetail(w http.ResponseWriter, r *http.Request) {
 		FocusHistory: s.focusHistoryPath(focus.AgentSubject(a.ID)),
 	}
 	view.SendNotice, view.SendNoticeOK = composerNotice(r)
+	// A claude-code agent's chat is the Rendered half of its Rendered |
+	// Terminal switch, which its terminal opens in a frame (ui/view_swap.go).
+	if agents.ResolveKind(view.Kind) == agents.KindClaudeCode {
+		allowSameOriginFrame(w)
+	}
 	formDocument(w)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := ui.RenderAgentDetail(w, view, s.shellFeatures(r.Context())); err != nil {
@@ -1796,6 +1822,10 @@ func (s *Server) handleAgentWS(w http.ResponseWriter, r *http.Request) {
 	}
 	defer c.CloseNow()
 	ctx := r.Context()
+	// The socket's open and end, like a terminal's attached/detached: how many
+	// chat sockets a page really holds (the browser suite counts them).
+	s.logger.Printf("agents: chat %s connected", a.Name)
+	defer s.logger.Printf("agents: chat %s disconnected", a.Name)
 
 	for {
 		_, data, err := c.Read(ctx)

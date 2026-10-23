@@ -27,6 +27,7 @@ import (
 // write route cannot be added without being checked here.
 var connectorOperatorWrites = []string{
 	"DELETE /connector-grants/{id}",
+	"DELETE /connector-standing-grants/{id}",
 	"DELETE /connectors/{name}",
 	"POST /connectors",
 	"POST /connectors/{name}/rotate",

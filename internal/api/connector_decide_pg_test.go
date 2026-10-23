@@ -156,8 +156,14 @@ func nextConnectorEvent(ch <-chan sse.Event) string {
 // the provenance is the MCP door's, not a constant.
 func TestAMirroredSessionListsAndApprovesAConnectorRequest(t *testing.T) {
 	f := newDecideFixture(t)
+	// The control asks for ANOTHER connector: an approval of svc is shared
+	// (0043), so a second svc request would be approved by the first decision.
+	if _, err := f.store.CreateConnector(f.ctx, connectors.NewConnector{Name: "svc2", Hosts: []string{"api.example.com"},
+		Scheme: connectors.SchemeBearer, Secret: connTestSecret}); err != nil {
+		t.Fatal(err)
+	}
 	id := f.request(t, f.opTok, "svc", "to read the widget API")
-	ctl := f.request(t, f.op2Tok, "svc", "control")
+	ctl := f.request(t, f.op2Tok, "svc2", "control")
 
 	reqs := f.listedRequests(t, f.ws, focusSID)
 	var mine map[string]any
@@ -201,8 +207,9 @@ func TestAMirroredSessionListsAndApprovesAConnectorRequest(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("the agent's connector_status wait did not wake on the MCP approval")
 	}
-	if got := f.auditDetails(t, f.op.Name); len(got) != 2 || got[0] != "requested" ||
-		got[1] != "approved via MCP from ws/"+focusSID+" (host proven by its mirror token; session as named by the caller)" {
+	if got := f.auditDetails(t, f.op.Name); len(got) != 3 || got[0] != "requested" ||
+		got[1] != "approved via MCP from ws/"+focusSID+" (host proven by its mirror token; session as named by the caller)" ||
+		got[2] != "approval shared as standing grant 1: later requests for svc from any of your agents are approved automatically (approved via MCP from ws/"+focusSID+")" {
 		t.Fatalf("the requester's audit lines: %q", got)
 	}
 
@@ -216,7 +223,7 @@ func TestAMirroredSessionListsAndApprovesAConnectorRequest(t *testing.T) {
 	if got := nextConnectorEvent(ch); got != `{"id":"`+strconv.FormatInt(ctl, 10)+`"}` {
 		t.Fatalf("control: the tab's approval nudged %q", got)
 	}
-	if got := f.auditDetails(t, f.op2.Name); len(got) != 2 || got[1] != "approved" {
+	if got := f.auditDetails(t, f.op2.Name); len(got) != 3 || got[1] != "approved" || !strings.HasPrefix(got[2], "approval shared as standing grant 2: ") {
 		t.Fatalf("control: the tab's audit lines: %q", got)
 	}
 
@@ -274,7 +281,12 @@ func TestConnectorRequestDecideRefusesDecidedForeignMissingAndBadRequests(t *tes
 			t.Fatalf("%s of an approved request: %s", d, text)
 		}
 	}
-	denied := f.request(t, f.op2Tok, "svc", "")
+	// Another connector: op's approval of svc above is shared (0043).
+	if _, err := f.store.CreateConnector(f.ctx, connectors.NewConnector{Name: "svc2", Hosts: []string{"api.example.com"},
+		Scheme: connectors.SchemeBearer, Secret: connTestSecret}); err != nil {
+		t.Fatal(err)
+	}
+	denied := f.request(t, f.op2Tok, "svc2", "")
 	if w := f.call(t, http.MethodPost, "/ui/connector-requests/"+strconv.FormatInt(denied, 10)+"/deny", nil, f.operator()); w.Code != http.StatusOK {
 		t.Fatal(w.Code)
 	}
@@ -392,7 +404,10 @@ func TestAnMCPApprovalCanStillBeRevokedOnTheTab(t *testing.T) {
 	if g := f.grantRow(t, id); w.Code != http.StatusOK || g != (grantRow{status: "revoked", by: "operator", source: "stored"}) {
 		t.Fatalf("revoke of an MCP approval: %d %+v %s", w.Code, g, w.Body)
 	}
-	if got := f.auditDetails(t, f.op.Name); len(got) != 3 || !strings.HasPrefix(got[1], "approved via MCP from ws/") || got[2] != "revoked" {
+	// got[2] is the approval being shared (0043); the revoke here is of this
+	// agent's grant alone.
+	if got := f.auditDetails(t, f.op.Name); len(got) != 4 || !strings.HasPrefix(got[1], "approved via MCP from ws/") ||
+		!strings.HasPrefix(got[2], "approval shared as standing grant ") || got[3] != "revoked" {
 		t.Fatalf("audit: %q", got)
 	}
 }

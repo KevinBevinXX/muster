@@ -336,6 +336,7 @@ func (c *Client) runOnce(ctx context.Context, version int) error {
 	hello.Version, hello.Host, hello.Interactive, hello.PanePaste = version, c.cfg.Host, c.cfg.Interactive, conn.panePaste()
 	hello.PaneScroll = conn.paneScroll()
 	hello.AskAnswer = conn.askAnswer()
+	hello.AskCancel = conn.askCancel(hello.AskAnswer)
 	hello.StatusReport = reportsStatus(c.cfg.Backend)
 	hello.CatalogReport = version >= 2 && !c.cfg.NoCatalog
 	hello.SubagentReport = conn.subagentReport()
@@ -439,6 +440,10 @@ func (c *Client) runOnce(ctx context.Context, version int) error {
 				if conn.version >= 2 {
 					go conn.answer(m)
 				}
+			case mirror.TypeCancelAsk:
+				if conn.version >= 2 {
+					go conn.cancelAsk(m)
+				}
 			case mirror.TypeCatalog:
 				if conn.version >= 2 && !c.cfg.NoCatalog {
 					go conn.catalog(m)
@@ -501,6 +506,8 @@ type hostSide struct {
 	scroller *scroller
 	// pending reads what each waiting window waits on (pending.go).
 	pending pendingReader
+	// lastMsg reads each Claude window's last message time (lastmsg.go).
+	lastMsg lastMessageReader
 	// hermes is what each waiting Hermes window waits on, and the gateway
 	// viewers that answer its approvals (hermes_asks.go); nil in a test that
 	// builds a hostSide without one.
@@ -573,6 +580,7 @@ func (h *hostSide) read() (listing, bool) {
 		return listing{}, false
 	}
 	h.pending.attachPending(raw)
+	h.lastMsg.attach(raw)
 	if h.hermes != nil {
 		h.hermes.attachPending(raw)
 	}

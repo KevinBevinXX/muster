@@ -100,7 +100,8 @@ func applyThroughFrom(ctx context.Context, t *testing.T, pool *pgxpool.Pool, max
 //   - uploads (0024, the composer's attached files).
 //   - jobs (0037, the machine job API's jobs).
 //   - devices, device_pairing_codes (0039, the Android app's paired phones).
-var ownedAfter0006 = []string{"agent_focus", "agent_focus_history", "attention_asks", "cc_account_marks", "device_pairing_codes", "devices", "flow_jobs", "flow_requests", "flow_runner_tokens",
+//   - connector_standing_grants (0043, an owner's shared connector approvals).
+var ownedAfter0006 = []string{"agent_focus", "agent_focus_history", "attention_asks", "cc_account_marks", "connector_standing_grants", "device_pairing_codes", "devices", "flow_jobs", "flow_requests", "flow_runner_tokens",
 	"jobs", "mirror_tokens", "pins", "plugin_messages", "plugin_reply_drafts", "plugins", "push_preferences",
 	"push_subscriptions", "recents", "send_queue", "session_routes", "uploads", "user_credentials"}
 
@@ -145,6 +146,9 @@ var wantForeignKeys = []string{
 	"connector_audit|connector_audit_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"connector_grants|connector_grants_agent_owner_fkey|FOREIGN KEY (agent_id, owner_id) REFERENCES agents(id, owner_id) ON DELETE CASCADE",
 	"connector_grants|connector_grants_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
+	// 0043: an automatic approval names its standing grant, of the SAME owner.
+	"connector_grants|connector_grants_standing_grant_owner_fkey|FOREIGN KEY (standing_grant_id, owner_id) REFERENCES connector_standing_grants(id, owner_id)",
+	"connector_standing_grants|connector_standing_grants_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"connectors|connectors_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"github_connection|github_connection_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"invites|invites_claim_user_id_fkey|FOREIGN KEY (claim_user_id) REFERENCES users(id)",

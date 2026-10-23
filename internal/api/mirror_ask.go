@@ -39,7 +39,9 @@ import (
 //     ui.MirrorAskPath; muster asks the host to TYPE the answer into the
 //     picker (mirror.Hub.AnswerWindow → internal/askdrive), which reads the
 //     pane before and after every key and never types into a picker that is
-//     not this question, untouched.
+//     not this question, untouched — or exactly as muster's own earlier typing
+//     left it: a typing that stopped part way records what it typed
+//     (askq.Entry.Left), and trying again from the card continues it.
 //
 // 🔴 AN ANSWER IS A WRITE INTO THE OPERATOR'S SESSION, SO IT PASSES EXACTLY THE
 // GATES A SEND PASSES (mirrorSend): a same-origin request from the session's
@@ -58,7 +60,7 @@ import (
 // no ask routes (404 — the question is then the terminal's only).
 type mirrorAsker interface {
 	AuthenticateHost(w http.ResponseWriter, r *http.Request) (owner int64, host string, ok bool)
-	AnswerWindow(ctx context.Context, host, session, window string, qs []askq.Question, choices []askq.Choice) error
+	AnswerWindow(ctx context.Context, host, session, window string, qs []askq.Question, choices []askq.Choice, prior *askq.Progress) error
 	Nudge(owner int64)
 }
 
@@ -115,6 +117,13 @@ func (s *Server) registerMirrorAskRoutes(mux Mux) {
 	// The person: the live region, and an answer.
 	mux.HandleFunc("GET "+ui.MirrorAsksPath, s.requireSession(s.handleMirrorAsks))
 	mux.HandleFunc("POST "+ui.MirrorAskPath, s.requireOperatorWrite(s.handleMirrorAskAnswer))
+	mux.HandleFunc("POST "+ui.MirrorAskCancelPath, s.requireOperatorWrite(s.handleMirrorAskCancel))
+}
+
+// mirrorAskCanceller is the plugin's half of dismissing a picker
+// (mirror.Service.CancelAsk). A plugin without it has no Cancel control.
+type mirrorAskCanceller interface {
+	CancelAsk(ctx context.Context, host, session, window string) (note string, err error)
 }
 
 // mirrorAskOpenRequest is the hook's registration: the PreToolUse payload's
@@ -203,22 +212,26 @@ func askKey(r *http.Request, h mirror.HostView, e mirror.SessionView, tool strin
 
 // questionCard is entry x as a card of e's window, h being its host.
 func questionCard(h mirror.HostView, e mirror.SessionView, x askq.Entry) ui.MirrorAskLiveView {
-	v := ui.MirrorAskLiveView{Ref: mirrorRef(e), ToolID: x.Key.ToolUseID, Questions: x.Questions, Answers: x.Answers, Note: x.Note}
-	switch x.State {
-	case askq.Pending:
+	v := ui.MirrorAskLiveView{Ref: mirrorRef(e), ToolID: x.Key.ToolUseID, Questions: x.Questions, Answers: x.Answers, Note: x.Note,
+		WindowName: e.DisplayTitle(), CanCancel: h.Interactive && h.Online && h.AskCancel}
+	switch {
+	case x.State == askq.Pending:
 		v.State = ui.AskStatePending
-	case askq.Typing:
+	case x.State == askq.Typing:
 		v.State, v.Answers = ui.AskStateTyping, x.Typed
-	case askq.Failed:
-		v.State = ui.AskStateFailed
-	case askq.Answered:
+	case x.State == askq.Failed:
+		v.State, v.Retry = ui.AskStateFailed, x.Retry
+		if x.Left != nil {
+			v.Chosen = x.Left.Choices
+		}
+	case x.State == askq.Answered:
 		v.State = ui.AskStateAnsweredTerminal
 		if x.By == askq.ByMuster {
 			v.State = ui.AskStateAnswered
 		}
-	case askq.Declined:
+	case x.State == askq.Declined:
 		v.State = ui.AskStateDeclined
-	case askq.Superseded:
+	case x.State == askq.Superseded:
 		v.State = ui.AskStateSuperseded
 	default:
 		v.State = ui.AskStateExpired
@@ -272,11 +285,27 @@ func (s *Server) handleMirrorAsks(w http.ResponseWriter, r *http.Request) {
 // answer before it stopped.
 const askPartlyFilled = " The picker may be partly filled in — check what it shows before you submit it in the terminal."
 
+// The failure notes a card can show, by what happened.
+const (
+	// askNoteLost: muster's own keys stopped part way (the picker did not
+	// show what a key should have produced). Muster recorded what it typed,
+	// so trying again continues it.
+	askNoteLost = "Muster lost track of the terminal's picker part-way through typing your answer, and nothing was submitted. " +
+		"Try again: muster continues from where it stopped."
+	// askNoteLostUnknown: as askNoteLost, with nothing recorded to continue.
+	askNoteLostUnknown = "Muster lost track of the terminal's picker while typing your answer, and nothing was submitted." + askPartlyFilled
+	// askNoteTouched: the picker is not as muster left it — someone typed in
+	// the terminal.
+	askNoteTouched = "Someone else has started answering it in the terminal — finish it there."
+)
+
 // askTypeFailure is what a card says when muster could not type the answer
-// in: what happened, and that the terminal has the question — and, when keys
-// may have been typed before it stopped, that the picker may be partly filled
-// in.
-func askTypeFailure(err error) string {
+// in: what happened, and what to do next — try again here, or answer in the
+// terminal; and, when keys may have been typed before it stopped and muster
+// cannot continue them, that the picker may be partly filled in. resumable
+// says muster recorded what it typed (the next answer continues it); typed
+// that keys of muster's reached the picker before it stopped.
+func askTypeFailure(err error, resumable, typed bool) string {
 	switch {
 	case errors.Is(err, mirror.ErrAskNoPicker):
 		return "The question is no longer on the terminal's screen — it was answered or dismissed there."
@@ -286,14 +315,18 @@ func askTypeFailure(err error) string {
 		return "Couldn't type it in: the question went off the terminal's screen while typing (its picker is taller than the terminal), and nothing was submitted." + askPartlyFilled
 	case errors.Is(err, mirror.ErrAskUnreadable):
 		return "Couldn't read this question off the terminal's screen as the one muster was sent — answer it in the terminal."
+	case errors.Is(err, mirror.ErrAskTouched) && typed:
+		return askNoteTouched + askPartlyFilled
 	case errors.Is(err, mirror.ErrAskTouched):
-		return "Someone has started answering it in the terminal — finish it there."
+		return askNoteTouched
 	case errors.Is(err, mirror.ErrAskBusy):
-		return "Another answer is being typed into this terminal — wait for it, or answer in the terminal."
+		return "Another answer is being typed into this terminal — wait for it, then try again (or answer in the terminal)."
 	case errors.Is(err, mirror.ErrAskUnrecognised):
 		return "Couldn't recognise the terminal's picker (Claude Code may have changed) — answer it in the terminal."
+	case errors.Is(err, mirror.ErrAskLost) && resumable:
+		return askNoteLost
 	case errors.Is(err, mirror.ErrAskLost):
-		return "Couldn't type it in: the terminal's picker changed while typing, and nothing was submitted." + askPartlyFilled
+		return askNoteLostUnknown
 	case errors.Is(err, mirror.ErrAskUnsupported):
 		return "This host's muster-mirror cannot type an answer into the terminal — answer it there."
 	case errors.Is(err, mirror.ErrAskNotSent) && (errors.Is(err, mirror.ErrHostOffline) || errors.Is(err, mirror.ErrHostDisconnected)):
@@ -304,6 +337,24 @@ func askTypeFailure(err error) string {
 		return "The host went offline while typing." + askPartlyFilled
 	}
 	return "Couldn't type it in." + askPartlyFilled
+}
+
+// askFailure is how a drive that ended in err (AnswerWindow's) leaves the
+// question: what the card says, whether it can be tried again from muster,
+// and what the picker is known to hold of muster's — choices' first keys
+// (mirror.AskKeys). A drive whose outcome is unknown records nothing it may
+// have typed (askq.Failure.Settled).
+func askFailure(err error, choices []askq.Choice) askq.Failure {
+	f := askq.Failure{Settled: mirror.AskOutcomeKnown(err)}
+	if f.Settled && mirror.AskKeys(err) > 0 {
+		f.Left = &askq.Progress{Choices: choices, Keys: mirror.AskKeys(err)}
+	}
+	// Lost part way with what it typed recorded: continue it — the card
+	// resends exactly that answer (ui: a fixed retry). Busy: wait.
+	resumable := f.Left != nil && errors.Is(err, mirror.ErrAskLost) && !errors.Is(err, mirror.ErrAskUnreadable)
+	f.Retry = resumable || errors.Is(err, mirror.ErrAskBusy)
+	f.Note = askTypeFailure(err, resumable, mirror.AskKeys(err) > 0)
+	return f
 }
 
 // askTypingResult is the muster_mirror_ask_typing_total label for an
@@ -408,11 +459,13 @@ func (s *Server) handleMirrorAskAnswer(w http.ResponseWriter, r *http.Request) {
 	// connection, a closed tab) must not end the wait while the host may
 	// still be typing — that would mark the answer failed and let another
 	// drive start into the same picker. The hub bounds the wait itself.
-	err = a.AnswerWindow(context.WithoutCancel(r.Context()), h.Host, e.Session, e.Window, entry.Questions, choices)
+	// got.Left is what an earlier drive is known to have left in the picker:
+	// the host continues it when the picker shows exactly that.
+	err = a.AnswerWindow(context.WithoutCancel(r.Context()), h.Host, e.Session, e.Window, entry.Questions, choices, got.Left)
 	metrics.MirrorAskTyping.WithLabelValues(askTypingResult(err)).Inc()
 	if err != nil {
 		s.logger.Printf("mirror: typing an answer into %s/%s%s failed: %v", h.Host, e.Session, e.Window, err)
-		failed, _ := s.asks.TypingFailed(key, askTypeFailure(err), mirror.AskOutcomeKnown(err))
+		failed, _ := s.asks.TypingFailed(key, askFailure(err, choices))
 		s.writeAskLive(w, http.StatusConflict, questionCard(h, e, failed))
 		return
 	}
@@ -422,6 +475,102 @@ func (s *Server) handleMirrorAskAnswer(w http.ResponseWriter, r *http.Request) {
 	// before then shows "typing".
 	now, _ := s.asks.Find(key)
 	s.writeAskLive(w, http.StatusOK, questionCard(h, e, now))
+}
+
+// askCancelFailure is what a card says when muster could not dismiss its
+// picker: what happened, and whether the Escape was sent.
+func askCancelFailure(err error) string {
+	switch {
+	case errors.Is(err, mirror.ErrAskNoPicker):
+		return "The question is no longer on the terminal's screen — nothing was sent."
+	case errors.Is(err, mirror.ErrAskBusy):
+		return "An answer is being typed into this terminal — nothing was sent. Try again once it is done."
+	case errors.Is(err, mirror.ErrAskTouched):
+		return "The terminal's picker changed while muster was reading it — nothing was sent."
+	case errors.Is(err, mirror.ErrAskUnreadable), errors.Is(err, mirror.ErrAskUnrecognised):
+		return "Couldn't read the terminal's picker as this question — nothing was sent. Press Esc in the terminal."
+	case errors.Is(err, mirror.ErrAskCancelUnsupported), errors.Is(err, mirror.ErrAskUnsupported):
+		return "This host's muster-mirror cannot dismiss a question — press Esc in the terminal."
+	case errors.Is(err, mirror.ErrAskNotSent) && (errors.Is(err, mirror.ErrHostOffline) || errors.Is(err, mirror.ErrHostDisconnected)):
+		return "The host is offline — nothing was sent."
+	case errors.Is(err, mirror.ErrAskNotSent):
+		return "Couldn't reach the host — nothing was sent."
+	}
+	return "Couldn't dismiss it — check the terminal."
+}
+
+// handleMirrorAskCancel is POST ui.MirrorAskCancelPath: dismiss a question's
+// picker in the terminal with ONE Escape (the host's askdrive.Cancel). 200
+// with the card, saying the Esc was sent (the CLI's record of the call ending
+// unanswered then resolves it, as any dismissal); 409 with the card when the
+// question is not open,
+// or with what happened (text) when the host refused; 404 for a question
+// that is not the request's owner's.
+//
+// 🔴 THE SAME GATES AS AN ANSWER BUT ONE (handleMirrorAskAnswer): a
+// same-origin request from the session's owner (requireOperatorWrite;
+// another owner's host is not found), a host that advertised -interactive
+// and AskCancel — and NO step-up re-authentication, an operator decision:
+// the page asks for confirmation in a dialog naming the window. The host
+// checks the rest: a picker on screen, the pane's one-drive lock.
+func (s *Server) handleMirrorAskCancel(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, mirrorAskFormMax)
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "the request is too large", http.StatusRequestEntityTooLarge)
+		return
+	}
+	h, e, ok := s.askWindow(w, r, r.PostFormValue("host"), r.PostFormValue("session"), r.PostFormValue("window"))
+	if !ok {
+		return
+	}
+	if !h.Interactive {
+		http.Error(w, mirror.ErrInteractiveRefused.Error(), http.StatusConflict)
+		return
+	}
+	tool := r.PostFormValue("tool")
+	if !toolUseIDPattern.MatchString(tool) {
+		http.Error(w, "a dismissal names the call it dismisses (tool)", http.StatusBadRequest)
+		return
+	}
+	if e.ClaudeSession == "" {
+		http.NotFound(w, r)
+		return
+	}
+	key := askKey(r, h, e, tool)
+	entry, err := s.asks.Dismissing(key)
+	switch {
+	case errors.Is(err, askq.ErrNotFound):
+		http.NotFound(w, r)
+		return
+	case errors.Is(err, askq.ErrClosed), errors.Is(err, askq.ErrBusy):
+		s.writeAskLive(w, http.StatusConflict, questionCard(h, e, entry))
+		return
+	case err != nil:
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	c, can := s.ext.Mirror.(mirrorAskCanceller)
+	if !can || !h.AskCancel {
+		http.Error(w, askCancelFailure(mirror.ErrAskCancelUnsupported), http.StatusConflict)
+		return
+	}
+	// Not the request's context, as for an answer: a page that goes away must
+	// not end the wait while the host may be sending the key.
+	note, err := c.CancelAsk(context.WithoutCancel(r.Context()), h.Host, e.Session, e.Window)
+	if err != nil {
+		s.logger.Printf("mirror: dismissing a question in %s/%s%s failed: %v", h.Host, e.Session, e.Window, err)
+		http.Error(w, askCancelFailure(err), http.StatusConflict)
+		return
+	}
+	s.logger.Printf("mirror: dismissed a question in %s/%s%s with Escape (%s)", h.Host, e.Session, e.Window, entry.ID)
+	v := questionCard(h, e, entry)
+	// The host's note says the picker is still showing (the Escape did not
+	// take): the question is still the person's to answer or dismiss.
+	v.Sent, v.SentShowing = note, note != ""
+	if note == "" {
+		v.Sent = "Esc sent — the question left the terminal's screen."
+	}
+	s.writeAskLive(w, http.StatusOK, v)
 }
 
 // ---------------------------------------------------------------------------

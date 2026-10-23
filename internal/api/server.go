@@ -55,6 +55,7 @@ import (
 	"github.com/ZacxDev/muster/internal/push"
 	"github.com/ZacxDev/muster/internal/sendqueue"
 	"github.com/ZacxDev/muster/internal/sse"
+	"github.com/ZacxDev/muster/internal/textplain"
 	"github.com/ZacxDev/muster/internal/ui"
 	"github.com/ZacxDev/muster/web"
 )
@@ -654,50 +655,49 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 }
 
 // shellData is what the shell draws on its first paint (ui.ShellData): on the
-// Agents tab, the "Recently viewed" strip, so it is not filled in above the list
-// a moment later and push everything below it down. Any other tab draws its
-// Agents panel hidden, where a late strip moves nothing on screen.
+// Agents tab, the LIST — its cards, server-rendered — and the "Recently viewed"
+// strip resolved against them, so nothing is filled in under the reader a moment
+// later. Any other tab draws its Agents panel hidden and empty, where a late
+// list moves nothing on screen, and fills it from the list's own load.
 //
-// 🔴 IT IS NOT THE LIST'S BUILD, AND MUST NOT BE. agentsListCards asks the
-// provisioner for live instances (a Kubernetes read) and reads every agent's
-// last message; the shell's first byte waited on both, and GET /agents then
-// built the whole list a second time for /ui/agents. The strip needs only
-// which agents exist, what they are called and which are pinned — one store
-// read — plus the mirror hub's cards, which are in memory, and their hosts'
-// icons, which are one mirror_tokens read (mirror.Service.HostRanks, uncached;
-// none when the viewer has no hosts). The live status arrives with the list's
-// own load, which MORPHS the strip out of band moments later
-// (ui.recentStrip): an icon swap that moves nothing.
-// TestTheAgentsShellReadsNoInstances counts the provisioner calls.
+// 🔴 IT IS THE LIST'S BUILD — agentsListCards, THE ONE handleAgentsContent
+// SERVES — AND THE TAB'S FIRST PAINT NEEDS NO SECOND. The shell used to draw only
+// the strip (a lighter read) and leave the list to a `load` request, so the
+// document was a filter bar over nothing until that request landed. Now the
+// document reads the provisioner's instances ONCE and the list issues no load
+// of its own (ui.agentsListLiveTrigger). (Its first live refresh — the SSE
+// open's resync — still rebuilds and morphs it; see ui/agents_list_ssr.go for
+// why that is measured and kept.) TestTheAgentsFirstPaintBuildsTheListOnce counts the provisioner reads.
 //
-// ⚠ A FAILED READ DRAWS THE OLD WAY (an empty strip the list's own load fills),
-// not an error: the list's load reports its own failure.
+// 🔴 THE DOCUMENT'S FIRST BYTE WAITS ON THAT INSTANCE READ AT MOST
+// shellInstancesWithin. It is a Kubernetes list (two API reads) with no timeout
+// of its own, and a stalled apiserver made GET /agents — every reload, a pin's
+// redirect, a boosted click — a blank tab for as long as it stalled (measured by
+// review: 3.002s behind a 3s-delayed provisioner, against 1ms for the shell
+// before). Past the bound the cards are drawn with their STORED status — still
+// the cards, so the first paint is still the list — and the list's first live
+// refresh (the SSE open's resync, GET /ui/agents, which waits for its read as
+// it always did) brings the live one, morphed in place.
+//
+// ⚠ A FAILED BUILD DRAWS THE OLD WAY (an empty list its own load fills, an
+// empty strip), not an error: that load reports its own failure.
 func (s *Server) shellData(ctx context.Context, tab string) ui.ShellData {
 	if tab != "agents" || s.ext.Agents == nil {
 		return ui.ShellData{}
 	}
-	list, err := s.ext.Agents.List(ctx)
+	cards, mirrors, err := s.agentsListCardsWithin(ctx, shellInstancesWithin)
 	if err != nil {
-		s.logger.Printf("agents: shell recents: %v", err)
+		s.logger.Printf("agents: shell list: %v", err)
 		return ui.ShellData{}
 	}
-	pinned := s.pinSet(ctx)
-	cards := make([]ui.AgentCardView, 0, len(list))
-	notChief := func(agents.Agent) bool { return false }
-	for _, a := range list {
-		// The ONE card composer (cardViewIndexed; TestOneCardComposerFeedsEverySurface)
-		// with a NIL instance index: liveStatusIndexed then answers the STORED
-		// status, with no provisioner read on the document's path
-		// (TestTheAgentsShellReadsNoInstances). The list's own load replaces the
-		// strip with the live one; a stored status that has since moved changes
-		// colour in the same 12px box, which moves nothing. Chief and focus are
-		// left zero: the strip draws neither.
-		cards = append(cards, s.cardViewIndexed(a, nil, time.Time{}, notChief, pinned, nil))
-	}
-	// No focus index: the strip draws no focus (ui/recents.go), and reading it
-	// would be a second store read on the shell's first byte.
-	return ui.ShellData{}.WithRecent(cards, s.mirrorCards(ctx, pinned, nil), s.recentRefs(ctx))
+	refs := s.recentRefs(ctx)
+	return ui.ShellData{}.WithList(cards, mirrors, refs, s.ext.AgentsIdleAfter)
 }
+
+// shellInstancesWithin bounds the Agents document's instance read (shellData):
+// long enough for a healthy apiserver's two list calls, short enough that a
+// stalled one costs a reload a moment rather than the tab.
+const shellInstancesWithin = 1500 * time.Millisecond
 
 // tabFromPath maps a request path to a tab key.
 //
@@ -1066,6 +1066,17 @@ func (s *Server) goNotify(owner int64, event string, n RouterNotification, onDel
 	if !s.notifiable() || owner <= 0 {
 		return
 	}
+	// 🔴 THE ONE PUSH TITLE SINK. Every notification — the browser payload, the
+	// native device's payload v2 (push.Payload.V2) and the router — leaves
+	// through here, so the title rule is applied to the TITLE here, once, at
+	// emit time. The BODY is not touched: a task or comment body is already
+	// plained upstream, before it is truncated (taskTitle,
+	// commentNotificationText), and running the rule again is not idempotent;
+	// the other bodies (a connector's reason, a reply draft's sender line) are
+	// not titles and are sent as written. TestTheTitleSinkLedger
+	// (internal/textplain) pins both halves and that sendPush and router.Notify
+	// are reached from nowhere else.
+	n.Title = textplain.Title(n.Title)
 	// 🔴 THE Add IS ON THE CALLER'S GOROUTINE AND THE Done IS fn's FIRST DEFER,
 	// AND safeGo DOES NOT DISTURB EITHER. safeGo's recover is registered OUTSIDE
 	// fn, so on a panic fn's own defers unwind first — Done runs, then the

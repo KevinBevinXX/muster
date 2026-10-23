@@ -104,6 +104,9 @@ func (s *Server) handleAgentTerminalPage(w http.ResponseWriter, r *http.Request)
 		c.Disabled = AgentNotRunningNotice
 	}
 	v.Composer = &c
+	// The Terminal half of the switch, which the agent's chat opens in a frame
+	// (ui/view_swap.go).
+	allowSameOriginFrame(w)
 	formDocument(w)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := ui.AgentTerminalPage(v).Render(w); err != nil {

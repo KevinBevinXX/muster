@@ -82,9 +82,38 @@ type Entry struct {
 	Typed   map[string]string
 	By      string
 	// Note is why typing failed (Failed).
-	Note     string
+	Note string
+	// Retry (Failed) says the failure leaves the question answerable from
+	// muster again: typing can be tried again (Failure.Retry).
+	Retry bool
+	// Left is what muster's typing is KNOWN to have left in the terminal's
+	// picker: the choices it was typing and how many keys of their plan it
+	// sent (nil: nothing known to be there). A drive that stopped part way
+	// leaves it; the next drive is handed it (BeginTyping) so it can tell
+	// muster's own partial answer from someone else's and continue it.
+	Left     *Progress
 	Created  time.Time
 	Resolved time.Time
+}
+
+// Progress is how far muster's typing of an answer got into the terminal's
+// picker: the choices it was typing, and how many keys of their plan
+// (internal/askdrive's Plan) it sent.
+type Progress struct {
+	Choices []Choice `json:"choices"`
+	Keys    int      `json:"keys"`
+}
+
+// clone is a deep copy of p (nil for nil).
+func (p *Progress) clone() *Progress {
+	if p == nil {
+		return nil
+	}
+	out := &Progress{Keys: p.Keys, Choices: make([]Choice, len(p.Choices))}
+	for i, c := range p.Choices {
+		out.Choices[i] = Choice{Picks: append([]int(nil), c.Picks...), Other: c.Other}
+	}
+	return out
 }
 
 // The store's bounds and clocks.
@@ -178,6 +207,7 @@ func (e *entry) snapshot() Entry {
 	out.Questions = append([]Question(nil), e.Questions...)
 	out.Answers = maps.Clone(e.Answers)
 	out.Typed = maps.Clone(e.Typed)
+	out.Left = e.Left.clone()
 	return out
 }
 
@@ -396,28 +426,45 @@ func (s *Store) BeginTyping(key Key, answers map[string]string) (e Entry, again 
 			return en.snapshot(), false, ErrBusy
 		}
 	}
-	en.State, en.Typed, en.Note = Typing, maps.Clone(answers), ""
+	// Left stays: it is what this drive finds in the picker (the caller hands
+	// it to the host), until this drive's outcome replaces it.
+	en.State, en.Typed, en.Note, en.Retry = Typing, maps.Clone(answers), "", false
 	en.driveUntil = s.now().Add(MaxDrive)
 	s.touch(en, &fire)
 	return en.snapshot(), false, nil
 }
 
 // TypingDone records that the host reported it typed the answer in: the
-// CLI's record will resolve the question; no drive is running.
+// CLI's record will resolve the question; no drive is running, and nothing of
+// muster's is left half-typed.
 func (s *Store) TypingDone(key Key) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if en, ok := s.byID[s.byKey[key]]; ok {
-		en.driveUntil = time.Time{}
+		en.driveUntil, en.Left = time.Time{}, nil
 	}
 }
 
-// TypingFailed records that muster could not type the answer in (why): a
+// Failure is how a drive that did not type the answer in ended.
+type Failure struct {
+	// Note is what the card says (Entry.Note).
+	Note string
+	// Settled says the host reported its outcome (it is not typing).
+	Settled bool
+	// Left is what the drive is known to have left in the picker (Entry.Left).
+	// It is recorded only when Settled; nil (no key of this drive reached the
+	// picker) keeps what the last drive left.
+	Left *Progress
+	// Retry says the question can be answered from muster again (Entry.Retry).
+	Retry bool
+}
+
+// TypingFailed records that muster could not type the answer in (f): a
 // Typing question becomes Failed, still the terminal's to answer. A question
-// the CLI resolved meanwhile is left as it is. settled says the host reported
-// its outcome (it is not typing); unsettled, no new typing may begin until
-// MaxDrive after the last began (BeginTyping's ErrBusy).
-func (s *Store) TypingFailed(key Key, why string, settled bool) (Entry, error) {
+// the CLI resolved meanwhile is left as it is. Unsettled, no new typing may
+// begin until MaxDrive after the last began (BeginTyping's ErrBusy), and what
+// the picker holds is not known (no Left).
+func (s *Store) TypingFailed(key Key, f Failure) (Entry, error) {
 	var fire []Entry
 	defer func() { s.notify(fire) }()
 	s.mu.Lock()
@@ -426,12 +473,42 @@ func (s *Store) TypingFailed(key Key, why string, settled bool) (Entry, error) {
 	if !ok {
 		return Entry{}, ErrNotFound
 	}
-	if settled {
+	if f.Settled {
 		en.driveUntil = time.Time{}
+		// A drive that typed nothing (refused before its first key: busy,
+		// not sent, …) left the picker as the last one did: keep that.
+		if f.Left != nil {
+			en.Left = f.Left.clone()
+		}
+	} else {
+		en.Left = nil
 	}
 	if en.State == Typing {
-		en.State, en.Note = Failed, why
+		en.State, en.Note, en.Retry = Failed, f.Note, f.Retry
 		s.touch(en, &fire)
+	}
+	return en.snapshot(), nil
+}
+
+// Dismissing reports whether the question at key (key.Owner is the request's
+// own owner; another owner's is ErrNotFound) may be dismissed from muster: an
+// open question no answer is being typed into (ErrBusy for one that is, and
+// for one whose last typing's outcome is not known yet — a host may still be
+// typing it), and not resolved (ErrClosed).
+func (s *Store) Dismissing(key Key) (Entry, error) {
+	var fire []Entry
+	defer func() { s.notify(fire) }()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.sweepLocked(&fire)
+	en, ok := s.byID[s.byKey[key]]
+	switch {
+	case !ok:
+		return Entry{}, ErrNotFound
+	case !en.State.Open():
+		return en.snapshot(), ErrClosed
+	case en.State == Typing, s.now().Before(en.driveUntil):
+		return en.snapshot(), ErrBusy
 	}
 	return en.snapshot(), nil
 }

@@ -15,12 +15,19 @@
 // defence in depth, not a proof — the guarantee is that the secret is never in
 // the pod, and only an approved agent reaches only the connector's own hosts.
 //
-// 🔴 ACCESS IS PER AGENT, APPROVED ON FIRST USE. Any agent may ASK for any
-// connector by name; the first ask files a pending [Grant] and the operator is
-// prompted. Once approved, that agent keeps access until it is destroyed (the
-// grant row cascades with the agent), the grant is revoked, or the connector is
-// deleted (its grants go with it). There is no time-based expiry: those three
-// are the whole model. A denial is final for that request.
+// 🔴 ACCESS IS RECORDED PER AGENT, BUT AN APPROVAL IS SHARED BY THE OWNER'S
+// AGENTS. Any agent may ASK for any connector by name; the first ask files a
+// pending [Grant]. When the owner approves one, a [StandingGrant] is recorded
+// for the owner, keyed on the connector, its credential source and — for the
+// GitHub App's one-repository token — the agent's repository: a later request
+// from ANY of the owner's agents with the same key is approved at request time
+// (decided_via 'standing', naming the standing grant), and requests already
+// waiting with that key are approved in the same step. Only when no standing
+// grant matches is the owner prompted. An approved agent keeps access until it
+// is destroyed (the grant row cascades with the agent), the grant or its
+// standing grant is revoked, or the connector is deleted (its grants and
+// standing grants go with it). There is no time-based expiry. A denial is final
+// for that request, and is never shared.
 //
 // ⚠ HTTP ONLY. HTTPS APIs and git's smart-HTTP protocol go through the proxy.
 // Non-HTTP platforms (a database, SSH) are out of scope: a future "handout"
@@ -137,7 +144,53 @@ type Grant struct {
 	// DecidedVia is where the operator decided it when that was NOT the
 	// Connectors tab (migration 0035): the zero value for the tab, for a grant
 	// not yet decided, a revoked one, and every decision recorded before 0035.
+	// DecidedViaStanding for an automatic approval (migration 0043).
 	DecidedVia DecisionSource `json:"-"`
+	// StandingGrantID is the standing grant that approved this grant
+	// automatically (migration 0043); 0 for every other grant.
+	StandingGrantID int64 `json:"standingGrantId,omitempty"`
+}
+
+// DecidedViaStanding is decided_via for a grant approved automatically by a
+// [StandingGrant] (migration 0043): no human decided THIS request — the owner
+// approved an earlier one with the same key. decided_by is DecidedByStanding.
+const DecidedViaStanding = "standing"
+
+// DecidedByStanding is decided_by on a grant approved by a standing grant. It is
+// deliberately not "operator": the owner did not decide this request.
+const DecidedByStanding = "standing-grant"
+
+// StandingGrant is one owner-wide approval (migration 0043): while it is live
+// (RevokedAt nil), a request from any of the owner's agents for Connector whose
+// credential source is Source — and, for the GitHub App (SourceApp), whose
+// agent's repository is Repo — is approved automatically.
+type StandingGrant struct {
+	ID        int64  `json:"id"`
+	Connector string `json:"connector"`
+	Source    string `json:"source"`
+	Repo      string `json:"repo,omitempty"`
+	// OriginGrantID is the per-agent grant whose approval created it.
+	OriginGrantID int64      `json:"originGrantId,omitempty"`
+	CreatedAt     time.Time  `json:"createdAt"`
+	RevokedAt     *time.Time `json:"revokedAt,omitempty"`
+}
+
+// StandingRepo is the repository part of a standing grant's key for an agent
+// dispatched with repo, under credential source: the repository trimmed and
+// lowercased (GitHub names are case-insensitive, and the App compares them so:
+// githubapp.App.Credential) for SourceApp, and "" for a stored credential,
+// which is keyed on the connector alone. ok is false when there is no key: a
+// SourceApp approval for an agent with no repository grants nothing usable, so
+// it is never shared.
+func StandingRepo(source, repo string) (string, bool) {
+	if source != SourceApp {
+		return "", true
+	}
+	r := strings.ToLower(strings.TrimSpace(repo))
+	if r == "" || len(r) > 256 {
+		return "", false
+	}
+	return r, true
 }
 
 // DecidedViaMCP is decided_via for a decision made through
@@ -232,6 +285,28 @@ type Store interface {
 	// ListGrants returns every pending and approved grant (the live set).
 	ListGrants(ctx context.Context) ([]Grant, error)
 	TouchGrant(ctx context.Context, id int64) error
+
+	// CreateStandingGrant records the owner's standing grant for the key
+	// (connector, source, repo — see StandingRepo), from the approval of grant
+	// origin; when a live one already exists it is returned and created is false.
+	// It retires the connector's live standing grants under the OTHER source.
+	CreateStandingGrant(ctx context.Context, connector, source, repo string, origin int64) (sg StandingGrant, created bool, err error)
+	// MatchStandingGrant returns the owner's live standing grant for the key that
+	// may approve agentID's request, or ErrNotFound. A standing grant does not
+	// apply to an agent whose grant on the connector the owner revoked or denied
+	// after the standing grant was created: that agent's own decision stands.
+	MatchStandingGrant(ctx context.Context, agentID int64, connector, source, repo string) (StandingGrant, error)
+	// ApproveFromStanding approves PENDING grant id from live standing grant sg
+	// (recording the standing grant's credential source); ErrNotPending when the
+	// grant is no longer pending or the standing grant is no longer live.
+	ApproveFromStanding(ctx context.Context, id, sg int64) (Grant, error)
+	// RevokeStandingGrant revokes a live standing grant AND every approved grant
+	// it gave (the ones it approved automatically, and the approval it was
+	// created from), returning the grants it revoked. ErrNotPending when it was
+	// already revoked.
+	RevokeStandingGrant(ctx context.Context, id int64, by string) (StandingGrant, []Grant, error)
+	// ListStandingGrants returns the owner's live standing grants.
+	ListStandingGrants(ctx context.Context) ([]StandingGrant, error)
 
 	Audit(ctx context.Context, e AuditEntry) error
 	ListAudit(ctx context.Context, limit int) ([]AuditEntry, error)

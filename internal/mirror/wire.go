@@ -156,6 +156,15 @@ const (
 	// advertised Msg.AskAnswer.
 	TypeAnswer   = "answer"
 	TypeAnswered = "answered"
+
+	// Dismissing an AskUserQuestion picker (askcancel.go). muster → host:
+	// cancel-ask — the window only (ID, Session, Window): it carries NO keys,
+	// and the host's one response to it is a single Escape into that pane's
+	// picker. Host → muster: ask-cancelled (its outcome: Msg.Refusal naming
+	// the kind of refusal; on success, Msg.Text a note, "" for none). Sent
+	// only to a host that advertised Msg.AskCancel.
+	TypeCancelAsk    = "cancel-ask"
+	TypeAskCancelled = "ask-cancelled"
 )
 
 // Msg is every control message on the tunnel, as one JSON text frame.
@@ -329,6 +338,18 @@ type Msg struct {
 	// Ask (answer) is what to type: the questions as muster showed them, and
 	// one choice per question.
 	Ask *AskTyping `json:"ask,omitempty"`
+	// AskCancel (hello) is the host ADVERTISING that it dismisses an
+	// AskUserQuestion picker with one Escape (TypeCancelAsk) — an -interactive
+	// host whose muster-mirror can. 🔴 NO VERSION BUMP, BACKWARD-COMPATIBLE
+	// BOTH WAYS, like AskAnswer: an older host never sets it, so muster never
+	// sends it a cancel (and the card offers none); an older muster ignores it.
+	AskCancel bool `json:"askCancel,omitempty"`
+	// Keys (answered) is how many keys of the answer's plan the picker has
+	// received from muster (askdrive.DriveFrom): what the next answer's
+	// AskTyping.Prior is when this one stopped part way. 🔴 NO VERSION BUMP,
+	// BACKWARD-COMPATIBLE BOTH WAYS: an older host never sets it (0: nothing
+	// muster can vouch for), and an older muster ignores it.
+	Keys int `json:"keys,omitempty"`
 	// HermesSend (hello) is the host ADVERTISING that it accepts a paste into
 	// a Hermes window (Window.Runtime RuntimeHermes), on an -interactive v2
 	// host. 🔴 NO HOST SETS IT YET: the host's flag and its gated send arrive
@@ -523,6 +544,36 @@ type Window struct {
 	// window at most). SessionKey is the runtime-qualified key it is stored by.
 	// Backward-compatible both ways, like ClaudeSession.
 	AgentSession string `json:"agentSession,omitempty"`
+	// LastMessage is when the Claude Code conversation in the window last had
+	// a MESSAGE — the newest timestamp of a user or assistant row in its
+	// transcript that is not meta (mirrorhost's lastMessageReader) — Unix
+	// seconds, floored to ActivityBucket; 0 when the window is not Claude or the
+	// host did not say. While the session is WORKING (a turn running, waiting
+	// on the person, a background shell of its own) it is instead the host's
+	// now: Claude Code writes no row then, and a working window must not read
+	// as idle (mirrorhost's WireWindows). CardActivity prefers it over Activity.
+	//
+	// 🔴 WHY: Activity is tmux's #{window_activity}, which a tmux restart (a
+	// tmux-resurrect restore) resets for EVERY window to the restore — measured:
+	// all 67 windows on one host read "active since the restore", so nothing
+	// could ever look idle. A resumed session's transcript is written on start
+	// too (attachment and system rows), so a file's mtime is no better; the last
+	// MESSAGE's own timestamp is the one that survives both.
+	//
+	// Backward-compatible both ways, like ClaudeSession: an older muster ignores
+	// it (and keeps ordering by Activity); an older host sends none, and muster
+	// falls back to Activity.
+	LastMessage int64 `json:"lastMessage,omitempty"`
+}
+
+// CardActivity is the window's activity as the Agents list uses it — the
+// order, the card's "active … ago" and the Idle section, one number: a Claude
+// window's LastMessage when the host reported one, else Activity.
+func (w Window) CardActivity() int64 {
+	if w.Claude && w.LastMessage > 0 {
+		return w.LastMessage
+	}
+	return w.Activity
 }
 
 // The agent runtimes a window can run (Window.AgentRuntime), sized for exactly
@@ -954,6 +1005,14 @@ func NormalizeWindows(in []Window, now int64) []Window {
 			w.Activity = now
 		}
 		w.Activity -= w.Activity % ActivityBucket
+		// The same bounds for the last message, which only a Claude window has.
+		if !w.Claude || w.LastMessage < 0 {
+			w.LastMessage = 0
+		}
+		if now > 0 && w.LastMessage > now {
+			w.LastMessage = now
+		}
+		w.LastMessage -= w.LastMessage % ActivityBucket
 		out = append(out, w)
 	}
 	sort.SliceStable(out, func(i, j int) bool {
@@ -1139,7 +1198,8 @@ func (w Window) Equal(o Window) bool {
 	return w.Session == o.Session && w.ID == o.ID && w.Index == o.Index && w.Active == o.Active && w.Label == o.Label &&
 		w.Activity == o.Activity && w.Claude == o.Claude && w.Command == o.Command && w.Status == o.Status &&
 		w.StatusSince == o.StatusSince && w.ClaudeSession == o.ClaudeSession && slices.Equal(w.OtherClaude, o.OtherClaude) &&
-		pendingEqual(w.Pending, o.Pending) && w.Runtime == o.Runtime && w.AgentSession == o.AgentSession
+		pendingEqual(w.Pending, o.Pending) && w.Runtime == o.Runtime && w.AgentSession == o.AgentSession &&
+		w.LastMessage == o.LastMessage
 }
 
 // AskTyping is an answer to type into an AskUserQuestion picker (Msg.Ask):
@@ -1148,6 +1208,11 @@ func (w Window) Equal(o Window) bool {
 type AskTyping struct {
 	Questions []askq.Question `json:"questions"`
 	Choices   []askq.Choice   `json:"choices"`
+	// Prior is what an earlier answer's typing is known to have left in this
+	// picker (askq.Entry.Left): the host continues it when the picker shows
+	// exactly that, and only then (askdrive.DriveFrom). nil: nothing. An
+	// older host ignores it and requires the picker untouched, as before.
+	Prior *askq.Progress `json:"prior,omitempty"`
 }
 
 // The kinds of paste refusal a host names (Msg.Refusal on pasted): the

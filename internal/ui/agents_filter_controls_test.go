@@ -74,7 +74,7 @@ func TestTheCardsCarryTheirHostLabel(t *testing.T) {
 	// The list's partial is the cards and the recent strip, and nothing else
 	// (no out-of-band tabs: the script builds them from the cards).
 	var b strings.Builder
-	if err := RenderAgentsList(&b, list, mirrors, nil); err != nil {
+	if err := RenderAgentsList(&b, list, mirrors, nil, 0); err != nil {
 		t.Fatal(err)
 	}
 	if b.String() != cards+renderNode(t, recentStrip(recentItems(list, mirrors, nil), true)) {
@@ -170,13 +170,13 @@ func TestTheBarHasHostTabsAndNoDropdowns(t *testing.T) {
 func TestTheHostTabIsAnExactTermAndedWithTheBox(t *testing.T) {
 	script := scriptWith(t, renderString(t, Page("agents", featuresAllOn)), "__musterAgentsFilter")
 	for name, want := range map[string]string{
-		"the tab is one more EXACT term, ANDed":   "var all_ = host ? ts.concat([{ attr: 'data-f-host', value: host, exact: true }]) : ts;",
-		"every term hides":                        "style.textContent = ['#agents-list > article[data-held]{display:none !important}'].concat(all_.map(",
-		"the box alone is ?q= and the session":    "var q = input.value;",
-		"tabs come from the DRAWN cards":          "var drawn = list.querySelectorAll(':scope > article:not([data-held])');",
-		"the choice is stored under tabs' prefix": "var HOST_KEY = 'muster:tabs:agents-host';",
-		"an absent host SHOWS All":                "var on = h && seen[h] ? h : '';",
-		"the hold reads the filter":               "var h = heldOrder.filter(function (id) { return inLive[id] && shows(byId(id)); });",
+		"the tab is one more EXACT term, ANDed":      "var all_ = host ? ts.concat([{ attr: 'data-f-host', value: host, exact: true }]) : ts;",
+		"every term hides (the head's one rule set)": "var text = R.rules(ts, host, cs, false);",
+		"the box alone is ?q= and the session":       "var q = input.value;",
+		"tabs come from the DRAWN cards":             "var drawn = list.querySelectorAll(':scope > article:not([data-held])');",
+		"the choice is stored under tabs' prefix":    "var HOST_KEY = 'muster:tabs:agents-host';",
+		"an absent host SHOWS All":                   "var on = h && seen[h] ? h : '';",
+		"the hold reads the filter":                  "var h = heldOrder.filter(function (id) { return inLive[id] && shows(byId(id)); });",
 	} {
 		if !strings.Contains(script, want) {
 			t.Errorf("%s: the filter script no longer contains %q", name, want)

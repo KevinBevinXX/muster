@@ -6,6 +6,8 @@ import (
 
 	g "maragu.dev/gomponents"
 	. "maragu.dev/gomponents/html"
+
+	"github.com/ZacxDev/muster/internal/textplain"
 )
 
 // NotificationRow is one agent's unread-replies entry in the notifications
@@ -134,7 +136,7 @@ func agentHref(name string, sessionID int64) string {
 }
 
 func activeRow(it ActiveRow) g.Node {
-	label := it.DisplayName
+	label := textplain.Title(it.DisplayName)
 	if label == "" {
 		label = it.Name
 	}
@@ -171,7 +173,7 @@ func activePill(it ActiveRow) g.Node {
 }
 
 func notifRow(it NotificationRow) g.Node {
-	label := it.DisplayName
+	label := textplain.Title(it.DisplayName)
 	if label == "" {
 		label = it.Name
 	}

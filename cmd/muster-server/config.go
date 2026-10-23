@@ -28,6 +28,7 @@ import (
 	"github.com/ZacxDev/muster/internal/push"
 	"github.com/ZacxDev/muster/internal/sendqueue"
 	"github.com/ZacxDev/muster/internal/stepup"
+	"github.com/ZacxDev/muster/internal/ui"
 )
 
 // defaultPort is the port this service listens on when MUSTER_PORT is unset.
@@ -121,6 +122,11 @@ const (
 	// session on any host. A Go duration, 168h when unset, refused outside
 	// 1h–2160h (90 days).
 	envFocusRetention = "MUSTER_FOCUS_RETENTION"
+	// The Agents list's Idle section (internal/ui/idle_section.go): how long an
+	// entry must have had no activity to be drawn under the collapsed "Idle"
+	// header. Days ("14d") or a Go duration, 14d when unset, "0"/"off" turns it
+	// off, refused outside 1h–365d otherwise.
+	envAgentsIdleAfter = "MUSTER_AGENTS_IDLE_AFTER"
 
 	// The optional MIRRORED-sessions plugin (internal/mirror): "1" turns it on.
 	// Off, GET /mirror/connect answers 404 and nothing mirrored is listed.
@@ -141,6 +147,12 @@ const (
 	// or owner/*>,…", each matched only on mail that plugin marked sender_verified. Unset: every
 	// routed answer becomes a pending draft the owner approves.
 	envRouteRelayAllow = "MUSTER_ROUTE_RELAY_ALLOW"
+	// How long a routed message waits for its session's answer before it is
+	// handed back to the chief (api.DefaultRouteTimeout, 30m, when unset). A Go
+	// duration between api.MinRouteTimeout and api.MaxRouteTimeout, and — with
+	// routing on — longer than MUSTER_SEND_QUEUE_IDLE; anything else refuses to
+	// boot.
+	envRouteTimeout = "MUSTER_ROUTE_TIMEOUT"
 	// TASK ROUTING (internal/api/task_routing.go): "1" lets a plugin hand a task
 	// it files (POST /plugin/v1/tasks, route_to_chief) to the owner's chief,
 	// which routes it with task_route_attention / task_forward. Needs the plugin
@@ -273,6 +285,24 @@ const (
 	envAgentCCAccounts    = "MUSTER_AGENT_CC_ACCOUNTS"
 	envAgentCCTokenPrefix = "MUSTER_AGENT_CC_TOKEN_"
 	envAgentCCStorage     = "MUSTER_AGENT_CC_STORAGE_SIZE"
+
+	// The account pool's two limits (internal/ccpool.Limits): how long an
+	// account rests after a `rate_limited` whose message states no readable reset
+	// time, and how many jobs one account may run at once. Unset cooldown is
+	// ccpool.DefaultCooldown; unset cap is NO cap (the cap is opt-in).
+	envAgentCCCooldown = "MUSTER_AGENT_CC_RATE_LIMIT_COOLDOWN"
+	envAgentCCMaxJobs  = "MUSTER_AGENT_CC_MAX_CONCURRENT_JOBS"
+
+	// envAgentCCBypassPools is a comma list of worker-pool names whose
+	// claude-code agents run their JOB lanes with permissions BYPASSED
+	// (agentspec.ClaudeCodeConfig.BypassPools -> CCD_JOB_PERMISSION_MODE in the
+	// pod, cmd/ccd/jobmode.go). Unset is none. 🔴 A listed pool's job lanes run
+	// any command on the code they are handed, without approval, and can read
+	// that worker's own Claude setup-token: for pools reviewing trusted members'
+	// PRs only. Names are lower-cased as read (splitList; pool names are
+	// lower-case only). Refused at boot without the claude-code kind, and for a
+	// name agents.ValidWorkerPool refuses.
+	envAgentCCBypassPools = "MUSTER_AGENT_CC_BYPASS_POOLS"
 
 	// The hermes kind (docs/design/hermes.md): its image (tag or digest pinned;
 	// no default, for MUSTER_AGENT_CC_IMAGE's reason) and its /data volume size.
@@ -494,6 +524,11 @@ type config struct {
 	FocusInterval time.Duration
 	// FocusRetention is MUSTER_FOCUS_RETENTION (focus.DefaultRetention unset).
 	FocusRetention time.Duration
+	// AgentsIdleAfter is MUSTER_AGENTS_IDLE_AFTER (ui.DefaultIdleSectionAfter
+	// when unset; 0 = no Idle section). AgentsIdleAfterRaw is the value as
+	// set ("" unset), for the banner.
+	AgentsIdleAfter    time.Duration
+	AgentsIdleAfterRaw string
 
 	// Mirror turns the mirrored-sessions plugin on (MUSTER_MIRROR=1).
 	Mirror bool
@@ -506,6 +541,9 @@ type config struct {
 	SessionRouting     bool
 	RouteRelayAllowRaw string
 	RouteRelayAllow    plugins.RelayAllowlist
+	// RouteTimeout is MUSTER_ROUTE_TIMEOUT (api.DefaultRouteTimeout when unset):
+	// a route's deadline.
+	RouteTimeout time.Duration
 	// TaskRouting is MUSTER_TASK_ROUTING=1; ChiefDispatchOwners
 	// MUSTER_CHIEF_DISPATCH_OWNERS, parsed (loadConfig refuses one that does not
 	// parse) — non-empty turns task_dispatch on.
@@ -750,6 +788,15 @@ type config struct {
 	AgentCCTokens       map[string]string
 	// AgentCCStorage is the claude-code kind's /data volume size ("" = 10Gi).
 	AgentCCStorage string
+	// AgentCCCooldown and AgentCCMaxJobs are the account pool's limits
+	// (MUSTER_AGENT_CC_RATE_LIMIT_COOLDOWN, MUSTER_AGENT_CC_MAX_CONCURRENT_JOBS);
+	// zero is unset: ccpool.DefaultCooldown for the cooldown, and NO cap.
+	AgentCCCooldown time.Duration
+	AgentCCMaxJobs  int
+	// AgentCCBypassPools is MUSTER_AGENT_CC_BYPASS_POOLS read by splitList:
+	// trimmed, in order, LOWER-CASED (pool names are lower-case only, so
+	// "Pr-Review" names the pool "pr-review"). Empty is none.
+	AgentCCBypassPools []string
 
 	// AgentHermesImage is the hermes kind's FULL image reference (tag or digest
 	// required; no default), and AgentHermesStorage its /data volume size
@@ -983,6 +1030,7 @@ func loadConfig(getenv func(string) string) (config, error) {
 		AgentCCImage:          strings.TrimSpace(getenv(envAgentCCImage)),
 		AgentCCAccountNames:   splitList(getenv(envAgentCCAccounts)),
 		AgentCCStorage:        strings.TrimSpace(getenv(envAgentCCStorage)),
+		AgentCCBypassPools:    splitList(getenv(envAgentCCBypassPools)),
 		AgentHermesImage:      strings.TrimSpace(getenv(envAgentHermesImage)),
 		AgentHermesStorage:    strings.TrimSpace(getenv(envAgentHermesStorage)),
 		AgentNetpolFromNS:     strings.TrimSpace(getenv(envAgentNetpolFromNS)),
@@ -1024,6 +1072,23 @@ func loadConfig(getenv func(string) string) (config, error) {
 	// set the field), and two defaulting expressions is how one of them comes to
 	// hold a different literal.
 	c.AgentNamespacePrefix = agents.ResolveNamespacePrefix(c.AgentNamespacePrefix)
+
+	if v := strings.TrimSpace(getenv(envAgentCCCooldown)); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil || d < time.Minute || d > 7*24*time.Hour {
+			return config{}, fmt.Errorf("invalid %s %q: want a Go duration between 1m and 168h (unset means %s)",
+				envAgentCCCooldown, v, ccpool.DefaultCooldown)
+		}
+		c.AgentCCCooldown = d
+	}
+	if v := strings.TrimSpace(getenv(envAgentCCMaxJobs)); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 || n > 64 {
+			return config{}, fmt.Errorf("invalid %s %q: want an integer 1-64 (unset means no per-account cap)",
+				envAgentCCMaxJobs, v)
+		}
+		c.AgentCCMaxJobs = n
+	}
 
 	if v := strings.TrimSpace(getenv(envPort)); v != "" {
 		p, err := strconv.Atoi(v)
@@ -1092,6 +1157,12 @@ func loadConfig(getenv func(string) string) (config, error) {
 		}
 		c.FocusInterval = d
 	}
+	c.AgentsIdleAfterRaw = strings.TrimSpace(getenv(envAgentsIdleAfter))
+	idleAfter, err := ui.ParseIdleSectionAfter(c.AgentsIdleAfterRaw)
+	if err != nil {
+		return config{}, fmt.Errorf("invalid %s: %v", envAgentsIdleAfter, err)
+	}
+	c.AgentsIdleAfter = idleAfter
 	c.FocusRetention = focus.DefaultRetention
 	if v := strings.TrimSpace(getenv(envFocusRetention)); v != "" {
 		d, err := time.ParseDuration(v)
@@ -1099,6 +1170,25 @@ func loadConfig(getenv func(string) string) (config, error) {
 			return config{}, fmt.Errorf("invalid %s %q: want a Go duration between 1h and 2160h (e.g. 168h)", envFocusRetention, v)
 		}
 		c.FocusRetention = d
+	}
+	c.RouteTimeout = api.DefaultRouteTimeout
+	if v := strings.TrimSpace(getenv(envRouteTimeout)); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil || d < api.MinRouteTimeout || d > api.MaxRouteTimeout {
+			return config{}, fmt.Errorf("invalid %s %q: want a Go duration between %s and %s (e.g. 30m)",
+				envRouteTimeout, v, api.MinRouteTimeout, api.MaxRouteTimeout)
+		}
+		c.RouteTimeout = d
+	}
+	// 🔴 A ROUTE MUST OUTLAST ITS OWN PASTE. A routed message is pasted only
+	// once the window has been idle for MUSTER_SEND_QUEUE_IDLE, so a deadline
+	// no longer than that wait times the route out before its message can
+	// reach the session — every route would go back to the chief unread.
+	// Checked only with routing on: with it off neither value is about routes,
+	// and a long idle wait alone is a valid setting.
+	if c.SessionRouting && c.RouteTimeout <= c.SendQueueIdle {
+		return config{}, fmt.Errorf("invalid %s %s: it must be longer than %s (%s), the idle wait before a routed message is even pasted",
+			envRouteTimeout, c.RouteTimeout, envSendQueueIdle, c.SendQueueIdle)
 	}
 	if c.RouteRelayAllowRaw != "" {
 		l, err := plugins.ParseRelayAllowlist(c.RouteRelayAllowRaw)
@@ -1816,6 +1906,24 @@ func (c config) validateKinds() error {
 	return nil
 }
 
+// connectorStoreConfigured reports whether this deployment builds a connector
+// store: a database to hold it and a key to seal its secrets.
+func (c config) connectorStoreConfigured() bool {
+	return c.Database != "" && len(c.ConnectorEncKey) > 0
+}
+
+// ccPoolLimits is the account pool's limits: the configured values, with
+// ccpool.DefaultCooldown where the cooldown is unset. An unset cap stays zero,
+// which is NO cap: the per-account cap is opt-in.
+func (c config) ccPoolLimits() ccpool.Limits {
+	l := ccpool.DefaultLimits()
+	if c.AgentCCCooldown != 0 {
+		l.Cooldown = c.AgentCCCooldown
+	}
+	l.MaxConcurrentJobs = c.AgentCCMaxJobs
+	return l
+}
+
 // validateClaudeCodeKind checks the claude-code kind's own settings: refused
 // while the kind is off (an armed switch), required while it is on.
 func (c config) validateClaudeCodeKind() error {
@@ -1826,7 +1934,23 @@ func (c config) validateClaudeCodeKind() error {
 				envAgentCCImage, envAgentCCAccounts, envAgentCCStorage, envAgentKinds, agents.KindClaudeCode,
 				agents.KindClaudeCode, envAgentKinds)
 		}
+		if c.AgentCCCooldown != 0 || c.AgentCCMaxJobs != 0 {
+			return fmt.Errorf("%s or %s is set but %s does not include %s: there is no Claude account pool for "+
+				"them to limit. Add %s to %s, or unset them", envAgentCCCooldown, envAgentCCMaxJobs, envAgentKinds,
+				agents.KindClaudeCode, agents.KindClaudeCode, envAgentKinds)
+		}
+		if len(c.AgentCCBypassPools) > 0 {
+			return fmt.Errorf("%s is set but %s does not include %s: there are no Claude Code job lanes for it to "+
+				"bypass permissions on, so it would be an armed switch that does nothing. Add %s to %s, or unset it",
+				envAgentCCBypassPools, envAgentKinds, agents.KindClaudeCode, agents.KindClaudeCode, envAgentKinds)
+		}
 		return nil
+	}
+	for _, p := range c.AgentCCBypassPools {
+		if !agents.ValidWorkerPool(p) {
+			return fmt.Errorf("invalid %s entry %q: a worker pool name is 1-63 of [a-z0-9-], starting with a "+
+				"letter or digit", envAgentCCBypassPools, p)
+		}
 	}
 	if c.agentProvisioner() == provisionerNone {
 		return fmt.Errorf("%s includes %s but %s=%s: a kind is something a DRIVER provisions, so there is "+

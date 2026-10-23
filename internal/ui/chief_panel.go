@@ -6,6 +6,8 @@ import (
 
 	g "maragu.dev/gomponents"
 	. "maragu.dev/gomponents/html"
+
+	"github.com/ZacxDev/muster/internal/textplain"
 )
 
 // ---------------------------------------------------------------------------
@@ -632,7 +634,7 @@ func chiefThreadRows(v ChiefThreadsView) g.Node {
 	}
 	rows := make([]g.Node, 0, len(v.Threads))
 	for _, sess := range v.Threads {
-		title := sess.Title
+		title := textplain.Title(sess.Title)
 		if title == "" {
 			title = "New thread"
 		}

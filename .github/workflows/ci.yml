@@ -18,9 +18,24 @@ name: ci
 # concurrency group can merge the two without leaving the loser's cancelled
 # check-runs on the head commit. Trade-off: a branch pushed WITHOUT an open PR
 # gets no CI — run the `make` targets locally (see above).
+#
+# A `v<MAJOR>.<MINOR>.<PATCH>` TAG push runs the whole suite too, and then
+# publishes the muster image under that release version (the `image-*` jobs at
+# the end). No release tags exist yet: the Harbor releases are versioned by
+# devrc's `muster-ops release`, outside this repository, and this trigger is the
+# GHCR spelling of the same version for whoever starts tagging.
+#
+# 🔴 THE TAG FILTER IS STRICT SEMVER, NOT `v*`, BECAUSE A RED RUN HERE IS NOT
+# CHEAP. `muster-ops release` refuses a sha unless EVERY CI run for it concluded
+# success, and `image-muster` refuses a non-semver version — so a `v*` filter
+# let a tag like `v1.2.3-rc1` turn that sha's runs permanently red and block its
+# Harbor release for good. In GitHub's filter syntax `.` is literal and `+` is
+# "one or more of the preceding": this matches `v1.2.3` and `v10.20.30`, not
+# `v1.2.3-rc1`, `v1.2` or `vfoo`. (image-muster keeps its own semver check.)
 on:
   push:
     branches: [main]
+    tags: ['v[0-9]+.[0-9]+.[0-9]+']
   pull_request:
 
 # 🔴 ONLY A PULL REQUEST'S RUNS CANCEL EACH OTHER; A PUSH TO `main` IS NEVER
@@ -663,3 +678,173 @@ jobs:
           node pick-legs.mjs ../e2e-legs > ../e2e-legs-picked.txt
           mapfile -t picked < ../e2e-legs-picked.txt
           node verdict.mjs --all "${picked[@]}"
+
+  # ---------------------------------------------------------------------------
+  # IMAGE PUBLISHING TO GHCR (ghcr.io/<owner>/{muster,claude-code-agent}).
+  #
+  # 🔴 THIS ADDS A REGISTRY; IT DOES NOT MOVE OFF HARBOR. The existing
+  # deployment pulls from a private Harbor, which devrc's `muster-ops release`
+  # (and `make hermes-image` by hand) push to from an operator's host; nothing
+  # here touches that. GHCR exists for clusters that cannot reach that registry.
+  #
+  # TAGS ARE THE HARBOR TAGS, so a deploy can pin either registry the same way:
+  #   claude-code-agent:<7-char commit sha>               (muster-ops' tag)
+  #   muster:<MAJOR.MINOR.PATCH>                          on a v<version> tag push,
+  #       stamped with that VERSION, as muster-ops does;
+  #   muster:<7-char sha>                                 on every push to main,
+  #       stamped VERSION=<sha>. The semver is minted by muster-ops at release
+  #       time, outside this repository, so a main push has no version to give it.
+  #
+  # ⚠ THE hermes-agent IMAGE IS DELIBERATELY NOT PUBLISHED HERE: no GHCR
+  # consumer runs the hermes kind, and its nix build costs ~6 minutes per run.
+  # It stays Harbor-only, via `make hermes-image`.
+  #
+  # 🔴 PUSHES ONLY ON A `push` EVENT (main, or a vX.Y.Z tag), AND ONLY AFTER
+  # EVERY TEST JOB ABOVE IS GREEN (`publish-gate`). A pull request builds every
+  # image the same way and pushes nothing; it does log in read-only and probe the
+  # tag it WOULD push, so the registry path is exercised before merge.
+  #
+  # ⚠ THESE JOBS ARE PART OF THE `ci` RUN, SO A GHCR FAILURE BLOCKS A HARBOR
+  # RELEASE. `muster-ops release` refuses a sha whose CI runs are not ALL
+  # success; a GHCR outage during a `main` run leaves that sha refused until the
+  # failed image job is re-run (`gh run rerun --failed`). Accepted.
+  #
+  # 🔴 ONE PUBLISHER PER IMAGE PER COMMIT AT A TIME (job-level `concurrency`).
+  # The `main` run and a vX.Y.Z tag run for the same commit both publish
+  # `claude-code-agent:<sha7>`; without the group both could probe "absent" and
+  # both push, and the second would move the tag. Serialised, the second sees
+  # "present" and keeps the first. `cancel-in-progress: false`, so neither is
+  # cancelled (a THIRD queued run would replace a pending one — rare, re-runnable).
+  #
+  # 🔴 A PUBLISHED TAG IS NEVER OVERWRITTEN (.github/scripts/ghcr-push.sh): a
+  # re-run keeps the image already under a commit's tag, and a release version
+  # that already exists fails the job.
+  #
+  # Local: make image IMAGE=muster VERSION=<v>; docker build -f
+  # images/claude-code-agent/Dockerfile . Pushing is CI's.
+  publish-gate:
+    name: publish gate (every test job green)
+    needs: [build, test, leakscan, nix, css, ccd-tmux, mirror-tmux, ccd-image, e2e]
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "every test job succeeded for $GITHUB_SHA"
+
+  image-muster:
+    name: muster image (GHCR)
+    needs: publish-gate
+    runs-on: ubuntu-latest
+    concurrency:
+      group: ghcr-muster-${{ github.sha }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: the tag this run publishes
+        id: tag
+        run: |
+          ns="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}"
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            v="${GITHUB_REF_NAME#v}"
+            if ! [[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "::error::tag $GITHUB_REF_NAME is not v<MAJOR>.<MINOR>.<PATCH>; no muster image is published for it"
+              exit 1
+            fi
+            mode=refuse
+          else
+            v="${GITHUB_SHA::7}"
+            mode=reuse
+          fi
+          {
+            echo "version=$v"
+            echo "ref=$ns/muster:$v"
+            echo "mode=$mode"
+          } >> "$GITHUB_OUTPUT"
+          echo "muster image: $ns/muster:$v (VERSION=$v, existing tag: $mode)"
+
+      - name: docker build (make image)
+        run: |
+          make image IMAGE=muster VERSION='${{ steps.tag.outputs.version }}' \
+            DOCKER_BUILD_FLAGS="--label org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY --label org.opencontainers.image.revision=$GITHUB_SHA"
+
+      # Same-repository pull requests only: a fork's token cannot read packages.
+      - name: log in to ghcr.io
+        if: ${{ github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository }}
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: probe the tag it would push (pull request; pushes nothing)
+        if: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
+        run: .github/scripts/ghcr-push.sh probe '${{ steps.tag.outputs.ref }}'
+
+      - name: push
+        if: ${{ github.event_name == 'push' }}
+        run: .github/scripts/ghcr-push.sh push 'muster:${{ steps.tag.outputs.version }}' '${{ steps.tag.outputs.ref }}' '${{ steps.tag.outputs.mode }}'
+
+  image-claude-code-agent:
+    name: claude-code-agent image (GHCR)
+    needs: publish-gate
+    runs-on: ubuntu-latest
+    concurrency:
+      group: ghcr-claude-code-agent-${{ github.sha }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: the tag this run publishes
+        id: tag
+        run: |
+          short="${GITHUB_SHA::7}"
+          echo "short=$short" >> "$GITHUB_OUTPUT"
+          echo "ref=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/claude-code-agent:$short" >> "$GITHUB_OUTPUT"
+
+      # The build muster-ops runs, with its revision label (the provenance it
+      # checks before reusing a tag) and the source label.
+      - name: docker build
+        run: |
+          docker build \
+            --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
+            --label "org.opencontainers.image.revision=$GITHUB_SHA" \
+            -f images/claude-code-agent/Dockerfile -t 'claude-code-agent:${{ steps.tag.outputs.short }}' .
+
+      # 🔴 THE IMAGE THIS JOB PUSHES IS SMOKED, NOT ONLY THE `ccd-image` JOB'S.
+      # This is a fresh build on floating base images, so it is not byte-for-byte
+      # the image `ccd-image` tested. Same three runs as that job and as
+      # muster-ops' cc_smoke: a fresh volume, a legacy root-owned
+      # /data/workspace, and the resume of that legacy volume's transcript.
+      - name: cc-smoke the image it will push (fresh, legacy, legacy-resume)
+        env:
+          IMG: claude-code-agent:${{ steps.tag.outputs.short }}
+        run: |
+          docker run --rm --tmpfs /data:rw,exec,mode=2777,uid=0,gid=1000 -e CC_SMOKE_VOLUME=fresh "$IMG" cc-smoke
+          docker volume create cc-smoke-legacy
+          docker run --rm --user 0 -v cc-smoke-legacy:/data:nocopy "$IMG" \
+            sh -euc 'chown 0:1000 /data && chmod 2777 /data && install -d -o 0 -g 1000 -m 2755 /data/workspace'
+          docker run --rm -v cc-smoke-legacy:/data:nocopy -e CC_SMOKE_VOLUME=legacy "$IMG" cc-smoke
+          docker run --rm --user 0 -v cc-smoke-legacy:/data:nocopy "$IMG" \
+            sh -euc 'rm -rf /data/workspace && install -d -o 0 -g 1000 -m 2755 /data/workspace'
+          docker run --rm -v cc-smoke-legacy:/data:nocopy -e CC_SMOKE_VOLUME=legacy-resume "$IMG" cc-smoke
+
+      - name: log in to ghcr.io
+        if: ${{ github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository }}
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: probe the tag it would push (pull request; pushes nothing)
+        if: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
+        run: .github/scripts/ghcr-push.sh probe '${{ steps.tag.outputs.ref }}'
+
+      - name: push
+        if: ${{ github.event_name == 'push' }}
+        run: .github/scripts/ghcr-push.sh push 'claude-code-agent:${{ steps.tag.outputs.short }}' '${{ steps.tag.outputs.ref }}' reuse

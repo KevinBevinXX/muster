@@ -37,6 +37,9 @@ export interface Running {
   url: string;
   proc: ChildProcess;
   stop(): Promise<void>;
+  // log is the server's output so far (stdout and stderr): a spec counts the
+  // lines it writes for a socket's open and end.
+  log(): string;
 }
 
 export async function startServer(version: string, port: number, extraEnv: Record<string, string> = {}): Promise<Running> {
@@ -77,6 +80,7 @@ export async function startServer(version: string, port: number, extraEnv: Recor
   return {
     url,
     proc,
+    log: () => log,
     async stop() {
       if (proc.exitCode !== null) return;
       const done = new Promise((r) => proc.once('exit', r));

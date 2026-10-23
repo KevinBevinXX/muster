@@ -3,7 +3,6 @@ package api
 import (
 	"context"
 	"fmt"
-	"strings"
 
 	"github.com/ZacxDev/muster/internal/connectors"
 )
@@ -32,30 +31,19 @@ import (
 //     tab, a mirrored session's connector_request_decide, and the approval that
 //     comes with entering a credential.
 //
+// A third door outside this package: a worker-pool agent holding such a grant is
+// never started with job-lane permission bypass (agentprovision, the
+// MUSTER_AGENT_CC_BYPASS_POOLS veto), whatever the two doors above let through.
+//
 // A worker joins its pool at creation, before it can hold any grant, so with
 // both doors it never holds one. ⚠ A worker on a PRIVATE repository therefore
 // cannot clone it (ccd's clone has no credential, and the request ccd files
 // for one can never be approved): pool workers serve public repositories, the
 // same ones a job's anonymous fetch can read.
 
-// grantReachesGitHub reports whether a grant on connector name could put a
-// GitHub credential in the agent's pod: the `github` connector, a connector
-// with a github.com host, or — failing closed — one whose hosts are unknown.
+// grantReachesGitHub is connectors.ReachesGitHub, the one predicate.
 func grantReachesGitHub(name string, hosts map[string][]string) bool {
-	if name == "github" {
-		return true
-	}
-	hs, known := hosts[name]
-	if !known {
-		return true
-	}
-	for _, h := range hs {
-		h = strings.ToLower(strings.TrimSpace(h))
-		if h == "github.com" || strings.HasSuffix(h, ".github.com") {
-			return true
-		}
-	}
-	return false
+	return connectors.ReachesGitHub(name, hosts)
 }
 
 // connectorHosts is every connector's hosts, by name. nil with no connector
@@ -64,15 +52,7 @@ func (s *Server) connectorHosts(ctx context.Context) (map[string][]string, error
 	if s.ext.Connectors == nil {
 		return nil, nil
 	}
-	list, err := s.ext.Connectors.ListConnectors(ctx)
-	if err != nil {
-		return nil, err
-	}
-	out := make(map[string][]string, len(list))
-	for _, c := range list {
-		out[c.Name] = c.Hosts
-	}
-	return out, nil
+	return connectors.Hosts(ctx, s.ext.Connectors)
 }
 
 // gitHubGrants maps each agent among ids that holds an APPROVED grant reaching

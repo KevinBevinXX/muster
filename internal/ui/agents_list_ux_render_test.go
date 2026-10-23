@@ -234,8 +234,8 @@ func TestTheAgentsFilterHasThePresetChips(t *testing.T) {
 	if n := strings.Count(row, ` title="`); n != 5 {
 		t.Errorf("%d chips explain themselves, want 5", n)
 	}
-	script := scriptWith(t, page, "__musterAgentsFilter")
-	for _, want := range []string{"'muster:agents:chips'", "try { var v = JSON.parse(localStorage.getItem(CHIPS_KEY)",
+	script := scriptWith(t, page, "__musterAgentsFilter") + scriptWith(t, page, "__musterAgentsRules =")
+	for _, want := range []string{"'muster:agents:chips'", "try { chips = R.chipsOf(localStorage.getItem(CHIPS_KEY)); }", "try { var v = JSON.parse(raw || '[]');",
 		"try { if (cs.length) localStorage.setItem(CHIPS_KEY"} {
 		if !strings.Contains(script, want) {
 			t.Errorf("the filter script does not remember the chips safely: missing %s", want)

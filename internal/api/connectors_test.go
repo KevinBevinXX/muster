@@ -57,7 +57,7 @@ func newConnFixtureWith(t *testing.T, extra func(ext *Extensions, pool *pgxpool.
 		t.Fatal(err)
 	}
 	t.Cleanup(pool.Close)
-	dbtest.OwnerExec(t, dsn, `TRUNCATE connectors, connector_grants, connector_audit RESTART IDENTITY`)
+	dbtest.OwnerExec(t, dsn, `TRUNCATE connectors, connector_grants, connector_standing_grants, connector_audit RESTART IDENTITY`)
 	store, err := connectors.NewPG(pool, bytes.Repeat([]byte{3}, 32))
 	if err != nil {
 		t.Fatal(err)
@@ -200,6 +200,7 @@ func TestTheOperatorSurfaceRefusesAgentAndHookTokens(t *testing.T) {
 		{"GET", "/ui/connectors"}, {"POST", "/connectors"}, {"POST", "/connectors/github/rotate"},
 		{"DELETE", "/connectors/github"}, {"POST", "/ui/connector-requests/1/approve"},
 		{"POST", "/ui/connector-requests/1/deny"}, {"DELETE", "/connector-grants/1"},
+		{"DELETE", "/connector-standing-grants/1"},
 	} {
 		for _, tok := range []string{"pushy-agent-token-0123456789", connTestHookToken} {
 			w := f.call(t, rt.method, rt.path, nil, map[string]string{"X-Muster-Token": tok, "Authorization": "Bearer " + tok})
@@ -265,7 +266,10 @@ func TestTheAgentRequestsAndTheOperatorEntersTheCredential(t *testing.T) {
 			decisions = append(decisions, e.Detail)
 		}
 	}
-	if strings.Join(decisions, "|") != "approved|connector created by the operator|requested" {
+	// Entering the credential approves through the one decision
+	// (decideConnectorGrant), so the approval is shared like the card's (0043).
+	if strings.Join(decisions, "|") != "approval shared as standing grant 1: later requests for github from any of your agents are approved automatically|"+
+		"approved|connector created by the operator|requested" {
 		t.Fatalf("grant decisions recorded = %v", decisions)
 	}
 }

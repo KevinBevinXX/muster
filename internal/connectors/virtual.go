@@ -24,8 +24,9 @@ import (
 // them in one place, so a request filed BEFORE the virtual connector existed
 // becomes approvable the moment it does, with nothing re-filed and no row edited.
 // The grant flow is untouched: a grant names its connector BY NAME
-// (connector_grants.connector_name, not a foreign key), and the owner still
-// approves each agent's request.
+// (connector_grants.connector_name, not a foreign key), and the owner's
+// approval is shared by their agents on the SAME repository only (a standing
+// grant keyed on SourceApp and the repository: StandingRepo, migration 0043).
 //
 // 🔴 IT EXISTS ONLY FOR THE PRINCIPALS allow ADMITS. The App is the
 // deployment's, so on a multi-user muster it is the admin's alone (cmd/

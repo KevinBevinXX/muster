@@ -29,9 +29,12 @@ With the App configured:
   for example) carry the token, which can reach only the agent's repository.
 - **An agent with no repository gets no github access** while the App is
   configured. A chief, for example, has no repository to scope a token to.
-- **You still approve each agent.** An agent's `github` request still waits
-  for you under Connectors. The App changes where the credential comes from,
-  not who decides. A request filed before the App was configured (when no
+- **You approve each repository once.** The first agent's `github` request
+  for a repository waits for you under Connectors; approving it is shared
+  with every later agent of yours dispatched on **that same repository**
+  ([connectors.md](connectors.md#shared-approvals)), and never with an agent
+  on another repository. The App changes where the credential comes from, not
+  who decides. A request filed before the App was configured (when no
   `github` connector existed) shows **Approve** once the App is configured.
   Approve it and the agent's next clone retry (every 30 s) succeeds, with no
   new dispatch.

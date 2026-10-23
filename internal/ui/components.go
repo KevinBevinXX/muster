@@ -220,8 +220,12 @@ func PageWith(activeTab string, feat Features, data ShellData) g.Node {
 // measured by e2e/tests/cls.spec.ts. Drawn here, the strip is already where it
 // will be when the list lands, and the out-of-band copy replaces it in place.
 // The zero value draws what the shell always drew (an empty, hidden strip).
+//
+// The Agents tab's own document also draws the LIST (WithList): its cards are
+// the first paint, not a request's answer (agents_list_ssr.go).
 type ShellData struct {
 	recent []recentItem
+	list   *shellList
 }
 
 // WithRecent resolves the strip's entries the way RenderAgentsList does —
@@ -245,6 +249,9 @@ func shell(activeTab string, feat Features, extra g.Node, data ShellData) g.Node
 				Meta(Name("viewport"), Content("width=device-width, initial-scale=1, viewport-fit=cover")),
 				Meta(Name("color-scheme"), Content("dark light")),
 				ThemeHead(),
+				// The Agents list's stored filter, applied before the first paint
+				// (agents_filter_head.go) — the list is in the document now.
+				agentsFilterHead(),
 				Meta(Name("mobile-web-app-capable"), Content("yes")),
 				Meta(Name("apple-mobile-web-app-capable"), Content("yes")),
 				Meta(Name("apple-mobile-web-app-status-bar-style"), Content("black-translucent")),
@@ -332,7 +339,7 @@ func shell(activeTab string, feat Features, extra g.Node, data ShellData) g.Node
 							// it is what makes the tab's absence honest instead of making
 							// its presence noisy.
 							NotesPanel(activeTab == "tasks"),
-							agentsPanel(activeTab == "agents", data.recent),
+							agentsPanel(activeTab == "agents", data.recent, data.list),
 							g.If(feat.GitHub, ReposPanel(activeTab == "repos")),
 							g.If(feat.Connectors, ConnectorsPanel(activeTab == "connectors")),
 						),
@@ -369,8 +376,8 @@ func shell(activeTab string, feat Features, extra g.Node, data ShellData) g.Node
 					floatingMenuScript(),
 					// The Agents list's search box (agents_filter.go).
 					agentsFilterScript(),
-					// …and its scroll positions across hydration (agents_scroll.go):
-					// BEFORE appScript, whose restore needs the list's box reserved.
+					// …and the "Recently viewed" strip's sideways offset across
+					// hydration (agents_scroll.go).
 					agentsScrollScript(),
 					// Refetch the list on focus / visibility / SSE reconnect so a
 					// closed-and-reopened app is never stale.

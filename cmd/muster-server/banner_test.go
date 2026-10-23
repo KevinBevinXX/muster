@@ -272,6 +272,9 @@ func normaliseBannerLine(s string) string {
 // exclusion instead of gesturing at a parenthesised handful in prose.
 var bannerLedger = []string{
 	envDatabase,
+	// The Agents list's Idle section: one line in both directions (ON with the
+	// threshold / OFF).
+	envAgentsIdleAfter,
 	envUIPassword,
 	// Accounts PR 4: the mode, muster's GoTrue (its secret is named, never
 	// printed), and the browser listener — each on its own line in both
@@ -387,6 +390,9 @@ var bannerLedger = []string{
 	// and how many owners have an allowlist.
 	envSessionRouting,
 	envRouteRelayAllow,
+	// The route deadline: ON, the line names the value a route waits before it
+	// goes back to the chief; OFF, that it is not read.
+	envRouteTimeout,
 	// 🔴 TASK ROUTING IS LEDGERED: ON, an outside system's task notice reaches
 	// the chief, and with dispatch the chief can start agents on the owner's
 	// credentials, so the log must say which state this is.
@@ -431,6 +437,14 @@ var bannerExempt = map[string]string{
 	envAgentCCAccounts:    "printed on the claude-code arm of the `agent kinds:` line (names only); same reason as " + envAgentCCImage,
 	envAgentCCTokenPrefix: "a PREFIX naming subscription credentials: the banner names the prefix and never a value (TestTheKindsBannerLineNamesAccountsNeverTokens)",
 	envAgentCCStorage:     "an optional size for the claude-code volume; refused at boot without the kind, defaulted with it (agentspec.DefaultClaudeCodeStorage)",
+	envAgentCCCooldown: "an optional limit of the claude-code account pool; refused at boot without the kind, defaulted " +
+		"with it (ccpool.DefaultCooldown, config.ccPoolLimits), so there is no OFF state to announce",
+	envAgentCCMaxJobs: "an optional, opt-in limit of the claude-code account pool (unset is no cap, config.ccPoolLimits); " +
+		"refused at boot without the kind, so there is no OFF state to announce",
+	envAgentCCBypassPools: "printed on the claude-code arm of the `agent kinds:` line in both states (the pools listed, or " +
+		"\"no worker pool bypasses\"), which bannerBothDirections' fixture cannot render; refused at boot without the " +
+		"kind (validateClaudeCodeKind), so outside that arm there is no state to announce. " +
+		"TestTheKindsBannerLineAnnouncesTheJobLaneBypassBothWays pins both",
 	envAgentHermesImage: "printed on the hermes arm of the `agent kinds:` line; refused at boot when the kind is not " +
 		"enabled (validateKinds), so there is no OFF state to announce. TestTheKindsBannerLineNamesTheHermesImage pins it",
 	envAgentHermesStorage: "an optional size for the hermes volume; refused at boot without the kind, defaulted with it (agentspec.DefaultHermesStorage)",
@@ -739,6 +753,9 @@ func bannerBothDirections(t *testing.T) (onOut, offOut string) {
 		GitHubAppID:         12345,
 		GitHubAppAccounts:   []githubapp.Account{{Login: "example-org", ID: 4200}},
 		CheckoutWaitTimeout: 48 * time.Hour,
+		// The Agents list's Idle section, at a value that is not the default.
+		AgentsIdleAfter:    72 * time.Hour,
+		AgentsIdleAfterRaw: "3d",
 	}
 	onOut = renderBannerWithPool(t, on, api.Extensions{
 		GitHubApp:   bannerStubGitHubApp{},
@@ -754,7 +771,7 @@ func bannerBothDirections(t *testing.T) (onOut, offOut string) {
 		Plugins:         bannerStubPlugins{},
 		PluginGateway:   bannerStubPluginGateway{},
 		Routes:          bannerStubRoutes{},
-		Routing:         &api.Routing{Allow: bannerAllowlist(t)},
+		Routing:         &api.Routing{Allow: bannerAllowlist(t), Timeout: 45 * time.Minute},
 		TaskRouting:     &api.TaskRouting{DispatchOwners: map[int64]bool{1: true}},
 		SessionRuntimes: []string{"claude-code", "gateway"},
 	}, &pgxpool.Pool{})

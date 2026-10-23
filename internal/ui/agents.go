@@ -11,6 +11,7 @@ import (
 
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/mirror"
+	"github.com/ZacxDev/muster/internal/textplain"
 )
 
 // AgentCardView is the per-agent data the card grid renders.
@@ -110,6 +111,9 @@ type AgentCardView struct {
 	// status poll carries it (StatusPollPath) so a change or an expiry re-renders
 	// the list. Zero: no chip.
 	Work mirror.WindowWork
+	// Idle: drawn in the list's Idle section (idle_section.go's InIdleSection),
+	// composed by MarkIdle. Its card carries data-idle-section.
+	Idle bool
 }
 
 // lastActive is the card's "active" time: LastActiveAt, or UpdatedAt when the
@@ -145,11 +149,12 @@ type ComboOption struct {
 // the FAB and dispatch modal live in the shell (Page) so the 4s status refresh
 // never rebuilds them. The card list uses morph swaps so live updates patch in
 // place (no scroll jump, no teardown of hover/expanded state).
-func AgentsPanel(active bool) g.Node { return agentsPanel(active, nil) }
+func AgentsPanel(active bool) g.Node { return agentsPanel(active, nil, nil) }
 
-// agentsPanel is AgentsPanel with the "Recently viewed" strip's entries drawn on
-// the first paint (ShellData).
-func agentsPanel(active bool, recent []recentItem) g.Node {
+// agentsPanel is AgentsPanel with the "Recently viewed" strip's entries — and,
+// on the Agents tab's own document, the list's cards (list, nil for none) —
+// drawn on the first paint (ShellData).
+func agentsPanel(active bool, recent []recentItem, list *shellList) g.Node {
 	return Div(
 		ID(panelID("agents")),
 		g.Attr("role", "tabpanel"),
@@ -186,6 +191,12 @@ func agentsPanel(active bool, recent []recentItem) g.Node {
 		Div(
 			ID("agents-list"),
 			Class("grid grid-cols-1 gap-3 lg:grid-cols-2"),
+			// 🔴 SERVER-RENDERED ON THE AGENTS TAB (list != nil): the cards are in
+			// the document, so its first paint is the list and nothing is filled in
+			// under the reader. They are the SAME renderer's output as the
+			// /ui/agents partial (agentsListBody; TestTheAgentsDocumentDrawsTheListPartial
+			// holds the two byte for byte).
+			drawnList(list),
 			hx("hx-get", "/ui/agents"),
 			// Event-driven only — NO timer. A 4s poll churned the list constantly;
 			// status stays live via each card's own status-icon poll
@@ -200,7 +211,7 @@ func agentsPanel(active bool, recent []recentItem) g.Node {
 			// turned either into `agents:changed`: the Tasks board listened for
 			// sse:agent.changed, this list did not, so a list left open never
 			// re-ordered and never showed a status change it had not caused itself.
-			hx("hx-trigger", agentsListTrigger),
+			hx("hx-trigger", listTrigger(list)),
 			hx("hx-target", "#agents-list"),
 			hx("hx-swap", "morph:innerHTML"),
 		),
@@ -309,13 +320,13 @@ func agentRenameForm(a AgentCardView) g.Node {
 // kinds of card cannot drift into two layouts again.
 func agentCard(a AgentCardView) g.Node {
 	ids := strconv.FormatInt(a.ID, 10)
-	// markdownPlain, exactly as agentTitle on the detail page does. A
+	// textplain.Title, exactly as agentTitle on the detail page does. A
 	// task-derived display name routinely carries `**bold**` and `code`, and
 	// this rendered it RAW while the detail header rendered it as markup — one
 	// string, two answers, from the same click. Stripping on both surfaces is
-	// what makes them agree; see markdownPlain for why stripping was chosen over
+	// what makes them agree; see textplain.Title for why stripping was chosen over
 	// rendering markup here.
-	name := markdownPlain(displayOr(a.DisplayName, a.Name))
+	name := plainOr(a.DisplayName, a.Name)
 	// A name past cardTitleMax is drawn in a title row of its own, clamped,
 	// with a "…" button that opens it whole (cardLongTitle).
 	_, long := clampTitle(name)
@@ -327,6 +338,7 @@ func agentCard(a AgentCardView) g.Node {
 	return Article(
 		ID("agent-"+ids),
 		g.If(a.Pinned, g.Attr("data-pinned", "")),
+		g.If(a.Idle, g.Attr("data-idle-section", "")),
 		// What the list's recency filter chips read (list_signals.go).
 		cardActivityAttrs(time.Now(), a.lastActive()),
 		g.If(waitTokens(a.Attention, a.AwaitingApproval) != "", g.Attr("data-wait", waitTokens(a.Attention, a.AwaitingApproval))),
@@ -877,7 +889,18 @@ func statusLabel(status string) string {
 // live: the queue moved, so the cards' counts may have. It is debounced
 // (delay:50ms) for the reason attentionBadgeTrigger gives: the sidebar badge
 // listens for the same event, so each one reaches this list twice.
-const agentsListTrigger = "load, agents:changed from:body, sse:agent.changed from:body, sse:chat.reply from:body, sse:attention_queue.changed from:body delay:50ms, muster:resync from:body, agents:awaiting from:body"
+//
+// 🔴 "load" IS ONLY FOR A LIST THE DOCUMENT DID NOT DRAW. The Agents tab's own
+// document server-renders the cards (ShellData.WithList), so its list carries
+// agentsListLiveTrigger — every live event, no first fetch: a load request there
+// would rebuild the list it already holds and morph identical markup over it.
+// Every other tab draws the Agents panel hidden and EMPTY, and fills it with
+// that load (agentsListTrigger).
+const agentsListTrigger = "load, " + agentsListLiveTrigger
+
+// agentsListLiveTrigger is agentsListTrigger without the first load: the
+// trigger of a list the document drew with its cards.
+const agentsListLiveTrigger = "agents:changed from:body, sse:agent.changed from:body, sse:chat.reply from:body, sse:attention_queue.changed from:body delay:50ms, muster:resync from:body, agents:awaiting from:body"
 
 // agentModalShell is the static (always-present, hidden) dispatch modal. Its
 // body is loaded on demand by the FAB so it stays out of the 4s poll cycle.
@@ -1081,6 +1104,8 @@ func DispatchModalTaskBody(v TaskDispatchView) g.Node {
 	if modelStatic == "" {
 		modelStatic = defaultModelShortLabel()
 	}
+	// The task's title, as a reader of it sees it (textplain).
+	taskLabel := textplain.Title(v.Label)
 	repoStatic := v.Repo
 	if repoStatic == "" {
 		repoStatic = "none"
@@ -1092,7 +1117,7 @@ func DispatchModalTaskBody(v TaskDispatchView) g.Node {
 			Div(
 				Class("min-w-0"),
 				H2(Class("text-base font-semibold text-fg"), g.Text("Dispatch · Task #"+ids)),
-				g.If(v.Label != "", P(Class("mt-0.5 truncate text-xs text-muted"), g.Text(v.Label))),
+				g.If(taskLabel != "", P(Class("mt-0.5 truncate text-xs text-muted"), g.Text(taskLabel))),
 			),
 			Span(Class("flex-1")),
 			dispatchCloseButton(),
@@ -1242,7 +1267,7 @@ func repoOptions(repos []RepoView) []ComboOption {
 func noteOptions(notes []NoteOption) []ComboOption {
 	opts := make([]ComboOption, 0, len(notes))
 	for _, n := range notes {
-		opts = append(opts, ComboOption{Value: strconv.FormatInt(n.ID, 10), Label: n.Label})
+		opts = append(opts, ComboOption{Value: strconv.FormatInt(n.ID, 10), Label: textplain.Title(n.Label)})
 	}
 	return opts
 }

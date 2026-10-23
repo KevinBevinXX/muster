@@ -198,7 +198,9 @@ func TestParseSummaryShapes(t *testing.T) {
 		{"labelled any case, bullets", "- TITLE: Ship 0.4\n* description: Tagging the release.", "Ship 0.4", "Tagging the release."},
 		{"unlabelled lines", "Migrate the queue\nMoving rows to 0019. Half done.", "Migrate the queue", "Moving rows to 0019. Half done."},
 		{"one line", "Debugging the mirror tunnel. It drops after 30 s.", "Debugging the mirror tunnel", "Debugging the mirror tunnel. It drops after 30 s."},
-		{"markdown stripped", "Title: **Bold** `code` title\nDescription: ok", "Bold code title", "ok"},
+		// Kept as written: the parse result is STORED, and markdown is removed
+		// at render time (internal/textplain), which tells C# and #123 from markup.
+		{"markdown kept for the renderer", "Title: **Bold** `code` title\nDescription: ok", "**Bold** `code` title", "ok"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			title, desc, err := ParseSummary(c.in)
@@ -299,6 +301,20 @@ func TestSubjects(t *testing.T) {
 	for _, bad := range []string{"agent:0", "agent:-1", "agent:012", "agent:x", "mirror:", "mirror:@3", "mirror:a/b", "pod:1", "12", "mirror:" + strings.Repeat("a", 65)} {
 		if _, err := ParseSubject(bad); !errors.Is(err, ErrBadSubject) {
 			t.Errorf("%q parsed", bad)
+		}
+	}
+}
+
+// TestCleanStripsNoMarkdown: Clean's output is STORED, so it folds whitespace
+// and drops control characters but leaves every markdown-looking character in
+// place — "C#", "a*b", "#123" and backticks survive (the store-side half of
+// TestAFocusTitleIsStoredAsWritten, which needs Postgres). Red before: oneLine
+// deleted * ` # here.
+func TestCleanStripsNoMarkdown(t *testing.T) {
+	for _, in := range []string{"C#", "a*b", "#123", "`cfg` **x**"} {
+		got, _, err := Clean(in, "")
+		if err != nil || got != in {
+			t.Errorf("Clean(%q) = %q (%v), want it unchanged", in, got, err)
 		}
 	}
 }

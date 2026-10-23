@@ -123,6 +123,19 @@ func Plan(qs []askq.Question, choices []Choice) ([]Step, error) {
 		if c.Other != "" && !typeableText(c.Other) {
 			return nil, untypeable("question %d: the text cannot be typed into one line", i+1)
 		}
+		if q.Previews() {
+			// A digit moves the cursor to its row (none to move for the first,
+			// where the cursor starts); Enter takes it. There is no row to type
+			// an answer of one's own into.
+			if len(picks) != 1 || c.Other != "" {
+				return nil, untypeable("question %d shows previews: it takes exactly one of its options", i+1)
+			}
+			if picks[0] > 0 {
+				steps = append(steps, Step{Keys: digit(picks[0] + 1), Want: Want{Kind: Question, Q: i, Cursor: picks[0] + 1}})
+			}
+			steps = append(steps, Step{Keys: KeyEnter, Want: next(i)})
+			continue
+		}
 		if !q.MultiSelect {
 			switch {
 			case len(picks) == 1 && c.Other == "":
@@ -174,30 +187,19 @@ func Plan(qs []askq.Question, choices []Choice) ([]Step, error) {
 // Start is the screen the first key requires: the first question, untouched.
 func Start() Want { return Want{Kind: Question, Q: 0, Cursor: 1} }
 
+// At is the screen steps leave the picker in after their first k keys: Start
+// for none.
+func At(steps []Step, k int) Want {
+	if k <= 0 {
+		return Start()
+	}
+	return steps[k-1].Want
+}
+
 func digit(n int) string { return strconv.Itoa(n) }
 
 // Answers is the answers choices give, keyed by question text, as the CLI
-// records them — the review screen's lines and the transcript's toolUseResult:
-// a multi-select answer's options in the question's order, then the text, all
-// joined by ", ".
+// records them (askq.AnswersOf).
 func Answers(qs []askq.Question, choices []Choice) map[string]string {
-	out := make(map[string]string, len(qs))
-	for i, q := range qs {
-		if i >= len(choices) {
-			break
-		}
-		picks := slices.Clone(choices[i].Picks)
-		slices.Sort(picks)
-		var parts []string
-		for _, p := range picks {
-			if p >= 0 && p < len(q.Options) {
-				parts = append(parts, q.Options[p].Label)
-			}
-		}
-		if choices[i].Other != "" {
-			parts = append(parts, choices[i].Other)
-		}
-		out[q.Question] = strings.Join(parts, askq.MultiJoin)
-	}
-	return out
+	return askq.AnswersOf(qs, choices)
 }

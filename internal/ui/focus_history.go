@@ -7,6 +7,8 @@ import (
 
 	g "maragu.dev/gomponents"
 	. "maragu.dev/gomponents/html"
+
+	"github.com/ZacxDev/muster/internal/textplain"
 )
 
 // FOCUS HISTORY (internal/focus, migration 0022): every focus a session has
@@ -70,10 +72,10 @@ func focusHistoryRows(v FocusHistoryPageView) g.Node {
 			Class("flex flex-col gap-1 border-b border-line px-4 py-3"),
 			Div(
 				Class("flex items-start gap-3"),
-				Span(g.Attr("data-focus-history-title", ""), Class("min-w-0 flex-1 break-words text-sm font-semibold text-fg"), g.Text(e.Title)),
+				Span(g.Attr("data-focus-history-title", ""), Class("min-w-0 flex-1 break-words text-sm font-semibold text-fg"), g.Text(textplain.Title(e.Title))),
 				Span(g.Attr("data-focus-history-at", ""), Class("inline-flex shrink-0 items-center gap-1 text-xs text-muted"), cardTime(e.At), g.Text("ago")),
 			),
-			g.If(e.Description != "", P(g.Attr("data-focus-history-description", ""), Class("break-words text-sm text-fg2"), g.Text(e.Description))),
+			g.If(textplain.Title(e.Description) != "", P(g.Attr("data-focus-history-description", ""), Class("break-words text-sm text-fg2"), g.Text(textplain.Title(e.Description)))),
 		))
 	}
 	if v.Next != "" {

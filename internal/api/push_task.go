@@ -3,7 +3,6 @@ package api
 import (
 	"context"
 	"fmt"
-	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -13,6 +12,7 @@ import (
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/notes"
 	"github.com/ZacxDev/muster/internal/push"
+	"github.com/ZacxDev/muster/internal/textplain"
 )
 
 // Task-lifecycle Web Push notifications. Each hangs off an existing
@@ -423,8 +423,8 @@ func commentedTasksSummary(buf []commentedTaskRef) string {
 }
 
 // commentNotificationText flattens a markdown comment body to the plain text an
-// OS notification renders: the first non-empty line, markdown-stripped via the
-// shared notificationText. Falls back to a flattened, whitespace-collapsed form
+// OS notification renders: the first non-empty line, markdown-stripped by
+// textplain.Title, the one title rule. Falls back to a flattened, whitespace-collapsed form
 // of the whole body when every line is markup-only, and to "" when there is
 // nothing left to say.
 func commentNotificationText(body string) string {
@@ -433,7 +433,7 @@ func commentNotificationText(body string) string {
 		if l == "" {
 			continue
 		}
-		if flat := notificationText(l); flat != "" {
+		if flat := textplain.Title(l); flat != "" {
 			return truncate(flat, taskBodyMax)
 		}
 	}
@@ -450,40 +450,19 @@ func commentNotificationText(body string) string {
 // Do not "consolidate" these two; they answer different questions.
 func taskTitle(n notes.Note) string {
 	for _, line := range strings.Split(n.Body, "\n") {
-		if s := strings.TrimSpace(line); s != "" {
+		// A line that is all markup (a fence, a rule) flattens to nothing and is
+		// skipped, as commentNotificationText skips it.
+		if s := textplain.Title(line); s != "" {
 			// Task bodies are markdown (the drafter/repo-cos post `**Goal:** …`,
 			// backticked paths, `[text](url)` links). A Web Push body is PLAIN TEXT on
 			// every platform — the OS never parses markdown — so flatten it here or the
 			// phone shows literal `**`/backticks. Flatten BEFORE truncate so stripped
 			// markers don't eat the length budget.
-			return truncate(notificationText(s), taskBodyMax)
+			return truncate(s, taskBodyMax)
 		}
 	}
 	if d := strings.TrimSpace(n.Directory); d != "" {
 		return truncate(d, taskBodyMax)
 	}
 	return "New task"
-}
-
-var (
-	ntLink   = regexp.MustCompile(`\[([^\]]+)\]\([^)]*\)`)             // [text](url) → text
-	ntCode   = regexp.MustCompile("`([^`]+)`")                         // `code` → code
-	ntEmph   = regexp.MustCompile(`(\*\*|__|\*|_)(.+?)(\*\*|__|\*|_)`) // **b**/_i_ → inner
-	ntLead   = regexp.MustCompile(`^\s*(?:#{1,6}|>|[-*+]|\d+[.)])\s+`) // heading/quote/list marker
-	ntImgBng = regexp.MustCompile(`!\[([^\]]*)\]\([^)]*\)`)            // ![alt](url) → alt
-)
-
-// notificationText flattens the inline markdown that appears in task bodies into
-// plain text suitable for an OS notification (which renders no markup). It strips
-// leading block markers, unwraps links/images/emphasis/inline-code, and collapses
-// stray whitespace. Order matters: block marker → image → link → code → emphasis.
-func notificationText(s string) string {
-	s = ntLead.ReplaceAllString(s, "")
-	s = ntImgBng.ReplaceAllString(s, "$1")
-	s = ntLink.ReplaceAllString(s, "$1")
-	s = ntCode.ReplaceAllString(s, "$1")
-	// Emphasis can nest (***x***); a couple of passes settles the common cases.
-	s = ntEmph.ReplaceAllString(s, "$2")
-	s = ntEmph.ReplaceAllString(s, "$2")
-	return strings.TrimSpace(s)
 }
