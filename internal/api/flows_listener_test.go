@@ -25,8 +25,8 @@ func TestTheFlowDoorsBehaveTheSameOnBothListeners(t *testing.T) {
 		}
 	}
 	doors[authz.ViaRunner] = routeVias[authz.ViaRunner]
-	if len(doors[authz.ViaToken]) != 3 || len(doors[authz.ViaRunner]) != 3 {
-		t.Fatalf("expected 3 flow API and 3 runner routes, got %v", doors)
+	if len(doors[authz.ViaToken]) != 4 || len(doors[authz.ViaRunner]) != 3 {
+		t.Fatalf("expected 4 flow API (enqueue, list, read, cancel) and 3 runner routes, got %v", doors)
 	}
 	listeners := map[string]http.Handler{"machine": h, "browser": BrowserListener(h)}
 	for via, patterns := range doors {

@@ -30,6 +30,7 @@ import (
 	"fmt"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -64,6 +65,10 @@ type Param struct {
 	// parameter — whatever its pattern — is screened; a new parameter is
 	// therefore screened by default.
 	ID bool
+	// Max, when set, is an inclusive NUMERIC upper bound: the value (which its
+	// Pattern must already confine to decimal digits) may not exceed it. A
+	// pattern alone cannot say "at most 3600" without spelling every range.
+	Max int
 }
 
 // Flow is one catalogue entry.
@@ -93,11 +98,34 @@ var (
 	// muse wrapper uses (exactly one match). One line, printable, no shell-ish
 	// leading dash (it would read as a flag to the flow executable).
 	threadRE = regexp.MustCompile(`^[^\x00-\x1f\x7f-][^\x00-\x1f\x7f]{0,119}$`)
+	// sessionRE is a Muse thread's uuid, lowercase canonical: the muse wrapper
+	// opens that thread directly rather than matching a title.
+	sessionRE = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+	// markerRE is a dispatch id (muse dispatch): the send completes only when
+	// the reply's last line is `DONE <marker>`.
+	markerRE = regexp.MustCompile(`^md-[0-9a-f]{6}$`)
+	// waitRE is the seconds a send awaits its reply: 1..9999 by shape, and
+	// paramWait.Max bounds it to 3600.
+	waitRE = regexp.MustCompile(`^[1-9][0-9]{0,3}$`)
 )
+
+// MaxWaitSeconds bounds muse.send's wait. The runner's job timeout is
+// wait+240s, and it heartbeats inside the lease the whole time.
+const MaxWaitSeconds = 3600
 
 var (
 	paramTask   = Param{Name: "task", MaxLen: 18, Pattern: taskRE, ID: true, Help: "muster task id the flow posts its result on"}
 	paramThread = Param{Name: "thread", MaxLen: 120, Pattern: threadRE, Help: "Muse side-chat title (default: the main chat)"}
+	// session, marker and wait (muse dispatch) are NOT ID: they stay inside the
+	// agent-text screen. The dispatch client enqueues with a personal token, so
+	// no consumer files them as an agent request, and the screen's long-token
+	// rule refusing an agent-composed uuid is the closed default for that door.
+	paramSession = Param{Name: "session", MaxLen: 36, Pattern: sessionRE,
+		Help: "Muse thread id (uuid) — opens that thread directly; exclusive with thread"}
+	paramMarker = Param{Name: "marker", MaxLen: 9, Pattern: markerRE,
+		Help: "dispatch id; the send completes only when the reply's last line is DONE <marker>"}
+	paramWait = Param{Name: "wait", MaxLen: 4, Pattern: waitRE, Max: MaxWaitSeconds,
+		Help: "seconds to await the reply (1..3600; the runner's job timeout is wait+240s)"}
 )
 
 // catalogue is the closed set of flows muster will queue. The runner on the
@@ -121,7 +149,7 @@ var catalogue = []Flow{
 		Help:  "send a message to Muse and wait for its reply",
 		Params: []Param{
 			{Name: "text", Required: true, MaxLen: 4000, Help: "the message (sent to Meta's Muse)"},
-			paramThread, paramTask,
+			paramThread, paramSession, paramMarker, paramWait, paramTask,
 		},
 	},
 }
@@ -176,9 +204,14 @@ func ValidInstance(instance string) error {
 	return nil
 }
 
-// TTL bounds. A queued job not claimed within its TTL becomes `expired` and
-// never runs late: a Muse message composed for "now" is wrong an hour later,
-// for the same reason the host-side send lock refuses rather than queues.
+// TTL bounds. A queued job not claimed within its TTL becomes `expired`, but
+// time it spends blocked behind another job on the same browser does not
+// count, up to MaxTTLPause (90 min) per blocker (store.go). So a queued job
+// runs within its TTL plus its blocked time; behind a chain of dispatches
+// that can be hours. That is intended, because a dispatch chain is queued,
+// not refused. A send composed for a specific moment (a Muse message meant
+// for "now") should therefore be enqueued with a short TTL on an idle
+// instance.
 const (
 	DefaultTTL = 15 * time.Minute
 	MinTTL     = time.Minute
@@ -234,6 +267,15 @@ func Validate(r *Request) (Flow, error) {
 			return Flow{}, invalidf("flow %s needs parameter %q", f.Name, p.Name)
 		}
 	}
+	// Cross-parameter rules. A thread is named by its title OR by its uuid,
+	// never both (which one would win is a guess), and a dispatch marker always
+	// targets the dedicated thread by uuid.
+	if clean["session"] != "" && clean["thread"] != "" {
+		return Flow{}, invalidf("parameters \"session\" and \"thread\" are exclusive; name the thread by one of them")
+	}
+	if clean["marker"] != "" && clean["session"] == "" {
+		return Flow{}, invalidf("parameter \"marker\" needs \"session\" (a dispatch targets its thread by uuid)")
+	}
 	r.Params = clean
 	return f, nil
 }
@@ -248,6 +290,12 @@ func checkValue(p Param, v string) error {
 	if p.Pattern != nil {
 		if !p.Pattern.MatchString(v) {
 			return invalidf("parameter %q has a value this flow does not accept", p.Name)
+		}
+		if p.Max > 0 {
+			n, err := strconv.Atoi(v)
+			if err != nil || n > p.Max {
+				return invalidf("parameter %q is %s; the limit is %d", p.Name, v, p.Max)
+			}
 		}
 		return nil
 	}

@@ -88,8 +88,17 @@ func TestEveryParameterAnAgentComposesIsScreened(t *testing.T) {
 					}
 				}
 				r.Params[p.Name] = bad
-				if _, err := s.FileRequest(agentCtx(2), agent, 2, "p", r, ""); !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "may not send") {
-					t.Errorf("%s.%s = %q: FileRequest = %v; want the deny screen's refusal", f.Name, p.Name, bad, err)
+				_, err := s.FileRequest(agentCtx(2), agent, 2, "p", r, "")
+				// A patterned parameter (session, marker, wait) refuses these
+				// values by its closed shape before the screen sees them; a
+				// shape-conforming uuid IS screened (TestAnAgentCannotFileAMuseDispatch).
+				// Either way nothing is filed. Free text must meet the screen itself.
+				want := "may not send"
+				if p.Pattern != nil {
+					want = "parameter \"" + p.Name + "\""
+				}
+				if !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), want) {
+					t.Errorf("%s.%s = %q: FileRequest = %v; want a refusal containing %q", f.Name, p.Name, bad, err, want)
 				}
 				screened++
 			}
@@ -190,4 +199,30 @@ func TestRequestsLeaveAnAuditTrailWithoutTheText(t *testing.T) {
 func itoa(n int64) string {
 	b, _ := json.Marshal(n)
 	return string(b)
+}
+
+// TestAnAgentCannotFileAMuseDispatch (round-0 D1): session, marker and wait are
+// NOT exempt from the agent-text screen, so an agent-composed thread uuid is
+// refused by the long-token rule — the agent door to a dispatch fails closed
+// (the dispatch client enqueues with a personal token and never files a
+// request). CONTROL: the same request without the uuid is filed, so it is the
+// session value, not some other parameter, that the screen refuses.
+func TestAnAgentCannotFileAMuseDispatch(t *testing.T) {
+	s, _ := pgStore(t)
+	agent := seedAgent(t, s, 2, "req-agent-dispatch")
+	r := dispatchReq()
+	r.Params["text"] = "summarise the reading list"
+	delete(r.Params, "task") // a task id the agent's owner may not have; not under test here
+	_, err := s.FileRequest(agentCtx(2), agent, 2, "d", r, "dispatch")
+	if !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "long token-shaped string") {
+		t.Fatalf("an agent's dispatch request = %v; want the screen's long-token refusal", err)
+	}
+	c := dispatchReq()
+	c.Params["text"] = "summarise the reading list"
+	for _, k := range []string{"task", "session", "marker"} {
+		delete(c.Params, k)
+	}
+	if _, err := s.FileRequest(agentCtx(2), agent, 2, "d", c, "control"); err != nil {
+		t.Fatalf("CONTROL: the same request without the uuid was refused: %v", err)
+	}
 }

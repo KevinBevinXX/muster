@@ -349,6 +349,7 @@ var routeVias = map[authz.Via][]string{
 		"GET /api/flows/jobs",
 		"GET /api/flows/jobs/{id}",
 		"POST /api/flows/jobs",
+		"POST /api/flows/jobs/{id}/cancel",
 	},
 	// A browser-flow RUNNER token (0012) opens exactly the runner door.
 	authz.ViaRunner: {

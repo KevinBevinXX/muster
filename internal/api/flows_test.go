@@ -80,6 +80,10 @@ func (c *countingFlows) Get(ctx context.Context, _ int64) (flows.Job, error) {
 	c.note(ctx, "Get")
 	return flows.Job{}, flows.ErrNotFound
 }
+func (c *countingFlows) Cancel(ctx context.Context, _ int64) (flows.Job, error) {
+	c.note(ctx, "Cancel")
+	return flows.Job{}, flows.ErrNotFound
+}
 func (c *countingFlows) Claim(ctx context.Context, _ string, _ []string, _ int64) (flows.Job, bool, error) {
 	c.note(ctx, "Claim")
 	return flows.Job{}, false, nil
@@ -135,6 +139,7 @@ func TestTheFlowDoorsRefuseEveryOtherCredential(t *testing.T) {
 		{"POST", "/api/flows/jobs", `{"flow":"muse.poll","host":"laptop","instance":"personal"}`, bearer(personal), "Enqueue as api-token", bearer(flowTestRunnerToken)},
 		{"GET", "/api/flows/jobs", "", bearer(personal), "List as api-token", bearer(flowTestRunnerToken)},
 		{"GET", "/api/flows/jobs/7", "", bearer(personal), "Get as api-token", bearer(flowTestRunnerToken)},
+		{"POST", "/api/flows/jobs/7/cancel", "", bearer(personal), "Cancel as api-token", bearer(flowTestRunnerToken)},
 		{"POST", "/runner/flows/claim", `{"instances":["personal"],"waitSeconds":1}`, bearer(flowTestRunnerToken), "Claim as flow-runner", bearer(personal)},
 		{"POST", "/runner/flows/7/heartbeat", `{}`, bearer(flowTestRunnerToken), "Heartbeat as flow-runner", bearer(personal)},
 		{"POST", "/runner/flows/7/result", `{"outcome":"done"}`, bearer(flowTestRunnerToken), "Report as flow-runner", bearer(personal)},
@@ -393,5 +398,166 @@ func TestAClaimEndsAtShutdown(t *testing.T) {
 	}
 	if rec.Code != http.StatusNoContent || time.Since(start) > 5*time.Second {
 		t.Fatalf("claim at shutdown: %d after %s", rec.Code, time.Since(start))
+	}
+}
+
+// TestFlowCancelOverTheAPI drives POST /api/flows/jobs/{id}/cancel through the
+// real routes and Postgres: A's personal token cancels A's queued job (200,
+// cancelled) and dismisses one that needs the operator; B's token gets 404 for
+// A's job; a running job and an already-cancelled one are 409; the hook token
+// is refused. It also pins that the /flows form renders and accepts the
+// muse-dispatch parameters (session, marker, wait), and that the job card
+// shows them.
+func TestFlowCancelOverTheAPI(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	t.Cleanup(cancel)
+	pool, err := db.Connect(ctx, dbtest.DSN(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+	sys := authz.System(ctx)
+	suffix := strconv.FormatInt(time.Now().UnixNano(), 36)
+	var a, b int64
+	for _, id := range []*int64{&a, &b} {
+		if err := pool.QueryRow(sys, `INSERT INTO users (role, display_name) VALUES ('member', $1) RETURNING id`, "fcancel"+suffix).Scan(id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	asUser := func(uid int64) context.Context {
+		return authz.WithPrincipal(ctx, authz.Principal{UserID: uid, Role: authz.RoleMember, Via: authz.ViaSession})
+	}
+	ts := apitokens.NewPG(pool)
+	aTok, _, err := ts.Create(asUser(a), "a", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bTok, _, err := ts.Create(asUser(b), "b", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		ids := []int64{a, b}
+		for _, q := range []string{`DELETE FROM flow_jobs WHERE owner_id = ANY($1)`, `DELETE FROM flow_runner_tokens WHERE owner_id = ANY($1)`,
+			`DELETE FROM api_tokens WHERE user_id = ANY($1)`, `DELETE FROM audit_log WHERE user_id = ANY($1)`,
+			`DELETE FROM users WHERE id = ANY($1)`} {
+			_, _ = pool.Exec(authz.System(context.Background()), q, ids)
+		}
+	})
+	srv := New(nil, AuthConfig{HookToken: tokTestHook, UIPassword: "flow-cancel-operator-pw"}, log.New(io.Discard, "", 0))
+	srv.UseExtensions(Extensions{Users: users.NewPG(pool), APITokens: ts, Flows: flows.NewPG(pool)})
+	const userHeader = "X-Flow-Test-User"
+	srv.sessionUserOverride = func(r *http.Request) int64 {
+		v, _ := strconv.ParseInt(r.Header.Get(userHeader), 10, 64)
+		return v
+	}
+	h := srv.Handler()
+	do := func(method, path, body, bearer string, session int64) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(method, path, strings.NewReader(body)).WithContext(ctx)
+		r.Host = "muster.test"
+		if session > 0 {
+			r.Header.Set("Cookie", sessionCookieFor(srv))
+			r.Header.Set("Origin", "http://muster.test")
+			r.Header.Set(userHeader, strconv.FormatInt(session, 10))
+			r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		}
+		if bearer != "" {
+			r.Header.Set("Authorization", "Bearer "+bearer)
+			r.Header.Set("Content-Type", "application/json")
+		}
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, r)
+		return rec
+	}
+	host := "fc" + suffix
+	enqueue := func(body string) flows.Job {
+		t.Helper()
+		rec := do("POST", "/api/flows/jobs", body, aTok, 0)
+		var j flows.Job
+		if rec.Code != http.StatusCreated || json.Unmarshal(rec.Body.Bytes(), &j) != nil || j.Status != flows.StatusQueued {
+			t.Fatalf("enqueue: %d %s", rec.Code, rec.Body)
+		}
+		return j
+	}
+	cancelPath := func(id int64) string { return "/api/flows/jobs/" + strconv.FormatInt(id, 10) + "/cancel" }
+	poll := `{"flow":"muse.poll","host":"` + host + `","instance":"personal","params":{"thread":"cancel me"}}`
+
+	// A queued job: the hook token is refused, B is 404, A cancels it (200).
+	q1 := enqueue(poll)
+	if rec := do("POST", cancelPath(q1.ID), "", tokTestHook, 0); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("the HOOK token cancelled: %d %s; want 401", rec.Code, rec.Body)
+	}
+	if rec := do("POST", cancelPath(q1.ID), "", bTok, 0); rec.Code != http.StatusNotFound {
+		t.Fatalf("B cancelling A's job: %d %s; want 404", rec.Code, rec.Body)
+	}
+	if rec := do("POST", cancelPath(999999999), "", aTok, 0); rec.Code != http.StatusNotFound {
+		t.Fatalf("A cancelling a job that does not exist: %d; want 404", rec.Code)
+	}
+	rec := do("POST", cancelPath(q1.ID), "", aTok, 0)
+	var got flows.Job
+	if rec.Code != http.StatusOK || json.Unmarshal(rec.Body.Bytes(), &got) != nil || got.ID != q1.ID || got.Status != flows.StatusCancelled {
+		t.Fatalf("A cancelling its queued job: %d %s; want 200 cancelled", rec.Code, rec.Body)
+	}
+	if rec := do("POST", cancelPath(q1.ID), "", aTok, 0); rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "running or already finished") {
+		t.Fatalf("cancelling a cancelled job: %d %s; want 409", rec.Code, rec.Body)
+	}
+
+	// A running job is 409, and stays running.
+	mint := do("POST", "/flows/runner-tokens", url.Values{"host": {host}}.Encode(), "", a)
+	m := mintedRunnerRE.FindStringSubmatch(mint.Body.String())
+	if mint.Code != 200 || m == nil {
+		t.Fatalf("minting a runner token: %d", mint.Code)
+	}
+	runner := m[1]
+	r1 := enqueue(poll)
+	claim := do("POST", "/runner/flows/claim", `{"instances":["personal"],"waitSeconds":1}`, runner, 0)
+	var claimed flows.Job
+	if claim.Code != http.StatusOK || json.Unmarshal(claim.Body.Bytes(), &claimed) != nil || claimed.ID != r1.ID {
+		t.Fatalf("claim: %d %s", claim.Code, claim.Body)
+	}
+	if rec := do("POST", cancelPath(r1.ID), "", aTok, 0); rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "running or already finished") {
+		t.Fatalf("cancelling a running job: %d %s; want 409", rec.Code, rec.Body)
+	}
+	var still flows.Job
+	if json.Unmarshal(do("GET", "/api/flows/jobs/"+strconv.FormatInt(r1.ID, 10), "", aTok, 0).Body.Bytes(), &still) != nil || still.Status != flows.StatusRunning {
+		t.Fatalf("after a refused cancel the job is %q; want running", still.Status)
+	}
+	// A needs_operator job is dismissed (200, cancelled).
+	if rec := do("POST", "/runner/flows/"+strconv.FormatInt(r1.ID, 10)+"/result", `{"outcome":"needs_operator","detail":"look"}`, runner, 0); rec.Code != http.StatusOK {
+		t.Fatalf("report needs_operator: %d %s", rec.Code, rec.Body)
+	}
+	rec = do("POST", cancelPath(r1.ID), "", aTok, 0)
+	if rec.Code != http.StatusOK || json.Unmarshal(rec.Body.Bytes(), &got) != nil || got.Status != flows.StatusCancelled || !strings.Contains(got.Detail, "dismissed") {
+		t.Fatalf("dismissing a needs_operator job: %d %s", rec.Code, rec.Body)
+	}
+
+	// The /flows form renders and accepts the dispatch parameters.
+	page := do("GET", "/flows", "", "", a).Body.String()
+	for _, p := range []string{"session", "marker", "wait"} {
+		if !strings.Contains(page, `name="param_`+p+`"`) {
+			t.Errorf("the /flows form has no input for %s", p)
+		}
+	}
+	const sess, marker = "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d", "md-0f9e8d"
+	rec = do("POST", "/flows/jobs", url.Values{"flow": {"muse.send"}, "host": {host}, "instance": {"personal"},
+		"param_text": {"dispatch body"}, "param_session": {sess}, "param_marker": {marker}, "param_wait": {"613"}}.Encode(), "", a)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("form enqueue of a dispatch: %d %s", rec.Code, truncate(rec.Body.String(), 300))
+	}
+	var list []flows.Job
+	if err := json.Unmarshal(do("GET", "/api/flows/jobs", "", aTok, 0).Body.Bytes(), &list); err != nil || len(list) == 0 ||
+		list[0].Params["session"] != sess || list[0].Params["marker"] != marker || list[0].Params["wait"] != "613" {
+		t.Fatalf("the form's dispatch job: %+v (%v)", list, err)
+	}
+	page = do("GET", "/flows", "", "", a).Body.String()
+	for _, want := range []string{"session: " + sess, "marker: " + marker, "wait: 613"} {
+		if !strings.Contains(page, want) {
+			t.Errorf("the job card does not show %q", want)
+		}
+	}
+	// The form refuses session + thread together (400, not queued).
+	if rec := do("POST", "/flows/jobs", url.Values{"flow": {"muse.send"}, "host": {host}, "instance": {"personal"},
+		"param_text": {"dispatch body"}, "param_thread": {"Side chat"}, "param_session": {sess}}.Encode(), "", a); rec.Code != http.StatusBadRequest {
+		t.Fatalf("form enqueue with session and thread: %d; want 400", rec.Code)
 	}
 }

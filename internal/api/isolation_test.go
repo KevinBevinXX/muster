@@ -356,6 +356,7 @@ var isolationClasses = map[string]routeClass{
 	"GET /api/flows/jobs":               classAPIToken,
 	"GET /api/flows/jobs/{id}":          classAPIToken,
 	"POST /api/flows/jobs":              classAPIToken,
+	"POST /api/flows/jobs/{id}/cancel":  classAPIToken,
 	"POST /runner/flows/claim":          classRunner,
 	"POST /runner/flows/{id}/heartbeat": classRunner,
 	"POST /runner/flows/{id}/result":    classRunner,

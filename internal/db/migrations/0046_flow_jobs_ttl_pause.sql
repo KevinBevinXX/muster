@@ -1,0 +1,33 @@
+-- muster 0046 — A QUEUED FLOW JOB'S TTL DOES NOT RUN WHILE IT IS BLOCKED.
+--
+-- Applies after 0043 (connector standing grants); it was numbered 0043 while
+-- that was still in review, and was renumbered when it merged first.
+--
+-- A claim refuses a job while another job of the same owner, host and
+-- instance is running (one browser, one job). A muse dispatch can hold an
+-- instance for wait (≤ 3600 s) + 240 s + the pacing gap, so a job queued behind
+-- it with the default 15-minute ttl used to become `expired` without ever
+-- having had a chance to run (PR #228 round-1 finding F1).
+--
+-- ttl_paused is the time a queued job has spent blocked that way. Its
+-- effective deadline is expires_at + ttl_paused. expires_at itself stays the
+-- immutable, as-enqueued audit fact (flow_jobs_input_immutable); this column is
+-- deliberately NOT in that trigger's list. The store:
+--   * while a job is blocked, counts the current blocker's hold toward its
+--     deadline, up to MaxTTLPause (90 min) PER BLOCKER (sweep), and
+--   * when the blocking job leaves `running` (Report, or the lease sweep), adds
+--     to each job still queued behind it the time it was blocked by that job,
+--     at most MaxTTLPause: now() - greatest(its created_at, the blocker's
+--     claimed_at) — in the SAME
+--     statement as the transition, so no sweep can see the blocker gone and
+--     the pause not yet applied.
+--
+-- Additive; an older muster ignores it (and goes back to expiring blocked
+-- jobs on the recorded expires_at).
+--
+-- The ALTER takes an ACCESS EXCLUSIVE lock on flow_jobs, which every runner
+-- claim and heartbeat touches. Fail fast rather than queue behind (and in
+-- front of) them; the same convention as 0040, 0041 and 0043.
+SET LOCAL lock_timeout = '3s';
+
+ALTER TABLE flow_jobs ADD COLUMN IF NOT EXISTS ttl_paused INTERVAL NOT NULL DEFAULT interval '0';

@@ -93,3 +93,109 @@ func TestRunnerTokenShape(t *testing.T) {
 		}
 	}
 }
+
+// Muse-dispatch parameters (session, marker, wait). The fixture values are
+// pairwise distinct, and the wait is not the 3600 bound, so a swapped field or
+// a hardcoded literal shows.
+const (
+	dispatchSession = "3f2a9c1e-8b4d-4e7a-9c3b-1d2e3f4a5b6c"
+	dispatchMarker  = "md-a1b2c3"
+	dispatchWait    = "917"
+)
+
+func dispatchReq() Request {
+	return Request{Flow: "muse.send", Host: "laptop", Instance: "personal", Params: map[string]string{
+		"text": "do the thing", "session": dispatchSession, "marker": dispatchMarker, "wait": dispatchWait, "task": "42"}}
+}
+
+func TestValidateAcceptsAMuseDispatch(t *testing.T) {
+	r := dispatchReq()
+	if _, err := Validate(&r); err != nil {
+		t.Fatalf("a well-formed dispatch was refused: %v", err)
+	}
+	want := map[string]string{"text": "do the thing", "session": dispatchSession, "marker": dispatchMarker, "wait": dispatchWait, "task": "42"}
+	if len(r.Params) != len(want) {
+		t.Fatalf("params = %v; want %v", r.Params, want)
+	}
+	for k, v := range want {
+		if r.Params[k] != v {
+			t.Errorf("param %s = %q; want %q", k, r.Params[k], v)
+		}
+	}
+	// The wait's numeric boundary and a low value are accepted.
+	for _, w := range []string{"3600", "1", "60"} {
+		r := dispatchReq()
+		r.Params["wait"] = w
+		if _, err := Validate(&r); err != nil {
+			t.Errorf("wait %s refused: %v", w, err)
+		}
+	}
+	// A send with neither session nor marker (the pre-dispatch shape) still works.
+	plain := Request{Flow: "muse.send", Host: "laptop", Instance: "personal", Params: map[string]string{"text": "hi", "wait": "30"}}
+	if _, err := Validate(&plain); err != nil {
+		t.Fatalf("a plain send with a wait: %v", err)
+	}
+}
+
+func TestValidateRefusesMalformedDispatchParams(t *testing.T) {
+	cases := map[string]func(r *Request){
+		"uppercase uuid":          func(r *Request) { r.Params["session"] = strings.ToUpper(dispatchSession) },
+		"short uuid":              func(r *Request) { r.Params["session"] = dispatchSession[:35] },
+		"uuid without dashes":     func(r *Request) { r.Params["session"] = strings.ReplaceAll(dispatchSession, "-", "") },
+		"uuid with braces":        func(r *Request) { r.Params["session"] = "{" + dispatchSession + "}" },
+		"marker 5 hex":            func(r *Request) { r.Params["marker"] = "md-12345" },
+		"marker 7 hex":            func(r *Request) { r.Params["marker"] = "md-1234567" },
+		"marker uppercase":        func(r *Request) { r.Params["marker"] = "md-ABCDEF" },
+		"marker wrong prefix":     func(r *Request) { r.Params["marker"] = "mx-a1b2c3" },
+		"wait zero":               func(r *Request) { r.Params["wait"] = "0" },
+		"wait over the bound":     func(r *Request) { r.Params["wait"] = "3601" },
+		"wait far over the bound": func(r *Request) { r.Params["wait"] = "9999" },
+		"wait negative":           func(r *Request) { r.Params["wait"] = "-5" },
+		"wait with a unit":        func(r *Request) { r.Params["wait"] = "60s" },
+		"wait leading zero":       func(r *Request) { r.Params["wait"] = "060" },
+		"session and thread":      func(r *Request) { r.Params["thread"] = "Side chat" },
+		"marker without session":  func(r *Request) { delete(r.Params, "session") },
+		"marker on muse.poll": func(r *Request) {
+			r.Flow = "muse.poll"
+			r.Params = map[string]string{"marker": dispatchMarker}
+		},
+		"wait on muse.poll": func(r *Request) {
+			r.Flow = "muse.poll"
+			r.Params = map[string]string{"wait": dispatchWait}
+		},
+		// Round-0 D4: nothing uses session on muse.poll, so neither catalogue
+		// takes it (the devrc runner's mirror refuses it too).
+		"session on muse.poll": func(r *Request) {
+			r.Flow = "muse.poll"
+			r.Params = map[string]string{"session": dispatchSession, "task": "7"}
+		},
+	}
+	// Each case names the refusal it must produce, so a case refused for some
+	// OTHER reason (an earlier check winning) does not pass as this one.
+	wantMsg := map[string]string{
+		"session and thread":      `"session" and "thread" are exclusive`,
+		"session on muse.poll":    `takes no parameter "session"`,
+		"marker without session":  `"marker" needs "session"`,
+		"marker on muse.poll":     `takes no parameter "marker"`,
+		"wait on muse.poll":       `takes no parameter "wait"`,
+		"wait over the bound":     `the limit is 3600`,
+		"wait far over the bound": `the limit is 3600`,
+	}
+	r0 := dispatchReq()
+	if _, err := Validate(&r0); err != nil {
+		t.Fatalf("control: the valid dispatch was refused: %v", err)
+	}
+	for name, mutate := range cases {
+		t.Run(name, func(t *testing.T) {
+			r := dispatchReq()
+			mutate(&r)
+			_, err := Validate(&r)
+			if !errors.Is(err, ErrInvalid) {
+				t.Fatalf("Validate = %v; want ErrInvalid", err)
+			}
+			if m := wantMsg[name]; m != "" && !strings.Contains(err.Error(), m) {
+				t.Fatalf("Validate = %v; want the refusal %q", err, m)
+			}
+		})
+	}
+}

@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -247,6 +248,59 @@ func enqueueTx(ctx context.Context, tx pgx.Tx, f Flow, r Request, params []byte,
 		f.Name, string(f.Class), r.Host, r.Instance, params, via, truncateRunes(by, 100), r.TTL.Seconds()))
 }
 
+// 🔴 THE TTL DOES NOT RUN WHILE A JOB IS BLOCKED (migration 0046, PR #228
+// round-1 F1). A claim refuses a job while a job of the same owner, host and
+// instance is running, and a muse dispatch may hold that instance for over an
+// hour; a job queued behind it must not expire merely for waiting. So a queued
+// job's deadline is expires_at + ttl_paused (credit from finished blockers) +
+// the time the current blocker has held it, at most MaxTTLPause (blockSpan,
+// in the sweep). When the blocker leaves `running` the same statement banks
+// that time — again at most MaxTTLPause — into ttl_paused of each job still
+// queued behind it (resumeBehind). Doing it in the transition's own statement is what makes it
+// race-safe: no other statement can observe the blocker gone and the pause not
+// yet applied.
+
+// MaxTTLPause is the PER-BLOCKER ceiling on the ttl credit a queued job earns
+// while it waits behind one running job on its browser instance (round-2 F-A,
+// round-3). Sized from the longest LEGITIMATE hold of one instance, a muse
+// dispatch: the pacing gap waited inside the job (10 min, the muse wrapper's
+// default MUSE_MIN_SEND_GAP_MIN) + MaxWaitSeconds (60 min) + the runner's 240 s
+// slack = 74 min, plus 16 min of headroom = 90 min.
+//
+// It caps EACH blocking interval, never a job's lifetime total: a job behind
+// two long dispatches is credited both holds. While a job is blocked its
+// deadline is expires_at + ttl_paused (credit from earlier blockers) + the
+// time the CURRENT blocker has held it, at most MaxTTLPause. So a job only
+// expires while blocked if its ttl ran out before this block began, or if the
+// blocker has run longer than MaxTTLPause — a wedged runner heartbeating
+// forever. Then the queue behind it clears within MaxTTLPause + the jobs'
+// remaining ttl of the block starting, and the owner's MaxPendingPerOwner
+// self-clears.
+const MaxTTLPause = 90 * time.Minute
+
+// maxTTLPauseSQL is MaxTTLPause as an SQL interval literal (a constant, not
+// input, so it is spliced rather than bound).
+var maxTTLPauseSQL = fmt.Sprintf("interval '%d seconds'", int64(MaxTTLPause.Seconds()))
+
+// blockSpan is how long the job currently blocking q (at most one: the 0012
+// one-running index) has held it, or NULL when nothing blocks q.
+const blockSpan = `(SELECT greatest(now() - greatest(q.created_at, r.claimed_at), interval '0') FROM flow_jobs r
+		                     WHERE r.status = 'running' AND r.owner_id = q.owner_id
+		                       AND r.host = q.host AND r.instance = q.instance LIMIT 1)`
+
+// blockedBy is the NOT EXISTS body: a running job holds q's browser instance.
+const blockedBy = `SELECT 1 FROM flow_jobs r
+		                        WHERE r.status = 'running' AND r.owner_id = q.owner_id
+		                          AND r.host = q.host AND r.instance = q.instance`
+
+// resumeBehind, inside a statement with a CTE `fin` (the rows that just left
+// running, with owner_id, host, instance and claimed_at), adds to each job
+// still queued on the same instance the time that job blocked it.
+var resumeBehind = `UPDATE flow_jobs q SET ttl_paused = q.ttl_paused + least(greatest(now() - greatest(q.created_at, fin.claimed_at), interval '0'), ` + maxTTLPauseSQL + `)
+		  FROM fin
+		 WHERE q.status = 'queued' AND q.owner_id = fin.owner_id
+		   AND q.host = fin.host AND q.instance = fin.instance`
+
 // sweep applies the two time-driven transitions to the CALLER's rows (row-level
 // security scopes the UPDATE): a queued job past its TTL becomes expired, and a
 // running job whose lease lapsed is re-queued (read, attempts left, TTL left),
@@ -257,14 +311,17 @@ func enqueueTx(ctx context.Context, tx pgx.Tx, f Flow, r Request, params []byte,
 // claim sweeps first, under the caller's principal, so no background loop needs
 // authz.System to act across users, and a job's displayed state is never stale
 // by more than the request that shows it. The claim's own WHERE clause refuses
-// an expired job regardless, so "never runs late" does not depend on a sweep
-// having happened.
+// an expired job regardless, so "never claimed past its deadline" (ttl plus
+// its blocked-time credit) does not depend on a sweep having happened.
 func (s *PGStore) sweep(ctx context.Context) error {
 	rows, err := s.pool.Query(ctx, `
-		UPDATE flow_jobs SET status = 'expired', finished_at = now(),
-		       detail = 'not claimed before its ttl; it will not run late'
-		 WHERE status = 'queued' AND expires_at <= now()
-		RETURNING flow`)
+		UPDATE flow_jobs q SET status = 'expired', finished_at = now(),
+		       detail = CASE WHEN coalesce(`+blockSpan+`, interval '0') >= `+maxTTLPauseSQL+`
+		           THEN 'not claimed within its ttl plus up to `+strconv.Itoa(int(MaxTTLPause.Minutes()))+` minutes of credit for each running job it waited behind on the same browser, and the job blocking it has run longer than that; it will not run later than that'
+		           ELSE 'not claimed before its ttl (plus its credit for time spent blocked); it will not run later than that' END
+		 WHERE q.status = 'queued'
+		   AND q.expires_at + q.ttl_paused + least(coalesce(`+blockSpan+`, interval '0'), `+maxTTLPauseSQL+`) <= now()
+		RETURNING q.flow`)
 	if err != nil {
 		return fmt.Errorf("flows: sweep ttl: %w", err)
 	}
@@ -272,23 +329,26 @@ func (s *PGStore) sweep(ctx context.Context) error {
 		return err
 	}
 	rows, err = s.pool.Query(ctx, `
+		WITH fin AS (
 		UPDATE flow_jobs SET
 		       status = CASE
 		           WHEN class = 'write' THEN 'needs_operator'
-		           WHEN expires_at <= now() THEN 'expired'
+		           WHEN expires_at + ttl_paused <= now() THEN 'expired'
 		           WHEN attempts >= $1 THEN 'failed'
 		           ELSE 'queued' END,
 		       lease_until = NULL,
 		       finished_at = CASE
-		           WHEN class = 'read' AND expires_at > now() AND attempts < $1 THEN NULL
+		           WHEN class = 'read' AND expires_at + ttl_paused > now() AND attempts < $1 THEN NULL
 		           ELSE now() END,
 		       detail = CASE
 		           WHEN class = 'write' THEN 'the runner stopped reporting mid-run; this write may have been delivered, so it is not re-run — check by hand'
-		           WHEN expires_at <= now() THEN 'the runner stopped reporting mid-run, and the ttl has passed'
+		           WHEN expires_at + ttl_paused <= now() THEN 'the runner stopped reporting mid-run, and the ttl has passed'
 		           WHEN attempts >= $1 THEN 'the runner stopped reporting mid-run on every attempt'
 		           ELSE 'the runner stopped reporting mid-run; re-queued' END
 		 WHERE status = 'running' AND lease_until < now()
-		RETURNING flow, status`, maxReadAttempts)
+		RETURNING flow, status, owner_id, host, instance, claimed_at),
+		paused AS (`+resumeBehind+`)
+		SELECT flow, status FROM fin`, maxReadAttempts)
 	if err != nil {
 		return fmt.Errorf("flows: sweep leases: %w", err)
 	}
@@ -412,10 +472,8 @@ func (s *PGStore) Claim(ctx context.Context, host string, instances []string, ru
 		WITH cand AS (
 		    SELECT q.id FROM flow_jobs q
 		     WHERE q.status = 'queued' AND q.host = $1 AND q.instance = ANY($2::text[])
-		       AND q.expires_at > now()
-		       AND NOT EXISTS (SELECT 1 FROM flow_jobs r
-		                        WHERE r.status = 'running' AND r.owner_id = q.owner_id
-		                          AND r.host = q.host AND r.instance = q.instance)
+		       AND q.expires_at + q.ttl_paused > now()
+		       AND NOT EXISTS (`+blockedBy+`)
 		     ORDER BY q.id
 		     LIMIT 1
 		     FOR UPDATE SKIP LOCKED)
@@ -478,10 +536,13 @@ func (s *PGStore) Report(ctx context.Context, id int64, host string, res Result)
 		return Job{}, invalidf("outcome %q is not one of done, failed, needs_operator", res.Outcome)
 	}
 	j, err := scanJob(s.pool.QueryRow(ctx, `
+		WITH fin AS (
 		UPDATE flow_jobs SET status = $3, finished_at = now(), lease_until = NULL,
 		       exit_code = $4, output = $5, detail = $6
 		 WHERE id = $1 AND host = $2 AND status = 'running'
-		RETURNING `+jobCols, id, host, string(res.Outcome), res.ExitCode,
+		RETURNING *),
+		paused AS (`+resumeBehind+`)
+		SELECT `+jobCols+` FROM fin`, id, host, string(res.Outcome), res.ExitCode,
 		truncateBytes(res.Output, MaxOutputBytes), truncateBytes(res.Detail, maxDetailBytes)))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Job{}, s.notFoundOrStateOnHost(ctx, id, host)

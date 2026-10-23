@@ -287,6 +287,288 @@ func TestAQueuedJobPastItsTTLExpiresAndNeverRuns(t *testing.T) {
 	}
 }
 
+// insertAgedPoll inserts a queued muse.poll on instance created 19 minutes ago
+// with the default 15-minute ttl, so its recorded expires_at passed 4 minutes
+// ago (inserted directly: created_at and expires_at are immutable input).
+func insertAgedPoll(t *testing.T, pool *pgxpool.Pool, instance string) int64 {
+	t.Helper()
+	var id int64
+	if err := pool.QueryRow(session(2), `INSERT INTO flow_jobs (flow, class, host, instance, params, requested_via, created_at, expires_at)
+		VALUES ('muse.poll', 'read', 'laptop', $1, '{}', 'session', now() - interval '19 minutes', now() - interval '4 minutes')
+		RETURNING id`, instance).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	return id
+}
+
+// TestAJobQueuedBehindARunningJobDoesNotExpireWhileBlocked is round-1 finding
+// F1: a muse dispatch holds its browser instance for up to wait+240 s (wait ≤
+// 3600 s) plus the pacing gap, and a job queued behind it on the same
+// owner/host/instance cannot be claimed meanwhile. Its ttl must not run while
+// it is blocked. Scenario: a muse.send was claimed 20 minutes ago and is still
+// running (heartbeating); a muse.poll queued 19 minutes ago with the default
+// 15-minute ttl is still queued — not expired — and is claimed once the send
+// reports. CONTROL: the same aged poll on an instance nothing is running on
+// expires as before, so the hold is about the block, not a ttl that never
+// fires.
+func TestAJobQueuedBehindARunningJobDoesNotExpireWhileBlocked(t *testing.T) {
+	s, pool := pgStore(t)
+	send := mustEnqueue(t, s, session(2), sendReq("laptop", "personal"))
+	if c, ok, err := s.Claim(runner(2), "laptop", []string{"personal"}, 0); err != nil || !ok || c.ID != send.ID {
+		t.Fatalf("claim send: %+v ok=%v %v", c, ok, err)
+	}
+	if _, err := pool.Exec(authz.System(context.Background()),
+		`UPDATE flow_jobs SET claimed_at = now() - interval '20 minutes' WHERE id = $1`, send.ID); err != nil {
+		t.Fatal(err)
+	}
+	blocked := insertAgedPoll(t, pool, "personal")
+	free := insertAgedPoll(t, pool, "work")
+
+	if got, err := s.Get(session(2), blocked); err != nil || got.Status != StatusQueued {
+		t.Fatalf("the poll queued behind the running send reads %+v %v; want still queued", got, err)
+	}
+	if got, err := s.Get(session(2), free); err != nil || got.Status != StatusExpired {
+		t.Fatalf("CONTROL: the same aged poll on an idle instance reads %+v %v; want expired", got, err)
+	}
+	if _, err := s.Report(runner(2), send.ID, "laptop", Result{Outcome: OutcomeDone}); err != nil {
+		t.Fatalf("report send: %v", err)
+	}
+	c, ok, err := s.Claim(runner(2), "laptop", []string{"personal"}, 0)
+	if err != nil || !ok || c.ID != blocked {
+		t.Fatalf("after the send reported, claim = %+v ok=%v %v; want the blocked poll %d", c, ok, err, blocked)
+	}
+	// The pause is exactly the time it was blocked — all 19 minutes since it
+	// was queued (the send was claimed before it) — not an unbounded hold: its
+	// effective deadline is created + 15m ttl + 19m paused, i.e. ~15m from now.
+	var left float64
+	if err := pool.QueryRow(authz.System(context.Background()),
+		`SELECT extract(epoch FROM (expires_at + ttl_paused) - now()) FROM flow_jobs WHERE id = $1`, blocked).Scan(&left); err != nil {
+		t.Fatal(err)
+	}
+	if left < 14*60 || left > 15*60+5 {
+		t.Fatalf("the unblocked poll has %.0fs of ttl left; want ~900s (blocked 19m, 15m ttl, created 19m ago)", left)
+	}
+}
+
+// TestALapsedBlockerAlsoResumesTheTTLOfTheJobsBehindIt: the same pause, when
+// the blocking job leaves `running` through the lease sweep instead of a
+// Report (a runner that died mid-run).
+func TestALapsedBlockerAlsoResumesTheTTLOfTheJobsBehindIt(t *testing.T) {
+	s, pool := pgStore(t)
+	send := mustEnqueue(t, s, session(2), sendReq("laptop", "personal"))
+	if _, ok, err := s.Claim(runner(2), "laptop", []string{"personal"}, 0); err != nil || !ok {
+		t.Fatalf("claim send: ok=%v %v", ok, err)
+	}
+	if _, err := pool.Exec(authz.System(context.Background()),
+		`UPDATE flow_jobs SET claimed_at = now() - interval '20 minutes' WHERE id = $1`, send.ID); err != nil {
+		t.Fatal(err)
+	}
+	blocked := insertAgedPoll(t, pool, "personal")
+	lapse(t, pool, send.ID)
+	if got, err := s.Get(session(2), send.ID); err != nil || got.Status != StatusNeedsOperator {
+		t.Fatalf("the lapsed send reads %+v %v; want needs_operator", got, err)
+	}
+	if c, ok, err := s.Claim(runner(2), "laptop", []string{"personal"}, 0); err != nil || !ok || c.ID != blocked {
+		t.Fatalf("after the send's lease lapsed, claim = %+v ok=%v %v; want the blocked poll %d", c, ok, err, blocked)
+	}
+}
+
+// sys runs owner-level SQL (ttl_paused and claimed_at are not input, so the
+// immutability trigger allows them).
+func sys(t *testing.T, pool *pgxpool.Pool, sql string, args ...any) {
+	t.Helper()
+	if _, err := pool.Exec(authz.System(context.Background()), sql, args...); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func pausedSeconds(t *testing.T, pool *pgxpool.Pool, id int64) float64 {
+	t.Helper()
+	var s float64
+	if err := pool.QueryRow(authz.System(context.Background()),
+		`SELECT extract(epoch FROM ttl_paused) FROM flow_jobs WHERE id = $1`, id).Scan(&s); err != nil {
+		t.Fatal(err)
+	}
+	return s
+}
+
+// insertPoll inserts a queued muse.poll on "personal" created `age` ago with
+// a ttl of `ttl` (inserted directly: created_at and expires_at are input).
+func insertPoll(t *testing.T, pool *pgxpool.Pool, age, ttl time.Duration) int64 {
+	t.Helper()
+	var id int64
+	if err := pool.QueryRow(session(2), `INSERT INTO flow_jobs (flow, class, host, instance, params, requested_via, created_at, expires_at)
+		VALUES ('muse.poll', 'read', 'laptop', 'personal', '{}', 'session',
+		        now() - make_interval(secs => $1), now() - make_interval(secs => $1) + make_interval(secs => $2))
+		RETURNING id`, age.Seconds(), ttl.Seconds()).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	return id
+}
+
+// runningSend enqueues and claims a muse.send on laptop/personal, then backdates
+// its claim by `ago`.
+func runningSend(t *testing.T, s *PGStore, pool *pgxpool.Pool, ago time.Duration) Job {
+	t.Helper()
+	send := mustEnqueue(t, s, session(2), sendReq("laptop", "personal"))
+	if c, ok, err := s.Claim(runner(2), "laptop", []string{"personal"}, 0); err != nil || !ok || c.ID != send.ID {
+		t.Fatalf("claim send: %+v ok=%v %v", c, ok, err)
+	}
+	sys(t, pool, `UPDATE flow_jobs SET claimed_at = now() - make_interval(secs => $2) WHERE id = $1`, send.ID, ago.Seconds())
+	return send
+}
+
+// The two expiry details, pinned whole: a reader must be able to tell a job
+// that waited out a wedged blocker from one whose own ttl ran out.
+const (
+	wantBlockedExpiry = "not claimed within its ttl plus up to 90 minutes of credit for each running job it waited behind on the same browser, and the job blocking it has run longer than that; it will not run later than that"
+	wantPlainExpiry   = "not claimed before its ttl (plus its credit for time spent blocked); it will not run later than that"
+)
+
+// TestABlockedJobStillExpiresAtTheAbsoluteCeiling (round-2 F-A, round-3 (b)):
+// a runner that keeps heartbeating a wedged flow must not hold the jobs behind
+// it forever. A poll blocked by ONE blocker for longer than MaxTTLPause, with
+// its own ttl spent, expires even though that blocker is STILL running, and
+// its detail is the blocked-branch message, whole. CONTROL: a poll blocked
+// just inside the bound stays queued.
+func TestABlockedJobStillExpiresAtTheAbsoluteCeiling(t *testing.T) {
+	s, pool := pgStore(t)
+	runningSend(t, s, pool, 3*time.Hour)
+	past := insertPoll(t, pool, DefaultTTL+MaxTTLPause+time.Minute, DefaultTTL)
+	inside := insertPoll(t, pool, DefaultTTL+MaxTTLPause-time.Minute, DefaultTTL)
+	got, err := s.Get(session(2), past)
+	if err != nil || got.Status != StatusExpired {
+		t.Fatalf("a poll blocked past the ceiling reads %+v %v; want expired while the blocker still runs", got, err)
+	}
+	if got.Detail != wantBlockedExpiry {
+		t.Fatalf("detail = %q\nwant      %q", got.Detail, wantBlockedExpiry)
+	}
+	if got, err := s.Get(session(2), inside); err != nil || got.Status != StatusQueued {
+		t.Fatalf("CONTROL: a poll blocked just inside the ceiling reads %+v %v; want still queued", got, err)
+	}
+}
+
+// TestAnUnblockedJobsExpiryDetailIsThePlainOne: the other branch, pinned whole.
+func TestAnUnblockedJobsExpiryDetailIsThePlainOne(t *testing.T) {
+	s, pool := pgStore(t)
+	id := insertPoll(t, pool, 20*time.Minute, DefaultTTL)
+	got, err := s.Get(session(2), id)
+	if err != nil || got.Status != StatusExpired || got.Detail != wantPlainExpiry {
+		t.Fatalf("an unblocked aged poll reads %+v %v; want expired with %q", got, err, wantPlainExpiry)
+	}
+}
+
+// TestAJobBehindTwoLongDispatchesSurvives (round-3 (a)): two muse.send
+// wait=3600 queued, then a muse.poll with the default 15-min ttl. Send 1 held
+// the instance ~63 min (credited to the poll when it reported) and send 2 has
+// now been running 64 min, legitimately. ~127 min of total waiting exceeds
+// ttl + 90, but no single blocker exceeded MaxTTLPause, so the poll is still
+// queued and is claimed once send 2 reports.
+func TestAJobBehindTwoLongDispatchesSurvives(t *testing.T) {
+	s, pool := pgStore(t)
+	send2 := runningSend(t, s, pool, 64*time.Minute)
+	poll := insertPoll(t, pool, 127*time.Minute, DefaultTTL)
+	sys(t, pool, `UPDATE flow_jobs SET ttl_paused = interval '63 minutes' WHERE id = $1`, poll) // send 1's credit
+	if got, err := s.Get(session(2), poll); err != nil || got.Status != StatusQueued {
+		t.Fatalf("the poll behind the second long dispatch reads %+v %v; want still queued", got, err)
+	}
+	if _, err := s.Report(runner(2), send2.ID, "laptop", Result{Outcome: OutcomeDone}); err != nil {
+		t.Fatalf("report send 2: %v", err)
+	}
+	if c, ok, err := s.Claim(runner(2), "laptop", []string{"personal"}, 0); err != nil || !ok || c.ID != poll {
+		t.Fatalf("after send 2 reported, claim = %+v ok=%v %v; want the poll %d", c, ok, err, poll)
+	}
+	if got := pausedSeconds(t, pool, poll); got < (63+64)*60-5 || got > (63+64)*60+5 {
+		t.Fatalf("ttl_paused = %.0fs; want ~%ds (63m + 64m, each under the per-blocker cap)", got, (63+64)*60)
+	}
+}
+
+// TestACreditedJobBlockedAgainHasTheDocumentedBound (round-3 (c)): the bound is
+// expires_at + its credit so far + up to MaxTTLPause for the CURRENT blocker.
+// A poll already credited 30 min, then blocked by a wedged send running 100
+// min: expired once expires_at + 30m + 90m has passed; a twin 30 min younger is
+// still queued.
+func TestACreditedJobBlockedAgainHasTheDocumentedBound(t *testing.T) {
+	s, pool := pgStore(t)
+	runningSend(t, s, pool, 100*time.Minute)
+	old := insertPoll(t, pool, 150*time.Minute, DefaultTTL)   // deadline -135+30+90 = -15m
+	young := insertPoll(t, pool, 120*time.Minute, DefaultTTL) // deadline -105+30+90 = +15m
+	sys(t, pool, `UPDATE flow_jobs SET ttl_paused = interval '30 minutes' WHERE id IN ($1, $2)`, old, young)
+	if got, err := s.Get(session(2), old); err != nil || got.Status != StatusExpired || got.Detail != wantBlockedExpiry {
+		t.Fatalf("the credited poll past its bound reads %+v %v; want expired (blocked branch)", got, err)
+	}
+	if got, err := s.Get(session(2), young); err != nil || got.Status != StatusQueued {
+		t.Fatalf("CONTROL: the credited poll inside its bound reads %+v %v; want still queued", got, err)
+	}
+}
+
+// TestTheCurrentBlockersCreditIsTheTimeItHasBlocked: while blocked, a job's
+// clock is paused only for the time THIS blocker has actually held it (up to
+// MaxTTLPause), not a flat MaxTTLPause. A poll whose ttl ran out while nothing
+// blocked it (queued 30m ago, 15m ttl), then blocked 10m ago, is expired.
+func TestTheCurrentBlockersCreditIsTheTimeItHasBlocked(t *testing.T) {
+	s, pool := pgStore(t)
+	runningSend(t, s, pool, 10*time.Minute)
+	id := insertPoll(t, pool, 30*time.Minute, DefaultTTL) // deadline -15m + 10m blocked = -5m
+	// It IS blocked, but its blocker has not run past the ceiling, so the
+	// plain detail is the true one (an EXISTS(blocker) test would pick the
+	// blocked message here).
+	if got, err := s.Get(session(2), id); err != nil || got.Status != StatusExpired || got.Detail != wantPlainExpiry {
+		t.Fatalf("a poll whose own ttl ran out before the blocker came reads %+v %v; want expired with %q", got, err, wantPlainExpiry)
+	}
+}
+
+// TestTheTTLCreditIsCappedAtMaxTTLPause: a poll blocked for longer than the
+// ceiling's credit (but not yet past expires_at + MaxTTLPause) is credited
+// exactly MaxTTLPause when its blocker reports, never more.
+func TestTheTTLCreditIsCappedAtMaxTTLPause(t *testing.T) {
+	s, pool := pgStore(t)
+	send := runningSend(t, s, pool, 3*time.Hour)
+	id := insertPoll(t, pool, MaxTTLPause+10*time.Minute, DefaultTTL) // blocked 100m of a 90m cap
+	if _, err := s.Report(runner(2), send.ID, "laptop", Result{Outcome: OutcomeDone}); err != nil {
+		t.Fatalf("report: %v", err)
+	}
+	if got := pausedSeconds(t, pool, id); got != MaxTTLPause.Seconds() {
+		t.Fatalf("ttl_paused = %.0fs; want exactly the cap %.0fs", got, MaxTTLPause.Seconds())
+	}
+}
+
+// TestTheCreditStartsWhenTheBlockerWasClaimed (round-2 F-B, mutant M4): a poll
+// queued while the runner was offline (its ttl running, nothing blocking it),
+// and only THEN blocked by a newly claimed send, is credited from the
+// blocker's claim — not from its own creation.
+func TestTheCreditStartsWhenTheBlockerWasClaimed(t *testing.T) {
+	s, pool := pgStore(t)
+	// The send was queued first (so it is claimed first) and the poll 20m
+	// ago; the runner was offline until 10m ago, when it claimed the send.
+	send := runningSend(t, s, pool, 10*time.Minute)
+	id := insertPoll(t, pool, 20*time.Minute, 25*time.Minute)
+	if _, err := s.Report(runner(2), send.ID, "laptop", Result{Outcome: OutcomeDone}); err != nil {
+		t.Fatalf("report: %v", err)
+	}
+	if got := pausedSeconds(t, pool, id); got < 600-5 || got > 600+5 {
+		t.Fatalf("ttl_paused = %.0fs; want ~600s (blocked only since the send's claim, not its 1200s age)", got)
+	}
+}
+
+// TestACreditedReadJobWhoseLeaseLapsesIsRequeued (round-2 F-B, mutants M6/M6b):
+// a read job claimed AFTER its raw expires_at — legitimately, on ttl credit —
+// whose lease then lapses is re-queued, not expired: the lease sweep judges it
+// on the effective deadline too.
+func TestACreditedReadJobWhoseLeaseLapsesIsRequeued(t *testing.T) {
+	s, pool := pgStore(t)
+	id := insertPoll(t, pool, 20*time.Minute, 15*time.Minute) // raw deadline passed 5m ago
+	sys(t, pool, `UPDATE flow_jobs SET ttl_paused = interval '15 minutes' WHERE id = $1`, id)
+	if c, ok, err := s.Claim(runner(2), "laptop", []string{"personal"}, 0); err != nil || !ok || c.ID != id {
+		t.Fatalf("claim the credited poll: %+v ok=%v %v", c, ok, err)
+	}
+	lapse(t, pool, id)
+	got, err := s.Get(session(2), id)
+	if err != nil || got.Status != StatusQueued || got.FinishedAt != nil || !strings.Contains(got.Detail, "re-queued") {
+		t.Fatalf("the credited read job whose lease lapsed reads %+v %v; want re-queued", got, err)
+	}
+}
+
 // lapse moves a running job's lease into the past (lease_until is not input,
 // so the immutability trigger allows it).
 func lapse(t *testing.T, pool *pgxpool.Pool, id int64) {

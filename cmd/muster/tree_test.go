@@ -44,7 +44,7 @@ import (
 // status/comment, agent ls/resolve/messages, agent task get/comment/status, and
 // chief ask. If a thirteenth is genuinely wanted, change this number, add its
 // ledger row, and say so in the commit — do not discover it in a diff.
-const wantVerbCount = 21
+const wantVerbCount = 22
 
 // minRunnableCommands is a hardcoded floor BELOW wantVerbCount. It exists so
 // that a tree wired to NOTHING cannot pass this file vacuously: a tree that lost
@@ -91,6 +91,8 @@ var wiring = []struct {
 	{"flow enqueue", []string{"flow", "enqueue", "muse.poll", "--param", "thread=Side chat"}, "POST /api/flows/jobs"},
 	{"flow ls", []string{"flow", "ls"}, "GET /api/flows/jobs"},
 	{"flow status", []string{"flow", "status", "9"}, "GET /api/flows/jobs/9"},
+	// The 22nd verb (muse dispatch): cancel a queued / dismiss a needs_operator job.
+	{"flow cancel", []string{"flow", "cancel", "9"}, "POST /api/flows/jobs/9/cancel"},
 	// Session routing: a mirrored session's reply_to_chief (route.go).
 	{"route reply", []string{"route", "reply", "rt_0123456789abcdef01234567", "--body", "x"}, "POST /api/routes/rt_0123456789abcdef01234567/reply"},
 	// Retrying an unconfirmed plugin message (plugin_retry.go).
@@ -198,6 +200,7 @@ func TestEveryCommandReachesItsRoute(t *testing.T) {
 			h.json("POST /api/flows/jobs", http.StatusCreated, `{"id":9,"flow":"muse.poll","status":"queued"}`)
 			h.json("GET /api/flows/jobs", http.StatusOK, `[]`)
 			h.json("GET /api/flows/jobs/9", http.StatusOK, `{"id":9,"status":"done"}`)
+			h.json("POST /api/flows/jobs/9/cancel", http.StatusOK, `{"id":9,"status":"cancelled"}`)
 			h.json("POST /api/routes/rt_0123456789abcdef01234567/reply", http.StatusOK, `{"route_id":"rt_0123456789abcdef01234567","state":"relayed","nested":{"a":1}}`)
 			h.json("POST /api/plugins/messages/6/retry", http.StatusAccepted, `{"id":6,"status":"queued","retrying":true}`)
 			h.json("POST /api/chief/replace", http.StatusOK, `{"deleted":null,"created":true,"agent":{"id":2,"name":"chief"}}`)
