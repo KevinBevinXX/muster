@@ -161,7 +161,7 @@ func TestAMirroredCardHasNoInteractiveBadge(t *testing.T) {
 // no longer text in the title row. It is an icon button OUTSIDE the nav anchor
 // (so a tap opens the tooltip rather than the window) whose accessible name
 // and title say it, and whose popover — the tap tooltip — says it too. The
-// host is still VISIBLE, in the footer.
+// host is still VISIBLE, in the body (hostChip).
 func TestTheMirroredMarkIsAnIconWithAnAccessibleTooltip(t *testing.T) {
 	markup := renderNode(t, mirrorCard(realisticMirror()))
 	doc, err := html.Parse(strings.NewReader(markup))
@@ -256,4 +256,86 @@ func nodeText(n *html.Node) string {
 	}
 	walk(n)
 	return b.String()
+}
+
+// slotOf is the element of an article's markup carrying data-card-slot=slot.
+func slotOf(t *testing.T, markup, slot string) *html.Node {
+	t.Helper()
+	doc, err := html.Parse(strings.NewReader(markup))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out *html.Node
+	var walk func(*html.Node)
+	walk = func(n *html.Node) {
+		if v, ok := nodeAttr(n, "data-card-slot"); ok && n.Type == html.ElementNode && v == slot && out == nil {
+			out = n
+		}
+		for c := n.FirstChild; c != nil; c = c.NextSibling {
+			walk(c)
+		}
+	}
+	walk(doc)
+	if out == nil {
+		t.Fatalf("no %q slot in:\n%s", slot, markup)
+	}
+	return out
+}
+
+// TestAMirroredCardSpellsItsHostInTheBodyNotTheFooter: the operator's ask
+// "drop laptop from the bottom part of the card and just include it in the
+// body". A mirrored card's host is a chip in its header row ("host tower"),
+// and its footer no longer names it. A dispatched agent's card draws no host
+// chip (its cluster icon and the "cluster" tab say it), and the two kinds keep
+// one layout (TestAgentAndMirrorCardsRenderTheSameSlots). Red before: the
+// mirrored footer said "host tower" and no header carried a host chip.
+func TestAMirroredCardSpellsItsHostInTheBodyNotTheFooter(t *testing.T) {
+	markup := renderNode(t, mirrorCard(realisticMirror()))
+	header := slotOf(t, markup, "header")
+	var chipEl *html.Node
+	walkNodes(header, func(n *html.Node) bool {
+		if _, ok := nodeAttr(n, "data-card-host"); ok && n.Type == html.ElementNode {
+			chipEl = n
+		}
+		return chipEl == nil
+	})
+	if chipEl == nil {
+		t.Fatalf("no host chip in the mirrored card's header:\n%s", markup)
+	}
+	if v, _ := nodeAttr(chipEl, "data-card-host"); v != "tower" || nodeText(chipEl) != "hosttower" {
+		t.Errorf("host chip %q / %q, want host tower", v, nodeText(chipEl))
+	}
+	footer := nodeText(slotOf(t, markup, "footer"))
+	if strings.Contains(footer, "tower") || strings.Contains(footer, "host") {
+		t.Errorf("the footer still names the host: %q", footer)
+	}
+	if !strings.Contains(footer, "active") {
+		t.Errorf("instrument check FAILED: the footer text %q is not the footer", footer)
+	}
+	// A dispatched agent's card: no host chip, and the cluster's icon.
+	agent := renderNode(t, agentCard(realisticAgent()))
+	if strings.Contains(agent, "data-card-host") || !strings.Contains(agent, `data-host-icon="cluster"`) {
+		t.Errorf("an agent card draws a host chip, or lost its cluster icon:\n%s", agent)
+	}
+}
+
+// TestAnOfflineCardsChipDoesNotReadAsAHost: beside the "host <name>" chip, the
+// offline chip is labelled "state" (the filter field, state:offline), so the
+// card does not read as having two hosts. Red before: chip("host", "offline").
+func TestAnOfflineCardsChipDoesNotReadAsAHost(t *testing.T) {
+	off := realisticMirror()
+	off.Online = false
+	markup := renderNode(t, mirrorCard(off))
+	if !strings.Contains(markup, `data-mirror-offline=""`) {
+		t.Fatalf("instrument check FAILED: no offline chip:\n%s", markup)
+	}
+	if n := strings.Count(markup, `<span class="text-muted">host</span>`); n != 1 {
+		t.Errorf("%d chips labelled host, want 1 (the host's own)", n)
+	}
+	if !strings.Contains(markup, `<span class="text-muted">state</span>offline`) {
+		t.Errorf("the offline chip is not labelled state:\n%s", markup)
+	}
+	if !strings.Contains(markup, `data-f-state="offline"`) {
+		t.Errorf("instrument check FAILED: the label no longer names the filter field")
+	}
 }

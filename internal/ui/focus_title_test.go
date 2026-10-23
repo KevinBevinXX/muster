@@ -102,7 +102,7 @@ func TestAFocusTitleHeadsTheCardAndTheNameBecomesItsSubtitle(t *testing.T) {
 		markup, subtitle string
 	}{
 		"agent":  {renderNode(t, agentCard(agent)), "Worker seven"},
-		"mirror": {renderNode(t, mirrorCard(mirror)), "mango:1work"}, // the label, then its muted tmux session (separate spans: no space between the text nodes)
+		"mirror": {renderNode(t, mirrorCard(mirror)), "mango:1"}, // the label alone: a card draws no raw session name
 	} {
 		t.Run(name, func(t *testing.T) {
 			art := parseArticle(t, c.markup)
@@ -170,8 +170,8 @@ func TestACardWithoutAFocusKeepsItsTitleAndHasNoSubtitle(t *testing.T) {
 		"agent, none":     {renderNode(t, agentCard(realisticAgent())), "Worker seven"},
 		"agent, empty":    {renderNode(t, agentCard(func() AgentCardView { a := realisticAgent(); a.Focus = &FocusView{}; return a }())), "Worker seven"},
 		"agent, missing":  {renderNode(t, agentCard(func() AgentCardView { a := realisticAgent(); a.Focus = missing; return a }())), "Worker seven"},
-		"mirror, none":    {renderNode(t, mirrorCard(realisticMirror())), "mango:1work"},
-		"mirror, missing": {renderNode(t, mirrorCard(func() MirrorCardView { m := realisticMirror(); m.Focus = missing; return m }())), "mango:1work"},
+		"mirror, none":    {renderNode(t, mirrorCard(realisticMirror())), "mango:1"},
+		"mirror, missing": {renderNode(t, mirrorCard(func() MirrorCardView { m := realisticMirror(); m.Focus = missing; return m }())), "mango:1"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			art := parseArticle(t, c.markup)

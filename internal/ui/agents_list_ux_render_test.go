@@ -203,8 +203,8 @@ func TestMarkCompleteGoesBackToTheAgentsList(t *testing.T) {
 	})
 }
 
-// TestTheAgentsFilterHasThePresetChips: above the list, five toggle chips —
-// Waiting on ask, Waiting on question, Idle >15m, Idle >1h, Idle >1d — each a
+// TestTheAgentsFilterHasThePresetChips: above the list, four toggle chips —
+// Waiting on you, Idle >15m, Idle >1h, Idle >1d — each a
 // 44px button with aria-pressed, explained by its title; the row is one 44px
 // row (no shift when chips are pressed); the choice is remembered in
 // localStorage, inside try/catch.
@@ -221,21 +221,21 @@ func TestTheAgentsFilterHasThePresetChips(t *testing.T) {
 	for _, l := range labels {
 		got = append(got, l[1]+"="+l[2])
 	}
-	want := "ask=Waiting on ask,question=Waiting on question,idle-15m=Idle &gt;15m,idle-1h=Idle &gt;1h,idle-1d=Idle &gt;1d"
+	want := "waiting=Waiting on you,idle-15m=Idle &gt;15m,idle-1h=Idle &gt;1h,idle-1d=Idle &gt;1d"
 	if strings.Join(got, ",") != want {
 		t.Fatalf("chips = %s, want %s", strings.Join(got, ","), want)
 	}
-	if n := strings.Count(row, `aria-pressed="false"`); n != 5 {
-		t.Errorf("%d chips drawn unpressed, want 5", n)
+	if n := strings.Count(row, `aria-pressed="false"`); n != 4 {
+		t.Errorf("%d chips drawn unpressed, want 4", n)
 	}
-	if n := strings.Count(row, "min-h-[44px]"); n < 6 {
+	if n := strings.Count(row, "min-h-[44px]"); n < 5 {
 		t.Errorf("the row and its chips are not all 44px tall (%d)", n)
 	}
-	if n := strings.Count(row, ` title="`); n != 5 {
-		t.Errorf("%d chips explain themselves, want 5", n)
+	if n := strings.Count(row, ` title="`); n != 4 {
+		t.Errorf("%d chips explain themselves, want 4", n)
 	}
 	script := scriptWith(t, page, "__musterAgentsFilter") + scriptWith(t, page, "__musterAgentsRules =")
-	for _, want := range []string{"'muster:agents:chips'", "try { chips = R.chipsOf(localStorage.getItem(CHIPS_KEY)); }", "try { var v = JSON.parse(raw || '[]');",
+	for _, want := range []string{"'muster:agents:chips'", "try { chips = R.chipsOf(localStorage.getItem(CHIPS_KEY)); }", "var v = JSON.parse(raw || '[]'), out = [];",
 		"try { if (cs.length) localStorage.setItem(CHIPS_KEY"} {
 		if !strings.Contains(script, want) {
 			t.Errorf("the filter script does not remember the chips safely: missing %s", want)
@@ -276,12 +276,12 @@ func TestALongFocusTitleIsClampedThroughTheSameRow(t *testing.T) {
 }
 
 // TestAnAgentAwaitingApprovalIsWaitingOnAnAsk: a dispatched agent blocked at a
-// permission prompt carries data-wait="ask" — what the "Waiting on ask" chip
+// permission prompt carries data-wait="you" — what the "Waiting on you" chip
 // selects — and its status poll says what the card was drawn with, so the
 // server can ask for a re-render when that changes.
 func TestAnAgentAwaitingApprovalIsWaitingOnAnAsk(t *testing.T) {
 	blocked := renderNode(t, agentCard(AgentCardView{ID: 7, Name: "blocked", Status: "running", AwaitingApproval: true}))
-	if !strings.Contains(openTag(t, blocked, `id="agent-7"`), `data-wait="ask"`) {
+	if !strings.Contains(openTag(t, blocked, `id="agent-7"`), `data-wait="you"`) {
 		t.Errorf("an agent awaiting approval is not waiting on an ask: %s", openTag(t, blocked, `id="agent-7"`))
 	}
 	if !strings.Contains(blocked, `hx-get="/ui/agents/7/status?awaiting=1&amp;work=0.0"`) {

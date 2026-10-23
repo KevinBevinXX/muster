@@ -21,10 +21,14 @@ import { writeFileAtomic } from '../lib/atomic';
 //      bucket (bright green, aqua, orange, grey).
 //   3. A LONG TITLE is clamped; its "…" is a button that opens the whole
 //      title — a tap (or Enter) never opens the agent.
-//   4. PRESET CHIPS: Waiting on ask (a Claude window stopped at a prompt),
-//      Waiting on question (a held AskUserQuestion, registered by the real
-//      `muster-mirror ask` hook), Idle >15m / >1h / >1d; combinable, kept
-//      across a list refresh and a reload (localStorage).
+//   4. PRESET CHIPS: Waiting on you (an agent's attention_ask, a Claude window
+//      stopped at a prompt, a held AskUserQuestion registered by the real
+//      `muster-mirror ask` hook — and NOT an agent with only a reply draft),
+//      Idle >15m / >1h / >1d; combinable, kept across a list refresh and a
+//      reload (localStorage), and a device that remembered the retired
+//      "Waiting on ask" / "Waiting on question" chips gets "Waiting on you".
+//      🔴 Red before: there was no "waiting" chip — "ask" and "question" were
+//      two chips, each matching only part of the union.
 //   5. MARK COMPLETE on an agent's page goes back OUT to the Agents list, with
 //      JavaScript and without it.
 //
@@ -45,6 +49,13 @@ let mirrorLog = '';
 // The two agents on the list: one fresh with a LONG name, one three days idle.
 const freshAgent = 'lux-fresh-' + stamp;
 const oldAgent = 'lux-old-' + stamp;
+// An agent waiting on an attention_ask, and one whose only attention item is a
+// reply draft (which waits on nothing).
+const askAgent = 'lux-ask-' + stamp;
+const draftAgent = 'lux-draft-' + stamp;
+const draftPlugin = 'lux-draft-' + stamp;
+const fix = (...args: string[]) =>
+  execFileSync('go', ['run', './e2e/pluginfix', ...args], { cwd: repoRoot, env: { ...process.env, DATABASE_URL: dsn } }).toString().trim();
 const LONG = 'Untangle the reconnect backoff so a flapping tunnel stops resetting its retry window every time';
 // The old agent's focus title, past the same clamp.
 const FOCUS = 'Sweeping the stale notes into the archive bucket and re-linking every task that still points at them';
@@ -64,7 +75,10 @@ const trQ = path.join(dir, sidQ + '.jsonl');
 const prompt = (t: string) => JSON.stringify({ type: 'user', promptId: 'p', origin: { kind: 'human' }, message: { role: 'user', content: t } }) + '\n';
 
 // The expected relative order of this spec's cards, newest first.
-const ORDER = ['luxnow', freshAgent, 'luxq', 'luxorange', 'luxancient', oldAgent];
+const ORDER = ['luxnow', askAgent, draftAgent, freshAgent, 'luxq', 'luxorange', 'luxancient', oldAgent];
+// What the "Waiting on you" chip shows: the window at a prompt, the asking
+// agent and the window holding a question — not the draft's agent.
+const WAITING = ['luxnow', askAgent, 'luxq'];
 
 const question = {
   question: 'Which region should the replica go to?',
@@ -82,6 +96,8 @@ test.beforeAll(async () => {
   server = await startServer(versionTerm, listUxPort, {
     MUSTER_MIRROR: '1',
     MUSTER_FOCUS_INTERVAL: '0',
+    // Reply drafts are an attention item only with the plugin interface on.
+    MUSTER_PLUGINS: '1',
     MUSTER_AGENT_PROVISIONER: 'noop',
     MUSTER_AGENT_IMAGE_REPO: 'registry.example.test/runtime',
     MUSTER_AGENT_API_URL: 'http://muster.example.test:8105',
@@ -97,6 +113,10 @@ test.beforeAll(async () => {
     MUSTER_E2E_ACTIVE_MINUTES_AGO: String(3 * 24 * 60),
     MUSTER_E2E_FOCUS: JSON.stringify([{ subject: 'self', title: FOCUS, description: 'Two buckets left.' }]),
   });
+  mkchat(askAgent, [{ role: 'user', content: 'Roll the fleet?' }], { MUSTER_E2E_ACTIVE_MINUTES_AGO: '2' });
+  mkchat(draftAgent, [{ role: 'user', content: 'Answer the mail.' }], { MUSTER_E2E_ACTIVE_MINUTES_AGO: '3' });
+  fix('ask', '1', askAgent, 'Roll the fleet now?');
+  fix('draft', '1', draftAgent, draftPlugin);
   for (const vp of VPS) {
     for (const js of [true, false]) {
       mkchat(doneAgent(vp, js), [{ role: 'user', content: 'Ship the fix.' }], {
@@ -177,6 +197,9 @@ test.afterAll(async () => {
   await server?.stop();
   mkchat(freshAgent, null);
   mkchat(oldAgent, null);
+  fix('rmplugin', '1', draftPlugin);
+  mkchat(askAgent, null);
+  mkchat(draftAgent, null);
   for (const vp of VPS) for (const js of [true, false]) mkchat(doneAgent(vp, js), null, { MUSTER_E2E_TASK: doneTask(vp, js) });
   fs.rmSync(dir, { recursive: true, force: true });
 });
@@ -262,8 +285,8 @@ for (const vp of [
     test('one flat list, most recently active first: a window above an agent, interleaved by activity', async ({ page }) => {
       await openList(page);
       expect(await order(page)).toEqual(ORDER);
-      // The host is still on each card: the window's host icon and footer,
-      // the agent's cluster mark.
+      // The host is still on each card: the window's host icon and the host
+      // chip in its body, the agent's cluster mark.
       await expect(card(page, 'luxnow').locator('[data-mirror-host]')).toHaveText(host);
       await expect(card(page, freshAgent).locator('[data-host-icon]').first()).toBeVisible();
     });
@@ -327,16 +350,26 @@ for (const vp of [
       await openList(page);
       await expect(page.locator('#agents-chips')).toHaveAttribute('role', 'group');
       // Each chip on its own (and off again).
+      // The merged chip's four kinds of card, each really on the list with its
+      // attention badge — and the draft's agent badged too, so that it is NOT
+      // shown below is the chip's rule, not a card without the item.
+      await expect(card(page, askAgent).locator('[data-attention-badge]')).toHaveAttribute('data-kind', 'ask');
+      await expect(card(page, 'luxnow').locator('[data-attention-badge]')).toHaveAttribute('data-kind', 'session');
+      await expect(card(page, 'luxq').locator('[data-attention-badge]')).toHaveAttribute('data-kind', 'question');
+      await expect(card(page, draftAgent).locator('[data-attention-badge]')).toHaveAttribute('data-kind', 'plugin');
+      // ONE wait chip: the two it replaced are gone.
+      await expect(page.locator('#agents-chips [data-chip-group="wait"]')).toHaveCount(1);
+      await expect(chip(page, 'waiting')).toHaveText('Waiting on you');
+      await expect(chip(page, 'ask')).toHaveCount(0);
+      await expect(chip(page, 'question')).toHaveCount(0);
       const cases: [string[], string[]][] = [
-        [['ask'], ['luxnow']],
-        [['question'], ['luxq']],
+        [['waiting'], WAITING],
         [['idle-15m'], ['luxq', 'luxorange', 'luxancient', oldAgent]],
         [['idle-1h'], ['luxorange', 'luxancient', oldAgent]],
         [['idle-1d'], ['luxancient', oldAgent]],
         // The chips OR: a card matching ANY chosen chip is shown.
-        [['ask', 'question'], ['luxnow', 'luxq']],
-        [['ask', 'idle-1d'], ['luxnow', 'luxancient', oldAgent]],
-        [['ask', 'question', 'idle-1h'], ['luxnow', 'luxq', 'luxorange', 'luxancient', oldAgent]],
+        [['waiting', 'idle-1d'], ['luxnow', askAgent, 'luxq', 'luxancient', oldAgent]],
+        [['waiting', 'idle-1h'], ['luxnow', askAgent, 'luxq', 'luxorange', 'luxancient', oldAgent]],
       ];
       for (const [chips, want] of cases) {
         for (const id of chips) await press(chip(page, id));
@@ -353,22 +386,22 @@ for (const vp of [
       await press(chip(page, 'idle-1d'));
 
       // Remembered: choose two, refresh the list in the background, then reload.
-      const kept = ['luxq', 'luxancient', oldAgent];
-      await press(chip(page, 'question'));
+      const kept = ['luxnow', askAgent, 'luxq', 'luxancient', oldAgent];
+      await press(chip(page, 'waiting'));
       await press(chip(page, 'idle-1d'));
       await expect.poll(() => shown(page)).toEqual(kept);
       const swapped = page.waitForResponse((r) => new URL(r.url()).pathname === '/ui/agents');
       await page.evaluate(() => document.body.dispatchEvent(new Event('muster:resync', { bubbles: true })));
       await swapped;
       await page.waitForTimeout(300);
-      await expect(chip(page, 'question'), 'a list refresh keeps the chips').toHaveAttribute('aria-pressed', 'true');
+      await expect(chip(page, 'waiting'), 'a list refresh keeps the chips').toHaveAttribute('aria-pressed', 'true');
       expect(await shown(page), 'a list refresh keeps the filter').toEqual(kept);
-      expect(JSON.parse((await page.evaluate(() => localStorage.getItem('muster:agents:chips'))) || '[]')).toEqual(['question', 'idle-1d']);
+      expect(JSON.parse((await page.evaluate(() => localStorage.getItem('muster:agents:chips'))) || '[]')).toEqual(['waiting', 'idle-1d']);
       await page.reload();
-      await expect(chip(page, 'question')).toHaveAttribute('aria-pressed', 'true');
+      await expect(chip(page, 'waiting')).toHaveAttribute('aria-pressed', 'true');
       await expect(chip(page, 'idle-1d')).toHaveAttribute('aria-pressed', 'true');
       await expect.poll(() => shown(page), { timeout: 20_000 }).toEqual(kept);
-      await press(chip(page, 'question'));
+      await press(chip(page, 'waiting'));
       await press(chip(page, 'idle-1d'));
       await expect.poll(() => page.evaluate(() => localStorage.getItem('muster:agents:chips'))).toBeNull();
       // The chip row never scrolls the page sideways.
@@ -376,18 +409,118 @@ for (const vp of [
       expect(sw).toBeLessThanOrEqual(cw);
     });
 
+    // A device that remembered a retired chip ("ask" — Waiting on ask — or
+    // "question") opens with "Waiting on you" pressed: the page neither breaks
+    // nor silently drops the choice. Red before: the remembered ids were the
+    // two chips themselves, and no "waiting" chip existed to press.
+    test('a remembered "ask" or "question" chip opens as "Waiting on you"', async ({ page }) => {
+      await openList(page);
+      for (const [stored, want, pressed] of [
+        [['ask'], WAITING, ['waiting']],
+        [['question', 'idle-1d'], ['luxnow', askAgent, 'luxq', 'luxancient', oldAgent], ['waiting', 'idle-1d']],
+        [['ask', 'question', 'nonsense'], WAITING, ['waiting']],
+      ] as [string[], string[], string[]][]) {
+        await page.evaluate((v) => localStorage.setItem('muster:agents:chips', JSON.stringify(v)), stored);
+        await page.reload();
+        for (const id of pressed) await expect(chip(page, id), `stored ${stored}`).toHaveAttribute('aria-pressed', 'true');
+        await expect.poll(() => shown(page), { message: `stored ${stored}`, timeout: 20_000 }).toEqual(want);
+      }
+      // Toggling writes the chip's own id from then on.
+      await press(chip(page, 'waiting'));
+      expect(JSON.parse((await page.evaluate(() => localStorage.getItem('muster:agents:chips'))) || '[]')).toEqual([]);
+      await expect.poll(() => shown(page)).toEqual(ORDER);
+    });
+
+    // 🔴 A WINDOW HOLDING ANOTHER BUILD'S RULES TABLE. window.__musterAgentsRules
+    // (agents_filter_head.go) outlives a boosted navigation, so a window whose
+    // table an OLDER build defined kept it on a page this build drew: "Waiting
+    // on you" (data-chip="waiting") looked up nothing in it and filtered
+    // nothing, and a stored ["waiting"] was dropped as unknown. Here the window
+    // is given an older build's table (ids ask/question, no version), then
+    // makes a boosted navigation out to an agent's page and back to the list:
+    // the table must be this build's again and the chip must filter. Red
+    // before: the table was defined once per window and the bound script kept
+    // the one it started with.
+    test("a window holding an older build's rules table is put right by a boosted navigation: the chip filters", async ({ page }) => {
+      await openList(page);
+      await page.addInitScript(() => {
+        let real: unknown;
+        const w = window as unknown as Record<string, unknown>;
+        w.__keepStale = true;
+        const sel: Record<string, string> = {
+          ask: '[data-wait~="ask"]', question: '[data-wait~="question"]',
+          'idle-15m': '[data-idle~="15m"]', 'idle-1h': '[data-idle~="1h"]', 'idle-1d': '[data-idle~="1d"]',
+        };
+        Object.defineProperty(window, '__musterAgentsRules', {
+          configurable: true,
+          get: () => real,
+          set: (t: Record<string, unknown>) => {
+            if (w.__keepStale) {
+              t = Object.assign({}, t, {
+                v: 'older-build',
+                chipsOf: (raw: string) => {
+                  try { const v = JSON.parse(raw || '[]'); return Array.isArray(v) ? v.filter((c) => c in sel) : []; } catch { return []; }
+                },
+                chipSel: (cs: string[]) => {
+                  const ps = cs.filter((c) => c in sel).map((c) => sel[c]);
+                  return ps.length === 0 ? '' : ps.length === 1 ? ps[0] : ':is(' + ps.join(',') + ')';
+                },
+              });
+            }
+            real = t;
+          },
+        });
+      });
+      await page.evaluate(() => localStorage.setItem('muster:agents:chips', JSON.stringify(['waiting'])));
+      await page.goto(origin + '/agents');
+      const v = () => page.evaluate(() => (window as unknown as { __musterAgentsRules: { v?: string } }).__musterAgentsRules.v);
+      expect(await v(), "control: the window holds the older build's table").toBe('older-build');
+      await page.evaluate(() => {
+        const w = window as unknown as Record<string, unknown>;
+        w.__keepStale = false;
+        w.__sameWindow = 1;
+      });
+      // Out to an agent's page and back to the list, both by boosted links:
+      // one window throughout.
+      // boostedTo follows a link drawn inside the page's boosted region and
+      // processed by htmx, as one the page drew itself would be.
+      const boostedTo = (href: string) =>
+        page.evaluate((h) => {
+          const a = document.createElement('a');
+          a.href = h;
+          a.textContent = 'go';
+          document.querySelector('[hx-boost="true"]')!.prepend(a);
+          (window as unknown as { htmx: { process: (e: Element) => void } }).htmx.process(a);
+          a.click();
+        }, href);
+      const same = () => page.evaluate(() => (window as unknown as { __sameWindow?: number }).__sameWindow);
+      await Promise.all([page.waitForURL((u) => u.pathname === `/agents/${freshAgent}`), boostedTo(`/agents/${freshAgent}`)]);
+      expect(await same(), 'control: boosted out, the same window').toBe(1);
+      await Promise.all([page.waitForURL((u) => u.pathname === '/agents'), boostedTo('/agents')]);
+      expect(await same(), 'control: boosted back, the same window').toBe(1);
+      await expect.poll(v, { message: "the table is this build's again" }).not.toBe('older-build');
+      await expect(chip(page, 'waiting'), 'the stored chip survived').toHaveAttribute('aria-pressed', 'true');
+      await expect.poll(async () => { await takeNew(page); return shown(page); }, { timeout: 20_000 }).toEqual(WAITING);
+      // And a press now goes through this build's table too.
+      await press(chip(page, 'waiting'));
+      await expect.poll(() => shown(page)).toEqual(ORDER);
+      await press(chip(page, 'waiting'));
+      await expect.poll(() => shown(page)).toEqual(WAITING);
+      await press(chip(page, 'waiting'));
+    });
+
     test('Clear turns every chip off, and is shown only while a chip is on', async ({ page }) => {
       await openList(page);
       const clear = page.locator('#agents-chips-clear');
       await expect(clear, 'no chip on: no Clear').toBeHidden();
-      await press(chip(page, 'ask'));
+      await press(chip(page, 'waiting'));
       await press(chip(page, 'idle-1h'));
-      await expect.poll(() => shown(page)).toEqual(['luxnow', 'luxorange', 'luxancient', oldAgent]);
+      await expect.poll(() => shown(page)).toEqual(['luxnow', askAgent, 'luxq', 'luxorange', 'luxancient', oldAgent]);
       await expect(clear).toBeVisible();
       const box = (await clear.boundingBox())!;
       expect(box.height, 'a 44px target').toBeGreaterThanOrEqual(44);
       await press(clear);
-      await expect(chip(page, 'ask')).toHaveAttribute('aria-pressed', 'false');
+      await expect(chip(page, 'waiting')).toHaveAttribute('aria-pressed', 'false');
       await expect(chip(page, 'idle-1h')).toHaveAttribute('aria-pressed', 'false');
       await expect.poll(() => shown(page)).toEqual(ORDER);
       await expect(clear).toBeHidden();

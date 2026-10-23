@@ -342,3 +342,74 @@ func topLevelDeclarations(script string) map[string][]string {
 	}
 	return out
 }
+
+// TestTheHostTabsAreOrderedByOneListStatedInGo: the operator's ask "the host
+// tabs in the order all, <their first host>, laptop, then cluster". The order
+// is ONE list (hostTabOrder) — the hosts the operator named
+// (HostPreferences.Order), every other host, the cluster last — and the
+// script is handed THAT list and sorts by a host's place in it before its
+// label, rather than carrying a copy of its own. With nothing named, the
+// cluster is still last. (Its behaviour in a browser, with hosts registered in
+// another order, is host-names.spec.ts.) Red before: the script sorted the
+// tabs by label alone, so "cluster" came first.
+func TestTheHostTabsAreOrderedByOneListStatedInGo(t *testing.T) {
+	if podHost != "cluster" {
+		t.Fatalf("instrument check FAILED: podHost = %q", podHost)
+	}
+	sortRule := `var rx = hostRank(x.v), ry = hostRank(y.v);
+      if (rx !== ry) return rx - ry;`
+	for name, c := range map[string]struct {
+		prefs HostPreferences
+		order string
+	}{
+		"nothing named": {HostPreferences{}, `["*","cluster"]`},
+		"two named":     {HostPreferences{Order: []string{"Tower", "laptop"}}, `["tower","laptop","*","cluster"]`},
+	} {
+		withHostPrefs(t, c.prefs)
+		script := renderNode(t, agentsFilterScript())
+		for _, want := range []string{`var HOST_ORDER = ` + c.order + `;`, sortRule} {
+			if !strings.Contains(script, want) {
+				t.Errorf("%s: the filter script lacks %q", name, want)
+			}
+		}
+		if c.prefs.Order != nil && strings.Count(script, `"tower"`) != 1 {
+			t.Errorf("%s: the script names tower %d times; the order must be stated once", name, strings.Count(script, `"tower"`))
+		}
+	}
+}
+
+// TestTheRulesTableIsRebuiltForAnotherBuildsVersion: the window-wide rules
+// table is defined when absent OR built from other values (its version is a
+// hash of the fields, chip selectors, ids and aliases), and the bound filter
+// script reads the window's table at each call rather than keeping the one it
+// started with. (The browser case is agents-list-ux.spec.ts.) Red before: the
+// table was defined only when absent, and the script captured it.
+func TestTheRulesTableIsRebuiltForAnotherBuildsVersion(t *testing.T) {
+	v := agentsRulesVersion()
+	if len(v) != 12 {
+		t.Fatalf("version %q", v)
+	}
+	for _, want := range []string{
+		`if (!window.__musterAgentsRules || window.__musterAgentsRules.v !== '` + v + `') (function () {`,
+		`window.__musterAgentsRules = { v: '` + v + `', `,
+	} {
+		if !strings.Contains(agentsRulesJS, want) {
+			t.Errorf("the rules script lacks %q", want)
+		}
+	}
+	script := renderNode(t, agentsFilterScript())
+	if strings.Contains(script, "var R = window.__musterAgentsRules;") ||
+		!strings.Contains(script, "var r = window.__musterAgentsRules; return r[k].apply(r, arguments);") {
+		t.Error("the filter script keeps the table it was bound with")
+	}
+	if !strings.Contains(script, "if (chips === null || chipsV !== v) {") {
+		t.Error("the stored chips are not re-read when the table changes")
+	}
+	// The version moves with what the table is built from.
+	was := chipAliases
+	t.Cleanup(func() { chipAliases = was })
+	chipAliases = map[string]string{"ask": "waiting"}
+	if agentsRulesVersion() == v {
+		t.Error("the version does not change with the aliases")
+	}
+}

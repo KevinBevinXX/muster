@@ -78,7 +78,7 @@ func listCardAttrs(body string) map[string]string {
 
 // TestTheCardsCarryWhatTheyAreWaitingOn: an agent that asked over MCP
 // (attention_ask) and a mirrored Claude window stopped at a prompt (status
-// waiting) both carry data-wait="ask" — what the "Waiting on ask" chip
+// waiting) both carry data-wait="you" — what the "Waiting on you" chip
 // selects — and a card waiting on nothing carries no data-wait. Red before the
 // chips: no card carried the attribute.
 func TestTheCardsCarryWhatTheyAreWaitingOn(t *testing.T) {
@@ -89,8 +89,8 @@ func TestTheCardsCarryWhatTheyAreWaitingOn(t *testing.T) {
 	if op == "" || op2 == "" {
 		t.Fatalf("instrument check FAILED: the two agents' cards are not on the list: %v", cards)
 	}
-	if !strings.Contains(op, ` data-wait="ask"`) {
-		t.Errorf("the asking agent's card does not carry data-wait=\"ask\": %s", op)
+	if !strings.Contains(op, ` data-wait="you"`) {
+		t.Errorf("the asking agent's card does not carry data-wait=\"you\": %s", op)
 	}
 	if strings.Contains(op2, "data-wait") {
 		t.Errorf("an agent waiting on nothing carries data-wait: %s", op2)
@@ -101,7 +101,7 @@ func TestTheCardsCarryWhatTheyAreWaitingOn(t *testing.T) {
 			continue
 		}
 		switch {
-		case strings.Contains(tag, ` data-wait="ask"`):
+		case strings.Contains(tag, ` data-wait="you"`):
 			waiting++
 		case !strings.Contains(tag, "data-wait"):
 			idle++

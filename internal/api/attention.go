@@ -456,7 +456,7 @@ func (s *Server) pendingDraftItems(ctx context.Context) ([]attentionItem, error)
 		}
 		it := attentionItem{Key: draftKey(c.Draft.ID), Kind: attentionKindPlugin, Source: c.PluginLabel,
 			Text: draftInboundText(c.Message), Detail: "Draft reply: " + mirror.OneLine(c.Draft.Body, draftReplyMax),
-			Since: c.Draft.CreatedAt, Link: pluginsPath + "#" + draftCardAnchor(c.Draft.ID)}
+			Since: c.Draft.CreatedAt, Link: draftLink(c.Draft.ID)}
 		// The agent that drafted it (none once that agent is deleted).
 		if c.Draft.AgentID != nil {
 			it.card.agentID = *c.Draft.AgentID
@@ -544,7 +544,9 @@ func (s *Server) attentionChanged(owner int64, key string) {
 
 // attentionNotify pushes one new item to owner's devices, under the
 // `attention` toggle. goNotify keeps it off the router: the router has no
-// attention card, and its notifications are its own.
+// attention card, and its notifications are its own. A tap opens
+// attentionOpenURL, which resolves the item's session (or its place on the
+// queue) when tapped: nothing is read here.
 func (s *Server) attentionNotify(owner int64, it attentionItem) {
 	title := "An agent needs your input"
 	if it.Kind == attentionKindSession {
@@ -553,7 +555,7 @@ func (s *Server) attentionNotify(owner int64, it attentionItem) {
 		title = "A session asks you a question"
 	}
 	s.goNotify(owner, push.EventAttention, RouterNotification{Type: attentionNotificationType, ID: it.Key, Title: title, Body: attentionPushBody(it),
-		Tag: attentionTag(it.Key), Data: map[string]string{"url": attentionPath + "#" + it.Key}}, nil)
+		Tag: attentionTag(it.Key), Data: map[string]string{"url": attentionOpenURL(it.Key)}}, nil)
 }
 
 // attentionPushBody is an item's notification body: WHO and WHERE, never WHAT.
@@ -769,6 +771,9 @@ func (s *Server) expireAsks(ctx context.Context) {
 func (s *Server) registerAttentionRoutes(mux Mux) {
 	mux.HandleFunc("GET "+attentionPath, s.requireSession(s.handleAttentionPage))
 	mux.HandleFunc("GET "+attentionPath+"/items", s.requireSession(s.handleAttentionItems))
+	mux.HandleFunc("GET "+asksDraftsPath, s.requireSession(s.handleAsksDrafts))
+	mux.HandleFunc("GET "+attentionAskerPath, s.requireSession(s.handleAttentionAsker))
+	mux.HandleFunc("GET "+attentionOpenPath+"{key}", s.requireSession(s.handleAttentionOpen))
 	mux.HandleFunc("GET "+ui.AttentionBadgePath, s.requireSession(s.handleAttentionBadge))
 	mux.HandleFunc("POST "+attentionPath+"/asks/{id}/answer", s.requireOperatorWrite(s.handleAttentionAnswerForm))
 	mux.HandleFunc("POST "+attentionPath+"/asks/{id}/cancel", s.requireOperatorWrite(s.handleAttentionCancelForm))
@@ -776,15 +781,25 @@ func (s *Server) registerAttentionRoutes(mux Mux) {
 	mux.HandleFunc("POST "+attentionHermesPath, s.requireOperatorWrite(s.handleAttentionHermesApprove))
 }
 
+// handleAttentionPage is GET /attention, the Asks page (asks_drafts.go):
+// served when the queue or plugins (its Reply drafts tab) is.
 func (s *Server) handleAttentionPage(w http.ResponseWriter, r *http.Request) {
-	if s.ext.Attention == nil {
+	if s.ext.Attention == nil && s.ext.Plugins == nil {
 		http.NotFound(w, r)
 		return
 	}
 	s.renderAttentionPage(w, r, http.StatusOK, "")
 }
 
+// renderAttentionPage is the Asks page on the tab the request names.
 func (s *Server) renderAttentionPage(w http.ResponseWriter, r *http.Request, code int, problem string) {
+	s.renderAsksPage(w, r, code, problem, asksTab(r), asksFocus(r))
+}
+
+// renderAsksPage writes the Asks page on tab: with plugins served, the Ask
+// and Reply drafts tabs (asks_drafts.go); without, the Ask list alone. focus
+// (0 for none) is a draft drawn whatever the views' cut (readDraftViews).
+func (s *Server) renderAsksPage(w http.ResponseWriter, r *http.Request, code int, problem, tab string, focus int64) {
 	items, err := s.attentionItems(r.Context())
 	s.withFocus(r.Context(), items)
 	if err != nil {
@@ -795,56 +810,39 @@ func (s *Server) renderAttentionPage(w http.ResponseWriter, r *http.Request, cod
 	}
 	var b strings.Builder
 	b.WriteString(`<section class="flex flex-col gap-4 rounded-2xl border border-line bg-s1/70 px-5 py-6 ring-1 ring-line" data-testid="attention-page">
-<h1 class="text-balance text-base font-semibold text-fg">Attention</h1>
-<p class="text-sm text-fg2">Everything waiting on you: questions your agents asked, sessions waiting at a prompt, and reply drafts awaiting approval.</p>
+<h1 class="text-balance text-base font-semibold text-fg">Asks</h1>
+<p class="text-sm text-fg2">Everything waiting on you: questions your agents asked and sessions waiting at a prompt` + asksIntroDrafts(s.ext.Plugins != nil) + `.</p>
 `)
 	b.WriteString(problemNode(problem))
 	b.WriteString(attentionNotice(r))
-	b.WriteString(`<ul id="attention-items" class="flex flex-col gap-2" data-testid="attention-items" aria-live="polite">`)
-	b.WriteString(attentionItemsHTML(items, time.Now()))
-	b.WriteString(answeredAsksHTML(s.recentAnswers(r.Context()), time.Now()))
-	b.WriteString(`</ul>
+	now := time.Now()
+	askList := `<ul id="attention-items" class="flex flex-col gap-2" data-testid="attention-items" aria-live="polite">` +
+		askTabListHTML(items, answeredAsksHTML(s.recentAnswers(r.Context()), now), now) + `</ul>`
+	if s.ext.Plugins == nil {
+		b.WriteString(askList)
+	} else {
+		pending, archived, ok := s.readDraftViews(r.Context(), focus)
+		if !ok && problem == "" {
+			b.WriteString(problemNode("The reply drafts could not be read."))
+		}
+		b.WriteString(s.asksTabsHTML(askList, pending, archived, tab))
+	}
+	b.WriteString(`
 <a href="/" class="inline-flex min-h-[44px] items-center text-sm text-accent underline">Back to muster</a>
 </section>`)
 	b.WriteString(attentionPageScript)
-	writeAuthDocument(w, code, "Attention", b.String())
+	if s.ext.Plugins != nil {
+		b.WriteString(asksPageScript)
+		b.WriteString(s.draftStepUpHTML(r))
+	}
+	writeAuthDocument(w, code, "Asks", b.String())
 }
 
-// attentionPageScript keeps the list live: on the queue's SSE event it
-// re-fetches the items — unless the owner is typing an answer, in which case
-// it waits until they leave the field, so a refresh never eats a half-typed
-// answer.
-const attentionPageScript = `<script>
-(function () {
-  var list = document.getElementById('attention-items');
-  if (!list || !window.EventSource) return;
-  var pending = false;
-  function busy() {
-    var a = document.activeElement;
-    if (a && list.contains(a) && (a.tagName === 'TEXTAREA' || a.tagName === 'INPUT')) return true;
-    var fields = list.querySelectorAll('textarea');
-    for (var i = 0; i < fields.length; i++) if (fields[i].value.trim() !== '') return true;
-    return false;
-  }
-  function refresh() {
-    if (busy()) { pending = true; return; }
-    pending = false;
-    fetch('/attention/items', { credentials: 'same-origin' }).then(function (r) {
-      return r.ok ? r.text() : null;
-    }).then(function (html) {
-      if (html !== null && !busy()) list.innerHTML = html; else if (html !== null) pending = true;
-    }).catch(function () {});
-  }
-  list.addEventListener('focusout', function () { if (pending) setTimeout(refresh, 0); });
-  var es;
-  try { es = new EventSource('/events'); } catch (e) { return; }
-  es.addEventListener('` + EventAttentionChanged + `', refresh);
-  setInterval(refresh, 60000);
-})();
-</script>`
+// attentionPageScript keeps the queue's list live (ui.AttentionLiveScript).
+var attentionPageScript = ui.AttentionLiveScript("attention-items", "/attention/items", EventAttentionChanged)
 
 func (s *Server) handleAttentionItems(w http.ResponseWriter, r *http.Request) {
-	if s.ext.Attention == nil {
+	if s.ext.Attention == nil && s.ext.Plugins == nil {
 		http.NotFound(w, r)
 		return
 	}
@@ -855,7 +853,8 @@ func (s *Server) handleAttentionItems(w http.ResponseWriter, r *http.Request) {
 	s.withFocus(r.Context(), items)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
-	_, _ = w.Write([]byte(attentionItemsHTML(items, time.Now()) + answeredAsksHTML(s.recentAnswers(r.Context()), time.Now())))
+	now := time.Now()
+	_, _ = w.Write([]byte(askTabListHTML(items, answeredAsksHTML(s.recentAnswers(r.Context()), now), now)))
 }
 
 func (s *Server) handleAttentionBadge(w http.ResponseWriter, r *http.Request) {
@@ -874,7 +873,24 @@ func (s *Server) handleAttentionBadge(w http.ResponseWriter, r *http.Request) {
 
 // attentionItemsHTML is the list's <li>s.
 func attentionItemsHTML(items []attentionItem, now time.Time) string {
+	return attentionItemsHTMLTo(items, now, "")
+}
+
+// attentionItemsHTMLTo is attentionItemsHTML whose ask forms send the browser
+// back to returnTo once answered or dismissed ("" = the queue): THE item and
+// answer partial, shared by /attention and the session pages
+// (attention_asker.go). A form on a session page opts out of htmx's boost, so
+// it is a plain POST whose redirect reloads that page.
+func attentionItemsHTMLTo(items []attentionItem, now time.Time, returnTo string) string {
 	esc := html.EscapeString
+	back := ""
+	if returnTo != "" {
+		back = `<input type="hidden" name="return" value="` + esc(returnTo) + `">`
+	}
+	formAttrs := ""
+	if returnTo != "" {
+		formAttrs = ` hx-boost="false"`
+	}
 	if len(items) == 0 {
 		return `<li class="text-sm text-fg2" data-testid="attention-empty">Nothing is waiting on you.</li>`
 	}
@@ -915,8 +931,8 @@ func attentionItemsHTML(items []attentionItem, now time.Time) string {
 		switch it.Kind {
 		case attentionKindAsk:
 			id := strconv.FormatInt(it.AskID, 10)
-			b.WriteString(`<form method="POST" action="` + attentionPath + `/asks/` + id + `/answer" class="flex flex-col gap-2" data-attention-answer>
-`)
+			b.WriteString(`<form method="POST" action="` + attentionPath + `/asks/` + id + `/answer" class="flex flex-col gap-2" data-attention-answer` + formAttrs + `>
+` + back)
 			if len(it.Options) > 0 {
 				b.WriteString(`<div class="flex flex-wrap gap-2">`)
 				for _, o := range it.Options {
@@ -928,7 +944,7 @@ func attentionItemsHTML(items []attentionItem, now time.Time) string {
 <textarea id="answer-` + id + `" name="answer" rows="2" maxlength="` + strconv.Itoa(attention.MaxAnswerRunes) + `" class="` + flowsInputClass + `"></textarea>
 <button type="submit" class="` + flowsButtonClass + `">Answer</button>
 </form>
-<form method="POST" action="` + attentionPath + `/asks/` + id + `/cancel"><button type="submit" class="` + flowsQuietButton + `">Dismiss without answering</button></form>
+<form method="POST" action="` + attentionPath + `/asks/` + id + `/cancel"` + formAttrs + `>` + back + `<button type="submit" class="` + flowsQuietButton + `">Dismiss without answering</button></form>
 `)
 		case attentionKindSession:
 			b.WriteString(hermesAskHTML(it))
@@ -1050,10 +1066,10 @@ func (s *Server) handleAttentionAnswerForm(w http.ResponseWriter, r *http.Reques
 		if attentionErrCode(err) == http.StatusInternalServerError {
 			s.logger.Printf("attention: answer %d: %v", id, err)
 		}
-		s.renderAttentionPage(w, r, attentionErrCode(err), attentionErrText(err, a))
+		s.attentionFormFailed(w, r, err, a)
 		return
 	}
-	http.Redirect(w, r, attentionPath, http.StatusSeeOther)
+	http.Redirect(w, r, attentionReturn(r), http.StatusSeeOther)
 }
 
 func (s *Server) handleAttentionCancelForm(w http.ResponseWriter, r *http.Request) {
@@ -1068,10 +1084,10 @@ func (s *Server) handleAttentionCancelForm(w http.ResponseWriter, r *http.Reques
 	}
 	a, err := s.cancelAsk(r.Context(), id)
 	if err != nil {
-		s.renderAttentionPage(w, r, attentionErrCode(err), attentionErrText(err, a))
+		s.attentionFormFailed(w, r, err, a)
 		return
 	}
-	http.Redirect(w, r, attentionPath, http.StatusSeeOther)
+	http.Redirect(w, r, attentionReturn(r), http.StatusSeeOther)
 }
 
 // handleAttentionRedeliverForm is an unconfirmed delivery's Retry: back to

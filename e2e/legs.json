@@ -69,6 +69,7 @@
   },
   "legs": {
     "1": [
+      "tests/host-names.spec.ts",
       "tests/claude-code-polish.spec.ts",
       "tests/badge.spec.ts",
       "tests/kinds.spec.ts",

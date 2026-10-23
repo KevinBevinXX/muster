@@ -89,6 +89,10 @@ type MirrorViewView struct {
 	// (FocusHistoryPath); "" when the host reports no Claude session for the
 	// window, which then has none. The index sheet's second tab.
 	FocusHistory string
+	// Asks and AsksSrc are the window's Claude sessions' OPEN attention asks
+	// and their fragment URL (AgentDetailView.Asks).
+	Asks    string
+	AsksSrc string
 }
 
 // MirrorReadOnlyNote is what a read-only host's composer says instead of
@@ -187,6 +191,8 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 				),
 				// The questions the window's ask hook is holding (mirror_ask.go).
 				mirrorAsksRegion(ref),
+				// The window's sessions' attention asks (attention_ask), answered here.
+				g.If(v.AsksSrc != "", AskerAsksBlock(v.Asks, v.AsksSrc, false)),
 				Div(
 					ID("mv-working"),
 					g.Attr("hidden", ""),
@@ -200,6 +206,8 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 				mirrorViewScript(),
 				// The question cards' poll and submit (mirror_ask.go).
 				askScript(),
+				// The attention asks block's live refresh.
+				AskerAsksLive(v.AsksSrc),
 				// The tool groups' open/close animation (tool_groups.go).
 				toolGroupScript(),
 				bubbleClampScript(),

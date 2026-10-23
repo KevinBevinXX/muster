@@ -17,7 +17,7 @@ import (
 // its `plugin` push (notifyDraftAwaiting, tag plugin-draft-<id>). It stops
 // waiting three ways, and each withdraws that notification and moves the
 // owner's badge and views:
-//   - decided on /plugins (decideDraft → draftSettled);
+//   - decided on the Asks page's Reply drafts tab (decideDraft → draftSettled);
 //   - superseded by a newer draft for the same message (draftFiled);
 //   - expired unseen (expireDraftNotes, on the attention sweep).
 // The last two need to know which drafts were notified, so this process

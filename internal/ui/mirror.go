@@ -170,8 +170,8 @@ func mirrorCardID(m MirrorCardView) string {
 
 // mirrorCard is a mirrored session's card: the session name, a mirrored icon
 // (with its host in a tooltip), an "offline" badge while the host is not
-// serving it, the whole body a real-load link to its terminal, and a footer
-// naming the host and when the window was last active.
+// serving it, the whole body a real-load link to its terminal naming its host
+// (hostChip), and a footer saying when the window was last active.
 //
 // 🔴 ITS SHAPE IS agentCard's, SLOT FOR SLOT (cardSlot), and so are its
 // classes, so it adds nothing to the committed stylesheet.
@@ -182,7 +182,8 @@ func mirrorCard(m MirrorCardView) g.Node {
 	id := mirrorCardID(m)
 	// A name past cardTitleMax is drawn in a title row of its own, clamped,
 	// with a "…" button that opens it whole (cardLongTitle). The qualifier
-	// and the raw session name stay beside it, as in mirrorEntryTitle.
+	// stays beside it, as in mirrorCardTitle; the raw session name is not
+	// drawn on a card.
 	// The name as a reader sees it (textplain): a Hermes or tmux window title is
 	// often LLM-written and carries markdown.
 	name := plainOr(displayOr(m.Label, m.Title), m.Session)
@@ -193,8 +194,7 @@ func mirrorCard(m MirrorCardView) g.Node {
 	if long {
 		bodyClass = titledBodyClass(reserve)
 		titleRow = cardLongTitle(id, MirrorCardHref(m), name, cardHasFocusTitle(m.Focus), reserve,
-			g.If(m.Qualifier != "", Span(g.Attr("data-mirror-qualifier", ""), g.Text(mirrorQualifierSep+m.Qualifier))),
-			g.If(m.Label != "" && m.Label != m.Session, Span(g.Attr("data-mirror-session", ""), Class("ml-1.5 text-xs text-muted"), g.Text(m.Session))))
+			g.If(m.Qualifier != "", Span(g.Attr("data-mirror-qualifier", ""), g.Text(mirrorQualifierSep+m.Qualifier))))
 	}
 	return Article(
 		ID(id),
@@ -223,8 +223,8 @@ func mirrorCard(m MirrorCardView) g.Node {
 			mirrorPinToggle(m),
 		),
 		// With a focus, it heads the card (cardFocusTitle): a popover trigger
-		// OUTSIDE the nav anchor, and the window's title below — with its muted
-		// session line — becomes its subtitle.
+		// OUTSIDE the nav anchor, and the window's title below (mirrorCardTitle:
+		// no raw session name) becomes its subtitle.
 		cardFocusTitle(id, m.Focus, reserve),
 		titleRow,
 		A(
@@ -241,9 +241,11 @@ func mirrorCard(m MirrorCardView) g.Node {
 				g.If(m.Pinned, pinnedGlyph()),
 				// Its host's icon, beside its name (host_icons.go).
 				hostMark(m.Host, m.HostIcon),
-				g.If(!long && !cardHasFocusTitle(m.Focus), mirrorEntryTitle(m.Label, m.Title, m.Session, m.Qualifier, cardTitleClass)),
+				g.If(!long && !cardHasFocusTitle(m.Focus), mirrorCardTitle(m.Label, m.Title, m.Session, m.Qualifier, cardTitleClass)),
 				g.If(!long && cardHasFocusTitle(m.Focus), Span(g.Attr("data-card-subtitle", ""), Class("contents"),
-					mirrorEntryTitle(m.Label, m.Title, m.Session, m.Qualifier, cardSubtitleClass))),
+					mirrorCardTitle(m.Label, m.Title, m.Session, m.Qualifier, cardSubtitleClass))),
+				// Its host, spelled (hostChip).
+				hostChip(m.Host),
 				g.If(m.Claude, Span(g.Attr("data-mirror-claude", ""), chip("kind", "Claude Code"))),
 				// What else runs there (a shell, opencode, another TUI): the
 				// host's reading of the pane's command.
@@ -255,15 +257,14 @@ func mirrorCard(m MirrorCardView) g.Node {
 				g.If(!m.Online, Span(
 					g.Attr("data-mirror-offline", ""),
 					g.Attr("title", "The host's muster-mirror is not connected, or the host no longer lists this tmux session"),
-					chip("host", "offline"),
+					// "state", the filter field (state:offline) — not "host", which
+					// beside the host chip read as a second host called "offline".
+					chip("state", "offline"),
 				)),
 			),
 		),
-		// The host stays VISIBLE, not only in the mark's tooltip: it is what tells
-		// two same-named windows apart and a filter field (host:), and a phone has
-		// no hover.
+		// The host is in the body (hostChip), not here.
 		cardFooter(
-			cardMeta("host", Span(g.Attr("data-mirror-host", ""), Class("font-medium text-fg2"), g.Text(m.Host))),
 			cardActivity(m.ActiveAt),
 			cardFocus(id, m.Focus),
 		),
@@ -366,7 +367,7 @@ func agentsListNodes(list []AgentCardView, mirrors []MirrorCardView, after time.
 	return out
 }
 
-// mirrorSessionTitle is a mirrored session's name as a list or page title: the
+// mirrorSessionTitle is a mirrored session's name as a page title: the
 // host's label when it sent one, with the raw tmux session name as a small
 // secondary text AND the tooltip; the session name alone otherwise.
 //
@@ -384,9 +385,28 @@ func mirrorSessionTitle(label, session, class string) g.Node {
 // qualifier ("" = none) is what tells the entry apart from another listed
 // entry of the same name (mirror.SessionView.Qualifier). It is drawn AS PART
 // OF THE TITLE, right after the name — "mango:1 · laptop" — not in a chip, so
-// two "mango:1" cards read as two different titles. The card, the rendered
-// view and the terminal page all draw their title here.
+// two "mango:1" cards read as two different titles. The rendered view and the
+// terminal page draw their title here; the card through mirrorCardTitle, the
+// same title without the raw session name.
 func mirrorEntryTitle(label, title, session, qualifier, class string) g.Node {
+	return entryTitle(label, title, session, qualifier, class, true)
+}
+
+// mirrorCardTitle is mirrorEntryTitle as the Agents list's CARD draws it: the
+// label and its qualifier, WITHOUT the raw tmux session name beside it
+// (an operator ask: the resolved title only, not the raw session name).
+// Nothing that tells two cards apart is lost with it: two entries
+// sharing a label on one host carry their tmux address in the qualifier
+// (mirror.qualify), and an entry with no label is titled "<session>:<index>".
+// The session is still the name's tooltip and a search term (cardFilterAttrs);
+// the window's own pages, opened from the card, still show it.
+func mirrorCardTitle(label, title, session, qualifier, class string) g.Node {
+	return entryTitle(label, title, session, qualifier, class, false)
+}
+
+// entryTitle is mirrorEntryTitle, drawing the muted session name beside a
+// label only when withSession is set.
+func entryTitle(label, title, session, qualifier, class string, withSession bool) g.Node {
 	q := g.If(qualifier != "", Span(g.Attr("data-mirror-qualifier", ""), g.Text(mirrorQualifierSep+qualifier)))
 	if label == "" || label == session {
 		return Span(Class(class), g.Attr("data-mirror-name", ""), g.Text(plainOr(title, session)), q)
@@ -397,7 +417,7 @@ func mirrorEntryTitle(label, title, session, qualifier, class string) g.Node {
 		g.Attr("title", "tmux session "+session),
 		Span(g.Attr("data-mirror-label", ""), g.Text(plainOr(label, session))),
 		q,
-		Span(g.Attr("data-mirror-session", ""), Class("ml-1.5 text-xs text-muted"), g.Text(session)),
+		g.If(withSession, Span(g.Attr("data-mirror-session", ""), Class("ml-1.5 text-xs text-muted"), g.Text(session))),
 	)
 }
 

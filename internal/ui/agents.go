@@ -101,7 +101,7 @@ type AgentCardView struct {
 	// AwaitingApproval: the agent is blocked on a permission prompt (or has a
 	// request open on the approval queue) — internal/api's AwaitingApproval,
 	// the same answer the polled "awaiting approval" badge shows. It is NOT an
-	// attention item, so it is carried here: the "Waiting on ask" chip reads it
+	// attention item, so it is carried here: the "Waiting on you" chip reads it
 	// (waitTokens), and the status poll asks for a list refresh when it changes
 	// (cardStatusIcon).
 	AwaitingApproval bool
@@ -474,7 +474,7 @@ func cardFooter(children ...g.Node) g.Node {
 		Class("flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-line px-4 py-2 text-xs text-muted")}, children...)...)
 }
 
-// cardMeta is one labelled item of a card footer: "age 3h", "host tower".
+// cardMeta is one labelled item of a card footer: "age 3h".
 func cardMeta(label string, value g.Node) g.Node {
 	return Span(
 		Class("inline-flex items-center gap-1"),

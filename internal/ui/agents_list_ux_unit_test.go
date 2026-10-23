@@ -176,10 +176,11 @@ func TestIdleTokensAreStrictlyPastEachThreshold(t *testing.T) {
 	}
 }
 
-// TestWaitTokensFileEachAttentionKind: an agent's attention_ask and a session
-// stopped at a prompt are "ask", and so is a dispatched agent awaiting approval
-// (a permission prompt, carried beside the badge); an AskUserQuestion picker is
-// "question"; a reply draft is neither.
+// TestWaitTokensFileEachAttentionKind: an agent's attention_ask, a session
+// stopped at a prompt, an AskUserQuestion picker and a dispatched agent
+// awaiting approval are ALL "you" — the one "Waiting on you" word; a reply
+// draft is not. Red before: the picker filed under "question" and the rest
+// under "ask", two words for two chips.
 func TestWaitTokensFileEachAttentionKind(t *testing.T) {
 	for _, c := range []struct {
 		kinds    []string
@@ -187,15 +188,16 @@ func TestWaitTokensFileEachAttentionKind(t *testing.T) {
 		want     string
 	}{
 		{nil, false, ""},
-		{[]string{"ask"}, false, "ask"},
-		{[]string{"session"}, false, "ask"},
-		{[]string{"question"}, false, "question"},
+		{[]string{"ask"}, false, "you"},
+		{[]string{"session"}, false, "you"},
+		{[]string{"question"}, false, "you"},
 		{[]string{"plugin"}, false, ""},
-		{[]string{"question", "plugin", "session"}, false, "ask question"},
-		{[]string{"ask", "session"}, false, "ask"},
-		{nil, true, "ask"},
-		{[]string{"question"}, true, "ask question"},
-		{[]string{"plugin"}, true, "ask"},
+		{[]string{"question", "plugin", "session"}, false, "you"},
+		{[]string{"plugin", "question"}, false, "you"},
+		{[]string{"ask", "session"}, false, "you"},
+		{nil, true, "you"},
+		{[]string{"question"}, true, "you"},
+		{[]string{"plugin"}, true, "you"},
 	} {
 		var a *CardAttention
 		if c.kinds != nil {
@@ -204,6 +206,10 @@ func TestWaitTokensFileEachAttentionKind(t *testing.T) {
 		if got := waitTokens(a, c.awaiting); got != c.want {
 			t.Errorf("kinds %v awaiting=%v: %q, want %q", c.kinds, c.awaiting, got, c.want)
 		}
+	}
+	// A badge with no count waits on nothing, whatever kinds it lists.
+	if got := waitTokens(&CardAttention{Count: 0, Kinds: []string{"ask"}}, false); got != "" {
+		t.Errorf("a zero-count badge: %q, want none", got)
 	}
 }
 
@@ -240,24 +246,27 @@ func matchesChipSelector(t *testing.T, sel, wait, idle string) bool {
 // TestTheChipSelectorsOrTheChosenChips: the coordinator's rule — a card is
 // shown when it matches ANY chosen chip — pinned on the SELECTORS the script
 // looks up (chipSelectorsJSON, the rule's only statement), with literal cases.
-// Positive control: the evaluator reads a hand-written selector both ways.
+// The one wait chip, "Waiting on you", selects every card that waits on the
+// operator (data-wait "you", TestWaitTokensFileEachAttentionKind). Positive
+// control: the evaluator reads a hand-written selector both ways.
 func TestTheChipSelectorsOrTheChosenChips(t *testing.T) {
-	if !matchesChipSelector(t, `:is([data-wait~="ask"],[data-idle~="1h"])`, "", "15m 1h") ||
-		matchesChipSelector(t, `:is([data-wait~="ask"],[data-idle~="1h"])`, "question", "15m") {
+	if !matchesChipSelector(t, `:is([data-wait~="you"],[data-idle~="1h"])`, "", "15m 1h") ||
+		matchesChipSelector(t, `:is([data-wait~="you"],[data-idle~="1h"])`, "other", "15m") {
 		t.Fatal("instrument check FAILED: the selector evaluator misreads a known selector")
 	}
 	var sels map[string]string
 	if err := json.Unmarshal([]byte(chipSelectorsJSON()), &sels); err != nil {
 		t.Fatal(err)
 	}
-	// 4 sets of wait chips × (no idle chip or one of 3), less the empty one.
-	if len(sels) != 15 {
-		t.Fatalf("%d selections, want 15: %v", len(sels), sels)
+	// 2 sets of wait chips (none, waiting) × (no idle chip or one of 3), less
+	// the empty one.
+	if len(sels) != 7 {
+		t.Fatalf("%d selections, want 7: %v", len(sels), sels)
 	}
 	for key, want := range map[string]string{
-		"ask":                  `[data-wait~="ask"]`,
-		"idle-1d":              `[data-idle~="1d"]`,
-		"ask,question,idle-1h": `:is([data-wait~="ask"],[data-wait~="question"],[data-idle~="1h"])`,
+		"waiting":         `[data-wait~="you"]`,
+		"idle-1d":         `[data-idle~="1d"]`,
+		"waiting,idle-1h": `:is([data-wait~="you"],[data-idle~="1h"])`,
 	} {
 		if got := sels[key]; got != want {
 			t.Errorf("selector for %s = %s, want %s", key, got, want)
@@ -267,21 +276,17 @@ func TestTheChipSelectorsOrTheChosenChips(t *testing.T) {
 		key, wait, idle string
 		want            bool
 	}{
-		{"ask", "ask", "", true},
-		{"ask", "question", "15m 1h 1d", false},
-		{"question", "ask question", "", true},
-		{"ask,question", "question", "", true},
-		{"ask,question", "", "15m 1h 1d", false},
+		{"waiting", "you", "", true},
+		{"waiting", "", "15m 1h 1d", false},
 		{"idle-1h", "", "15m 1h", true},
 		{"idle-1h", "", "15m", false},
-		{"idle-1d", "ask", "15m", false},
+		{"idle-1d", "you", "15m", false},
 		// OR across groups: waiting OR idle, either is enough.
-		{"ask,idle-15m", "ask", "", true},
-		{"ask,idle-15m", "", "15m", true},
-		{"ask,idle-15m", "question", "", false},
-		{"question,idle-1d", "", "15m 1h 1d", true},
-		{"ask,question,idle-1h", "", "15m", false},
-		{"ask,question,idle-1h", "", "15m 1h", true},
+		{"waiting,idle-15m", "you", "", true},
+		{"waiting,idle-15m", "", "15m", true},
+		{"waiting,idle-15m", "", "", false},
+		{"waiting,idle-1h", "", "15m", false},
+		{"waiting,idle-1h", "", "15m 1h", true},
 	} {
 		sel, ok := sels[c.key]
 		if !ok {
@@ -291,9 +296,50 @@ func TestTheChipSelectorsOrTheChosenChips(t *testing.T) {
 			t.Errorf("chips %s on a card wait=%q idle=%q: shown=%v, want %v (selector %s)", c.key, c.wait, c.idle, got, c.want, sel)
 		}
 	}
+	// The merged chip selects each kind of waiting card, and not a draft's.
+	for kinds, want := range map[string]bool{"ask": true, "session": true, "question": true, "plugin": false} {
+		w := waitTokens(&CardAttention{Count: 1, Kinds: []string{kinds}}, false)
+		if got := matchesChipSelector(t, sels["waiting"], w, ""); got != want {
+			t.Errorf("Waiting on you on a %s card (data-wait=%q): shown=%v, want %v", kinds, w, got, want)
+		}
+	}
+	if !matchesChipSelector(t, sels["waiting"], waitTokens(nil, true), "") {
+		t.Error("Waiting on you does not select an agent awaiting approval")
+	}
 	// Two idle chips are never a selection (they are exclusive).
 	if _, ok := sels["idle-15m,idle-1h"]; ok {
 		t.Error("two idle chips have a selector; they are exclusive")
+	}
+}
+
+// TestARetiredChipIDIsReadAsTheChipThatReplacedIt: a device that remembered
+// "Waiting on ask" or "Waiting on question" (localStorage ["ask"],
+// ["question"]) is not left with a selection the page cannot draw: both ids
+// alias to "waiting" (chipAliases), which the script's chipsOf applies. Red
+// before: no alias table — chipsOf dropped the ids, losing the selection.
+func TestARetiredChipIDIsReadAsTheChipThatReplacedIt(t *testing.T) {
+	for old, want := range map[string]string{"ask": "waiting", "question": "waiting"} {
+		if got := chipAliases[old]; got != want {
+			t.Errorf("retired chip %q aliases to %q, want %q", old, got, want)
+		}
+		if _, ok := chipByID(old); ok {
+			t.Errorf("retired chip %q is still a chip", old)
+		}
+	}
+	for old, to := range chipAliases {
+		if _, ok := chipByID(to); !ok {
+			t.Errorf("alias %q names no chip (%q)", old, to)
+		}
+	}
+	rules := agentsRulesJS
+	for _, want := range []string{
+		`var CHIP_ALIASES = {"ask":"waiting","question":"waiting"};`,
+		`if (typeof c === 'string' && Object.prototype.hasOwnProperty.call(CHIP_ALIASES, c)) c = CHIP_ALIASES[c];`,
+		`if (CHIP_IDS.indexOf(c) >= 0 && out.indexOf(c) < 0) out.push(c);`,
+	} {
+		if !strings.Contains(rules, want) {
+			t.Errorf("chipsOf does not read retired ids as their replacement: missing %s", want)
+		}
 	}
 }
 

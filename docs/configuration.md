@@ -109,6 +109,8 @@ See [auth.md](auth.md).
 | `MUSTER_FARO_URL` | none | no | A Grafana Faro collector URL. Setting it turns on front-end real-user monitoring. |
 | `MUSTER_FARO_API_KEY` | none | no | The Faro API key. It is sent to the browser, so it is public. |
 | `MUSTER_FARO_TRACING` | off | no | Turns on Faro tracing as well. |
+| `MUSTER_HOST_ORDER` | none | no | Comma-separated mirrored host names whose tabs come first on the Agents list, after **All**, in this order (e.g. `tower,laptop`). Every other host follows A–Z; **cluster** is always last. Names match case-insensitively. A name that is not a host name (lower-case letters, digits and inner hyphens, so no spaces or other separators), `cluster`, or a host listed twice refuses to boot. |
+| `MUSTER_HOST_ICONS` | none | no | Comma-separated `<host>=<icon>` entries giving a mirrored host its icon by name, whatever order its token was minted in (e.g. `laptop=laptop,tower=server`). The icons: `laptop`, `server`, `terminal`, `chip`, `phone`, `home`, `globe`, `box`, `bolt`, `star`, `moon`, `drive`. No other host draws an icon named here. A name that is not a host name (lower-case letters, digits and inner hyphens), `cluster`, an unknown icon, or one icon for two hosts refuses to boot. |
 
 ## muster-server: permission router and approvals
 

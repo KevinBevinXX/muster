@@ -159,12 +159,21 @@ for (const vp of [
       const shell = cardOf(page, termPath(shellWin));
       const solo = cardOf(page, termPath(soloWin));
 
-      // Named by codename and the window's OWN index, with the tmux session
-      // name beside it; a session with no codename is <session>:<index>.
+      // Named by codename and the window's OWN index; a session with no
+      // codename is <session>:<index>.
       await expect(eleven.locator('[data-mirror-label]')).toHaveText('Gold:11');
       await expect(eight.locator('[data-mirror-label]')).toHaveText('Gold:8');
       await expect(shell.locator('[data-mirror-label]')).toHaveText('Gold:1');
-      for (const c of [eleven, eight, shell]) await expect(c.locator('[data-mirror-session]')).toHaveText('scratch2');
+      // 🔴 The raw tmux session name is NOT drawn on a labelled card (an
+      // operator ask: the resolved title only) — not beside the name, not
+      // anywhere in the card's text. It is the name's tooltip, and the search
+      // still finds the card by it. Red before: each card drew `scratch2`
+      // muted beside its codename.
+      for (const c of [eleven, eight, shell]) {
+        await expect(c.locator('[data-mirror-session]')).toHaveCount(0);
+        expect(await c.innerText(), 'no raw session name on the card').not.toContain('scratch2');
+        await expect(c.locator('[data-mirror-name]')).toHaveAttribute('title', 'tmux session scratch2');
+      }
       await expect(solo.locator('[data-mirror-name]')).toHaveText('solo:3');
       await expect(solo.locator('[data-mirror-label]')).toHaveCount(0);
 
@@ -173,7 +182,13 @@ for (const vp of [
       await expect(eight.locator('[data-mirror-claude]')).toContainText('Claude Code');
       await expect(shell.locator('[data-mirror-kind]')).toContainText('shell');
       await expect(solo.locator('[data-mirror-kind]')).toContainText('opencode');
-      for (const c of [eleven, eight, shell, solo]) await expect(c.locator('[data-mirror-host]')).toHaveText(host);
+      // The host is spelled in the card's BODY (a chip beside the name), and
+      // not in its footer. Red before: "host <name>" was the footer's.
+      for (const c of [eleven, eight, shell, solo]) {
+        await expect(c.locator('[data-card-slot="header"] [data-mirror-host]')).toHaveText(host);
+        await expect(c.locator('[data-card-slot="header"] [data-card-host]')).toHaveAttribute('data-card-host', host);
+        await expect(c.locator('[data-card-slot="footer"]')).not.toContainText(host);
+      }
 
       // One flat list, most recently active first — two windows of ONE session
       // sit either side of another session's.
@@ -181,6 +196,13 @@ for (const vp of [
         els.map((e) => ((e.querySelector('[data-mirror-label]') ?? e.querySelector('[data-mirror-name]')) as HTMLElement).textContent),
       );
       expect(order).toEqual(['Gold:11', 'solo:3', 'Gold:8', 'Gold:1']);
+      // The search still finds the windows by their raw session name, though
+      // no card spells it.
+      await page.locator('#agents-search').fill('scratch2');
+      await expect(cards(page).filter({ visible: true })).toHaveCount(3);
+      await expect(cardOf(page, termPath(soloWin))).toBeHidden();
+      await page.locator('#agents-search-clear').click();
+      await expect(cards(page).filter({ visible: true })).toHaveCount(4);
 
       await noHorizontalScroll(page);
       for (const c of [eleven, solo]) {
@@ -509,7 +531,7 @@ for (const vp of [
       await expect(count).toHaveText(`${all} of ${all}`);
 
       // The tabs are the cards' own hosts, each counting its cards.
-      await expect.poll(() => page.locator('#agents-hosts [data-tab-label]').allTextContents(), { timeout: 20_000 }).toEqual(['All', 'cluster', host]);
+      await expect.poll(() => page.locator('#agents-hosts [data-tab-label]').allTextContents(), { timeout: 20_000 }).toEqual(['All', host, 'cluster']);
       await expect(hostTab('').locator('[data-tab-count]')).toHaveText(String(all));
       await expect(hostTab('cluster').locator('[data-tab-count]')).toHaveText(String(podCount));
       await expect(hostTab(host).locator('[data-tab-count]')).toHaveText('4');

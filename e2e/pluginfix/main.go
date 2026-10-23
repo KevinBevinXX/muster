@@ -9,6 +9,9 @@
 //		DATABASE_URL=…_e2e go run ./e2e/pluginfix label <agent-id> <display-name>
 //		DATABASE_URL=…_e2e go run ./e2e/pluginfix rmagent <owner-id> <name>
 //		DATABASE_URL=…_e2e go run ./e2e/pluginfix cleanup <owner-id> <name>
+//		DATABASE_URL=…_e2e go run ./e2e/pluginfix ask <owner-id> <agent-name> <question>   → prints the ask id
+//		DATABASE_URL=…_e2e go run ./e2e/pluginfix draft <owner-id> <agent-name> <plugin-name> → prints the draft id
+//		DATABASE_URL=…_e2e go run ./e2e/pluginfix rmplugin <owner-id> <plugin-name>
 //
 //	  - chief: an agent labelled "chief", running, holding token — the owner's
 //	    chief, whose own token the spec then calls /mcp with. It REFUSES when the
@@ -31,6 +34,15 @@
 //	    (the chief IS the agent displayed "chief"), "chief" gives it back.
 //	  - cleanup: removes the chief and the owner's plugins (their messages and
 //	    drafts cascade), so later specs on the shared database see neither.
+//	  - ask: an OPEN attention_ask from the named agent — the row its /mcp
+//	    attention_ask call stores (internal/attention) — for a spec about what
+//	    the Agents list does with it, not about the door (agent-cards.spec.ts
+//	    asks through the real /mcp door).
+//	  - draft: a PENDING reply draft by the named agent, to a delivered message
+//	    of a plugin of that name made for it — the attention queue's "plugin"
+//	    item on that agent's card.
+//	  - rmplugin: removes one plugin of the owner's by name (its message and
+//	    draft cascade), leaving the owner's other plugins alone.
 //
 // 🔴 IT REFUSES ANY DATABASE WHOSE NAME DOES NOT END IN "_e2e" (e2edb.Check):
 // it writes as the login role with row-level security's scope set to all, which
@@ -62,7 +74,7 @@ func run(args []string) error {
 		return err
 	}
 	if len(args) == 0 {
-		return fmt.Errorf("usage: pluginfix chief|agent|delivering|unconfirmed|lapse|label|rmagent|cleanup …")
+		return fmt.Errorf("usage: pluginfix chief|agent|delivering|unconfirmed|lapse|label|rmagent|cleanup|ask|draft|rmplugin …")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
@@ -189,6 +201,51 @@ func run(args []string) error {
 			return err
 		}
 		if _, err := conn.Exec(ctx, `DELETE FROM agents WHERE owner_id = $1 AND name = $2`, owner, args[2]); err != nil {
+			return err
+		}
+	case "ask":
+		owner, err := num(1)
+		if err != nil || len(args) != 4 {
+			return fmt.Errorf("usage: ask <owner-id> <agent-name> <question>")
+		}
+		var id int64
+		if err := conn.QueryRow(ctx, `INSERT INTO attention_asks (owner_id, agent_id, asker_label, question, expires_at)
+			SELECT $1, id, name, $3, now() + interval '1 hour' FROM agents WHERE owner_id = $1 AND name = $2 RETURNING id`,
+			owner, args[2], args[3]).Scan(&id); err != nil {
+			return fmt.Errorf("ask from %s: %w", args[2], err)
+		}
+		fmt.Println(id)
+	case "draft":
+		owner, err := num(1)
+		if err != nil || len(args) != 4 {
+			return fmt.Errorf("usage: draft <owner-id> <agent-name> <plugin-name>")
+		}
+		var agentID int64
+		if err := conn.QueryRow(ctx, `SELECT id FROM agents WHERE owner_id = $1 AND name = $2`, owner, args[2]).Scan(&agentID); err != nil {
+			return fmt.Errorf("agent %s: %w", args[2], err)
+		}
+		var pluginID, msgID, draftID int64
+		if err := conn.QueryRow(ctx, `INSERT INTO plugins (owner_id, name, label, token_hash, data_scope)
+			VALUES ($1, $2, $2, 'e2e-fixture-' || $2 || '-' || gen_random_uuid()::text, $2) RETURNING id`, owner, args[3]).Scan(&pluginID); err != nil {
+			return fmt.Errorf("plugin: %w", err)
+		}
+		if err := conn.QueryRow(ctx, `INSERT INTO plugin_messages (owner_id, plugin_id, external_id, sender, body, status, delivered_at, agent_id)
+			VALUES ($1, $2, 'e2e-1', 'someone', 'Are you free at noon?', 'delivered', now(), $3) RETURNING id`,
+			owner, pluginID, agentID).Scan(&msgID); err != nil {
+			return fmt.Errorf("message: %w", err)
+		}
+		if err := conn.QueryRow(ctx, `INSERT INTO plugin_reply_drafts (owner_id, message_id, agent_id, agent_name, body, expires_at)
+			VALUES ($1, $2, $3, $4, 'Yes, noon works.', now() + interval '1 hour') RETURNING id`,
+			owner, msgID, agentID, args[2]).Scan(&draftID); err != nil {
+			return fmt.Errorf("draft: %w", err)
+		}
+		fmt.Println(draftID)
+	case "rmplugin":
+		owner, err := num(1)
+		if err != nil || len(args) != 3 {
+			return fmt.Errorf("usage: rmplugin <owner-id> <plugin-name>")
+		}
+		if _, err := conn.Exec(ctx, `DELETE FROM plugins WHERE owner_id = $1 AND name = $2`, owner, args[2]); err != nil {
 			return err
 		}
 	default:

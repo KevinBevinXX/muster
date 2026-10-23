@@ -52,6 +52,20 @@ const tabClass = "press inline-flex min-h-[44px] shrink-0 items-center whitespac
 // what the choice is stored under ("" = not stored); label is the tablist's
 // accessible name. Each panel is the scroll container of its own content.
 func Tabs(id, key, label string, tabs ...Tab) TabSet {
+	return TabsSelected(id, key, label, "", tabs...)
+}
+
+// TabsSelected is Tabs with the tab whose ID is selected drawn selected — the
+// first when selected names none of them. It is how a page whose tab is in its
+// URL (the Asks page's ?tab=) draws that tab without a script: a stored choice
+// (key) still wins on load, so such a page passes key "".
+func TabsSelected(id, key, label, selected string, tabs ...Tab) TabSet {
+	sel := 0
+	for i, t := range tabs {
+		if t.ID == selected {
+			sel = i
+		}
+	}
 	list := []g.Node{
 		ID(id), g.Attr("role", "tablist"), g.Attr("aria-label", label), g.Attr("data-tabs", ""),
 		g.If(key != "", g.Attr("data-tabs-key", key)),
@@ -60,9 +74,9 @@ func Tabs(id, key, label string, tabs ...Tab) TabSet {
 	var panels []g.Node
 	for i, t := range tabs {
 		tabID, panelID := id+"-tab-"+t.ID, id+"-panel-"+t.ID
-		tabIndex, selected := "-1", "false"
-		if i == 0 {
-			tabIndex, selected = "0", "true"
+		tabIndex, isSel := "-1", "false"
+		if i == sel {
+			tabIndex, isSel = "0", "true"
 		}
 		list = append(list, Button(
 			Type("button"),
@@ -70,7 +84,7 @@ func Tabs(id, key, label string, tabs ...Tab) TabSet {
 			g.Attr("role", "tab"),
 			g.Attr("data-tab", t.ID),
 			g.Attr("aria-controls", panelID),
-			g.Attr("aria-selected", selected),
+			g.Attr("aria-selected", isSel),
 			g.Attr("tabindex", tabIndex),
 			Class(tabClass),
 			g.Text(t.Label),
@@ -81,13 +95,17 @@ func Tabs(id, key, label string, tabs ...Tab) TabSet {
 			g.Attr("data-tab-panel", t.ID),
 			g.Attr("aria-labelledby", tabID),
 			g.Attr("tabindex", "0"),
-			g.If(i != 0, g.Attr("hidden", "")),
+			g.If(i != sel, g.Attr("hidden", "")),
 			Class("min-h-0 flex-1 flex-col overflow-y-auto overscroll-contain focus-visible:outline-none [&:not([hidden])]:flex"),
 			t.Panel,
 		))
 	}
 	return TabSet{List: Div(list...), Panels: g.Group(panels)}
 }
+
+// TabsScript is tabsScript for a page drawn outside this package's shell (the
+// Asks page, internal/api): the same once-per-document script.
+func TabsScript() g.Node { return tabsScript() }
 
 // tabsScript switches every [data-tabs] tablist's panels: a click, and the
 // arrow keys, Home and End on a focused tab. Each switch is stored (when the

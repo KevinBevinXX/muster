@@ -603,7 +603,7 @@ func (s *Server) cardViewIndexed(a agents.Agent, idx map[string]*provision.Insta
 		Pinned: pinned.Agent(a.ID),
 		// The agent's focus (internal/focus), read once per render by the caller.
 		Focus: focused.view(focus.AgentSubject(a.ID)),
-		// The polled badge's own answer (in memory), so "Waiting on ask" finds an
+		// The polled badge's own answer (in memory), so "Waiting on you" finds an
 		// agent blocked at a permission prompt.
 		AwaitingApproval: s.AwaitingApproval(a.ID),
 		// The pod's live work counts (agent_work.go): none unless it is running,
@@ -1442,6 +1442,8 @@ func (s *Server) handleAgentDetail(w http.ResponseWriter, r *http.Request) {
 		FocusHistory: s.focusHistoryPath(focus.AgentSubject(a.ID)),
 	}
 	view.SendNotice, view.SendNoticeOK = composerNotice(r)
+	// The agent's open attention asks, answerable here (attention_asker.go).
+	view.Asks, view.AsksSrc = s.askerAsksBlock(ctx, askerRef{agent: a.Name, session: active.ID})
 	// A claude-code agent's chat is the Rendered half of its Rendered |
 	// Terminal switch, which its terminal opens in a frame (ui/view_swap.go).
 	if agents.ResolveKind(view.Kind) == agents.KindClaudeCode {

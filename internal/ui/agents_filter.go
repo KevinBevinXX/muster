@@ -64,8 +64,9 @@ import (
 // copy, so a shared link reproduces the filter.
 //
 // HOST TABS. Above the box, one tab per host the list holds — "All", then
-// each host's name (dispatched pod agents are the host "cluster", podHost) —
-// each with how many of its cards match the box. A tab is a FILTER OVER THE ONE
+// each host's name (dispatched pod agents are the host "cluster", podHost), in
+// hostTabOrder's order (the operator's named hosts, the rest A–Z, the cluster
+// last) — each with how many of its cards match the box. A tab is a FILTER OVER THE ONE
 // LIST, not a panel of its own: choosing one adds one more hide rule,
 //
 //	#agents-list > article:not([data-f-host="tower"]) { display: none }
@@ -249,6 +250,25 @@ func isLabelled(key string) bool {
 // under tabs.go's prefix).
 const agentsHostTabsStorageKey = "muster:tabs:agents-host"
 
+// hostTabOrder is the order of the host tabs after "All": the hosts the
+// operator named first (HostPreferences.Order, MUSTER_HOST_ORDER) in that
+// order, then hostTabRest — every host NOT named, alphabetically by its label
+// — then the cluster (dispatched pod agents, podHost) last. The ONE statement
+// of the order: syncHosts reads it (hostTabOrderJSON) and only applies it.
+// Hosts are matched by their data-f-host (lower-cased, as the field is).
+func hostTabOrder() []string {
+	return append(append([]string{}, hostPrefs.Order...), hostTabRest, podHost)
+}
+
+// hostTabRest is hostTabOrder's place for every host it does not name.
+const hostTabRest = "*"
+
+// hostTabOrderJSON is hostTabOrder for the script.
+func hostTabOrderJSON() string {
+	b, _ := json.Marshal(hostTabOrder())
+	return string(b)
+}
+
 // agentsHostTabs is the host tab strip, drawn with its one fixed tab, "All".
 // The script adds a tab per host by CLONING that one (so the markup and look
 // live here once), and keeps the counts. It is one 44px row whatever it holds,
@@ -348,15 +368,25 @@ func agentsFilterScript() g.Node {
   // them up — and the rules. The head applies the stored filter before the
   // first paint with them; this script keeps it applied. One definition, so
   // the two cannot disagree.
-  var R = window.__musterAgentsRules;
+  // R is the window's table AT EACH CALL, never the one this script was bound
+  // with: a boosted navigation into a newer build's page rebuilds the table
+  // (agentsRulesVersion) while this script stays bound.
+  var R = {};
+  ['terms', 'sel', 'chipsOf', 'chipSel', 'rules'].forEach(function (k) {
+    R[k] = function () { var r = window.__musterAgentsRules; return r[k].apply(r, arguments); };
+  });
   function terms(q) { return R.terms(q); }
   function sel(t) { return R.sel(t); }
   // The chosen chips are remembered per device (localStorage), in try/catch:
   // storage can be unavailable.
   var CHIPS_KEY = '` + agentsChipsStorageKey + `';
-  var chips = null;
+  // chips is the selection as read under table version chipsV: a rebuilt table
+  // re-reads it, so a chip the old table did not know is not lost.
+  var chips = null, chipsV = null;
   function chipsChosen() {
-    if (chips === null) {
+    var v = window.__musterAgentsRules.v;
+    if (chips === null || chipsV !== v) {
+      chipsV = v;
       chips = [];
       try { chips = R.chipsOf(localStorage.getItem(CHIPS_KEY)); } catch (e) { chips = []; }
     }
@@ -613,9 +643,18 @@ func agentsFilterScript() g.Node {
     if (tr.left < sr.left) s.scrollLeft += tr.left - sr.left;
     else if (tr.right > sr.right) s.scrollLeft += tr.right - sr.right;
   }
+  // HOST_ORDER is hostTabOrder (Go): the operator's named hosts' places, '*'
+  // the place of every other host, the cluster's last. hostRank is a host's
+  // place in it.
+  var HOST_ORDER = ` + hostTabOrderJSON() + `;
+  function hostRank(v) {
+    var i = HOST_ORDER.indexOf(v);
+    return i >= 0 ? i : HOST_ORDER.indexOf('` + hostTabRest + `');
+  }
   // syncHosts makes the strip say what the list DRAWS now — a tab per distinct
   // data-f-host of a drawn card (an arrival held behind the pill is not drawn,
-  // so it offers no tab yet), labelled by its data-l-host, sorted by label —
+  // so it offers no tab yet), labelled by its data-l-host, in HOST_ORDER (and
+  // by label among the hosts it does not name) —
   // and returns the host the list is filtered to ('' = All). Each tab's count
   // is how many drawn cards of that host the box's terms (ts) show; All's is
   // all of them.
@@ -656,6 +695,8 @@ func agentsFilterScript() g.Node {
     var h = linkAll ? '' : hostChosen();
     var on = h && seen[h] ? h : '';
     hosts.sort(function (x, y) {
+      var rx = hostRank(x.v), ry = hostRank(y.v);
+      if (rx !== ry) return rx - ry;
       var a = x.l.toLowerCase(), b = y.l.toLowerCase();
       if (a !== b) return a < b ? -1 : 1;
       return x.v < y.v ? -1 : x.v > y.v ? 1 : 0;

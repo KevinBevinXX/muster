@@ -117,6 +117,11 @@ type AgentDetailView struct {
 	// FocusHistory is the agent's focus history, the newest page
 	// (FocusHistoryPath); "" = no focus store, and no header control for it.
 	FocusHistory string
+	// Asks is the agent's OPEN attention asks as the queue draws them, with
+	// their answer forms (internal/api attention_asker.go), "" for none; AsksSrc
+	// is that block's fragment URL, "" when the queue is not served (no block).
+	Asks    string
+	AsksSrc string
 }
 
 // SessionView is one chat session in the switcher.
@@ -625,6 +630,7 @@ func agentChatPane(v AgentDetailView) g.Node {
 		// sub-view of the panel's OWN column, which needs no viewport-relative
 		// positioning at all. See ChatSurface.
 		g.If(v.Surface != ChatSurfaceChiefPanel, sessionDrawer(v)),
+		g.If(v.Surface == ChatSurfacePage && v.AsksSrc != "", AskerAsksBlock(v.Asks, v.AsksSrc, true)),
 		Div(
 			ID("chat-log"),
 			Class("flex flex-1 flex-col gap-2 overflow-auto rounded-xl bg-s1/40 p-3 ring-1 ring-inset ring-line min-h-0"),

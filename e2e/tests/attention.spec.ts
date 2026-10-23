@@ -172,7 +172,14 @@ test('an agent asks over MCP, the operator answers in the Attention view, and th
   await page.waitForTimeout(1500); // a bounded observation window: a loop would add ~60 here
   expect(badgeFetches - settled, 'badge requests while nothing changed').toBeLessThanOrEqual(1);
 
+  // The queue is called "Asks" (operator decision "Rename to Asks"), at the
+  // same /attention, so every existing /attention#<key> link still lands.
+  // This server serves no plugins, so there is no Reply drafts tab.
+  await expect(page.locator('#sidebar-attention')).toContainText('Asks');
   await page.goto(origin + '/attention');
+  await expect(page.getByRole('heading', { level: 1 })).toHaveText('Asks');
+  await expect(page).toHaveTitle('Asks · muster');
+  await expect(page.getByRole('tab'), 'no plugins: no tabs').toHaveCount(0);
   const askItem = page.locator(`#ask-${id}`);
   await expect(askItem).toBeVisible();
   await expect(askItem.locator('[data-attention-text]')).toHaveText('Deploy the importer to production now?');
@@ -372,3 +379,72 @@ test('a queued message answers the ask, and its Cancel says the answer stays', a
   await expect(page.locator('#mv-note')).toHaveText(/^Cancelled — but this message had already answered .+'s question, and that answer was delivered: it can't be un-sent\.$/);
   await expect(row).toHaveAttribute('data-queue-state', 'cancelled');
 });
+
+// ANSWERED WHERE THE NOTIFICATION LANDS (attention_asker.go): the
+// notification's URL, /attention/open/<key>, resolves a mirrored session's
+// ask to that session's rendered view when tapped (attention_push_target.go). The view
+// shows the ask with the queue's own form; a second ask arrives live; the
+// operator answers there, lands back on the view, and the session's wait
+// returns the answer. On a phone the block stays above the pinned composer.
+for (const vp of [
+  { name: 'phone', use: { viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true } },
+  { name: 'desktop', use: { viewport: { width: 1280, height: 800 }, hasTouch: false, isMobile: false } },
+]) {
+  test.describe(`on a ${vp.name}`, () => {
+    test.use(vp.use);
+    test('a mirrored session\'s ask is answered on its own rendered view', async ({ page }) => {
+      test.setTimeout(120_000);
+      // The host writes its local secret once it is up (a fresh worker may run
+      // this test first).
+      await expect.poll(() => fs.existsSync(mcpSecretFile), { timeout: 30_000 }).toBe(true);
+      const secret = fs.readFileSync(mcpSecretFile, 'utf8').trim();
+      const auth = { Authorization: 'Bearer ' + secret, 'X-Muster-Pane': '%e2e-work-@1', 'X-Muster-Tmux': fakeTMUX };
+      const askLocal = async (question: string, options: string[] = []) => {
+        const r = (await (await localCall('attention_ask', { question, options }, auth)).json()) as { result: { content: { text: string }[] } };
+        return (JSON.parse(r.result.content[0].text) as { id: number }).id;
+      };
+      const id = await askLocal(`Merge on the ${vp.name}?`, ['merge', 'hold']);
+
+      await page.goto(origin + '/login');
+      await page.fill('#muster-password', password);
+      await Promise.all([page.waitForURL((u) => !u.pathname.startsWith('/login')), page.click('button[type=submit]')]);
+      // The notification's URL (the tap route) resolves to the window's view.
+      const view = origin + `/mirror/view?host=${encodeURIComponent(host)}&session=work&window=%401`;
+      await page.goto(origin + `/attention/open/ask-${id}`);
+      await page.waitForURL(view);
+      const block = page.locator('#asker-asks');
+      const item = block.locator(`#ask-${id}`);
+      await expect(item.locator('[data-attention-text]')).toHaveText(`Merge on the ${vp.name}?`);
+      await expect(item.getByRole('button', { name: 'merge', exact: true })).toBeVisible();
+
+      // A second ask, raised while the view is open, arrives without a reload.
+      const id2 = await askLocal(`And the changelog on the ${vp.name}?`);
+      await expect(block.locator(`#ask-${id2}`)).toBeVisible({ timeout: 15_000 });
+
+      // The layout holds: the block sits above the pinned composer, which is
+      // still inside the visible viewport, and the conversation keeps room.
+      const size = page.viewportSize()!;
+      const compose = (await page.locator('#mv-compose').boundingBox())!;
+      const asks = (await block.boundingBox())!;
+      const log = (await page.locator('#mv-log').boundingBox())!;
+      expect(compose.y + compose.height, 'the composer is on screen').toBeLessThanOrEqual(size.height + 1);
+      expect(asks.y + asks.height, 'the asks block ends above the composer').toBeLessThanOrEqual(compose.y + 1);
+      expect(log.height, 'the conversation keeps room').toBeGreaterThan(80);
+
+      // Answer by an option: back on this view, the session's wait gets it, the ask leaves.
+      const waited = localCall('attention_wait', { id, wait_seconds: 60 }, auth).then((r) => r.json());
+      await Promise.all([page.waitForURL(view), item.getByRole('button', { name: 'hold', exact: true }).click()]);
+      const got = (await waited) as { result: { content: { text: string }[] } };
+      expect(JSON.parse(got.result.content[0].text)).toMatchObject({ id, status: 'answered', answer: 'hold' });
+      await expect(block.locator(`#ask-${id}`)).toHaveCount(0);
+
+      // Free text on the second: it leaves too.
+      const second = block.locator(`#ask-${id2}`);
+      await second.locator('textarea').fill('yes, add it');
+      await Promise.all([page.waitForURL(view), second.getByRole('button', { name: 'Answer', exact: true }).click()]);
+      const w2 = (await (await localCall('attention_wait', { id: id2, wait_seconds: 0 }, auth)).json()) as { result: { content: { text: string }[] } };
+      expect(JSON.parse(w2.result.content[0].text)).toMatchObject({ status: 'answered', answer: 'yes, add it' });
+      await expect(block.locator(`#ask-${id2}`)).toHaveCount(0);
+    });
+  });
+}

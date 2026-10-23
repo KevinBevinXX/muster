@@ -446,6 +446,11 @@ var isolationClasses = map[string]routeClass{
 	// forms name A's ask by id.
 	"GET /attention":                   classList,
 	"GET /attention/items":             classList,
+	"GET /attention/drafts":            classList,
+	// A session page's asks block names its asker by query (?agent=): A's
+	// agent's asks, never B's view of them. The tap route names an item by key.
+	"GET /attention/asker":             classParam,
+	"GET /attention/open/{key}":        classParam,
 	"GET /attention/badge":             classList,
 	"POST /attention/asks/{id}/answer": classParam,
 	"POST /attention/asks/{id}/cancel": classParam,
@@ -496,6 +501,10 @@ var wantCanaryForA = []string{
 	"GET /account",
 	// Plugins: A's second plugin is canary-labelled, so A's page shows it.
 	"GET /plugins",
+	// The attention asks: A's agent's asks block shows A's canary-carrying
+	// question, and the tap on A's ask opens A's agent's page (its name, an
+	// identity of A's, in the redirect).
+	"GET /attention/asker", "GET /attention/open/{key}",
 }
 
 func TestEveryRouteIsClassifiedForIsolation(t *testing.T) {
@@ -1271,6 +1280,10 @@ func (w *isoWorld) fill(pattern string, o isoObjs, actor isoUser) (method, path,
 	case strings.HasPrefix(path, "/attention/asks/{id}"):
 		id = strconv.FormatInt(o.ask, 10)
 	}
+	if path == "/attention/asker" {
+		// The asks block of A's agent (the agent page's), by name.
+		path += "?" + url.Values{"agent": {o.agentName}}.Encode()
+	}
 	name := o.agentName
 	if strings.Contains(path, "connectors/{name}") {
 		name = o.connName
@@ -1282,7 +1295,7 @@ func (w *isoWorld) fill(pattern string, o isoObjs, actor isoUser) (method, path,
 		"{$}", "", "{id}", url.PathEscape(id), "{name}", url.PathEscape(name),
 		"{cid}", strconv.FormatInt(o.comment, 10), "{aid}", strconv.FormatInt(o.attach, 10),
 		"{tag}", url.PathEscape(o.tag), "{sid}", strconv.FormatInt(o.chat, 10),
-		"{connector}", o.connName, "{host}", w.upHost, "{path...}", "probe",
+		"{connector}", o.connName, "{host}", w.upHost, "{path...}", "probe", "{key}", "ask-"+strconv.FormatInt(o.ask, 10),
 	).Replace(path)
 	if path == "/static/" {
 		path = "/static/app.css"
@@ -1552,7 +1565,7 @@ func (w *isoWorld) checkOutsider(t *testing.T, who string, results []isoResult) 
 	t.Helper()
 	for _, res := range results {
 		named := namesObject(res.route)
-		if l := w.leaks(res.body, !named); len(l) > 0 {
+		if l := w.leaks(res.body, !named || idFreePaths[res.route]); len(l) > 0 {
 			t.Errorf("LEAK: %s %s %s → %d carries A's %v\n  body: %s", who, res.via, res.route, res.status, l, truncate(res.body, 300))
 		}
 		if named && res.status != res.ghost {
@@ -1563,6 +1576,14 @@ func (w *isoWorld) checkOutsider(t *testing.T, who string, results []isoResult) 
 			t.Errorf("LEAK: %s %s %s reports A's connector EXISTS: %s", who, res.via, res.route, truncate(res.body, 300))
 		}
 	}
+}
+
+// idFreePaths are routes that name A's object by a bare number, never by an
+// identity of A's: the request carries none of A's names, so an answer that
+// carries one (a redirect to A's agent page) is a leak even though the route
+// names an object.
+var idFreePaths = map[string]bool{
+	"GET /attention/open/{key}": true,
 }
 
 func is2xx(code int) bool { return code >= 200 && code < 300 }

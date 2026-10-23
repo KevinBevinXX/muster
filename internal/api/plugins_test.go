@@ -81,6 +81,11 @@ func (c *countingPlugins) DraftCards(ctx context.Context, _ int) ([]plugins.Draf
 	return nil, nil
 }
 
+func (c *countingPlugins) DraftCard(ctx context.Context, _ int64) (plugins.DraftCard, error) {
+	c.note(ctx, "DraftCard")
+	return plugins.DraftCard{}, plugins.ErrNotFound
+}
+
 func (c *countingPlugins) Retryable(ctx context.Context, _ int) ([]plugins.Message, error) {
 	c.note(ctx, "Retryable")
 	return nil, nil

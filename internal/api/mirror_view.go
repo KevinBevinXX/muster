@@ -90,6 +90,9 @@ func (s *Server) handleMirrorViewPage(w http.ResponseWriter, r *http.Request) {
 	}
 	v.Notice, v.NoticeOK = composerNotice(r)
 	v.HostIcon = s.mirrorHostIcon(r.Context(), h.Host)
+	// The window's sessions' open attention asks, answerable here
+	// (attention_asker.go).
+	v.Asks, v.AsksSrc = s.askerAsksBlock(r.Context(), askerRef{mirror: ui.MirrorRef{Host: h.Host, Session: e.Session, Window: e.Window}})
 	allowSameOriginFrame(w)
 	formDocument(w)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")

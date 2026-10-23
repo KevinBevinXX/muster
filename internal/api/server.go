@@ -77,7 +77,9 @@ const (
 	// EventConnectorChanged announces a connector request, decision or change.
 	EventConnectorChanged = "connector.changed"
 	// EventAttentionChanged announces that something entered or left the
-	// owner's attention queue (attention.go). Spelled with "_queue" so it can
+	// owner's attention queue (attention.go) — and that a reply draft's
+	// delivery status moved: a plugin claimed it or reported its result
+	// (draftStatusMoved), so the Asks page's Archived view re-reads. Spelled with "_queue" so it can
 	// never be read as the router's own attention events on a mirrored bus.
 	EventAttentionChanged = "attention_queue.changed"
 )

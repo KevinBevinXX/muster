@@ -29,7 +29,7 @@ func (l listingRelay) LastMessageByAgentIDs(context.Context, []int64) (map[int64
 
 // TestAnAgentAwaitingApprovalIsWaitingOnAnAskOnTheList: an agent blocked at a
 // permission prompt (POST /agent/blocked — the "awaiting approval" badge) is
-// drawn with data-wait="ask", so the "Waiting on ask" chip finds it; and the
+// drawn with data-wait="you", so the "Waiting on you" chip finds it; and the
 // card's status poll, carrying what the card was drawn with, answers
 // HX-Trigger agents:awaiting when that is no longer true — on the way in AND on
 // the way out — and nothing when it still is.
@@ -67,8 +67,8 @@ func TestAnAgentAwaitingApprovalIsWaitingOnAnAskOnTheList(t *testing.T) {
 		t.Fatalf("control: an agent not blocked is waiting on something (or not listed): %q", tag)
 	}
 	block(true)
-	if tag := cardTag(relayAgentA.ID); !strings.Contains(tag, `data-wait="ask"`) {
-		t.Errorf("a blocked agent's card does not carry data-wait=\"ask\": %s", tag)
+	if tag := cardTag(relayAgentA.ID); !strings.Contains(tag, `data-wait="you"`) {
+		t.Errorf("a blocked agent's card does not carry data-wait=\"you\": %s", tag)
 	}
 	if tag := cardTag(relayAgentB.ID); strings.Contains(tag, "data-wait") {
 		t.Errorf("the other agent is waiting too: %s", tag)

@@ -178,61 +178,58 @@ func cardActivityAttrs(now, t time.Time) g.Node {
 }
 
 // ---------------------------------------------------------------------------
-// WAITING: what the card is blocked on the operator for, from its attention
+// WAITING: whether the card is blocked on the operator, from its attention
 // badge (CardAttention, composed in internal/api from the attention queue's
-// ONE read — never re-derived here). Two words, written into `data-wait`:
+// ONE read — never re-derived here). One word, written into `data-wait`:
 //
-//	ask       muster's attention_ask (the queue's "Question" row): a dispatched
-//	          agent or a mirrored Claude session called attention_ask and is
-//	          waiting for your answer — OR a mirrored Claude Code session is
-//	          stopped at a prompt (status "waiting": a permission prompt, the
-//	          session ASKING to go on; the queue's "Session waiting").
-//	question  Claude Code's own AskUserQuestion picker, held open by a mirrored
-//	          session (the queue's "Session question"): it is asking YOU a
-//	          question with options, answered in the session.
+//	you   it is waiting on YOU, any of:
+//	      - muster's attention_ask (the queue's "Question" row): a dispatched
+//	        agent or a mirrored Claude session called attention_ask and is
+//	        waiting for your answer;
+//	      - a mirrored Claude Code session stopped at a prompt (status
+//	        "waiting": a permission prompt, the session ASKING to go on; the
+//	        queue's "Session waiting");
+//	      - Claude Code's own AskUserQuestion picker, held open by a mirrored
+//	        session (the queue's "Session question");
+//	      - a dispatched agent blocked at a permission prompt (the "awaiting
+//	        approval" badge, AgentCardView.AwaitingApproval) — not an attention
+//	        item, but the same kind of block as a mirrored session's prompt.
 //
-// A dispatched agent blocked at a permission prompt (the "awaiting approval"
-// badge, AgentCardView.AwaitingApproval) is an ask too — the same kind of
-// block as a mirrored session's prompt — though it is not an attention item.
-// A reply draft (kind "plugin") is neither: nothing is blocked on it.
+// These were two words ("ask", "question") behind two chips until an operator
+// ask merged the chips: whichever way a card asks, it is waiting on you.
+// A reply draft (kind "plugin") is not: nothing is blocked on it.
 
 // waitKinds maps each attention kind a card can count to the wait word it
 // files under ("" = none).
 var waitKinds = map[string]string{
-	"ask":      "ask",
-	"session":  "ask",
-	"question": "question",
+	"ask":      "you",
+	"session":  "you",
+	"question": "you",
 	"plugin":   "",
 }
 
-// waitTokens is a card's `data-wait`: the wait words of its attention items'
-// kinds — and "ask" for an agent awaiting approval — in a fixed order ("ask
-// question"), "" for none.
+// waitTokens is a card's `data-wait`: "you" when any of its attention items'
+// kinds files under it, or the agent is awaiting approval; "" for none.
 func waitTokens(a *CardAttention, awaitingApproval bool) string {
-	has := map[string]bool{"ask": awaitingApproval}
+	if awaitingApproval {
+		return "you"
+	}
 	if a != nil && a.Count > 0 {
 		for _, k := range a.Kinds {
 			if w := waitKinds[k]; w != "" {
-				has[w] = true
+				return w
 			}
 		}
 	}
-	var out []string
-	for _, w := range []string{"ask", "question"} {
-		if has[w] {
-			out = append(out, w)
-		}
-	}
-	return strings.Join(out, " ")
+	return ""
 }
 
 // ---------------------------------------------------------------------------
 // THE FILTER CHIPS: presets above the list.
 //
 // SEMANTICS, stated once: the chips are ORed — a card is shown when it
-// matches ANY chosen chip (the operator's own words: "waiting on an ask,
-// waiting on a user question, OR have been idle for a certain period"). The
-// idle chips are exclusive with each other (choosing one clears the others:
+// matches ANY chosen chip ("waiting on you, OR have been idle for a certain
+// period"). The idle chips are exclusive with each other (choosing one clears the others:
 // they are nested thresholds, so two ORed would just be the smaller). No chip
 // chosen: no filter. The chips as a whole AND with the search box and the host
 // tab, like any other term.
@@ -250,11 +247,25 @@ type listChip struct {
 }
 
 var listChips = []listChip{
-	{"ask", "Waiting on ask", "An agent or a session asked you something with attention_ask, or a Claude Code session or a dispatched agent is stopped at a permission prompt", "wait", "ask"},
-	{"question", "Waiting on question", "A Claude Code session is holding an AskUserQuestion picker open for you", "wait", "question"},
+	{"waiting", "Waiting on you", "An agent or a session asked you something (attention_ask or an AskUserQuestion picker), or a Claude Code session or a dispatched agent is stopped at a permission prompt", "wait", "you"},
 	{"idle-15m", "Idle >15m", "No activity for more than 15 minutes", "idle", "15m"},
 	{"idle-1h", "Idle >1h", "No activity for more than an hour", "idle", "1h"},
 	{"idle-1d", "Idle >1d", "No activity for more than a day", "idle", "1d"},
+}
+
+// chipAliases maps a chip id this device may still have stored from before
+// (localStorage, agentsChipsStorageKey) to the chip that replaced it: the
+// "Waiting on ask" and "Waiting on question" chips became "Waiting on you",
+// so a remembered selection of either is that chip, not dropped.
+var chipAliases = map[string]string{
+	"ask":      "waiting",
+	"question": "waiting",
+}
+
+// chipAliasesJSON is chipAliases for the script (chipsOf).
+func chipAliasesJSON() string {
+	b, _ := json.Marshal(chipAliases)
+	return string(b)
 }
 
 // chipByID is the chip with that id.
