@@ -64,5 +64,5 @@ func attentionLink(feat Features) g.Node {
 	}
 	return A(ID("sidebar-attention"), Href("/attention"), hx("hx-boost", "false"),
 		Class("press flex min-h-[44px] w-full items-center gap-3 rounded-lg px-3 text-left text-sm font-medium text-fg2 transition hover:bg-s2 hover:text-fg"),
-		Span(Class("text-base"), g.Text("🔔")), Span(g.Text("Attention")), attentionBadgeSlot())
+		Span(Class("text-base"), g.Text("🔔")), Span(g.Text("Asks")), attentionBadgeSlot())
 }

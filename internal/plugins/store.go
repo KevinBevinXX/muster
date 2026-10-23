@@ -96,6 +96,8 @@ type Store interface {
 	// DraftCards is the principal's drafts for /plugins, those awaiting a
 	// decision first.
 	DraftCards(ctx context.Context, limit int) ([]DraftCard, error)
+	// DraftCard is one of the principal's drafts as a card.
+	DraftCard(ctx context.Context, id int64) (DraftCard, error)
 	// DecideDraft approves or rejects a pending draft.
 	DecideDraft(ctx context.Context, id int64, approve bool) (Draft, error)
 	// ClaimDraft leases one approved, unclaimed draft of pluginID's.

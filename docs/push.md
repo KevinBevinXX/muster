@@ -30,7 +30,7 @@ has its own toggle, and all are on by default:
 | `agent` | A task's agent comes up. |
 | `created` | A machine (an agent, the CLI) created tasks. |
 | `comment` | A machine commented on a task. |
-| `plugin` | Your chief drafted a reply to a [plugin](plugins.md) message, and it awaits your approval. The notification's text is muster's own: it never quotes the message or the draft. A tap opens the draft's card on `/plugins`. |
+| `plugin` | Your chief drafted a reply to a [plugin](plugins.md) message, and it awaits your approval. The notification's text is muster's own: it never quotes the message or the draft. A tap opens the draft's card on the Asks page's Reply drafts tab (`/attention?tab=drafts#draft-<id>`). |
 | `attention` | Something new in your [attention queue](attention.md): an agent asked you a question (the notification shows the asker and the question's first line), or a mirrored Claude Code session started waiting at a prompt. One notification per item; it is withdrawn when the item is answered, dismissed, expires or stops waiting. A tap opens the item on `/attention`. A decided reply draft's `plugin` notification is withdrawn the same way. |
 
 Push routes are session-authenticated and same-origin:

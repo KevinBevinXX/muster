@@ -172,7 +172,14 @@ test('an agent asks over MCP, the operator answers in the Attention view, and th
   await page.waitForTimeout(1500); // a bounded observation window: a loop would add ~60 here
   expect(badgeFetches - settled, 'badge requests while nothing changed').toBeLessThanOrEqual(1);
 
+  // The queue is called "Asks" (operator decision "Rename to Asks"), at the
+  // same /attention, so every existing /attention#<key> link still lands.
+  // This server serves no plugins, so there is no Reply drafts tab.
+  await expect(page.locator('#sidebar-attention')).toContainText('Asks');
   await page.goto(origin + '/attention');
+  await expect(page.getByRole('heading', { level: 1 })).toHaveText('Asks');
+  await expect(page).toHaveTitle('Asks · muster');
+  await expect(page.getByRole('tab'), 'no plugins: no tabs').toHaveCount(0);
   const askItem = page.locator(`#ask-${id}`);
   await expect(askItem).toBeVisible();
   await expect(askItem.locator('[data-attention-text]')).toHaveText('Deploy the importer to production now?');

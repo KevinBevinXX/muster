@@ -85,8 +85,8 @@ func recv(t *testing.T, c <-chan string) string {
 
 // TestTheQueueIsNewestFirstAcrossSources: an ask, a waiting session, a reply
 // draft and a second ask, each with its own time, come back newest first —
-// whichever source they were read from — on the read model, the page and
-// attention_list alike.
+// whichever source they were read from — on the read model, the page (less
+// the draft, which is the Reply drafts tab's) and attention_list alike.
 func TestTheQueueIsNewestFirstAcrossSources(t *testing.T) {
 	f := newAttnFixture(t)
 	base := time.Now().Add(-2 * time.Hour).Truncate(time.Millisecond) // the waiting window went waiting here
@@ -111,9 +111,17 @@ func TestTheQueueIsNewestFirstAcrossSources(t *testing.T) {
 	if strings.Join(got, " ") != strings.Join(want, " ") {
 		t.Fatalf("the queue's order: %v, want newest first %v", got, want)
 	}
+	// The page's Ask tab lists the same order WITHOUT the draft: drafts are
+	// the Reply drafts tab's (asks_drafts.go).
 	page := f.page(t, "/attention/items")
+	if strings.Contains(page, `id="`+draftKey(d.ID)+`"`) {
+		t.Fatalf("the Ask list draws the reply draft: %s", page)
+	}
 	at := -1
 	for _, k := range want {
+		if k == draftKey(d.ID) {
+			continue
+		}
 		i := strings.Index(page, `id="`+k+`"`)
 		if i < at {
 			t.Fatalf("the page lists %s before an older item: %s", k, page)

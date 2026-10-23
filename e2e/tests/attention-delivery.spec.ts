@@ -66,6 +66,9 @@ test.beforeAll(async () => {
   await new Promise<void>((r) => runtime!.listen(attentionDeliveryFakePort, '127.0.0.1', () => r()));
   server = await startServer(versionTerm, attentionDeliveryPort, {
     MUSTER_FOCUS_INTERVAL: '0',
+    // Plugins on, so the page is the TABBED Asks page: the Answered section
+    // must be on its Ask tab (asks_drafts.go). No plugin is ever created.
+    MUSTER_PLUGINS: '1',
     MUSTER_CONNECTOR_ENCRYPTION_KEY: Buffer.alloc(32, 0x4e).toString('base64'),
     MUSTER_CONNECT_PORT: String(attentionDeliveryConnectPort),
     MUSTER_AGENT_CONNECT_URL: connectURL,
@@ -128,6 +131,9 @@ test('the operator answers the chief on /attention and the chief\'s session rece
   expect(next).toContain('you do not need to wait');
 
   await page.goto(origin + '/attention');
+  await expect(page.getByRole('heading', { level: 1 })).toHaveText('Asks');
+  await expect(page.getByRole('tab', { name: 'Ask', exact: true })).toHaveAttribute('aria-selected', 'true');
+  await expect(page.getByRole('tab', { name: 'Reply drafts', exact: true })).toHaveAttribute('aria-selected', 'false');
   const item = page.locator(`#ask-${id}`);
   await expect(item.locator('[data-attention-text]')).toHaveText('Who should take task 42?');
   await Promise.all([page.waitForURL(origin + '/attention'), item.getByRole('button', { name: 'dispatch a new agent' }).click()]);
@@ -138,6 +144,12 @@ test('the operator answers the chief on /attention and the chief\'s session rece
   await expect(answered.locator('[data-attention-answer-text]')).toHaveText('Your answer: dispatch a new agent');
   await expect(answered).toHaveAttribute('data-delivery', 'delivered', { timeout: 30_000 });
   await expect(answered.locator('[data-attention-delivery]')).toHaveText('Delivered to chief as a new message in its session.');
+  // The Answered section is the Ask tab's: visible there, and hidden with it.
+  await expect(page.locator('#asks-tabs-panel-ask').locator(`#answered-${id}`)).toBeVisible();
+  await page.getByRole('tab', { name: 'Reply drafts', exact: true }).click();
+  await expect(answered).toBeHidden();
+  await expect(page.locator('#asks-drafts-pending [data-drafts-empty]')).toBeVisible();
+  await expect(page).toHaveURL(origin + '/attention?tab=drafts');
 
   // The runtime got exactly one turn carrying it, fenced.
   const carrying = turns.filter((b) => b.includes(`your owner answered attention #${id}`));

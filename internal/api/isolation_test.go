@@ -446,6 +446,7 @@ var isolationClasses = map[string]routeClass{
 	// forms name A's ask by id.
 	"GET /attention":                   classList,
 	"GET /attention/items":             classList,
+	"GET /attention/drafts":            classList,
 	"GET /attention/badge":             classList,
 	"POST /attention/asks/{id}/answer": classParam,
 	"POST /attention/asks/{id}/cancel": classParam,

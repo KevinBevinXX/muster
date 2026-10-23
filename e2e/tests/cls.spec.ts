@@ -88,6 +88,7 @@ const NOT_A_PAGE: Record<string, string> = {
   'GET /send-queue': 'an htmx partial (the queue list)',
   'GET /attention/items': 'an html partial (the attention list)',
   'GET /attention/badge': 'an htmx partial (the attention count badge)',
+  'GET /attention/drafts': 'JSON (the Asks page\'s Reply drafts lists, re-fetched live)',
   'GET /static/': 'static files',
   'GET /sw.js': 'service worker script',
   'GET /tasks/{id}/attachments/{aid}': 'a file download',
