@@ -106,6 +106,7 @@ func (s *Server) handleAgentTerminalPage(w http.ResponseWriter, r *http.Request)
 	v.Composer = &c
 	// The Terminal half of the switch, which the agent's chat opens in a frame
 	// (ui/view_swap.go).
+	v.Nav = ui.NavChrome{Feat: s.shellFeatures(r.Context())}
 	allowSameOriginFrame(w)
 	formDocument(w)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")

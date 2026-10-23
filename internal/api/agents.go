@@ -603,7 +603,7 @@ func (s *Server) cardViewIndexed(a agents.Agent, idx map[string]*provision.Insta
 		Pinned: pinned.Agent(a.ID),
 		// The agent's focus (internal/focus), read once per render by the caller.
 		Focus: focused.view(focus.AgentSubject(a.ID)),
-		// The polled badge's own answer (in memory), so "Waiting on ask" finds an
+		// The polled badge's own answer (in memory), so "Waiting on you" finds an
 		// agent blocked at a permission prompt.
 		AwaitingApproval: s.AwaitingApproval(a.ID),
 		// The pod's live work counts (agent_work.go): none unless it is running,
@@ -1329,8 +1329,18 @@ type errDestroyChief struct{ a agents.Agent }
 
 func (e errDestroyChief) Error() string { return chiefRefusal(e.a) }
 
-// destroyHooks are what a destroyAgent caller adds after the shared teardown.
+// errDestroyNotClaimed is destroyAgent's answer when the caller's claim hook
+// lost: nothing was started.
+var errDestroyNotClaimed = errors.New("the agent no longer qualifies, or another process claimed it")
+
+// destroyHooks are what a destroyAgent caller adds around the shared teardown.
 type destroyHooks struct {
+	// claim runs AFTER the chief check and BEFORE anything is started, on the
+	// caller's context. false (or an error) and nothing is torn down:
+	// destroyAgent answers errDestroyNotClaimed (or the error). nil: no claim.
+	// The stopped-agent reaper's conditional claim is the one user
+	// (agent_reap.go).
+	claim func(ctx context.Context) (bool, error)
 	// done runs in the teardown's goroutine after a SUCCESSFUL Destroy and the
 	// shared after-steps, on the same principal-keeping context. nil: nothing
 	// more.
@@ -1339,7 +1349,8 @@ type destroyHooks struct {
 
 // destroyAgent is THE agent teardown both doors take — the browser's DELETE
 // /agents/{id} (handleAgentDelete) and a mirrored session's agent_destroy
-// (agent_destroy_tool.go): the chief check, then the provisioner's Destroy in
+// (agent_destroy_tool.go) — and the stopped-agent reaper's (agent_reap.go),
+// which adds a claim: the chief check, then the provisioner's Destroy in
 // the background (instance, then the row; see agentprovision.Adapter.Destroy),
 // exactly as the browser always did. It returns the agent row the chief check
 // read (zero when the id names no agent the caller can see — the browser's
@@ -1364,6 +1375,15 @@ func (s *Server) destroyAgent(ctx context.Context, id int64, destroy func(contex
 	}
 	if chief {
 		return a, errDestroyChief{a}
+	}
+	if h.claim != nil {
+		won, err := h.claim(ctx)
+		if err != nil {
+			return a, fmt.Errorf("claim: %w", err)
+		}
+		if !won {
+			return a, errDestroyNotClaimed
+		}
 	}
 	// A destroyed pod cannot post its own clear: forget its work report now.
 	s.clearAgentWork(id)
@@ -1442,6 +1462,8 @@ func (s *Server) handleAgentDetail(w http.ResponseWriter, r *http.Request) {
 		FocusHistory: s.focusHistoryPath(focus.AgentSubject(a.ID)),
 	}
 	view.SendNotice, view.SendNoticeOK = composerNotice(r)
+	// The agent's open attention asks, answerable here (attention_asker.go).
+	view.Asks, view.AsksSrc = s.askerAsksBlock(ctx, askerRef{agent: a.Name, session: active.ID})
 	// A claude-code agent's chat is the Rendered half of its Rendered |
 	// Terminal switch, which its terminal opens in a frame (ui/view_swap.go).
 	if agents.ResolveKind(view.Kind) == agents.KindClaudeCode {

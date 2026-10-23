@@ -115,10 +115,10 @@ func (s *Server) inviteRefusal(w http.ResponseWriter, r *http.Request) bool {
 	case !s.adminPagesServed():
 		http.NotFound(w, r)
 	case !s.auth.goTrueMode():
-		s.renderNotice(w, http.StatusServiceUnavailable, "Not open yet",
+		s.renderNotice(w, r, http.StatusServiceUnavailable, "Not open yet",
 			"This muster does not use per-user sign-in yet. Ask the operator to try the link again later.")
 	case !viaBrowserListener(r):
-		s.renderNotice(w, http.StatusForbidden, "Open this link at the public address",
+		s.renderNotice(w, r, http.StatusForbidden, "Open this link at the public address",
 			"This port serves muster's machine API only. Open the link at muster's public address"+s.publicURLSuffix()+".")
 	case r.Method == http.MethodPost && !s.isSameOrigin(r):
 		s.writeJSON(w, http.StatusForbidden, map[string]any{"error": CrossOriginRefusal})
@@ -130,8 +130,8 @@ func (s *Server) inviteRefusal(w http.ResponseWriter, r *http.Request) bool {
 
 // renderInvalidInvite is the ONE page for every bad link, so it cannot be used
 // to learn which tokens exist, which are bound, or why one failed.
-func (s *Server) renderInvalidInvite(w http.ResponseWriter) {
-	s.renderNotice(w, http.StatusNotFound, "This link is invalid or expired", "Ask the person who invited you for a new link.")
+func (s *Server) renderInvalidInvite(w http.ResponseWriter, r *http.Request) {
+	s.renderNotice(w, r, http.StatusNotFound, "This link is invalid or expired", "Ask the person who invited you for a new link.")
 }
 
 // fragmentForm is the bootstrap page: its script moves the URL fragment into
@@ -257,35 +257,35 @@ func (s *Server) handleInviteSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := r.ParseForm(); err != nil {
-		s.renderInvalidInvite(w)
+		s.renderInvalidInvite(w, r)
 		return
 	}
 	ip := clientIP(r)
 	now := s.gt.now()
 	lim := &s.inviteLimits
 	if !lim.ip.take(ip, now, inviteIPWindow, inviteIPLimit) {
-		s.renderNotice(w, http.StatusTooManyRequests, "Too many attempts", "Wait a minute and try again.")
+		s.renderNotice(w, r, http.StatusTooManyRequests, "Too many attempts", "Wait a minute and try again.")
 		return
 	}
 	token := postedLinkToken(r)
 	if token == "" {
-		s.renderInvalidInvite(w)
+		s.renderInvalidInvite(w, r)
 		return
 	}
 	hash := claimHash(token)
 	inv, err := s.gt.Accounts.OpenInvite(r.Context(), hash)
 	if errors.Is(err, users.ErrInvalidInvite) {
 		// No live invite: no per-link record (only the per-address count).
-		s.renderInvalidInvite(w)
+		s.renderInvalidInvite(w, r)
 		return
 	}
 	if err != nil {
 		s.logger.Printf("invite: open: %v", err)
-		s.renderNotice(w, http.StatusInternalServerError, "Something went wrong", "Try the link again in a moment.")
+		s.renderNotice(w, r, http.StatusInternalServerError, "Something went wrong", "Try the link again in a moment.")
 		return
 	}
 	if !lim.hold.take(inv.ID, now, inviteTokenFailWindow, inviteTokenFailures) {
-		s.renderInvalidInvite(w)
+		s.renderInvalidInvite(w, r)
 		return
 	}
 	// The reserved slot is kept only by a failure (bad); every other way out
@@ -298,7 +298,7 @@ func (s *Server) handleInviteSubmit(w http.ResponseWriter, r *http.Request) {
 	}()
 	bad := func() {
 		failed = true
-		s.renderInvalidInvite(w)
+		s.renderInvalidInvite(w, r)
 	}
 	if r.FormValue("step") != "redeem" {
 		s.renderInviteForm(w, http.StatusOK, token, inv, "", "", "")
@@ -392,12 +392,12 @@ func (s *Server) signInNewLogin(w http.ResponseWriter, r *http.Request, ip, emai
 	sess, err := s.gt.Client.PasswordGrant(r.Context(), ip, email, pw)
 	if err != nil {
 		s.logger.Printf("sign-in after account setup failed: %v", err)
-		s.renderNotice(w, http.StatusBadGateway, "Your account is ready, but sign-in failed",
+		s.renderNotice(w, r, http.StatusBadGateway, "Your account is ready, but sign-in failed",
 			"Sign in with your email and new password in a moment.")
 		return
 	}
 	if _, problem, code := s.admitFreshSession(r.Context(), sess); problem != "" {
-		s.renderNotice(w, code, "Your account is ready, but sign-in failed", problem)
+		s.renderNotice(w, r, code, "Your account is ready, but sign-in failed", problem)
 		return
 	}
 	s.setGoTrueCookies(w, sess)
@@ -443,18 +443,18 @@ func (s *Server) handleResetSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := r.ParseForm(); err != nil {
-		s.renderInvalidInvite(w)
+		s.renderInvalidInvite(w, r)
 		return
 	}
 	ip := clientIP(r)
 	now := s.gt.now()
 	if !s.inviteLimits.ip.take(ip, now, inviteIPWindow, inviteIPLimit) {
-		s.renderNotice(w, http.StatusTooManyRequests, "Too many attempts", "Wait a minute and try again.")
+		s.renderNotice(w, r, http.StatusTooManyRequests, "Too many attempts", "Wait a minute and try again.")
 		return
 	}
 	token, pw, pw2 := postedLinkToken(r), r.FormValue("password"), r.FormValue("password2")
 	if token == "" {
-		s.renderInvalidInvite(w)
+		s.renderInvalidInvite(w, r)
 		return
 	}
 	if len(pw) < gotrue.MinPasswordLength || pw != pw2 {
@@ -469,25 +469,25 @@ func (s *Server) handleResetSubmit(w http.ResponseWriter, r *http.Request) {
 	}
 	sess, err := s.gt.Client.VerifyRecovery(r.Context(), ip, token)
 	if gotrue.IsClientError(err) {
-		s.renderInvalidInvite(w)
+		s.renderInvalidInvite(w, r)
 		return
 	}
 	if err != nil {
 		s.logger.Printf("reset: GoTrue /verify failed: %v", err)
-		s.renderNotice(w, http.StatusBadGateway, "Password reset is unavailable right now", "Try the link again shortly.")
+		s.renderNotice(w, r, http.StatusBadGateway, "Password reset is unavailable right now", "Try the link again shortly.")
 		return
 	}
 	c, err := s.gt.Verifier.Verify(sess.AccessToken)
 	if err != nil {
 		s.logger.Printf("reset: a token GoTrue just issued does not verify: %v", err)
-		s.renderNotice(w, http.StatusInternalServerError, "Password reset is misconfigured on this server", "Tell the operator.")
+		s.renderNotice(w, r, http.StatusInternalServerError, "Password reset is misconfigured on this server", "Tell the operator.")
 		return
 	}
 	u, err := s.gt.Users.BySub(r.Context(), c.Subject)
 	if err != nil || u.Disabled() {
 		// A recovery token for a login with no (enabled) muster account sets
 		// nothing.
-		s.renderInvalidInvite(w)
+		s.renderInvalidInvite(w, r)
 		return
 	}
 	// 🔴 THE SESSION CUTOFF MOVES FIRST, BEFORE THE PASSWORD AND BEFORE THE NEW
@@ -506,7 +506,7 @@ func (s *Server) handleResetSubmit(w http.ResponseWriter, r *http.Request) {
 		s.logger.Printf("reset: moving the session cutoff for user %d failed: %v", u.ID, err)
 		// GoTrue has already SPENT the single-use recovery token (/verify
 		// above), so the link cannot be tried again.
-		s.renderNotice(w, http.StatusInternalServerError, "The password could not be set", "Ask for a new reset link.")
+		s.renderNotice(w, r, http.StatusInternalServerError, "The password could not be set", "Ask for a new reset link.")
 		return
 	}
 	s.gt.forgetUser(u.ID)
@@ -528,7 +528,7 @@ func (s *Server) handleResetSubmit(w http.ResponseWriter, r *http.Request) {
 	// already ended, which is the safe half (TestAResetDeletesEveryPasskey).
 	if n, err := s.gt.Client.AdminDeleteAllPasskeys(r.Context(), ip, c.Subject); err != nil {
 		s.logger.Printf("reset: removing the passkeys of user %d failed after %d: %v", u.ID, n, err)
-		s.renderNotice(w, http.StatusBadGateway, "The password could not be set", "Ask for a new reset link.")
+		s.renderNotice(w, r, http.StatusBadGateway, "The password could not be set", "Ask for a new reset link.")
 		return
 	} else if n > 0 {
 		s.logger.Printf("reset: removed %d passkeys of user %d", n, u.ID)
@@ -547,7 +547,7 @@ func (s *Server) handleResetSubmit(w http.ResponseWriter, r *http.Request) {
 			return s.gt.Client.AdminSetPassword(r.Context(), ip, c.Subject, pw)
 		}); err != nil {
 		s.logger.Printf("reset: setting the password for user %d failed: %v", u.ID, err)
-		s.renderNotice(w, http.StatusBadGateway, "The password could not be set", "Ask for a new reset link.")
+		s.renderNotice(w, r, http.StatusBadGateway, "The password could not be set", "Ask for a new reset link.")
 		return
 	}
 	s.logger.Printf("reset: user %d set a new password", u.ID)
@@ -586,7 +586,7 @@ func (s *Server) signInAfterCutoff(w http.ResponseWriter, r *http.Request, ip, e
 			continue
 		}
 		if _, problem, code := s.admitFreshSession(r.Context(), sess); problem != "" {
-			s.renderNotice(w, code, "Your password is set, but sign-in failed", problem+" "+resetTokensRevoked)
+			s.renderNotice(w, r, code, "Your password is set, but sign-in failed", problem+" "+resetTokensRevoked)
 			return
 		}
 		s.setGoTrueCookies(w, sess)
@@ -595,6 +595,6 @@ func (s *Server) signInAfterCutoff(w http.ResponseWriter, r *http.Request, ip, e
 		http.Redirect(w, r, accountResetDonePath, http.StatusSeeOther)
 		return
 	}
-	s.renderNotice(w, http.StatusBadGateway, "Your password is set, but sign-in failed",
+	s.renderNotice(w, r, http.StatusBadGateway, "Your password is set, but sign-in failed",
 		"Sign in with your email and new password in a moment. "+resetTokensRevoked)
 }

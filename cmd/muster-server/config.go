@@ -108,8 +108,17 @@ const (
 	envFaroKey     = "MUSTER_FARO_API_KEY"
 	envFaroTracing = "MUSTER_FARO_TRACING"
 
+	// The operator's own hosts (ui.HostPreferences): the host tabs named
+	// first, in order, and a host's icon by its name.
+	envHostOrder = "MUSTER_HOST_ORDER"
+	envHostIcons = "MUSTER_HOST_ICONS"
+
 	envTagAutoDispatch = "MUSTER_TAG_AUTODISPATCH"
 	envTaskReapAfter   = "MUSTER_TASK_REAP_AFTER"
+	// The stopped-agent reaper (internal/api agent_reap.go): how long an agent
+	// may stay stopped before it is destroyed. A Go duration, 336h when unset,
+	// "0"/"off" turns the reaper off, refused below 1h otherwise.
+	envAgentReapStoppedAfter = "MUSTER_AGENT_REAP_STOPPED_AFTER"
 	// The send queue (internal/sendqueue): how long a target must have been idle
 	// before a queued message is sent to it. A Go duration, 30s when unset,
 	// refused outside 1s–1h.
@@ -514,8 +523,15 @@ type config struct {
 	FaroKey     string
 	FaroTracing bool
 
+	// HostPrefs is MUSTER_HOST_ORDER and MUSTER_HOST_ICONS, checked
+	// (ui.HostPreferences.Normalized); the zero value names no host.
+	HostPrefs ui.HostPreferences
+
 	TagAutoDispatch bool
 	TaskReapAfter   time.Duration
+	// AgentReapStoppedAfter is MUSTER_AGENT_REAP_STOPPED_AFTER
+	// (api.DefaultAgentReapStoppedAfter when unset; 0 = the reaper is off).
+	AgentReapStoppedAfter time.Duration
 	// SendQueueIdle is MUSTER_SEND_QUEUE_IDLE (sendqueue.DefaultIdleFor when
 	// unset).
 	SendQueueIdle time.Duration
@@ -907,6 +923,29 @@ func parsePodLabels(v string) (map[string]string, error) {
 	return out, nil
 }
 
+// parseHostIcons parses MUSTER_HOST_ICONS: a comma list of `<host>=<icon>`.
+// Which hosts and icons are allowed is ui.HostPreferences.Normalized's; this
+// refuses only an entry that is not host=icon. Empty is none.
+func parseHostIcons(v string) (map[string]string, error) {
+	out := map[string]string{}
+	for _, part := range strings.Split(v, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		host, icon, ok := strings.Cut(part, "=")
+		host, icon = strings.TrimSpace(host), strings.TrimSpace(icon)
+		if !ok || host == "" || icon == "" {
+			return nil, fmt.Errorf("entry %q is not host=icon", part)
+		}
+		if _, dup := out[strings.ToLower(host)]; dup {
+			return nil, fmt.Errorf("host %q is given two icons", host)
+		}
+		out[strings.ToLower(host)] = icon
+	}
+	return out, nil
+}
+
 // splitList parses a comma list: trimmed, lower-cased, empties dropped.
 func splitList(v string) []string {
 	var out []string
@@ -1140,6 +1179,11 @@ func loadConfig(getenv func(string) string) (config, error) {
 		}
 		c.TaskReapAfter = d
 	}
+	d, err := parseAgentReapStoppedAfter(getenv(envAgentReapStoppedAfter))
+	if err != nil {
+		return config{}, err
+	}
+	c.AgentReapStoppedAfter = d
 	c.SendQueueIdle = sendqueue.DefaultIdleFor
 	if v := strings.TrimSpace(getenv(envSendQueueIdle)); v != "" {
 		d, err := time.ParseDuration(v)
@@ -1205,6 +1249,14 @@ func loadConfig(getenv func(string) string) (config, error) {
 	}
 	c.ChiefDispatchOwners = owners
 	c.ChiefSessionRuntimes = splitList(getenv(envChiefSessionRuntimes))
+
+	icons, err := parseHostIcons(getenv(envHostIcons))
+	if err != nil {
+		return config{}, fmt.Errorf("invalid %s: %v (want <host>=<icon>, comma-separated)", envHostIcons, err)
+	}
+	if c.HostPrefs, err = (ui.HostPreferences{Order: splitList(getenv(envHostOrder)), Icons: icons}).Normalized(); err != nil {
+		return config{}, fmt.Errorf("invalid %s / %s: %v", envHostOrder, envHostIcons, err)
+	}
 
 	if v := strings.TrimSpace(getenv(envGitHubEncKey)); v != "" {
 		key, err := decodeEncryptionKey(v)
@@ -2038,3 +2090,30 @@ func imagePinned(ref string) bool {
 // osGetenv is os.Getenv as a value, so main() can hand loadConfig the real
 // environment and tests can hand it a map.
 func osGetenv(name string) string { return os.Getenv(name) }
+
+// minAgentReapStoppedAfter is the shortest stopped window accepted. The reaper
+// DESTROYS what it selects, so a value meant as days but written as minutes
+// ("14m") is refused at boot rather than destroying every stopped agent on the
+// next sweep.
+const minAgentReapStoppedAfter = time.Hour
+
+// parseAgentReapStoppedAfter reads MUSTER_AGENT_REAP_STOPPED_AFTER: unset is
+// api.DefaultAgentReapStoppedAfter, "0" or "off" is 0 (the reaper is off), and
+// anything else must be a Go duration of at least minAgentReapStoppedAfter.
+func parseAgentReapStoppedAfter(raw string) (time.Duration, error) {
+	v := strings.TrimSpace(raw)
+	switch strings.ToLower(v) {
+	case "":
+		return api.DefaultAgentReapStoppedAfter, nil
+	case "0", "off":
+		return 0, nil
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil {
+		return 0, fmt.Errorf("invalid %s %q: %w (want a Go duration, e.g. 336h, or 0/off)", envAgentReapStoppedAfter, v, err)
+	}
+	if d < minAgentReapStoppedAfter {
+		return 0, fmt.Errorf("invalid %s %q: must be at least %s (or 0/off to turn the reaper off)", envAgentReapStoppedAfter, v, minAgentReapStoppedAfter)
+	}
+	return d, nil
+}

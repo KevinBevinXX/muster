@@ -12,6 +12,7 @@ import (
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/devices"
 	"github.com/ZacxDev/muster/internal/plugins"
+	"github.com/ZacxDev/muster/internal/ui"
 )
 
 // PERSONAL API TOKENS (accounts PR 6, plan §5).
@@ -337,5 +338,5 @@ func (s *Server) renderAccountTokens(w http.ResponseWriter, r *http.Request, cod
 	b.WriteString(`</ul>
 <a href="` + accountPath + `" class="inline-flex min-h-[44px] items-center text-sm text-accent underline">Back to account</a>
 </section>`)
-	writeAuthDocument(w, code, "API tokens", b.String())
+	s.writeNavDocument(w, r, code, "API tokens", ui.NavAccount, true, b.String())
 }

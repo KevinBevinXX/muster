@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"io"
 	"log"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -36,7 +37,7 @@ func TestTheAttentionPayloadsAreWhatTheWorkerReads(t *testing.T) {
 		got = append(got, string(b))
 	}
 	want := []string{
-		`{"type":"attention","id":"ask-41","title":"An agent needs your input","body":"worker-7 is asking","tag":"attention-ask-41","data":{"url":"/attention#ask-41"}}`,
+		`{"type":"attention","id":"ask-41","title":"An agent needs your input","body":"worker-7 is asking","tag":"attention-ask-41","data":{"url":"/attention/open/ask-41"}}`,
 		`{"type":"resolved","id":"ask-41","tag":"attention-ask-41"}`,
 	}
 	if strings.Join(got, "\n") != strings.Join(want, "\n") {
@@ -71,7 +72,7 @@ func TestTheBadgeListensForTheEventTheServerSends(t *testing.T) {
 	if !strings.Contains(page.String(), "sse:"+EventAttentionChanged+" ") {
 		t.Fatalf("the badge does not listen for %q", EventAttentionChanged)
 	}
-	if !strings.Contains(attentionPageScript, "'"+EventAttentionChanged+"'") {
+	if !strings.Contains(attentionPageScript, strconv.Quote(EventAttentionChanged)) {
 		t.Fatal("the page's script does not listen for the queue's event")
 	}
 }

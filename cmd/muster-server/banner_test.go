@@ -496,6 +496,11 @@ var bannerExempt = map[string]string{
 	envFaroTracing: "browser RUM: a tracing toggle on the page agent, handed to " +
 		"ui.SetFaroConfig with the URL and the key. It changes what the BROWSER emits, and " +
 		"nothing about what this process will or will not do at boot",
+	envHostOrder: "display only: the order of the Agents list's host tabs, handed to " +
+		"ui.SetHostPreferences. No server posture changes with it, and a value it refuses " +
+		"stops the boot in loadConfig, so there is no silent refusing state to announce",
+	envHostIcons: "display only: a host's icon by its name, handed to ui.SetHostPreferences " +
+		"with MUSTER_HOST_ORDER. Same reason as MUSTER_HOST_ORDER",
 	envTagAutoDispatch: "a feature flag on the task surface (api.Extensions.TagAutoDispatch), " +
 		"not a refusal or a dependency. Nothing about the boot posture changes with it, so " +
 		"a banner line would be noise",
@@ -510,6 +515,9 @@ var bannerExempt = map[string]string{
 	envTaskReapAfter: "the reaper announces its own state with the VALUE, at the point it " +
 		"starts (internal/api/server.go: \"task reaper: sweeping every %s for tasks idle for " +
 		">%s\"), which is where a reader looking for it will be",
+	envAgentReapStoppedAfter: "the agent reaper announces its own state with the VALUE, or that it " +
+		"is off, at the point it starts (internal/api/server.go: \"agent reaper: sweeping every %s " +
+		"for agents stopped for >%s\" / \"agent reaper: off\"); a value it refuses stops the boot",
 	envRouterToken: "reported by the permission-router line, which names whichever credential " +
 		"is MISSING (missingRouterCredential). A fully configured deployment deliberately " +
 		"says nothing about it, so it cannot satisfy the both-directions rule — " +

@@ -113,6 +113,9 @@ func headerOf(t *testing.T, card string) string {
 func TestEveryListedEntryDrawsItsHostsIconBesideItsName(t *testing.T) {
 	agent := AgentCardView{ID: 4, Name: "ag-icons", Status: "running"}
 	tower := MirrorCardView{Host: "tower", Session: "main", Online: true, HostIcon: HostIconFor(map[string]int{"tower": 1}, "tower")}
+	if tower.HostIcon != hostIconSet[1].Key {
+		t.Fatalf("instrument check FAILED: tower (rank 1) draws %q, want %q", tower.HostIcon, hostIconSet[1].Key)
+	}
 	for _, c := range []struct {
 		name, html, key, host string
 	}{
@@ -148,5 +151,84 @@ func TestAMirroredPageBadgeLeadsWithItsHostsIcon(t *testing.T) {
 	got := renderString(t, mirrorBadge("Mirrored · tower", "tower", key))
 	if !strings.Contains(got, `data-host-icon="`+key+`"`) || !strings.Contains(got, hostIconSet[2].Body) {
 		t.Errorf("the badge does not draw tower's icon %q:\n%s", key, got)
+	}
+}
+
+// operatorPrefs is the operator's shape, with synthetic names: a laptop
+// named "laptop" and a server named "tower".
+var operatorPrefs = HostPreferences{Order: []string{"tower", "laptop"}, Icons: map[string]string{"laptop": "laptop", "tower": "server"}}
+
+// TestANamedHostDrawsItsOwnGlyphWhateverItsRank: the operator's ask "update the
+// laptop icon to be a laptop". With HostPreferences.Icons naming them, "laptop"
+// draws the laptop glyph and "tower" the server glyph in EVERY registration
+// order — including laptop minted after tower, where rank order alone gave the
+// laptop the server glyph (rank 1). Red before: icons went by rank alone, so
+// tower (0) drew "laptop" and laptop (1) drew "server".
+func TestANamedHostDrawsItsOwnGlyphWhateverItsRank(t *testing.T) {
+	withHostPrefs(t, operatorPrefs)
+	for name, ranks := range map[string]map[string]int{
+		"tower first":  {"tower": 0, "laptop": 1, "dock": 2},
+		"laptop first": {"laptop": 0, "tower": 1, "dock": 2},
+		"others first": {"dock": 0, "pier": 1, "tower": 2, "laptop": 3},
+		"no ranks":     nil,
+	} {
+		if got := HostIconFor(ranks, "laptop"); got != "laptop" {
+			t.Errorf("%s: host laptop draws %q, want the laptop glyph", name, got)
+		}
+		if got := HostIconFor(ranks, "tower"); got != "server" {
+			t.Errorf("%s: host tower draws %q, want the server glyph", name, got)
+		}
+		// Matched whatever the case the host spells its name in.
+		if got := HostIconFor(ranks, "Laptop"); got != "laptop" {
+			t.Errorf("%s: host Laptop draws %q, want the laptop glyph", name, got)
+		}
+	}
+	// The glyphs are the set's own drawings, not two new keys that render blank.
+	for _, k := range []string{"laptop", "server"} {
+		if d := hostIconDefOf(k, "x"); d.Key != k {
+			t.Errorf("key %q resolves to icon %q", k, d.Key)
+		}
+	}
+	// Control: with nothing named, the same ranks give the rank's icon.
+	withHostPrefs(t, HostPreferences{})
+	if got := HostIconFor(map[string]int{"tower": 0, "laptop": 1}, "laptop"); got != hostIconSet[1].Key {
+		t.Errorf("control: unnamed laptop (rank 1) draws %q, want %q", got, hostIconSet[1].Key)
+	}
+}
+
+// TestNoOtherHostDrawsANamedHostsGlyph: with glyphs named for hosts, a host
+// picked by rank, or by the hash fallback, never draws one of them (or the
+// cluster's) — so the glyph still names its host. Red before: rank 0 drew
+// "laptop" and rank 1 "server" whatever was named.
+func TestNoOtherHostDrawsANamedHostsGlyph(t *testing.T) {
+	withHostPrefs(t, operatorPrefs)
+	reserved := map[string]bool{"laptop": true, "server": true, clusterIcon.Key: true}
+	ranks, hosts := ranksOf(3 * len(hostIconSet))
+	for _, h := range hosts {
+		if k := HostIconFor(ranks, h); reserved[k] {
+			t.Errorf("host %s (rank %d) draws the reserved glyph %q", h, ranks[h], k)
+		}
+	}
+	for i := 0; i < 500; i++ {
+		h := "unranked-" + strconv.Itoa(i)
+		if k := HostIconFor(nil, h); reserved[k] {
+			t.Errorf("unranked host %s draws the reserved glyph %q", h, k)
+		}
+	}
+}
+
+// TestEveryGlyphNamedStillDrawsAnIcon: naming every glyph leaves nothing to
+// keep apart, and an unnamed host still draws an icon of the set (no division
+// by an empty set).
+func TestEveryGlyphNamedStillDrawsAnIcon(t *testing.T) {
+	all := map[string]string{}
+	for i, d := range hostIconSet {
+		all["h"+strconv.Itoa(i)] = d.Key
+	}
+	withHostPrefs(t, HostPreferences{Icons: all})
+	for _, ranks := range []map[string]int{{"other": 3}, nil} {
+		if k := HostIconFor(ranks, "other"); hostIconDefOf(k, "other").Key != k {
+			t.Errorf("an unnamed host draws %q, not an icon of the set", k)
+		}
 	}
 }

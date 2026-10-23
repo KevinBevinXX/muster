@@ -263,7 +263,7 @@ func (s *Server) passkeyAccountCreds(w http.ResponseWriter, r *http.Request) (go
 	creds, ok := gotrueCredsFrom(r.Context())
 	if !ok || !s.passkeysServed(r.Context()) {
 		if isDocumentNavigation(r) {
-			s.renderNotice(w, http.StatusNotFound, "Passkeys are not available", PasskeysOffRefusal)
+			s.renderNotice(w, r, http.StatusNotFound, "Passkeys are not available", PasskeysOffRefusal)
 		} else {
 			s.writeJSON(w, http.StatusNotFound, map[string]any{"error": PasskeysOffRefusal})
 		}
@@ -328,7 +328,7 @@ func (s *Server) renderAccountPasskeys(w http.ResponseWriter, r *http.Request, c
 	list, err := s.gt.Client.Passkeys(ctx, clientIP(r), creds.access)
 	if err != nil {
 		s.logger.Printf("passkeys: list: %v", err)
-		s.renderNotice(w, http.StatusBadGateway, "Passkeys could not be loaded", "Try again in a moment.")
+		s.renderNotice(w, r, http.StatusBadGateway, "Passkeys could not be loaded", "Try again in a moment.")
 		return
 	}
 	sort.Slice(list, func(i, j int) bool { return list[i].CreatedAt.Before(list[j].CreatedAt) })
@@ -371,7 +371,7 @@ func (s *Server) renderAccountPasskeys(w http.ResponseWriter, r *http.Request, c
 	if r.URL.Query().Get("welcome") == "1" {
 		skip = `<a href="/" class="inline-flex min-h-[44px] items-center text-sm text-accent underline" id="passkey-skip">Skip for now</a>`
 	}
-	writeAuthDocument(w, code, "Passkeys", `<section class="flex flex-col gap-4 rounded-2xl border border-line bg-s1/70 px-5 py-6 ring-1 ring-line">
+	s.writeNavDocument(w, r, code, "Passkeys", ui.NavAccount, true, `<section class="flex flex-col gap-4 rounded-2xl border border-line bg-s1/70 px-5 py-6 ring-1 ring-line">
 <h1 class="text-balance text-base font-semibold text-fg">Passkeys</h1>
 `+b.String()+`
 <p class="text-sm text-fg2" id="passkey-status" role="status" aria-live="polite"></p>

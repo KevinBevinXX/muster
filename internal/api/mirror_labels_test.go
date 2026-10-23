@@ -67,7 +67,8 @@ func TestASharedLabelIsQualifiedByItsHostOnEverySurface(t *testing.T) {
 	for _, want := range []string{
 		`<span data-mirror-label="">mango:1</span><span data-mirror-qualifier=""> · ws</span>`,
 		`<span data-mirror-label="">mango:1</span><span data-mirror-qualifier=""> · tower</span>`,
-		`<span data-mirror-label="">solo</span><span data-mirror-session=""`,
+		// Unqualified, and (on a card) with no raw session name beside it.
+		`<span data-mirror-label="">solo</span></span>`,
 		// The filter finds it by the title as shown, too.
 		`data-filter="mango:1 mango:1 · ws main ws `,
 	} {

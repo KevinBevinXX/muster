@@ -88,6 +88,17 @@ const themeHeadScript = `(function () {
   var stored = null;
   try { stored = localStorage.getItem('` + themeStorageKey + `'); } catch (e) {}
   if (stored === 'light') apply(true);
+  // Another document of this origin changed the choice — the view in the
+  // view-swap frame over this page (its own side nav has the toggle), or
+  // another tab: follow it, so the page under the frame is not left in the old
+  // theme when it comes back on screen. The browser fires this only in the
+  // documents that did NOT write.
+  window.addEventListener('storage', function (e) {
+    if (e.key !== null && e.key !== '` + themeStorageKey + `') return;
+    var v = null;
+    try { v = localStorage.getItem('` + themeStorageKey + `'); } catch (x) {}
+    apply(v === 'light');
+  });
   // The toggle buttons render after this script, so re-sync their pressed state
   // once the document exists.
   document.addEventListener('DOMContentLoaded', function () { apply(window.musterIsLight()); });

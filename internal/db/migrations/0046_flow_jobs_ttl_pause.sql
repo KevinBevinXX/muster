@@ -1,4 +1,4 @@
--- muster 0044 — A QUEUED FLOW JOB'S TTL DOES NOT RUN WHILE IT IS BLOCKED.
+-- muster 0046 — A QUEUED FLOW JOB'S TTL DOES NOT RUN WHILE IT IS BLOCKED.
 --
 -- Applies after 0043 (connector standing grants); it was numbered 0043 while
 -- that was still in review, and was renumbered when it merged first.

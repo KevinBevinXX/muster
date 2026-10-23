@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	g "maragu.dev/gomponents"
 	. "maragu.dev/gomponents/html"
@@ -178,61 +179,58 @@ func cardActivityAttrs(now, t time.Time) g.Node {
 }
 
 // ---------------------------------------------------------------------------
-// WAITING: what the card is blocked on the operator for, from its attention
+// WAITING: whether the card is blocked on the operator, from its attention
 // badge (CardAttention, composed in internal/api from the attention queue's
-// ONE read — never re-derived here). Two words, written into `data-wait`:
+// ONE read — never re-derived here). One word, written into `data-wait`:
 //
-//	ask       muster's attention_ask (the queue's "Question" row): a dispatched
-//	          agent or a mirrored Claude session called attention_ask and is
-//	          waiting for your answer — OR a mirrored Claude Code session is
-//	          stopped at a prompt (status "waiting": a permission prompt, the
-//	          session ASKING to go on; the queue's "Session waiting").
-//	question  Claude Code's own AskUserQuestion picker, held open by a mirrored
-//	          session (the queue's "Session question"): it is asking YOU a
-//	          question with options, answered in the session.
+//	you   it is waiting on YOU, any of:
+//	      - muster's attention_ask (the queue's "Question" row): a dispatched
+//	        agent or a mirrored Claude session called attention_ask and is
+//	        waiting for your answer;
+//	      - a mirrored Claude Code session stopped at a prompt (status
+//	        "waiting": a permission prompt, the session ASKING to go on; the
+//	        queue's "Session waiting");
+//	      - Claude Code's own AskUserQuestion picker, held open by a mirrored
+//	        session (the queue's "Session question");
+//	      - a dispatched agent blocked at a permission prompt (the "awaiting
+//	        approval" badge, AgentCardView.AwaitingApproval) — not an attention
+//	        item, but the same kind of block as a mirrored session's prompt.
 //
-// A dispatched agent blocked at a permission prompt (the "awaiting approval"
-// badge, AgentCardView.AwaitingApproval) is an ask too — the same kind of
-// block as a mirrored session's prompt — though it is not an attention item.
-// A reply draft (kind "plugin") is neither: nothing is blocked on it.
+// These were two words ("ask", "question") behind two chips until an operator
+// ask merged the chips: whichever way a card asks, it is waiting on you.
+// A reply draft (kind "plugin") is not: nothing is blocked on it.
 
 // waitKinds maps each attention kind a card can count to the wait word it
 // files under ("" = none).
 var waitKinds = map[string]string{
-	"ask":      "ask",
-	"session":  "ask",
-	"question": "question",
+	"ask":      "you",
+	"session":  "you",
+	"question": "you",
 	"plugin":   "",
 }
 
-// waitTokens is a card's `data-wait`: the wait words of its attention items'
-// kinds — and "ask" for an agent awaiting approval — in a fixed order ("ask
-// question"), "" for none.
+// waitTokens is a card's `data-wait`: "you" when any of its attention items'
+// kinds files under it, or the agent is awaiting approval; "" for none.
 func waitTokens(a *CardAttention, awaitingApproval bool) string {
-	has := map[string]bool{"ask": awaitingApproval}
+	if awaitingApproval {
+		return "you"
+	}
 	if a != nil && a.Count > 0 {
 		for _, k := range a.Kinds {
 			if w := waitKinds[k]; w != "" {
-				has[w] = true
+				return w
 			}
 		}
 	}
-	var out []string
-	for _, w := range []string{"ask", "question"} {
-		if has[w] {
-			out = append(out, w)
-		}
-	}
-	return strings.Join(out, " ")
+	return ""
 }
 
 // ---------------------------------------------------------------------------
 // THE FILTER CHIPS: presets above the list.
 //
 // SEMANTICS, stated once: the chips are ORed — a card is shown when it
-// matches ANY chosen chip (the operator's own words: "waiting on an ask,
-// waiting on a user question, OR have been idle for a certain period"). The
-// idle chips are exclusive with each other (choosing one clears the others:
+// matches ANY chosen chip ("waiting on you, OR have been idle for a certain
+// period"). The idle chips are exclusive with each other (choosing one clears the others:
 // they are nested thresholds, so two ORed would just be the smaller). No chip
 // chosen: no filter. The chips as a whole AND with the search box and the host
 // tab, like any other term.
@@ -250,11 +248,25 @@ type listChip struct {
 }
 
 var listChips = []listChip{
-	{"ask", "Waiting on ask", "An agent or a session asked you something with attention_ask, or a Claude Code session or a dispatched agent is stopped at a permission prompt", "wait", "ask"},
-	{"question", "Waiting on question", "A Claude Code session is holding an AskUserQuestion picker open for you", "wait", "question"},
+	{"waiting", "Waiting on you", "An agent or a session asked you something (attention_ask or an AskUserQuestion picker), or a Claude Code session or a dispatched agent is stopped at a permission prompt", "wait", "you"},
 	{"idle-15m", "Idle >15m", "No activity for more than 15 minutes", "idle", "15m"},
 	{"idle-1h", "Idle >1h", "No activity for more than an hour", "idle", "1h"},
 	{"idle-1d", "Idle >1d", "No activity for more than a day", "idle", "1d"},
+}
+
+// chipAliases maps a chip id this device may still have stored from before
+// (localStorage, agentsChipsStorageKey) to the chip that replaced it: the
+// "Waiting on ask" and "Waiting on question" chips became "Waiting on you",
+// so a remembered selection of either is that chip, not dropped.
+var chipAliases = map[string]string{
+	"ask":      "waiting",
+	"question": "waiting",
+}
+
+// chipAliasesJSON is chipAliases for the script (chipsOf).
+func chipAliasesJSON() string {
+	b, _ := json.Marshal(chipAliases)
+	return string(b)
 }
 
 // chipByID is the chip with that id.
@@ -391,15 +403,67 @@ func agentsFilterChips() g.Node {
 // cardTitleMax is the most characters (runes) of a title a card draws.
 const cardTitleMax = 60
 
-// clampTitle is s as a card draws it: whole when it fits, else its first
-// cardTitleMax runes (trailing space trimmed) and true.
+// clampTitle is s as a card (and the agent page header) draws it: whole when
+// it fits, else at most its first cardTitleMax runes (trailing space trimmed)
+// and true.
+//
+// The cut is moved BACK to a grapheme-cluster boundary (graphemeJoins), so a
+// clamp never ends on half of what a reader sees as one character: a family
+// emoji (ZWJ sequence), a flag (regional-indicator pair), a letter with a
+// combining accent, a skin-tone or variation-selector modifier.
 func clampTitle(s string) (string, bool) {
 	r := []rune(s)
 	if len(r) <= cardTitleMax {
 		return s, false
 	}
-	return strings.TrimRight(string(r[:cardTitleMax]), " \t"), true
+	n := cardTitleMax
+	for n > 0 && graphemeJoins(r, n) {
+		n--
+	}
+	if n == 0 { // one cluster longer than the budget: cut it rather than draw nothing
+		n = cardTitleMax
+	}
+	return strings.TrimRight(string(r[:n]), " \t"), true
 }
+
+// graphemeJoins reports whether r[n-1] and r[n] belong to ONE extended
+// grapheme cluster, so a cut between them would split it. It covers the
+// clusters a title realistically carries — Extend/SpacingMark (combining
+// marks, variation selectors, emoji modifiers, tag characters), ZWJ
+// sequences and regional-indicator pairs — not the whole of UAX #29 (no
+// Hangul jamo or Prepend rules), which would need a dependency this module
+// does not have.
+func graphemeJoins(r []rune, n int) bool {
+	a, b := r[n-1], r[n]
+	if graphemeExtends(b) || a == '\u200d' {
+		return true
+	}
+	if isRegionalIndicator(a) && isRegionalIndicator(b) {
+		// Pairs are counted from the start of the run: the cut splits a flag
+		// when an ODD number of indicators precede it.
+		k := 0
+		for i := n - 1; i >= 0 && isRegionalIndicator(r[i]); i-- {
+			k++
+		}
+		return k%2 == 1
+	}
+	return false
+}
+
+// graphemeExtends is a rune that attaches to the one before it.
+func graphemeExtends(c rune) bool {
+	switch {
+	case c == '\u200d', // ZWJ
+		c >= 0xFE00 && c <= 0xFE0F, // variation selectors
+		c >= 0xE0100 && c <= 0xE01EF,
+		c >= 0x1F3FB && c <= 0x1F3FF, // emoji skin-tone modifiers
+		c >= 0xE0020 && c <= 0xE007F: // tag characters (subdivision flags)
+		return true
+	}
+	return unicode.In(c, unicode.Mn, unicode.Me, unicode.Mc)
+}
+
+func isRegionalIndicator(c rune) bool { return c >= 0x1F1E6 && c <= 0x1F1FF }
 
 // cardTitleRow is a card's title row: heading(short) — the title clamped by
 // clampTitle, drawn by the caller (a link to the card for a name, the popover
@@ -417,18 +481,49 @@ func cardTitleRow(slot, pop, full, pad, reserve string, heading func(short strin
 		cardSlot(slot),
 		Class("flex items-start gap-0.5 px-4 "+pad+" "+reserve),
 		heading(short),
-		g.If(clamped, Button(
-			Type("button"),
-			g.Attr("data-title-more", ""),
-			g.Attr("popovertarget", pop),
-			g.Attr("aria-haspopup", "dialog"),
-			g.Attr("aria-controls", pop),
-			g.Attr("aria-expanded", "false"),
-			g.Attr("aria-label", "Show the full title"),
-			Class("press -my-1.5 inline-flex h-11 min-w-[44px] shrink-0 items-start justify-center rounded-lg pt-1.5 text-base font-semibold leading-tight text-muted transition hover:bg-s2 hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus aria-expanded:bg-s2"),
-			g.Text("…"),
-		)),
+		g.If(clamped, titleMoreButton(pop, "-my-1.5 items-start pt-1.5 text-base")),
 		popover,
+	)
+}
+
+// titleMoreButton is THE "…" control that opens a clamped title's popover —
+// the cards' (cardTitleRow) and the agent page header's (agentTitle). fit is
+// only how it sits in its row (a card's top-aligned title row vs the header's
+// centred one); the control, its name and its ARIA are the same everywhere.
+//
+// extra is appended to the button (the agent header passes `hidden` while its
+// title is not clipped; see agentTitleFitScript).
+func titleMoreButton(pop, fit string, extra ...g.Node) g.Node {
+	return Button(
+		Type("button"),
+		g.Group(extra),
+		g.Attr("data-title-more", ""),
+		g.Attr("popovertarget", pop),
+		g.Attr("aria-haspopup", "dialog"),
+		g.Attr("aria-controls", pop),
+		g.Attr("aria-expanded", "false"),
+		g.Attr("aria-label", "Show the full title"),
+		Class("press inline-flex h-11 min-w-[44px] shrink-0 justify-center rounded-lg font-semibold leading-tight text-muted transition hover:bg-s2 hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus aria-expanded:bg-s2 "+fit),
+		g.Text("…"),
+	)
+}
+
+// fullTitlePopover is THE popover holding a clamped title whole: a native
+// popover="auto" (top layer; an outside tap or Escape closes it) placed by
+// floatingMenuScript ([data-floating-menu]). The text wraps anywhere — a
+// 600-character token with no break opportunity included — and a title too
+// long for the viewport scrolls inside the panel instead of running off it
+// (floatingMenuScript's place() sets the height cap, from the viewport).
+func fullTitlePopover(pop, full string) g.Node {
+	return Div(
+		ID(pop),
+		g.Attr("popover", "auto"),
+		g.Attr("role", "dialog"),
+		g.Attr("aria-label", "Full title"),
+		g.Attr("data-floating-menu", ""),
+		g.Attr("data-title-full", ""),
+		Class("invisible hidden [&:popover-open]:flex m-0 w-72 max-w-[calc(100vw-16px)] overflow-y-auto overscroll-contain flex-col gap-1.5 rounded-xl border border-line bg-s1 p-3 text-fg shadow-2xl ring-1 ring-black/20"),
+		Span(Class("[overflow-wrap:anywhere] text-sm font-semibold"), g.Text(full)),
 	)
 }
 
@@ -457,16 +552,7 @@ func cardLongTitle(cardID, href, full string, subtitle bool, reserve string, ext
 				g.Group(extra),
 			)
 		},
-		Div(
-			ID(pop),
-			g.Attr("popover", "auto"),
-			g.Attr("role", "dialog"),
-			g.Attr("aria-label", "Full title"),
-			g.Attr("data-floating-menu", ""),
-			g.Attr("data-title-full", ""),
-			Class("invisible hidden [&:popover-open]:flex m-0 w-72 max-w-[calc(100vw-16px)] flex-col gap-1.5 rounded-xl border border-line bg-s1 p-3 text-fg shadow-2xl ring-1 ring-black/20"),
-			Span(Class("break-words text-sm font-semibold"), g.Text(full)),
-		))
+		fullTitlePopover(pop, full))
 }
 
 // titledBodyClass is the nav anchor's box under a title row: like a focus

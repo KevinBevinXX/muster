@@ -743,7 +743,17 @@ func header(push bool) g.Node {
 // shared by the home shell header() and the agent-detail / operator headers so
 // every page carries the same #sidebar-open that appScript's initPage binds.
 // Hidden on desktop (lg) where the sidebar is always visible.
-func sidebarOpenButton() g.Node {
+func sidebarOpenButton() g.Node { return navOpenButton(false) }
+
+// overlayOpenButton is the hamburger of a page whose sidebar is an overlay at
+// every width (sidebarIn's overlay): the same #sidebar-open, never hidden.
+func overlayOpenButton() g.Node { return navOpenButton(true) }
+
+func navOpenButton(overlay bool) g.Node {
+	display := " lg:hidden"
+	if overlay {
+		display = ""
+	}
 	return Button(
 		ID("sidebar-open"),
 		Type("button"),
@@ -754,7 +764,7 @@ func sidebarOpenButton() g.Node {
 		// audit). Only
 		// the hit area grows — the icon stays h-5 w-5 — so the compact top bar's
 		// layout is unchanged apart from the button box.
-		Class("press -ml-1 inline-flex h-11 w-11 min-h-[44px] min-w-[44px] items-center justify-center rounded-lg text-fg2 transition hover:bg-s2 hover:text-fg lg:hidden"),
+		Class("press -ml-1 inline-flex h-11 w-11 min-h-[44px] min-w-[44px] shrink-0 items-center justify-center rounded-lg text-fg2 transition hover:bg-s2 hover:text-fg"+display),
 		g.Raw(`<svg class="h-5 w-5" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M3 5h14M3 10h14M3 15h14"/></svg>`),
 	)
 }
@@ -897,9 +907,28 @@ func jsonString(s string) string {
 // Pinned by TestSidebarMarksExactlyOneCurrentPage and
 // TestOffShellPagesClaimNoCurrentPage.
 func sidebar(activeTab, currentTab string, hasPanels bool, feat Features) g.Node {
+	return sidebarIn(activeTab, currentTab, hasPanels, feat, false)
+}
+
+// sidebarIn is sidebar with its desktop behaviour chosen.
+//
+// overlay=false is the ordinary page: at lg+ the panel is a persistent rail
+// beside a content column offset by lg:pl-72 (input.css). overlay=true keeps it
+// a slide-out at EVERY width (data-overlay, which input.css's lg rule excludes)
+// with a hamburger that is never hidden (overlayOpenButton). It is for the
+// full-height views — the mirrored Rendered view and the terminal — whose
+// layout is sized to the window: a rail there would take 18rem from a terminal
+// whose width is the far side's geometry, and from a composer pinned to the
+// visible viewport's edges. As an overlay nothing on those pages moves.
+//
+// activeTab / currentTab may also name a non-tab entry (NavAttention,
+// NavAccount, NavAdmin): the tab links then match nothing and that entry is
+// the one marked.
+func sidebarIn(activeTab, currentTab string, hasPanels bool, feat Features, overlay bool) g.Node {
 	return Div(
 		ID("sidebar-root"),
 		g.Attr("data-open", "false"),
+		g.If(overlay, g.Attr("data-overlay", "")),
 		// Backdrop: fades in when open, click closes.
 		Div(
 			ID("sidebar-backdrop"),
@@ -975,7 +1004,7 @@ func sidebar(activeTab, currentTab string, hasPanels bool, feat Features) g.Node
 					return sidebarTab(t.Key, t.Label, t.Icon, activeTab == t.Key, currentTab == t.Key, hasPanels)
 				}),
 				// The attention queue (attention.go): a standalone page, not a tab.
-				attentionLink(feat),
+				attentionLink(feat, activeTab == NavAttention, currentTab == NavAttention),
 			),
 			// Device preferences, pinned to the bottom of the panel and clear of
 			// the home indicator. They are per-device (localStorage), so they live
@@ -985,7 +1014,7 @@ func sidebar(activeTab, currentTab string, hasPanels bool, feat Features) g.Node
 				Class("mt-auto flex flex-col gap-1 border-t border-line p-2 pb-[calc(0.5rem+env(safe-area-inset-bottom))]"),
 				installButton(),
 				themeToggle(),
-				accountLinks(feat),
+				accountLinks(feat, activeTab, currentTab),
 			),
 		),
 	)
@@ -995,16 +1024,32 @@ func sidebar(activeTab, currentTab string, hasPanels bool, feat Features) g.Node
 // everywhere) and, for an admin, to the admin pages (accounts PR 5). Both are
 // standalone documents outside the shell, so the links opt out of boost: a
 // full navigation, never a body swap of a document that has no panels.
-func accountLinks(feat Features) g.Node {
-	link := func(id, href, label, icon string) g.Node {
+//
+// activeTab / currentTab are sidebar's: the Admin link is the one marked on an
+// admin page (NavAdmin), Account on the account pages (NavAccount).
+func accountLinks(feat Features, activeTab, currentTab string) g.Node {
+	link := func(id, href, label, icon, entry string) g.Node {
 		return A(ID(id), Href(href), hx("hx-boost", "false"),
-			Class("press flex min-h-[44px] w-full items-center gap-3 rounded-lg px-3 text-left text-sm font-medium text-fg2 transition hover:bg-s2 hover:text-fg"),
+			g.If(currentTab == entry, g.Attr("aria-current", "page")),
+			Class("press flex min-h-[44px] w-full items-center gap-3 rounded-lg px-3 text-left text-sm font-medium transition "+navEntryTone(activeTab == entry)),
 			Span(Class("text-base"), g.Text(icon)), Span(g.Text(label)))
 	}
 	return g.Group([]g.Node{
-		g.If(feat.Admin, link("sidebar-admin", "/admin/users", "Admin", "🛡️")),
-		link("sidebar-account", "/account", "Account", "👤"),
+		g.If(feat.Admin, link("sidebar-admin", "/admin/users", "Admin", "🛡️", NavAdmin)),
+		link("sidebar-account", "/account", "Account", "👤", NavAccount),
 	})
+}
+
+// navEntryTone is a nav link's colour: the accent highlight for the entry the
+// page belongs to, the quiet tone for every other. sidebarTab and the
+// non-tab entries (attentionLink, accountLinks) all take it from here, so the
+// one highlighted entry looks the same whichever kind it is — and appScript's
+// show() toggles exactly these classes on the tab links.
+func navEntryTone(active bool) string {
+	if active {
+		return "bg-accent/15 text-fg ring-1 ring-inset ring-accent/30"
+	}
+	return "text-fg2 hover:bg-s2 hover:text-fg"
 }
 
 // pathForTab maps a tab key to its SPA route, "/<tab>". ("/" also SERVES the
@@ -1048,10 +1093,7 @@ func pathForTab(key string) string { return "/" + normalizeTab(key) }
 // Verified correct (one extra request, arguably fresher content).
 func sidebarTab(tab, label, icon string, active, current, hasPanels bool) g.Node {
 	base := "sidebar-tab press flex items-center gap-3 rounded-lg px-3 py-2.5 text-left text-sm font-medium transition"
-	tone := "text-fg2 hover:bg-s2 hover:text-fg"
-	if active {
-		tone = "bg-accent/15 text-fg ring-1 ring-inset ring-accent/30"
-	}
+	tone := navEntryTone(active)
 	return A(
 		Href(pathForTab(tab)),
 		g.Attr("data-tab", tab),
@@ -1435,6 +1477,18 @@ func appScript(feat Features) g.Node {
       if (!e.detail || !e.detail.xhr || e.detail.xhr.status !== 401) return;
       e.detail.shouldSwap = false;
       e.detail.isError = false;
+      // 🔴 IN THE VIEW SWAP'S FRAME, THE TOP WINDOW RELOADS. The frame is the
+      // other view laid over the page; reloading only the frame would put the
+      // sign-in (or a refusal) inside it, and the page under it — whose
+      // session expired too — would still be there. The top window's address
+      // is the view on screen (view_swap.go keeps it so), so its reload is
+      // that view, signed out: the sign-in, at the top, with ?next= back.
+      try {
+        if (window.top !== window && window.top.location.origin === window.location.origin) {
+          window.top.location.reload();
+          return;
+        }
+      } catch (x) {}
       window.location.reload();
     });
   }
@@ -1542,9 +1596,22 @@ func appScript(feat Features) g.Node {
   // was painted aria-current on Agents by Go and then had it MOVED onto
   // "Claude Code requests" by this reconcile, naming a link that is neither the
   // page nor the highlight.
+  //
+  // 🔴 A DOCUMENT WITH NO PANELS ON A PATH NO TAB NAMES IS LEFT AS THE SERVER
+  // PAINTED IT. /attention, /account, /plugins, the mirrored views: each marks
+  // its own entry (or none) on first paint, and there is no panel here to
+  // reconcile — so the DEFAULT_TAB fallback above would only move the accent
+  // onto Tasks, beside the entry the page really belongs to.
   function showForPath() {
     var t = tabFromPath(location.pathname);
+    if (!t && !anyPanel()) return;
     show(t || DEFAULT_TAB, t !== '');
+  }
+  function anyPanel() {
+    for (var i = 0; i < TABS.length; i++) {
+      if (document.getElementById('panel-' + TABS[i])) return true;
+    }
+    return false;
   }
   // Every tab's path is /<key>, as Go's pathForTab. '/' also SHOWS the default
   // tab, but no tab's link points at it, so nothing here returns it.

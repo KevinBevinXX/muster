@@ -5,8 +5,9 @@ to ask you something and wait for the answer instead of stopping.
 
 ## What is in it
 
-`/attention` (the **Attention** link in the menu, with a live count) lists,
-**newest first** across every kind — by when each item started waiting (an
+`/attention` — the **Asks** page (the **Asks** link in the menu, with a live
+count of everything below, pending reply drafts included) — lists on its
+**Ask** tab, **newest first** across every kind — by when each item started waiting (an
 ask's or a draft's creation, a session's own status time, a held question's
 creation), ties broken by the item's key:
 
@@ -16,7 +17,40 @@ creation), ties broken by the item's key:
 | Session waiting | A mirrored Claude Code **or Hermes** window whose session reports `waiting` (a permission prompt, a question; for Hermes an approval, a clarify question or a sudo password). Shown with **what it waits on** (below), its focus title, its window @ host and its age. | The mirror hub's live window list; nothing is stored. | **Open the session** (the rendered view). A Hermes **approval** on a host with `-hermes-answer` also offers **Allow once** / **Deny**, answered through Hermes's gateway ([mirroring.md](mirroring.md)). It leaves the list when the session stops waiting. |
 | Session question | A mirrored session's `AskUserQuestion`, registered by the `muster-mirror ask` hook and shown in the terminal and the rendered view at once. | The open question (`internal/askq`), live; it leaves the queue once answered in either place, dismissed, replaced by a newer question, or its session is gone. Such a window is this ONE item — its question, or, when it asks several, each one's first line, numbered — never also "Session waiting". | **Answer in the session**: the rendered view, where the question card is. |
 | Task to route | A plugin handed a task to your chief ([task routing](plugins.md#routing-a-task-to-the-chief)) and the chief has not routed it: there is no chief, it is not running or busy, or it took the event and did not act. Shown as the task's number and title. | `plugin_messages` task events with no routing or start recorded for their task at or after the event's latest delivery attempt, or its creation if it has had none (audit rows), whose task is not complete or dismissed; nothing is copied. | **Open the task**. It leaves the list when the chief routes the task or starts an agent on it, or the task is complete or dismissed. No notification of its own: the task's "New task" push already went. |
-| Reply draft | Your chief drafted a reply to a plugin message. Shown as the message's sender and its first 160 characters, and the draft reply's first 160. | `plugin_reply_drafts`, pending ones; nothing is copied. | **Review the draft** on `/plugins`. |
+| Reply draft | Your chief drafted a reply to a plugin message. Shown as the message's sender and its first 160 characters, and the draft reply's first 160. | `plugin_reply_drafts`, pending ones; nothing is copied. | Not on the Ask tab: with [plugins](plugins.md) on, the page has a second tab, **Reply drafts** (below), whose label carries the count ("Reply drafts (2)"). The draft is still in the badge's count, its push and `attention_list`. |
+
+### The Reply drafts tab
+
+With plugins on, the page has two tabs, **Ask** (the table above and the
+**Answered** section) and **Reply drafts**, which has two views of its own:
+
+- **Awaiting decision** — each pending draft's card: the message it answers
+  (untrusted, escaped) and the exact text that would be sent, with **Approve
+  and send** (it needs a sign-in from the last few minutes, asked for in place)
+  and **Reject**.
+- **Archived** — every draft that is no longer pending, moved here the moment
+  you approve or reject it, or it is replaced by a newer draft or expires. Each
+  shows its live status: approved and waiting for the plugin to collect it,
+  collected and being sent, sent, failed, unconfirmed, rejected, superseded or
+  expired. An approval the plugin has not collected yet keeps **Withdraw the
+  approval**. The status follows the plugin's claim and result without a
+  reload. Nothing is stored for "archived": it is simply "not pending". It
+  shows the 50 most recent; a decision lands on its card
+  (`/attention?tab=archived&draft=<id>#draft-<id>`), which is drawn first
+  even when it is older than those.
+
+**What you approve is what you saw.** The Awaiting decision list is never
+re-drawn under you when the set of drafts in it changes (a newer draft
+replaces one, a new one arrives): the cards you are reading stay, and a line
+says *Drafts changed since you opened this list* with **Show the latest**.
+Approving a card that was replaced meanwhile is refused, never turned into an
+approval of its replacement.
+
+The tab is in the URL — `/attention?tab=drafts` and `/attention?tab=archived` —
+so a link, a reload and the draft's notification (`/attention?tab=drafts#draft-<id>`)
+open the right one; a `#draft-<id>` fragment opens whichever view holds that
+card. The page stays at `/attention`, so every existing `/attention#<key>` link
+still lands. An old `/plugins#draft-<id>` link is sent on to the Asks page.
 
 **What a waiting session waits on** is read by its host's `muster-mirror`
 from the session's own transcript (muster holds none): the last tool call since
@@ -58,7 +92,26 @@ waiting. **A notification says WHO and WHERE, never WHAT** — a lock screen sho
 it to anyone holding the phone: `<asker> is asking` for a question, `Waiting:
 <tool name> · <window> @ <host>` for a session (no command, path or URL). The
 question, the command and the message are on the page. Each item has one tag, so a
-notification is replaced, never stacked. A session is not re-notified:
+notification is replaced, never stacked. **A tap opens the item's session**
+when it has one, on the browser and the paired phone alike, decided when you
+tap, not when it was sent (the notification opens `/attention/open/<key>`,
+which resolves it then — a window that closed, an agent that was destroyed or
+an ask answered meanwhile opens its item on `/attention` instead of a dead
+page): a waiting window or
+a held question opens that window's rendered view; a dispatched agent's question
+opens the agent's page (`/agents/<name>`); a mirrored Claude session's question
+opens the window running that session, found when the notification is sent.
+Everything else opens its item on `/attention`: a question muster raised itself,
+a Hermes window that names no conversation, an asking agent that cannot be read,
+and an asking session no listed window runs at that moment
+(`internal/api/attention_push_target.go`, the one rule). **The session's page
+shows the asker's open questions with the same answer form as `/attention`**
+(its option buttons — a chief's task actions included — free text, Dismiss): an
+agent's page lists that agent's open asks, a window's rendered view the asks of
+the Claude sessions it runs, never another asker's. Answering there sends you
+back to that page; the list follows the queue live (an ask answered anywhere
+leaves it, a new one arrives, never replacing an answer you are typing)
+(`internal/api/attention_asker.go`). A session is not re-notified:
 
 - when muster restarts or a host reconnects: the first time this process sees
   a host — and again each time it comes back after disconnecting — its

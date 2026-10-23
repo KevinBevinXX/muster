@@ -391,7 +391,7 @@ func (s *Server) ledgerControlNarrow() {
 			"about that shape", controls)
 	}
 	sort.Strings(names)
-	if got, want := strings.Join(names, ","), "dismissTask,handleAgentDelete,replaceChief,toolAgentDestroy"; got != want {
+	if got, want := strings.Join(names, ","), "dismissTask,handleAgentDelete,reapStoppedAgents,replaceChief,toolAgentDestroy"; got != want {
 		t.Fatalf("declarations that can reach the provisioner's Destroy = %s, want %s — a destroy "+
 			"path was added or removed; guard it with agentIsChief and add its route to the tests above", got, want)
 	}

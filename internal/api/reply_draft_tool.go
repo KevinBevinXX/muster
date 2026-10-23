@@ -84,7 +84,7 @@ func (s *Server) toolReplyDraft(ctx context.Context, a agents.Agent, arguments s
 	})
 }
 
-// draftCardAnchor is a draft card's fragment on /plugins: the push deep link.
+// draftCardAnchor is a draft card's fragment on the Asks page (draftLink).
 func draftCardAnchor(id int64) string { return "draft-" + strconv.FormatInt(id, 10) }
 
 // notifyDraftAwaiting pushes the `plugin` event to the draft's owner.
@@ -109,7 +109,7 @@ func (s *Server) notifyDraftAwaiting(ctx context.Context, owner int64, d plugins
 		Title: DraftPushTitle,
 		Body:  draftPushBody(m, label),
 		Tag:   "plugin-draft-" + id,
-		Data:  map[string]string{"url": pluginsPath + "#" + draftCardAnchor(d.ID)},
+		Data:  map[string]string{"url": draftLink(d.ID)},
 	}, nil)
 }
 

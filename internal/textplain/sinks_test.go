@@ -65,6 +65,8 @@ var apiTitleNames = map[string]bool{"Source": true, "Focus": true}
 // checked below to call Title (or another helper in this set).
 var plainingHelpers = map[string]bool{
 	"mirrorEntryTitle":    true,
+	"mirrorCardTitle":     true,
+	"entryTitle":          true,
 	"mirrorSessionTitle":  true,
 	"mirrorTerminalTitle": true,
 }
@@ -74,6 +76,8 @@ var plainingHelpers = map[string]bool{
 // class) are drawn as written. checkPlainingHelpers holds each helper to it.
 var helperNameArgs = map[string][]int{
 	"mirrorEntryTitle":    {0, 1}, // label, title
+	"mirrorCardTitle":     {0, 1}, // label, title
+	"entryTitle":          {0, 1}, // label, title
 	"mirrorSessionTitle":  {0},    // label
 	"mirrorTerminalTitle": {0},    // title
 	"plainOr":             {0},    // s (the fallback is drawn as written)
@@ -85,14 +89,13 @@ type exemption struct {
 }
 
 const (
-	whyFilter    = "filter haystack / rank key: matched against what the user types, never drawn"
-	whyForm      = "edit form value: the raw stored title, edited as written"
-	whyStatic    = "a fixed UI label (tab, status, preset, model, runtime, quick key, chip), never author text"
-	whyPredicate = "a predicate on the raw value (which subtitle to draw), not a display"
-	whyAccessor  = "the accessor itself; every display caller applies Title to its result"
-	whyOption    = "an answer option: submitted verbatim as the answer, so shown verbatim"
-	whyDispatch  = "a query parameter into the dispatch form; DispatchModalTaskBody applies Title at emit"
-	whyPerson    = "a person's (user account's) display name, not a title"
+	whyFilter   = "filter haystack / rank key: matched against what the user types, never drawn"
+	whyForm     = "edit form value: the raw stored title, edited as written"
+	whyStatic   = "a fixed UI label (tab, status, preset, model, runtime, quick key, chip), never author text"
+	whyAccessor = "the accessor itself; every display caller applies Title to its result"
+	whyOption   = "an answer option: submitted verbatim as the answer, so shown verbatim"
+	whyDispatch = "a query parameter into the dispatch form; DispatchModalTaskBody applies Title at emit"
+	whyPerson   = "a person's (user account's) display name, not a title"
 )
 
 // uiExempt: "file func expr" → exemption.
@@ -103,9 +106,10 @@ var uiExempt = map[string]exemption{
 	"subagent_cards.go subagentCallOf in.Description":  {1, "a subagent call's input, copied into the view model; drawn by subagentSummary"},
 	"subagent_cards.go subagentSummary s.Description":  {2, "a subagent's tool-call description, shown as Claude Code wrote it, like the transcript row it summarises"},
 	"terminal.go AgentTerminalPage v.DisplayName":      {1, "the raw name, plained once into the <title> and once (inside the plaining helper mirrorTerminalTitle) into the header — never twice (\"applied once\")"},
-	"agents.go agentCard a.DisplayName":                {1, whyFilter},
-	"mirror.go mirrorCard m.Label":                     {4, whyFilter + "; and " + whyPredicate},
-	"mirror.go mirrorCard m.Title":                     {2, whyFilter},
+	"agents.go agentListAttrs a.DisplayName":           {1, whyFilter},
+	"mirror.go mirrorListAttrs m.Label":                {2, whyFilter},
+	"mirror.go mirrorListAttrs m.Title":                {2, whyFilter},
+	"pinned_chips.go pinnedChipName m.Label":           {2, "a presence/equality test (is there a codename that is not the session name?); the label the chip draws goes through plainOr"},
 	"agents.go agentFields a.DisplayName":              {2, whyFilter},
 	"agents.go agentRenameForm a.DisplayName":          {1, whyForm},
 	"agents.go comboOption o.Label":                    {2, whyStatic},
@@ -113,7 +117,8 @@ var uiExempt = map[string]exemption{
 	"agents.go modelFieldForDisplay m.Label":           {1, whyStatic},
 	"chief_sessions.go chiefNewSessionPicker rt.Label": {3, whyStatic},
 	"chief_sessions.go sessionModelCombobox m.Label":   {1, whyStatic},
-	"components.go sidebar t.Label":                    {1, whyStatic},
+	"components.go sidebarIn t.Label":                  {1, whyStatic},
+	"nav_layout.go NavDocument v.Title":                {1, "a server-authored page's fixed name (\"Attention\", \"Account\"), chosen by internal/api, never author text"},
 	"connectors.go ConnectorForm p.Label":              {1, whyStatic},
 	"list_signals.go agentsFilterChips c.Label":        {1, whyStatic},
 	"recents.go recentEntry it.Title":                  {2, "recentItem.Title is built through Title by recentItems"},
@@ -126,7 +131,7 @@ var uiExempt = map[string]exemption{
 	"notes.go NotesEditModalBody n.Title":              {1, whyForm},
 	"notes.go statusFilterRow taskstatus.Label":        {1, whyStatic},
 	"notes.go TaskTitle n.Title":                       {1, whyAccessor},
-	"tabs.go Tabs t.Label":                             {1, whyStatic},
+	"tabs.go TabsSelected t.Label":                     {1, whyStatic},
 	"tags.go tasksFilteredEmpty taskstatus.Label":      {1, whyStatic},
 	"terminal.go quickKeyBar k.Label":                  {1, whyStatic},
 	"focus.go focusHaystack f.Title":                   {1, whyFilter},

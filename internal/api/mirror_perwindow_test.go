@@ -53,7 +53,8 @@ func cardFor(t *testing.T, markup, href string) string {
 // card per session showed two. Each is titled by its own label (or
 // "<session>:<index>" with none), says what runs in it, opens the rendered view
 // when that is Claude Code and the terminal otherwise, and its link carries the
-// window's ID. The raw session name stays visible beside a codename.
+// window's ID. The raw session name is not drawn beside a codename on the card
+// (its pages draw it); it stays the name's tooltip.
 func TestAPerWindowHostsWindowsAreEachACard(t *testing.T) {
 	s, ts := viewServer(t, goldHost())
 	_, list := mirrorGet(t, s, ts, "/ui/agents")
@@ -70,8 +71,9 @@ func TestAPerWindowHostsWindowsAreEachACard(t *testing.T) {
 	} {
 		card := cardFor(t, list, tc.href)
 		if tc.small != "" {
-			if !strings.Contains(card, `data-mirror-label="">`+tc.title+`<`) || !strings.Contains(card, `>`+tc.small+`</span>`) {
-				t.Errorf("%s: the card is not titled %q with %q beside it:\n%s", tc.href, tc.title, tc.small, card)
+			if !strings.Contains(card, `data-mirror-label="">`+tc.title+`<`) || !strings.Contains(card, `title="tmux session `+tc.small+`"`) ||
+				strings.Contains(card, `>`+tc.small+`</span>`) || strings.Contains(card, "data-mirror-session") {
+				t.Errorf("%s: the card is not titled %q with %q its tooltip, and not its text:\n%s", tc.href, tc.title, tc.small, card)
 			}
 		} else if !strings.Contains(card, `data-mirror-name="">`+tc.title+`<`) || strings.Contains(card, "data-mirror-label") {
 			t.Errorf("%s: a window with no codename should be titled %q and nothing else:\n%s", tc.href, tc.title, card)

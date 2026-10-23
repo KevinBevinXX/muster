@@ -23,7 +23,8 @@ import (
 // REPLY DRAFTS, THE OWNER'S AND THE PLUGIN'S HALVES (internal/plugins/drafts.go
 // holds the rules; reply_draft_tool.go is the chief's half).
 //
-//   - The OWNER decides on /plugins: each pending draft is a card showing the
+//   - The OWNER decides on the Asks page's Reply drafts tab (/attention,
+//     asks_drafts.go — they used to be on /plugins): each pending draft is a card showing the
 //     message it answers (untrusted, escaped) and the EXACT text that will be
 //     sent (flows.VisibleEscape, with its length). Approve needs a FRESH
 //     sign-in (stepup.Fresh, as typing into a mirrored session
@@ -41,20 +42,20 @@ import (
 // pluginRetryBatch bounds how many queued messages one claim retries.
 const pluginRetryBatch = 20
 
-// pluginDraftsShown is how many drafts /plugins lists.
+// pluginDraftsShown is how many drafts each Reply drafts view lists.
 const pluginDraftsShown = 50
 
 // claimPollInterval is how often a waiting claim looks again when nothing in
 // this process signalled an approval (another replica may have approved one).
 const claimPollInterval = time.Second
 
-// DraftStepUpWhy is the confirm dialog's sentence on /plugins.
+// DraftStepUpWhy is the confirm dialog's sentence on the Asks page.
 func DraftStepUpWhy() string {
 	return "Approving a reply sends it to an outside party in your name, so it needs a sign-in from the last " +
 		stepup.WindowText() + "."
 }
 
-// DraftStepUpRequired is the /plugins notice for an approval refused as stale
+// DraftStepUpRequired is the Asks page's notice for an approval refused as stale
 // (the page's script did not ask first).
 const DraftStepUpRequired = "Approving a reply needs a recent sign-in. Confirm it's you, then approve again."
 
@@ -123,6 +124,7 @@ func (s *Server) handlePluginDraftClaim(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 		if ok {
+			s.draftStatusMoved(p.OwnerID, c.DraftID)
 			s.writeJSON(w, http.StatusOK, c)
 			return
 		}
@@ -168,6 +170,7 @@ func (s *Server) handlePluginDraftResult(w http.ResponseWriter, r *http.Request)
 	d, err := s.ext.Plugins.FinishDraft(r.Context(), p.ID, id, plugins.DraftResult{OK: *in.OK, ExternalRef: in.ExternalRef, Detail: in.Detail})
 	switch {
 	case err == nil:
+		s.draftStatusMoved(p.OwnerID, d.ID)
 		s.writeJSON(w, http.StatusOK, map[string]any{"draft_id": d.ID, "status": string(d.Status)})
 	case errors.Is(err, plugins.ErrInvalid):
 		s.writeJSON(w, http.StatusBadRequest, map[string]any{"error": strings.TrimPrefix(err.Error(), plugins.ErrInvalid.Error()+": ")})
@@ -182,6 +185,16 @@ func (s *Server) handlePluginDraftResult(w http.ResponseWriter, r *http.Request)
 	default:
 		s.logger.Printf("plugins: plugin %d result for draft %d: %v", p.ID, id, err)
 		s.writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "the result could not be recorded"})
+	}
+}
+
+// draftStatusMoved tells owner's open Asks pages that draft id's delivery
+// status moved (a plugin collected it, or reported it sent or failed), so the
+// Archived view re-reads it. The queue's own event, broadcast only: no ask
+// moved, so no attention waiter is woken.
+func (s *Server) draftStatusMoved(owner, id int64) {
+	if owner > 0 {
+		s.broadcastTo(owner, EventAttentionChanged, draftKey(id))
 	}
 }
 
@@ -223,7 +236,7 @@ func (s *Server) retryQueuedPluginMessages(r *http.Request, p plugins.Plugin) {
 	})
 }
 
-// --- the owner's half (/plugins) ----------------------------------------------
+// --- the owner's half (the Asks page's Reply drafts tab) ----------------------
 
 func (s *Server) handleDraftApprove(w http.ResponseWriter, r *http.Request) {
 	s.decideDraft(w, r, "approve")
@@ -238,16 +251,23 @@ func (s *Server) handleDraftReject(w http.ResponseWriter, r *http.Request) {
 // only asks BEFORE submitting so the owner is not bounced. A stale approval is
 // 403 — to a script with X-Muster-Step-Up (refuseStale), to a browser form the
 // page again, saying so.
+//
+// It answers on the Asks page's Reply drafts tab (asks_drafts.go): a decision
+// lands on the card, now in Archived; a refusal draws the page with the reason
+// on the view the draft is in.
 func (s *Server) decideDraft(w http.ResponseWriter, r *http.Request, how string) {
+	// A refusal is drawn on the pending view, except a withdraw (a reject of an
+	// already-approved draft), which comes from Archived.
+	tab := asksTabDrafts
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil || id <= 0 {
-		s.renderPluginsPage(w, r, http.StatusNotFound, "", "No such draft.")
+		s.renderAsksPage(w, r, http.StatusNotFound, "No such draft.", tab, id)
 		return
 	}
 	if how != "reject" && !stepup.Fresh(r.Context(), s.stepUpNow()) {
 		if isDocumentNavigation(r) {
 			w.Header().Set("X-Muster-Step-Up", "required")
-			s.renderPluginsPage(w, r, http.StatusForbidden, "", DraftStepUpRequired)
+			s.renderAsksPage(w, r, http.StatusForbidden, DraftStepUpRequired, asksTabDrafts, id)
 			return
 		}
 		refuseStale(w)
@@ -257,25 +277,26 @@ func (s *Server) decideDraft(w http.ResponseWriter, r *http.Request, how string)
 	switch {
 	case err == nil:
 	case errors.Is(err, plugins.ErrNotFound):
-		s.renderPluginsPage(w, r, http.StatusNotFound, "", "No such draft.")
+		s.renderAsksPage(w, r, http.StatusNotFound, "No such draft.", tab, id)
 		return
 	case how == "reject" && errors.Is(err, plugins.ErrDraftState) && d.Status == plugins.DraftApproved && d.ClaimedAt != nil:
-		s.renderPluginsPage(w, r, http.StatusConflict, "", "A plugin has already collected that draft, so it can no longer be withdrawn.")
+		tab = asksTabArchived
+		s.renderAsksPage(w, r, http.StatusConflict, "A plugin has already collected that draft, so it can no longer be withdrawn.", tab, id)
 		return
 	case errors.Is(err, plugins.ErrDraftState) && (d.Status == plugins.DraftPending || d.Status == plugins.DraftApproved) &&
 		d.ClaimedAt == nil && !d.ExpiresAt.After(time.Now()):
-		s.renderPluginsPage(w, r, http.StatusConflict, "", "That draft has expired: it was not sent within 7 days of being written.")
+		s.renderAsksPage(w, r, http.StatusConflict, "That draft has expired: it was not sent within 7 days of being written.", tab, id)
 		return
 	case errors.Is(err, plugins.ErrDraftState):
-		s.renderPluginsPage(w, r, http.StatusConflict, "", "That draft is no longer awaiting this decision (it is "+string(d.Status)+").")
+		s.renderAsksPage(w, r, http.StatusConflict, "That draft is no longer awaiting this decision (it is "+string(d.Status)+").", asksTabArchived, id)
 		return
 	case errors.Is(err, plugins.ErrReplyInFlight):
-		s.renderPluginsPage(w, r, http.StatusConflict, "", "Another reply to that message is already approved and not yet sent. "+
-			"Wait for its result before approving a second one.")
+		s.renderAsksPage(w, r, http.StatusConflict, "Another reply to that message is already approved and not yet sent. "+
+			"Wait for its result before approving a second one.", asksTabDrafts, id)
 		return
 	default:
 		s.logger.Printf("plugins: draft %d %s: %v", id, how, err)
-		s.renderPluginsPage(w, r, http.StatusInternalServerError, "", "The decision could not be recorded.")
+		s.renderAsksPage(w, r, http.StatusInternalServerError, "The decision could not be recorded.", tab, id)
 		return
 	}
 	if d.Status == plugins.DraftApproved {
@@ -284,25 +305,7 @@ func (s *Server) decideDraft(w http.ResponseWriter, r *http.Request, how string)
 	// Decided: it leaves the attention queue, and its `plugin` notification is
 	// cleared on the owner's other devices (the tag notifyDraftAwaiting set).
 	s.draftSettled(requestOwner(r.Context()), d.ID)
-	http.Redirect(w, r, pluginsPath+"#"+draftCardAnchor(d.ID), http.StatusSeeOther)
-}
-
-// draftsSectionHTML is /plugins' drafts: a card per draft, those awaiting a
-// decision first.
-func draftsSectionHTML(cards []plugins.DraftCard) string {
-	var b strings.Builder
-	b.WriteString(`<h2 class="text-sm font-semibold text-fg">Reply drafts</h2>
-<p class="text-xs text-fg2">Your chief drafts replies; nothing is sent until you approve one. The plugin then sends it once.</p>
-<ul class="flex flex-col gap-2" data-testid="plugin-drafts">
-`)
-	if len(cards) == 0 {
-		b.WriteString(`<li class="text-sm text-fg2">No drafts.</li>`)
-	}
-	for _, c := range cards {
-		b.WriteString(draftCardHTML(c))
-	}
-	b.WriteString("</ul>\n")
-	return b.String()
+	http.Redirect(w, r, draftDecidedLink(d.ID), http.StatusSeeOther)
 }
 
 // draftStatusText is a draft's state in words.
@@ -412,15 +415,21 @@ func draftTextLead(st plugins.DraftStatus) string {
 // draftPageScript makes an Approve on a stale sign-in ask "Confirm it's you"
 // BEFORE it submits, and submit once confirmed. It is a convenience: the server
 // refuses a stale approval whatever this script did (decideDraft).
+//
+// BY DELEGATION, on the document: the Asks page re-draws its drafts lists live
+// (asksPageScript), and a listener bound to each form at load would miss every
+// card that arrived later — its Approve would go straight to the server's 403.
 const draftPageScript = `<script>
 (function () {
-  document.querySelectorAll('form[data-step-up-form]').forEach(function (f) {
-    f.addEventListener('submit', function (ev) {
-      var su = window.musterStepUp;
-      if (!su || su.fresh()) return;
-      ev.preventDefault();
-      su.ask('', function () { f.submit(); });
-    });
+  if (window.musterDraftStepUp) return;
+  window.musterDraftStepUp = true;
+  document.addEventListener('submit', function (ev) {
+    var f = ev.target;
+    if (!f || !f.matches || !f.matches('form[data-step-up-form]')) return;
+    var su = window.musterStepUp;
+    if (!su || su.fresh()) return;
+    ev.preventDefault();
+    su.ask('', function () { f.submit(); });
   });
 })();
 </script>`

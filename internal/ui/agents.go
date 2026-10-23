@@ -88,8 +88,10 @@ type AgentCardView struct {
 	// regardless, so this only keeps the UI from offering what it would refuse.
 	IsChief bool
 	// Pinned: the viewing user pinned this agent (internal/pins). The list draws
-	// pinned entries first (AgentsCardsWithMirrors), the card a pin glyph, and the
-	// ⋯ menu offers Unpin instead of Pin. Composed in cardViewIndexed.
+	// a pinned agent first, as a label-only CHIP instead of its card
+	// (pinned_chips.go: unpinned, renamed and started/stopped from the chip's
+	// edit controls, behind the row's "Edit pins" toggle); RenderAgentCard draws
+	// that chip too. Composed in cardViewIndexed.
 	Pinned bool
 	// Focus is what the agent is working on (internal/focus), nil for none.
 	// Composed in cardViewIndexed; shown as the footer's focus chip, and found
@@ -101,7 +103,7 @@ type AgentCardView struct {
 	// AwaitingApproval: the agent is blocked on a permission prompt (or has a
 	// request open on the approval queue) — internal/api's AwaitingApproval,
 	// the same answer the polled "awaiting approval" badge shows. It is NOT an
-	// attention item, so it is carried here: the "Waiting on ask" chip reads it
+	// attention item, so it is carried here: the "Waiting on you" chip reads it
 	// (waitTokens), and the status poll asks for a list refresh when it changes
 	// (cardStatusIcon).
 	AwaitingApproval bool
@@ -190,7 +192,11 @@ func agentsPanel(active bool, recent []recentItem, list *shellList) g.Node {
 		agentsFilterBar(),
 		Div(
 			ID("agents-list"),
-			Class("grid grid-cols-1 gap-3 lg:grid-cols-2"),
+			// A wrapping flex row, not a grid: a card takes the whole row (half
+			// from lg up) and a pinned chip only its own width, so the chips
+			// wrap side by side above the cards (web/css/input.css,
+			// pinned_chips.go).
+			Class("flex flex-wrap gap-3"),
 			// 🔴 SERVER-RENDERED ON THE AGENTS TAB (list != nil): the cards are in
 			// the document, so its first paint is the list and nothing is filled in
 			// under the reader. They are the SAME renderer's output as the
@@ -239,10 +245,16 @@ func AgentsCards(list []AgentCardView) g.Node {
 	return g.Group(g.Map(list, agentCard))
 }
 
-// RenderAgentCard writes a single agent card (the #agent-{id} <article>). Used
-// to re-render one card after an inline rename (save) or to restore it on
-// cancel, swapped as outerHTML of #agent-{id}.
+// RenderAgentCard writes a single agent's list entry (the #agent-{id}
+// <article>). Used to re-render it after an inline rename (save) or to restore
+// it on cancel, swapped as outerHTML of #agent-{id}. A PINNED agent's entry is
+// its chip (pinned_chips.go), never a card: a rename started from the chip's
+// edit controls, or racing a pin from another tab, must not swap a full card
+// into the pinned row.
 func RenderAgentCard(w io.Writer, a AgentCardView) error {
+	if a.Pinned {
+		return pinnedChips1(listEntry{agent: &a}).Render(w)
+	}
 	return agentCard(a).Render(w)
 }
 
@@ -337,15 +349,8 @@ func agentCard(a AgentCardView) g.Node {
 	}
 	return Article(
 		ID("agent-"+ids),
-		g.If(a.Pinned, g.Attr("data-pinned", "")),
 		g.If(a.Idle, g.Attr("data-idle-section", "")),
-		// What the list's recency filter chips read (list_signals.go).
-		cardActivityAttrs(time.Now(), a.lastActive()),
-		g.If(waitTokens(a.Attention, a.AwaitingApproval) != "", g.Attr("data-wait", waitTokens(a.Attention, a.AwaitingApproval))),
-		// What the list's filter finds this card by (agents_filter.go).
-		cardFilterAttrs(agentFields(a), append([]string{
-			displayOr(a.DisplayName, a.Name), a.Name, a.Repo, agents.KindLabel(a.Kind), a.CCAccount, a.Status, "agent"},
-			focusHaystack(a.Focus)...)...),
+		agentListAttrs(a),
 		Class("group relative overflow-hidden rounded-2xl border border-line bg-s1/70 shadow-lg shadow-black/20 ring-1 ring-line"),
 		// The control cluster (rename + ⋯ menu) is positioned over the card's
 		// top-right corner, OUTSIDE the nav anchor, so its clicks don't navigate.
@@ -378,7 +383,6 @@ func agentCard(a AgentCardView) g.Node {
 				cardSlot("header"),
 				Class("flex flex-wrap items-center gap-2"),
 				cardStatusIcon(a),
-				g.If(a.Pinned, pinnedGlyph()),
 				// The owed-kickoff badge sits OUTSIDE cardStatusIcon's span on
 				// purpose: that span polls /ui/agents/{id}/status every 10s and
 				// swaps its own innerHTML, so anything nested inside it is erased
@@ -419,6 +423,21 @@ func agentCard(a AgentCardView) g.Node {
 		// task, a "Task #<id>" badge linking to the Tasks tab.
 		agentCardFooter(a),
 	)
+}
+
+// agentListAttrs is what the list's filter, host tabs and filter chips read
+// off a dispatched agent — on its card AND on its pinned chip
+// (pinned_chips.go), from this ONE function: its recency (list_signals.go),
+// whether it waits on you, and its filter fields and haystack
+// (agents_filter.go).
+func agentListAttrs(a AgentCardView) g.Node {
+	return g.Group{
+		cardActivityAttrs(time.Now(), a.lastActive()),
+		g.If(waitTokens(a.Attention, a.AwaitingApproval) != "", g.Attr("data-wait", waitTokens(a.Attention, a.AwaitingApproval))),
+		cardFilterAttrs(agentFields(a), append([]string{
+			displayOr(a.DisplayName, a.Name), a.Name, a.Repo, agents.KindLabel(a.Kind), a.CCAccount, a.Status, "agent"},
+			focusHaystack(a.Focus)...)...),
+	}
 }
 
 // agentFields is what an agent card is filtered by: its data-f-* (and data-l-*)
@@ -474,7 +493,7 @@ func cardFooter(children ...g.Node) g.Node {
 		Class("flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-line px-4 py-2 text-xs text-muted")}, children...)...)
 }
 
-// cardMeta is one labelled item of a card footer: "age 3h", "host tower".
+// cardMeta is one labelled item of a card footer: "age 3h".
 func cardMeta(label string, value g.Node) g.Node {
 	return Span(
 		Class("inline-flex items-center gap-1"),
@@ -583,7 +602,7 @@ func agentMenu(a AgentCardView) g.Node {
 			g.Attr("data-floating-menu", ""),
 			Class("invisible hidden [&:popover-open]:flex m-0 w-44 flex-col gap-1 rounded-xl border border-line bg-s1 p-1.5 text-fg shadow-2xl ring-1 ring-black/20"),
 			lifecycle,
-			agentPinMenuItem(a),
+			g.If(!a.Pinned, agentPinMenuItem(a)),
 			g.If(!a.IsChief, Div(Class("my-0.5 border-t border-line"))),
 			g.If(!a.IsChief, agentDeleteConfirm(ids)),
 		),

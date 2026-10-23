@@ -117,6 +117,11 @@ type AgentDetailView struct {
 	// FocusHistory is the agent's focus history, the newest page
 	// (FocusHistoryPath); "" = no focus store, and no header control for it.
 	FocusHistory string
+	// Asks is the agent's OPEN attention asks as the queue draws them, with
+	// their answer forms (internal/api attention_asker.go), "" for none; AsksSrc
+	// is that block's fragment URL, "" when the queue is not served (no block).
+	Asks    string
+	AsksSrc string
 }
 
 // SessionView is one chat session in the switcher.
@@ -184,7 +189,7 @@ func AgentDetailPage(v AgentDetailView, feat Features) g.Node {
 				// Stripped too: it is the same string on the same document, and a tab
 				// title reading `**fix** the `+"`chip`"+` row · muster` is the same defect in
 				// a third place.
-				TitleEl(g.Text(plainOr(v.DisplayName, v.Name)+" · muster")),
+				TitleEl(g.Text(agentDocTitle(v))),
 				Link(Rel("stylesheet"), Href(web.Asset("/static/app.css"))),
 				Script(Src(web.Asset("/static/vendor/htmx.min.js")), Defer()),
 				Script(Src(web.Asset("/static/vendor/sse.js")), Defer()),
@@ -261,6 +266,13 @@ func AgentDetailPage(v AgentDetailView, feat Features) g.Node {
 				g.If(v.FocusHistory != "", focusHistoryScript()),
 				agentChatScript(v.Name),
 				bubbleClampScript(),
+				// Places the header's full-title popover (agentTitle) beside its "…"
+				// and keeps that button's aria-expanded in step — the same script
+				// the shell runs for the cards' popovers.
+				floatingMenuScript(),
+				// Shows that "…" whenever the title is visibly clipped, not only
+				// when the server clamped it (agentTitle).
+				agentTitleFitScript(),
 				// appScript wires the sidebar open/close + the SPA tab router AND the
 				// model combobox (its combobox copy supports the hidden-mode autosave
 				// used by the header model form). It is now the SINGLE combobox
@@ -293,12 +305,11 @@ func agentDetailHeader(v AgentDetailView) g.Node {
 				// boosted tabs are how you leave this page now. Same markup/classes as
 				// the shell header()'s hamburger.
 				sidebarOpenButton(),
-				// Compact title: the DisplayName carries the whole "#<n> · <title>", so a
-				// smaller weight/size keeps the header tight without truncating it. The
-				// title is rendered as INLINE markdown (the task title often carries
-				// **bold**/`code`), escape-first so it can't inject markup. When the agent
-				// is task-linked, the title is a button that opens the full task detail in
-				// a modal (hx-loads /ui/agents/{name}/task into #task-modal).
+				// Compact title: the DisplayName carries the whole "#<n> · <title>",
+				// plained (textplain.Title) and clamped to ONE line — a long one ends
+				// in a "…" that opens it whole (agentTitle). When the agent is
+				// task-linked, the title is a button that opens the full task detail
+				// in a modal (hx-loads /ui/agents/{name}/task into #task-modal).
 				agentTitle(v),
 				newChatButton(v.ID),
 				chatHistoryButton(sessionDrawerID),
@@ -323,32 +334,130 @@ func agentDetailHeader(v AgentDetailView) g.Node {
 }
 
 // agentTitle renders the header title. For a task-linked agent it is a clickable
-// button opening the task-detail modal; otherwise a plain H1. Both render the
-// title as inline markdown.
+// button opening the task-detail modal; otherwise a plain H1.
+//
+// 🔴 A TITLE OF ANY LENGTH OR SHAPE MUST FIT ONE HEADER LINE. A dispatched
+// agent's name is its task's title, which is operator- or LLM-written and has
+// no length limit. This used to draw it WHOLE with break-all, so a long one
+// wrapped into a wall of lines that pushed the header controls and the chat
+// down the screen. Two guards now, because either alone leaves a hole:
+//   - the TEXT is clamped to cardTitleMax runes (clampTitle — the same budget
+//     and the same rune-safe cut the agent cards use);
+//   - the BOX is one line that can only shrink (min-w-0 on every flex parent,
+//     nowrap + overflow hidden), so even the clamped words cannot widen the row.
+//
+// 🔴 AND THE "…" FOLLOWS WHAT IS SEEN, NOT ONLY THE RUNE BUDGET. On a 390px
+// phone the header row leaves the title ~10 characters, so a 30-character
+// title is CLIPPED by the box though it is well inside the budget — and with
+// the "…" drawn only for a rune-clamped title, its full text was unreadable on
+// the operator's main device. So the "…" (titleMoreButton) and the full-title
+// popover (fullTitlePopover — the cards' own pair) are ALWAYS rendered; the
+// button starts `hidden` unless the server clamped, and agentTitleFitScript
+// shows it whenever the text is clipped (scrollWidth > clientWidth), re-checked
+// by a ResizeObserver (rotation, resize, a late font). The button sits INSIDE
+// the flex-1 title box, so showing it narrows the title and moves no other
+// header control. The text clips rather than drawing a CSS ellipsis: the "…"
+// button IS the ellipsis.
+//
+// textplain.Title (via plainOr), the SAME treatment agentCard gives this
+// string in the list — see textplain.Title for why it is stripped, not rendered.
 func agentTitle(v AgentDetailView) g.Node {
-	// textplain.Title, the SAME treatment agentCard gives this string in the list.
-	// It used to be mdInlineNode — inline markdown — which is how the list and the
-	// detail page came to render one name two ways (raw `**` on the card, bold
-	// here, and a backtick that survived on both). Stripping on both is the fix;
-	// see textplain.Title.
-	title := g.Text(plainOr(v.DisplayName, v.Name))
+	full := plainOr(v.DisplayName, v.Name)
+	short, clamped := clampTitle(full)
+	const line = "overflow-hidden text-clip whitespace-nowrap"
+	text := g.Attr("data-agent-title-text", "")
+	var heading g.Node
 	if v.NoteID == nil {
-		return H1(Class("mr-auto break-all text-sm font-medium"), title)
+		heading = H1(text, Class("min-w-0 "+line+" text-sm font-medium"), g.Attr("title", full), g.Text(short))
+	} else {
+		heading = H1(Class("flex min-w-0"),
+			Button(
+				Type("button"),
+				g.Attr("aria-label", "View task details"),
+				g.Attr("title", "View task details"),
+				Class("group flex min-h-[44px] min-w-0 max-w-full items-center gap-1 text-left text-sm font-medium text-fg transition hover:text-accent"),
+				hx("hx-get", "/ui/agents/"+v.Name+"/task"),
+				hx("hx-target", "#task-modal"),
+				hx("hx-swap", "innerHTML"),
+				Span(text, Class("min-w-0 "+line), g.Text(short)),
+				// A subtle chevron hints the title is tappable.
+				g.Raw(`<svg class="h-3.5 w-3.5 shrink-0 text-muted transition group-hover:text-fg2" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 18l6-6-6-6"/></svg>`),
+			),
+		)
 	}
-	return H1(Class("mr-auto min-w-0 break-all"),
-		Button(
-			Type("button"),
-			g.Attr("aria-label", "View task details"),
-			g.Attr("title", "View task details"),
-			Class("group flex min-h-[44px] w-full items-center gap-1 text-left text-sm font-medium text-fg transition hover:text-accent"),
-			hx("hx-get", "/ui/agents/"+v.Name+"/task"),
-			hx("hx-target", "#task-modal"),
-			hx("hx-swap", "innerHTML"),
-			Span(Class("min-w-0 break-all"), title),
-			// A subtle chevron hints the title is tappable.
-			g.Raw(`<svg class="h-3.5 w-3.5 shrink-0 text-muted transition group-hover:text-fg2" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 18l6-6-6-6"/></svg>`),
-		),
+	// The "…" sits BESIDE the heading, never inside the task button (a button
+	// inside a button is invalid and its tap would open the task modal).
+	// `[&[hidden]]:hidden`: the button's inline-flex utility would otherwise
+	// beat the UA's [hidden] rule and draw a "hidden" button anyway.
+	return Div(
+		g.Attr("data-agent-title", ""),
+		g.If(clamped, g.Attr("data-title-clamped", "")),
+		Class("mr-auto flex min-w-0 flex-1 items-center gap-0.5"),
+		heading,
+		titleMoreButton(agentTitlePopoverID, "items-center text-base [&[hidden]]:hidden", g.If(!clamped, g.Attr("hidden", ""))),
+		fullTitlePopover(agentTitlePopoverID, full),
 	)
+}
+
+// agentTitleFitScript shows the header's "…" (agentTitle) exactly while the
+// title is clipped or was clamped by the server, and hides it — closing an
+// open popover — when the title fits again. A ResizeObserver on the title text
+// re-checks on every size change of it: a window resize, a rotation, a late
+// web font. (No separate resize listener: the text's box changes with the
+// window, and every browser with the popover attribute has ResizeObserver.)
+//
+// It cannot oscillate: the check runs WITH the button's current state, and
+// showing the button only narrows the text (still clipped), hiding it only
+// widens it (still fits). Bound once per document (__musterAgentTitleFit);
+// each run of this in-body script (htmx re-executes it on a boosted swap)
+// binds the title on the page now, and a title htmx removes is unobserved.
+func agentTitleFitScript() g.Node {
+	return Script(g.Raw(`(function () {
+  function fit(box) {
+    var t = box.querySelector('[data-agent-title-text]');
+    var b = box.querySelector('[data-title-more]');
+    if (!t || !b) return;
+    var clipped = box.hasAttribute('data-title-clamped') || t.scrollWidth > t.clientWidth + 1;
+    if (clipped) { if (b.hasAttribute('hidden')) b.removeAttribute('hidden'); return; }
+    if (!b.hasAttribute('hidden')) b.setAttribute('hidden', '');
+    var p = document.getElementById(b.getAttribute('popovertarget'));
+    if (p && p.matches(':popover-open')) p.hidePopover();
+  }
+  var w = window.__musterAgentTitleFit;
+  if (!w) {
+    w = window.__musterAgentTitleFit = {
+      ro: new ResizeObserver(function (es) {
+        es.forEach(function (e) { var box = e.target.closest('[data-agent-title]'); if (box) fit(box); });
+      }),
+      bind: function () {
+        document.querySelectorAll('[data-agent-title]').forEach(function (box) {
+          fit(box);
+          var t = box.querySelector('[data-agent-title-text]');
+          if (t && !t.__musterFit) { t.__musterFit = true; w.ro.observe(t); }
+        });
+      }
+    };
+    document.addEventListener('htmx:load', function () { w.bind(); });
+    document.addEventListener('htmx:beforeCleanupElement', function (e) {
+      var el = e.target;
+      if (el && el.__musterFit) { w.ro.unobserve(el); el.__musterFit = false; }
+    });
+  }
+  w.bind();
+})();`))
+}
+
+// agentTitlePopoverID is the header's full-title popover. One per document.
+const agentTitlePopoverID = "agent-title-full"
+
+// agentDocTitle is the agent page's <title>: the same clamp as the header, so
+// a 600-character name does not become a 600-character tab label either.
+func agentDocTitle(v AgentDetailView) string {
+	short, clamped := clampTitle(plainOr(v.DisplayName, v.Name))
+	if clamped {
+		short += "…"
+	}
+	return short + " · muster"
 }
 
 // TaskModalView is the data the task-detail modal renders (opened from the chat
@@ -625,6 +734,7 @@ func agentChatPane(v AgentDetailView) g.Node {
 		// sub-view of the panel's OWN column, which needs no viewport-relative
 		// positioning at all. See ChatSurface.
 		g.If(v.Surface != ChatSurfaceChiefPanel, sessionDrawer(v)),
+		g.If(v.Surface == ChatSurfacePage && v.AsksSrc != "", AskerAsksBlock(v.Asks, v.AsksSrc, true)),
 		Div(
 			ID("chat-log"),
 			Class("flex flex-1 flex-col gap-2 overflow-auto rounded-xl bg-s1/40 p-3 ring-1 ring-inset ring-line min-h-0"),

@@ -61,8 +61,8 @@ type MirrorCardView struct {
 	// its read-only rendered view by default, as a Claude Code card does.
 	HermesView bool
 	// Pinned: the viewing user pinned this entry's address (internal/pins). The
-	// list draws pinned entries first (AgentsCardsWithMirrors); the card shows a
-	// pin glyph and its pin toggle pressed.
+	// list draws a pinned entry first, as a label-only CHIP instead of its card
+	// (pinned_chips.go); a card is only ever drawn for an unpinned entry.
 	Pinned bool
 	// Focus is what the Claude Code session in the window is working on
 	// (internal/focus, keyed by its Claude session id), nil for none.
@@ -170,19 +170,19 @@ func mirrorCardID(m MirrorCardView) string {
 
 // mirrorCard is a mirrored session's card: the session name, a mirrored icon
 // (with its host in a tooltip), an "offline" badge while the host is not
-// serving it, the whole body a real-load link to its terminal, and a footer
-// naming the host and when the window was last active.
+// serving it, the whole body a real-load link to its terminal naming its host
+// (hostChip), and a footer saying when the window was last active.
 //
 // 🔴 ITS SHAPE IS agentCard's, SLOT FOR SLOT (cardSlot), and so are its
 // classes, so it adds nothing to the committed stylesheet.
 // TestAgentAndMirrorCardsRenderTheSameSlots pins the shape.
 func mirrorCard(m MirrorCardView) g.Node {
-	f := mirrorFields(m)
-	status, kind, mode, state := f.Status, f.Kind, f.Mode, f.State
+	status := mirrorFields(m).Status
 	id := mirrorCardID(m)
 	// A name past cardTitleMax is drawn in a title row of its own, clamped,
 	// with a "…" button that opens it whole (cardLongTitle). The qualifier
-	// and the raw session name stay beside it, as in mirrorEntryTitle.
+	// stays beside it, as in mirrorCardTitle; the raw session name is not
+	// drawn on a card.
 	// The name as a reader sees it (textplain): a Hermes or tmux window title is
 	// often LLM-written and carries markdown.
 	name := plainOr(displayOr(m.Label, m.Title), m.Session)
@@ -193,26 +193,16 @@ func mirrorCard(m MirrorCardView) g.Node {
 	if long {
 		bodyClass = titledBodyClass(reserve)
 		titleRow = cardLongTitle(id, MirrorCardHref(m), name, cardHasFocusTitle(m.Focus), reserve,
-			g.If(m.Qualifier != "", Span(g.Attr("data-mirror-qualifier", ""), g.Text(mirrorQualifierSep+m.Qualifier))),
-			g.If(m.Label != "" && m.Label != m.Session, Span(g.Attr("data-mirror-session", ""), Class("ml-1.5 text-xs text-muted"), g.Text(m.Session))))
+			g.If(m.Qualifier != "", Span(g.Attr("data-mirror-qualifier", ""), g.Text(mirrorQualifierSep+m.Qualifier))))
 	}
 	return Article(
 		ID(id),
 		g.Attr("data-mirror-card", ""),
-		g.If(m.Pinned, g.Attr("data-pinned", "")),
 		g.If(m.Idle, g.Attr("data-idle-section", "")),
-		// What the list's recency and waiting filter chips read (list_signals.go).
-		cardActivityAttrs(time.Now(), m.ActiveAt),
 		// The window's tmux identity colour: its border and title (input.css
 		// maps the variants to the theme in force).
 		identityAttrs(m.Color),
-		g.If(waitTokens(m.Attention, false) != "", g.Attr("data-wait", waitTokens(m.Attention, false))),
-		// What the list's filter finds this card by (agents_filter.go): its title
-		// ("Gold:8"), the title as shown — with its qualifier ("Gold:8 · laptop")
-		// — its raw tmux session name, its host, and what runs in it.
-		cardFilterAttrs(f, append([]string{
-			m.Label, m.Title, mirrorQualified(displayOr(m.Label, displayOr(m.Title, m.Session)), m.Qualifier),
-			m.Session, m.Host, kind, m.Repo, "mirrored", mode, state}, focusHaystack(m.Focus)...)...),
+		mirrorListAttrs(m),
 		Class("group relative overflow-hidden rounded-2xl border border-line bg-s1/70 shadow-lg shadow-black/20 ring-1 ring-line"),
 		// The control cluster: the mirrored mark and the pin toggle, OUTSIDE the
 		// nav anchor (agentCard's pattern) so tapping either never opens the
@@ -223,8 +213,8 @@ func mirrorCard(m MirrorCardView) g.Node {
 			mirrorPinToggle(m),
 		),
 		// With a focus, it heads the card (cardFocusTitle): a popover trigger
-		// OUTSIDE the nav anchor, and the window's title below — with its muted
-		// session line — becomes its subtitle.
+		// OUTSIDE the nav anchor, and the window's title below (mirrorCardTitle:
+		// no raw session name) becomes its subtitle.
 		cardFocusTitle(id, m.Focus, reserve),
 		titleRow,
 		A(
@@ -238,12 +228,13 @@ func mirrorCard(m MirrorCardView) g.Node {
 				cardSlot("header"),
 				Class("flex flex-wrap items-center gap-2"),
 				statusIcon(status),
-				g.If(m.Pinned, pinnedGlyph()),
 				// Its host's icon, beside its name (host_icons.go).
 				hostMark(m.Host, m.HostIcon),
-				g.If(!long && !cardHasFocusTitle(m.Focus), mirrorEntryTitle(m.Label, m.Title, m.Session, m.Qualifier, cardTitleClass)),
+				g.If(!long && !cardHasFocusTitle(m.Focus), mirrorCardTitle(m.Label, m.Title, m.Session, m.Qualifier, cardTitleClass)),
 				g.If(!long && cardHasFocusTitle(m.Focus), Span(g.Attr("data-card-subtitle", ""), Class("contents"),
-					mirrorEntryTitle(m.Label, m.Title, m.Session, m.Qualifier, cardSubtitleClass))),
+					mirrorCardTitle(m.Label, m.Title, m.Session, m.Qualifier, cardSubtitleClass))),
+				// Its host, spelled (hostChip).
+				hostChip(m.Host),
 				g.If(m.Claude, Span(g.Attr("data-mirror-claude", ""), chip("kind", "Claude Code"))),
 				// What else runs there (a shell, opencode, another TUI): the
 				// host's reading of the pane's command.
@@ -255,19 +246,36 @@ func mirrorCard(m MirrorCardView) g.Node {
 				g.If(!m.Online, Span(
 					g.Attr("data-mirror-offline", ""),
 					g.Attr("title", "The host's muster-mirror is not connected, or the host no longer lists this tmux session"),
-					chip("host", "offline"),
+					// "state", the filter field (state:offline) — not "host", which
+					// beside the host chip read as a second host called "offline".
+					chip("state", "offline"),
 				)),
 			),
 		),
-		// The host stays VISIBLE, not only in the mark's tooltip: it is what tells
-		// two same-named windows apart and a filter field (host:), and a phone has
-		// no hover.
+		// The host is in the body (hostChip), not here.
 		cardFooter(
-			cardMeta("host", Span(g.Attr("data-mirror-host", ""), Class("font-medium text-fg2"), g.Text(m.Host))),
 			cardActivity(m.ActiveAt),
 			cardFocus(id, m.Focus),
 		),
 	)
+}
+
+// mirrorListAttrs is what the list's filter, host tabs and filter chips read
+// off a mirrored entry — on its card AND on its pinned chip (pinned_chips.go),
+// from this ONE function, so a chip is found, counted and hidden exactly as
+// its card would be: its recency (list_signals.go), whether it waits on you,
+// and its filter fields and haystack (agents_filter.go) — its title ("Gold:8"),
+// the title as shown, with its qualifier ("Gold:8 · laptop"), its raw tmux
+// session name, its host, and what runs in it.
+func mirrorListAttrs(m MirrorCardView) g.Node {
+	f := mirrorFields(m)
+	return g.Group{
+		cardActivityAttrs(time.Now(), m.ActiveAt),
+		g.If(waitTokens(m.Attention, false) != "", g.Attr("data-wait", waitTokens(m.Attention, false))),
+		cardFilterAttrs(f, append([]string{
+			m.Label, m.Title, mirrorQualified(displayOr(m.Label, displayOr(m.Title, m.Session)), m.Qualifier),
+			m.Session, m.Host, f.Kind, m.Repo, "mirrored", f.Mode, f.State}, focusHaystack(m.Focus)...)...),
+	}
 }
 
 // mirrorFields is what a mirrored card is filtered by: its data-f-* (and
@@ -324,8 +332,9 @@ func mirroredMark(cardID, host string) g.Node {
 const mirroredIcon = `<svg class="h-4 w-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>`
 
 // AgentsCardsWithMirrors is the Agents list: ONE flat list of agent cards and
-// mirrored entries — the viewer's PINNED entries first, then the rest, each
-// group most recently active first (orderList, which states the whole rule).
+// mirrored entries — the viewer's PINNED entries first, as compact chips
+// (pinned_chips.go), then the rest as cards, each group most recently active
+// first (orderList, which states the whole rule).
 // The empty state shows only when there are neither.
 //
 // 🔴 THE PER-KIND ORDERS ARE INPUTS, NOT RE-DECIDED. agents.SortByLastActivity
@@ -334,8 +343,9 @@ const mirroredIcon = `<svg class="h-4 w-4 shrink-0" viewBox="0 0 24 24" fill="no
 // their own kind; orderList only interleaves them by activity and lifts pins.
 // Every card stays a direct <article> child of #agents-list — no wrapper, no
 // divider article — so the filter's `#agents-list > article` rule and its count
-// still see each one (agents_filter.go): a pinned card that does not match is
-// hidden like any other.
+// still see each one (agents_filter.go): a pinned chip that does not match is
+// hidden like any card. (The pinned row's "Edit pins" toggle is the one
+// non-article child besides the Idle header; the filter's rules never see it.)
 //
 // Entries marked Idle (MarkIdle) are drawn after the rest, under the Idle
 // section's header (idle_section.go); this form, with no threshold to name,
@@ -350,15 +360,21 @@ func agentsListNodes(list []AgentCardView, mirrors []MirrorCardView, after time.
 	if len(list) == 0 && len(mirrors) == 0 {
 		return AgentsCards(nil)
 	}
-	var working, idle []listEntry
+	var pinned, working, idle []listEntry
 	for _, e := range orderList(list, mirrors) {
-		if e.idle() {
+		switch {
+		case e.pinned():
+			// A chip, not a card (pinned_chips.go). A pinned entry is never
+			// idle (InIdleSection), so it is never in the Idle section either.
+			pinned = append(pinned, e)
+		case e.idle():
 			idle = append(idle, e)
-		} else {
+		default:
 			working = append(working, e)
 		}
 	}
-	out := g.Group(g.Map(working, listCard))
+	out := g.Group{pinnedChips(pinned)}
+	out = append(out, g.Map(working, listCard)...)
 	if len(idle) > 0 {
 		out = append(out, idleHead(len(idle), after))
 		out = append(out, g.Map(idle, listCard)...)
@@ -366,7 +382,7 @@ func agentsListNodes(list []AgentCardView, mirrors []MirrorCardView, after time.
 	return out
 }
 
-// mirrorSessionTitle is a mirrored session's name as a list or page title: the
+// mirrorSessionTitle is a mirrored session's name as a page title: the
 // host's label when it sent one, with the raw tmux session name as a small
 // secondary text AND the tooltip; the session name alone otherwise.
 //
@@ -384,9 +400,28 @@ func mirrorSessionTitle(label, session, class string) g.Node {
 // qualifier ("" = none) is what tells the entry apart from another listed
 // entry of the same name (mirror.SessionView.Qualifier). It is drawn AS PART
 // OF THE TITLE, right after the name — "mango:1 · laptop" — not in a chip, so
-// two "mango:1" cards read as two different titles. The card, the rendered
-// view and the terminal page all draw their title here.
+// two "mango:1" cards read as two different titles. The rendered view and the
+// terminal page draw their title here; the card through mirrorCardTitle, the
+// same title without the raw session name.
 func mirrorEntryTitle(label, title, session, qualifier, class string) g.Node {
+	return entryTitle(label, title, session, qualifier, class, true)
+}
+
+// mirrorCardTitle is mirrorEntryTitle as the Agents list's CARD draws it: the
+// label and its qualifier, WITHOUT the raw tmux session name beside it
+// (an operator ask: the resolved title only, not the raw session name).
+// Nothing that tells two cards apart is lost with it: two entries
+// sharing a label on one host carry their tmux address in the qualifier
+// (mirror.qualify), and an entry with no label is titled "<session>:<index>".
+// The session is still the name's tooltip and a search term (cardFilterAttrs);
+// the window's own pages, opened from the card, still show it.
+func mirrorCardTitle(label, title, session, qualifier, class string) g.Node {
+	return entryTitle(label, title, session, qualifier, class, false)
+}
+
+// entryTitle is mirrorEntryTitle, drawing the muted session name beside a
+// label only when withSession is set.
+func entryTitle(label, title, session, qualifier, class string, withSession bool) g.Node {
 	q := g.If(qualifier != "", Span(g.Attr("data-mirror-qualifier", ""), g.Text(mirrorQualifierSep+qualifier)))
 	if label == "" || label == session {
 		return Span(Class(class), g.Attr("data-mirror-name", ""), g.Text(plainOr(title, session)), q)
@@ -397,7 +432,7 @@ func mirrorEntryTitle(label, title, session, qualifier, class string) g.Node {
 		g.Attr("title", "tmux session "+session),
 		Span(g.Attr("data-mirror-label", ""), g.Text(plainOr(label, session))),
 		q,
-		Span(g.Attr("data-mirror-session", ""), Class("ml-1.5 text-xs text-muted"), g.Text(session)),
+		g.If(withSession, Span(g.Attr("data-mirror-session", ""), Class("ml-1.5 text-xs text-muted"), g.Text(session))),
 	)
 }
 

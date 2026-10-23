@@ -248,7 +248,7 @@ func enqueueTx(ctx context.Context, tx pgx.Tx, f Flow, r Request, params []byte,
 		f.Name, string(f.Class), r.Host, r.Instance, params, via, truncateRunes(by, 100), r.TTL.Seconds()))
 }
 
-// 🔴 THE TTL DOES NOT RUN WHILE A JOB IS BLOCKED (migration 0044, PR #228
+// 🔴 THE TTL DOES NOT RUN WHILE A JOB IS BLOCKED (migration 0046, PR #228
 // round-1 F1). A claim refuses a job while a job of the same owner, host and
 // instance is running, and a muse dispatch may hold that instance for over an
 // hour; a job queued behind it must not expire merely for waiting. So a queued

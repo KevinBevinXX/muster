@@ -16,7 +16,8 @@ The whole loop:
 3. The chief may file a gated task (`task_create_gated`), draft a reply
    (`reply_draft`), [route it to a session](#routing-a-message-to-a-session)
    (`route_to_session`, when routing is on), or do nothing.
-4. You approve or reject each draft on `/plugins`.
+4. You approve or reject each draft on the **Asks** page's **Reply drafts** tab
+   (`/attention?tab=drafts`; see [attention.md](attention.md#the-reply-drafts-tab)).
 5. The plugin claims an approved draft (`POST /plugin/v1/drafts/claim`), sends
    it, and reports the result (`POST /plugin/v1/drafts/{id}/result`).
 
@@ -24,7 +25,7 @@ The whole loop:
 
 | door | who | routes |
 |---|---|---|
-| The **page** | you, signed in | `/plugins`: create and revoke plugin tokens; approve or reject reply drafts |
+| The **pages** | you, signed in | `/plugins`: create and revoke plugin tokens. `/attention?tab=drafts` (the Asks page's Reply drafts tab): approve or reject reply drafts, and see what became of each under Archived |
 | The **plugin** | an `mpl_` plugin token | `POST /plugin/v1/messages`, `POST /plugin/v1/drafts/claim`, `POST /plugin/v1/drafts/{id}/result`, `POST /plugin/v1/tasks` |
 
 A plugin token is shown once, when you create it. muster stores only its
@@ -510,7 +511,10 @@ agent you started yourself, an agent already stopped or in `error`, and every
 agent of a task set to `ready_for_review` (it must stay reachable through
 `task_forward`). The task's one start stays **spent**: a stop is not a destroy
 and records no release, so `task_dispatch` on the task still answers
-`already_dispatched`. A stopped agent is not live, so it frees its slot under
+`already_dispatched`. A stopped agent left stopped for
+`MUSTER_AGENT_REAP_STOPPED_AFTER` (14 days by default) is then destroyed by
+the [stopped-agent reaper](provisioner.md#reaping-stopped-agents), which does
+record the release. A stopped agent is not live, so it frees its slot under
 guard 10.
 
 ⚠ The live cap reads the stored status, so an agent whose instance died while
@@ -649,7 +653,7 @@ chief, on the agent gateway and over `/mcp`, and only while plugins are on.
 {"message_id": 42, "body": "Thanks, noon works."}
 ```
 
-- **Nothing is sent.** The tool files a draft. You read it on `/plugins` and
+- **Nothing is sent.** The tool files a draft. You read it on the Asks page's Reply drafts tab (`/attention?tab=drafts`) and
   approve or reject it.
 - `message_id` must be a plugin message delivered, or being delivered, to this
   chief (so the chief can draft on the turn that delivers it), and not marked
@@ -670,7 +674,7 @@ card.
 
 ### The card
 
-Each draft is a card on `/plugins`:
+Each draft is a card on the Asks page's Reply drafts tab (`/attention?tab=drafts`; decided ones under Archived):
 
 - The message it answers, from the outside sender, is shown escaped in its own
   box, labelled untrusted.
@@ -798,7 +802,7 @@ turn for each message says when to do this.
      claim and result routes;
    - otherwise — an unverified sender, the same address arriving through
      another plugin, an address that is not plain ASCII — it is an ordinary
-     **pending** draft that you approve on `/plugins`, with the usual push. It
+     **pending** draft that you approve on the Asks page (`/attention?tab=drafts`), with the usual push. It
      counts toward the chief's 20 pending drafts, like any draft; at that limit
      the route fails and the message is handed back to the chief (a turn, or
      a note when it is not running), as when a route times out. A relay that

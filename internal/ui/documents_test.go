@@ -172,6 +172,20 @@ var standaloneDocuments = []documentRenderer{
 		// name.
 		renderEmpty: func(w io.Writer) error { return RenderTaskNotFound(w, "", featuresAllOn) },
 	},
+	{
+		// Every server-authored signed-in page internal/api writes (Attention,
+		// Account, Plugins, …) is this document around its own markup. The full
+		// render is the Attention page's shape: its entry marked, a list in the
+		// content; the empty one belongs to no entry (Plugins, Browser flows).
+		fn: "NavDocument", label: "a server-authored signed-in page (/attention, /account, /plugins, …)",
+		render: func(w io.Writer) error {
+			return RenderNavDocument(w, NavDocumentView{Title: "Attention", Entry: NavAttention, Feat: featuresAllOn,
+				Main: `<section data-testid="attention-page"><h1>Attention</h1><ul><li>Asked: <b>which</b> branch?</li><li>Waiting at a prompt</li></ul></section>`})
+		},
+		renderEmpty: func(w io.Writer) error {
+			return RenderNavDocument(w, NavDocumentView{Title: "Plugins", Feat: Features{}, Main: `<section><h1>Plugins</h1></section>`})
+		},
+	},
 }
 
 // taskNotFoundFixtureID is the 404 page's whole input.

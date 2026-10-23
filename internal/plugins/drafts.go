@@ -373,12 +373,32 @@ func (s *PGStore) Draft(ctx context.Context, id int64) (Draft, error) {
 	return d, err
 }
 
-// DraftCards is the principal's drafts for /plugins — every one awaiting a
-// decision (pending), then the most recent others — at most limit, after a sweep.
+// DraftCards is the principal's drafts — every one awaiting a decision
+// (pending), then the most recent others — at most limit, after a sweep.
 func (s *PGStore) DraftCards(ctx context.Context, limit int) ([]DraftCard, error) {
 	if limit <= 0 || limit > 200 {
 		limit = 100
 	}
+	return s.draftCards(ctx, `ORDER BY (d.status = 'pending') DESC, d.id DESC LIMIT $1`, limit)
+}
+
+// DraftCard is one of the principal's drafts as a card (after a sweep):
+// what the Asks page draws for a just-decided draft that DraftCards' cut
+// left out. ErrNotFound for none (or another owner's: row-level security).
+func (s *PGStore) DraftCard(ctx context.Context, id int64) (DraftCard, error) {
+	cards, err := s.draftCards(ctx, `WHERE d.id = $1`, id)
+	if err != nil {
+		return DraftCard{}, err
+	}
+	if len(cards) == 0 {
+		return DraftCard{}, ErrNotFound
+	}
+	return cards[0], nil
+}
+
+// draftCards is DraftCards' and DraftCard's one query, tail its WHERE /
+// ORDER BY / LIMIT.
+func (s *PGStore) draftCards(ctx context.Context, tail string, arg any) ([]DraftCard, error) {
 	if err := s.sweep(ctx); err != nil {
 		return nil, err
 	}
@@ -388,8 +408,7 @@ func (s *PGStore) DraftCards(ctx context.Context, limit int) ([]DraftCard, error
 		  FROM plugin_reply_drafts d
 		  JOIN plugin_messages m ON m.id = d.message_id
 		  JOIN plugins p ON p.id = m.plugin_id
-		 ORDER BY (d.status = 'pending') DESC, d.id DESC
-		 LIMIT $1`, limit)
+		 `+tail, arg)
 	if err != nil {
 		return nil, err
 	}
