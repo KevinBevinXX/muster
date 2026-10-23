@@ -140,6 +140,13 @@ The Claude model the job's turn runs on. Absent, the CLI's default, as before.
   open a session of the job's own, a job with a `model` fails `internal`
   before its turn — the refusal a `sha` job gets there — rather than run in
   the agent's own session.
+- **Confirmed, or discarded.** ccd answers a turn from a session CLI of the
+  job's own with `X-Muster-CC-Workdir-Used`, and only from one. A `model` job
+  whose answer lacks it — an agent image that ignores the session and model
+  headers and answers from its main CLI, on that CLI's model — fails
+  `model_unconfirmed`, its reply discarded, instead of succeeding with a
+  `model` it did not run on. An image whose ccd has sessions but predates that
+  header fails the same way: update the agent's image.
 - **Read back:** `model` on the job (`""` when none was given).
 
 ### `config_ref`
@@ -333,6 +340,7 @@ kept — the job keeps its status and `error` says
 | `turn_timeout` | ccd's own turn budget elapsed (status `timed_out`) |
 | `checkout_failed` | the job's worktree could not be made: the pull request's head could not be fetched anonymously (a private repository, no such pull request, no network), the `sha` is neither that head nor an ancestor of it, the checkout's own git configuration rewrites the fetch URL or adds a header or credential to it, the default branch (`origin/HEAD`) could not be resolved, the `config_ref` is not on the default branch (or the default branch could not be fetched to look for it), the default branch has a symlink among the overlaid paths (it could point at a file the commit controls), or git failed; `error` says which |
 | `workdir_unconfirmed` | a `sha` job's turn succeeded, but the agent's runtime did not confirm it ran in the job's worktree (its image predates job worktrees); the reply was discarded — update the agent's image |
+| `model_unconfirmed` | a `model` job's turn succeeded, but the agent's runtime did not confirm it ran in a Claude Code session of the job's own (no `X-Muster-CC-Workdir-Used` on the answer, which ccd sends only from such a session's CLI): an image that ignores the session and model headers runs the turn in the agent's own session on that session's model. The reply was discarded — update the agent's image |
 | `result_read_failed` | the turn succeeded but `result_path` could not be returned |
 | `empty_reply` | the turn produced no reply text and no `result_path` was asked for |
 | `agent_unavailable` | the agent could not be loaded when the job was due to start |

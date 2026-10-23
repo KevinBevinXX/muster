@@ -956,6 +956,15 @@ func (s *Server) runJobTurn(ctx context.Context, a agents.Agent, sess agents.Cha
 	// echo is the working directory ccd says the turn's CLI used
 	// (agents.HeaderCCWorkdirUsed), for a sha job.
 	var echo workdirEcho
+	// 🔴 A model JOB MUST BE ANSWERED FROM A SESSION CLI OF ITS OWN. ccd sends
+	// agents.HeaderCCWorkdirUsed only from such a CLI (a "lane", started with
+	// the job's --model); a ccd from before lanes ignores the session and model
+	// headers and answers from the agent's primary CLI, on that CLI's model,
+	// without it. So the echo is recorded for every model job, and its absence
+	// fails the job below (model_unconfirmed).
+	if j.Model != "" {
+		turnCtx = withTurnEcho(turnCtx, &echo)
+	}
 	// 🔴 A sha JOB OR A model JOB ONLY IN A SESSION OF ITS OWN. A turn with no
 	// explicit Claude Code session goes to the agent's primary CLI, which works
 	// in the agent's checkout — exactly where a commit's own configuration must
@@ -1005,6 +1014,11 @@ func (s *Server) runJobTurn(ctx context.Context, a agents.Agent, sess agents.Cha
 				"output was discarded; update the agent's image", echo.want, got))
 		}
 	}
+	if j.Model != "" {
+		if _, ok := echo.get(); !ok {
+			return jobs.Failed(jobs.ReasonModelUnconfirmed, JobModelUnconfirmedError)
+		}
+	}
 	if j.ResultPath != "" {
 		o = s.readJobResult(ctx, a, worktree, j)
 		if worktree != 0 {
@@ -1018,6 +1032,12 @@ func (s *Server) runJobTurn(ctx context.Context, a agents.Agent, sess agents.Cha
 	}
 	return o
 }
+
+// JobModelUnconfirmedError is a model job's error when its turn's answer did
+// not come from a session CLI of the job's own (no agents.HeaderCCWorkdirUsed).
+const JobModelUnconfirmedError = "the agent's runtime did not confirm it ran the turn in a Claude Code session of " +
+	"the job's own (no " + agents.HeaderCCWorkdirUsed + "), so it may have run in the agent's own session on that " +
+	"session's model; the turn's output was discarded; update the agent's image"
 
 // JobNoOwnSessionError is a sha or model job's error when the chat store
 // cannot open a Claude Code session of the job's own
@@ -1059,6 +1079,14 @@ func withJobWorkdir(ctx context.Context, dir string, echo *workdirEcho) context.
 	h.Set(agents.HeaderCCWorkdir, dir)
 	r.Header = h
 	echo.want = dir
+	r.OnResponse = echo.record
+	return agents.WithTurnRoute(ctx, r)
+}
+
+// withTurnEcho is ctx with the turn's route recording into echo the directory
+// ccd answers its session CLI used (agents.HeaderCCWorkdirUsed), naming none.
+func withTurnEcho(ctx context.Context, echo *workdirEcho) context.Context {
+	r, _ := agents.TurnRouteFrom(ctx)
 	r.OnResponse = echo.record
 	return agents.WithTurnRoute(ctx, r)
 }

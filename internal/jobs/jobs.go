@@ -79,6 +79,13 @@ const (
 	// runtime did not confirm it ran in the job's worktree — an agent image too
 	// old for sha jobs — so its output was discarded.
 	ReasonWorkdirUnconfirmed = "workdir_unconfirmed"
+	// ReasonModelUnconfirmed: a model job's turn succeeded but the agent's
+	// runtime did not confirm it ran the turn in a session CLI of the job's own
+	// (no agents.HeaderCCWorkdirUsed, which ccd sends only from such a CLI) — an
+	// agent image that ignores the session and model headers would have run it
+	// in the agent's primary CLI on that CLI's model — so its output was
+	// discarded.
+	ReasonModelUnconfirmed = "model_unconfirmed"
 	// ReasonResultReadFailed: the turn succeeded but result_path could not be read.
 	ReasonResultReadFailed = "result_read_failed"
 	// ReasonEmptyReply: the turn succeeded with no reply text and no result_path
