@@ -956,20 +956,16 @@ func (s *Server) runJobTurn(ctx context.Context, a agents.Agent, sess agents.Cha
 	// echo is the working directory ccd says the turn's CLI used
 	// (agents.HeaderCCWorkdirUsed), for a sha job.
 	var echo workdirEcho
-	// 🔴 A MODEL ONLY IN A SESSION OF ITS OWN. The model travels as the job
-	// session's (jobSession); a turn with no explicit Claude Code session goes
-	// to the agent's primary CLI, which the model must never reach — and would
-	// not, so the job would run on a model it did not ask for.
-	if j.Model != "" && (sess.Runtime != agents.SessionRuntimeClaudeCode || sess.Model != j.Model) {
-		return jobs.Failed(jobs.ReasonInternal, JobModelNoOwnSessionError)
+	// 🔴 A sha JOB OR A model JOB ONLY IN A SESSION OF ITS OWN. A turn with no
+	// explicit Claude Code session goes to the agent's primary CLI, which works
+	// in the agent's checkout — exactly where a commit's own configuration must
+	// not run — and which a job's model must never reach (the model travels as
+	// the job session's, jobSession). A job with neither still runs there, as
+	// it always has.
+	if (j.SHA != "" || j.Model != "") && sess.Runtime != agents.SessionRuntimeClaudeCode {
+		return jobs.Failed(jobs.ReasonInternal, JobNoOwnSessionError)
 	}
 	if j.SHA != "" {
-		// 🔴 ONLY IN A SESSION OF ITS OWN. A turn with no explicit Claude Code
-		// session goes to the agent's primary CLI, which works in the agent's
-		// checkout — exactly where a commit's own configuration must not run.
-		if sess.Runtime != agents.SessionRuntimeClaudeCode {
-			return jobs.Failed(jobs.ReasonInternal, JobNoOwnSessionError)
-		}
 		// Registered BEFORE the worktree is made, so a half-made one goes too.
 		defer func() { o = s.removeJobWorktree(ctx, a, j, o) }()
 		dir, err := s.ext.JobWorkspace.PrepareJobWorktree(ctx, a, j.ID, j.Repo, j.PR, j.SHA, j.ConfigRef)
@@ -1023,15 +1019,11 @@ func (s *Server) runJobTurn(ctx context.Context, a agents.Agent, sess agents.Cha
 	return o
 }
 
-// JobNoOwnSessionError is a sha job's error when the chat store cannot open a
-// Claude Code session of the job's own (agents.SessionRuntimeStore).
+// JobNoOwnSessionError is a sha or model job's error when the chat store
+// cannot open a Claude Code session of the job's own
+// (agents.SessionRuntimeStore).
 const JobNoOwnSessionError = "this deployment's chat store cannot open a Claude Code session of the job's own, " +
-	"so the turn could not be kept out of the agent's checkout; nothing was run"
-
-// JobModelNoOwnSessionError is a model job's error when the chat store cannot
-// open a Claude Code session of the job's own carrying that model.
-const JobModelNoOwnSessionError = "this deployment's chat store cannot open a Claude Code session of the job's own " +
-	"with the job's model, so the model could not be kept off the agent's own session; nothing was run"
+	"so the turn could not be kept out of the agent's checkout and session; nothing was run"
 
 // workdirEcho records the working directory ccd answered with for a turn.
 type workdirEcho struct {

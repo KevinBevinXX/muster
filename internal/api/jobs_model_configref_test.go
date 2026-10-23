@@ -63,15 +63,17 @@ func TestAJobsModelRidesOnlyItsOwnTurn(t *testing.T) {
 
 // TestAModelJobNeverReachesTheAgentsOwnSession: on a store that cannot open a
 // Claude Code session of the job's own, a job with a model fails before any
-// turn — its turn would otherwise go to the agent's primary CLI, the session
-// the model must never reach. A job without a model still runs there.
+// turn with the same refusal a sha job gets (JobNoOwnSessionError) — its turn
+// would otherwise go to the agent's primary CLI, the session the model must
+// never reach. A job with neither a model nor a sha still runs there, as it
+// did before this field existed.
 func TestAModelJobNeverReachesTheAgentsOwnSession(t *testing.T) {
 	f := newJobFixture(t, testServiceToken)
 	f.s.ext.Agents = legacyJobAgents{f.ags}
 	f.gw.reply = "done"
 	out := f.await(t, f.submit(t, map[string]any{"agent": "keen-wren", "prompt": "review", "model": "opus"}))
-	if out["status"] != jobs.StatusFailed || out["reason"] != jobs.ReasonInternal || out["error"] != JobModelNoOwnSessionError {
-		t.Fatalf("job = %v/%v %q, want failed/internal %q", out["status"], out["reason"], out["error"], JobModelNoOwnSessionError)
+	if out["status"] != jobs.StatusFailed || out["reason"] != jobs.ReasonInternal || out["error"] != JobNoOwnSessionError {
+		t.Fatalf("job = %v/%v %q, want failed/internal %q", out["status"], out["reason"], out["error"], JobNoOwnSessionError)
 	}
 	if got := f.gw.seen(); len(got) != 0 {
 		t.Fatalf("turns = %q, want none", got)

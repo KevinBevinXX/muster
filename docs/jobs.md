@@ -138,7 +138,8 @@ The Claude model the job's turn runs on. Absent, the CLI's default, as before.
   ccd starts that session's CLI with `--model`. The agent's main session and
   every other session are not touched. On a deployment whose chat store cannot
   open a session of the job's own, a job with a `model` fails `internal`
-  before its turn, rather than run in the agent's own session.
+  before its turn — the refusal a `sha` job gets there — rather than run in
+  the agent's own session.
 - **Read back:** `model` on the job (`""` when none was given).
 
 ### `config_ref`
