@@ -108,6 +108,11 @@ const (
 	envFaroKey     = "MUSTER_FARO_API_KEY"
 	envFaroTracing = "MUSTER_FARO_TRACING"
 
+	// The operator's own hosts (ui.HostPreferences): the host tabs named
+	// first, in order, and a host's icon by its name.
+	envHostOrder = "MUSTER_HOST_ORDER"
+	envHostIcons = "MUSTER_HOST_ICONS"
+
 	envTagAutoDispatch = "MUSTER_TAG_AUTODISPATCH"
 	envTaskReapAfter   = "MUSTER_TASK_REAP_AFTER"
 	// The send queue (internal/sendqueue): how long a target must have been idle
@@ -514,6 +519,10 @@ type config struct {
 	FaroKey     string
 	FaroTracing bool
 
+	// HostPrefs is MUSTER_HOST_ORDER and MUSTER_HOST_ICONS, checked
+	// (ui.HostPreferences.Normalized); the zero value names no host.
+	HostPrefs ui.HostPreferences
+
 	TagAutoDispatch bool
 	TaskReapAfter   time.Duration
 	// SendQueueIdle is MUSTER_SEND_QUEUE_IDLE (sendqueue.DefaultIdleFor when
@@ -907,6 +916,29 @@ func parsePodLabels(v string) (map[string]string, error) {
 	return out, nil
 }
 
+// parseHostIcons parses MUSTER_HOST_ICONS: a comma list of `<host>=<icon>`.
+// Which hosts and icons are allowed is ui.HostPreferences.Normalized's; this
+// refuses only an entry that is not host=icon. Empty is none.
+func parseHostIcons(v string) (map[string]string, error) {
+	out := map[string]string{}
+	for _, part := range strings.Split(v, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		host, icon, ok := strings.Cut(part, "=")
+		host, icon = strings.TrimSpace(host), strings.TrimSpace(icon)
+		if !ok || host == "" || icon == "" {
+			return nil, fmt.Errorf("entry %q is not host=icon", part)
+		}
+		if _, dup := out[strings.ToLower(host)]; dup {
+			return nil, fmt.Errorf("host %q is given two icons", host)
+		}
+		out[strings.ToLower(host)] = icon
+	}
+	return out, nil
+}
+
 // splitList parses a comma list: trimmed, lower-cased, empties dropped.
 func splitList(v string) []string {
 	var out []string
@@ -1205,6 +1237,14 @@ func loadConfig(getenv func(string) string) (config, error) {
 	}
 	c.ChiefDispatchOwners = owners
 	c.ChiefSessionRuntimes = splitList(getenv(envChiefSessionRuntimes))
+
+	icons, err := parseHostIcons(getenv(envHostIcons))
+	if err != nil {
+		return config{}, fmt.Errorf("invalid %s: %v (want <host>=<icon>, comma-separated)", envHostIcons, err)
+	}
+	if c.HostPrefs, err = (ui.HostPreferences{Order: splitList(getenv(envHostOrder)), Icons: icons}).Normalized(); err != nil {
+		return config{}, fmt.Errorf("invalid %s / %s: %v", envHostOrder, envHostIcons, err)
+	}
 
 	if v := strings.TrimSpace(getenv(envGitHubEncKey)); v != "" {
 		key, err := decodeEncryptionKey(v)

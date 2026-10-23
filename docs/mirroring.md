@@ -50,8 +50,9 @@ host's MCP endpoint for its Claude Code sessions ([attention.md](attention.md#mi
   call per refresh, every 5 seconds.
 - **Titles.** A card is titled `<session>:<index>`. With `-labels-file` you can
   map a session to a codename: a JSON object `{"<session>": "<codename>"}`. Each
-  of that session's windows is then titled `<codename>:<index>`, with the raw
-  session name shown beside it. Each entry is checked on its own: an invalid one
+  of that session's windows is then titled `<codename>:<index>`. The window's
+  own pages show the raw session name beside it; its card does not (it is the
+  title's tooltip, and the search still finds it). Each entry is checked on its own: an invalid one
   is logged and skipped, and a missing or unreadable file is logged and ignored,
   never fatal.
   When the same title appears on more than one host, every one of them carries
@@ -109,24 +110,23 @@ host's MCP endpoint for its Claude Code sessions ([attention.md](attention.md#mi
   of those fields is plain text, so `gold:8` still finds a window called
   `Gold:8`. `field=value` matches the whole field instead of a substring. The
   filter is kept in the page's `?q=`, so a link reproduces it.
-- **Quick filters.** Under the box, five chips:
-  - **Waiting on ask**: something on the card asked you to decide. Either an
+- **Quick filters.** Under the box, four chips:
+  - **Waiting on you**: something on the card asked you to decide. Either an
     agent or a Claude Code session called `attention_ask` and waits for your
     answer, or a mirrored Claude Code session is stopped at a prompt (a
-    permission prompt: the session asking to go on) — the
-    [attention queue](attention.md)'s **Question** and **Session waiting**
-    items — or a dispatched agent is blocked at a permission prompt (its
-    **awaiting approval** badge).
-  - **Waiting on question**: a mirrored Claude Code session holds an
-    `AskUserQuestion` picker open for you (the queue's **Session question**).
+    permission prompt: the session asking to go on) or holds an
+    `AskUserQuestion` picker open for you — the
+    [attention queue](attention.md)'s **Question**, **Session waiting** and
+    **Session question** items — or a dispatched agent is blocked at a
+    permission prompt (its **awaiting approval** badge).
   - **Idle >15m**, **Idle >1h**, **Idle >1d**: no activity for more than that
     long (the same activity time the list is ordered by). A window with no
     reported activity is never counted as idle.
 
   The chips combine with OR: a card is shown when it matches ANY chosen chip
-  (waiting on an ask, or on a question, or idle that long). Only one idle chip
+  (waiting on you, or idle that long). Only one idle chip
   is on at a time. The chips together, the box and the host tab must all match.
-  A reply draft counts as neither waiting chip. The chosen chips are remembered
+  A reply draft does not count as waiting on you. The chosen chips are remembered
   on this device, and a list refresh never resets them; **Clear**, shown while
   any chip is on, turns them all off. A card that crosses an idle threshold
   while the list is open is not shown or hidden by itself — that would move
@@ -134,7 +134,9 @@ host's MCP endpoint for its Claude Code sessions ([attention.md](attention.md#mi
   and is applied on the tap.
 - **Host tabs.** Above the box: **All**, then one tab per host on the list
   (dispatched pod agents under **cluster**), each counting its cards that match
-  the box. A tab narrows the list to that host exactly, together with the box.
+  the box. The hosts named in `MUSTER_HOST_ORDER` come first, in that order,
+  then every other host alphabetically, then **cluster** last
+  ([configuration](configuration.md)). A tab narrows the list to that host exactly, together with the box.
   The chosen tab is remembered by the browser (not in `?q=`). While its host is
   not listed (a restart, a laptop asleep) the list shows **All**, and goes back
   to that host when it returns; only picking another tab changes the choice. A
@@ -143,11 +145,14 @@ host's MCP endpoint for its Claude Code sessions ([attention.md](attention.md#mi
   "N new ↑". On a phone the strip scrolls sideways.
 - **Host icons.** Every entry draws its host's icon beside its name — on its
   card, its "Recently viewed" entry, its host tab and the badge on its own
-  pages — with the host's name in the icon's tooltip. Dispatched pod agents
-  draw the cluster's icon, which no mirrored host ever draws. A host's icon is
-  picked by when its first mirror token was minted, so your first twelve hosts
-  each draw a different one, and minting a token for a new host (or a second
-  token for an old one) never changes an existing host's icon.
+  pages — with the host's name in the icon's tooltip. A mirrored window's card
+  also spells its host in a chip in its body (`host laptop`). Dispatched pod
+  agents draw the cluster's icon, which no mirrored host ever draws. A host
+  given an icon in `MUSTER_HOST_ICONS` (`laptop=laptop`) draws it, and no other
+  host does. Any other host's icon is picked by when its first mirror token was
+  minted, so your first hosts usually each draw a different one, and minting a
+  token for a new host (or a second token for an old one) never changes an
+  existing host's icon.
 
 ![The Agents list filtered with the search box](img/agents-filter.png)
 

@@ -223,6 +223,11 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		Version: api.BuildVersion,
 		Tracing: cfg.FaroTracing,
 	})
+	// The operator's own hosts: the host tabs' order and icons by name. Checked
+	// by loadConfig; installed here, before any page is rendered.
+	if err := ui.SetHostPreferences(cfg.HostPrefs); err != nil {
+		return nil, fmt.Errorf("host preferences: %w", err)
+	}
 	// Without this the page's connect-src stays 'self' and every telemetry send
 	// is blocked by CSP, silently, in the browser only.
 	api.SetTelemetryConnectSrc(cfg.FaroURL)

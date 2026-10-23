@@ -1,20 +1,32 @@
 package ui
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+
 	g "maragu.dev/gomponents"
 	. "maragu.dev/gomponents/html"
 )
 
 // agentsRulesJS defines window.__musterAgentsRules — the filter's grammar, the
-// chips' table and the hide rules — once per window. It is emitted in BOTH the
-// head script and agentsFilterScript, from this one constant: a boosted
-// navigation into the Agents tab from a document without the shell's head (an
-// agent's page) runs the body script with no head script ever having run.
+// chips' table and the hide rules — once per window AND VERSION. It is emitted
+// in BOTH the head script and agentsFilterScript, from this one constant: a
+// boosted navigation into the Agents tab from a document without the shell's
+// head (an agent's page) runs the body script with no head script ever having
+// run.
+//
+// 🔴 VERSIONED (agentsRulesVersion). A window keeps its globals across boosted
+// navigations, including one into a page a NEWER server rendered. A table
+// defined "once per window" then stayed the OLD one: chips the new page drew
+// (data-chip="waiting") looked up nothing in it and filtered nothing, and a
+// stored selection of them was dropped as unknown. The table is rebuilt
+// whenever its version is not this build's.
 var agentsRulesJS = `
-if (!window.__musterAgentsRules) (function () {
+if (!window.__musterAgentsRules || window.__musterAgentsRules.v !== '` + agentsRulesVersion() + `') (function () {
     var FIELDS = ` + cardFieldKeysJSON() + `;
     var CHIP_SEL = ` + chipSelectorsJSON() + `;
     var CHIP_IDS = ` + chipIDsJSON() + `;
+    var CHIP_ALIASES = ` + chipAliasesJSON() + `;
     function norm(v) { return String(v || '').replace(/\s+/g, ' ').trim(); }
     // tokens is a string in the grammar, term by term and in order: {raw, f, exact,
     // v} each — f a registered field (lower-cased) or null for free text, exact
@@ -53,9 +65,18 @@ if (!window.__musterAgentsRules) (function () {
     // string: [a="v"] for an exact term, [a*="v"] for every other. The rule that
     // hides and the query that counts are both built from it.
     function sel(t) { return '[' + t.attr + (t.exact ? '=' : '*=') + '"' + t.value.replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"]'; }
-    // chipsOf is a stored chip list, cleaned to the known chips.
+    // chipsOf is a stored chip list, cleaned to the known chips: a retired
+    // id is read as the chip that replaced it (CHIP_ALIASES), once.
     function chipsOf(raw) {
-      try { var v = JSON.parse(raw || '[]'); return Array.isArray(v) ? v.filter(function (c) { return CHIP_IDS.indexOf(c) >= 0; }) : []; } catch (e) { return []; }
+      try {
+        var v = JSON.parse(raw || '[]'), out = [];
+        if (!Array.isArray(v)) return [];
+        v.forEach(function (c) {
+          if (typeof c === 'string' && Object.prototype.hasOwnProperty.call(CHIP_ALIASES, c)) c = CHIP_ALIASES[c];
+          if (CHIP_IDS.indexOf(c) >= 0 && out.indexOf(c) < 0) out.push(c);
+        });
+        return out;
+      } catch (e) { return []; }
     }
     // chipSel is the chips' compound selector for a selection ('' for none).
     function chipSel(cs) { return CHIP_SEL[CHIP_IDS.filter(function (c) { return cs.indexOf(c) >= 0; }).join(',')] || ''; }
@@ -73,9 +94,17 @@ if (!window.__musterAgentsRules) (function () {
       if (cs) r.push('#agents-list > article:not(' + cs + '){display:none !important}');
       return r.join('\n');
     }
-    window.__musterAgentsRules = { tokens: tokens, terms: terms, sel: sel, norm: norm, chipsOf: chipsOf, chipSel: chipSel, rules: rules, CHIP_IDS: CHIP_IDS };
+    window.__musterAgentsRules = { v: '` + agentsRulesVersion() + `', tokens: tokens, terms: terms, sel: sel, norm: norm, chipsOf: chipsOf, chipSel: chipSel, rules: rules, CHIP_IDS: CHIP_IDS };
 })();
 `
+
+// agentsRulesVersion is a hash of everything agentsRulesJS takes from Go — the
+// fields, the chips' selectors, ids and aliases — so a window holding a table
+// built from other values rebuilds it.
+func agentsRulesVersion() string {
+	sum := sha256.Sum256([]byte(cardFieldKeysJSON() + "\x00" + chipSelectorsJSON() + "\x00" + chipIDsJSON() + "\x00" + chipAliasesJSON()))
+	return hex.EncodeToString(sum[:6])
+}
 
 // THE LIST'S FILTER STATE, APPLIED BEFORE THE FIRST PAINT.
 //

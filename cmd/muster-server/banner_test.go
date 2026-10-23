@@ -496,6 +496,11 @@ var bannerExempt = map[string]string{
 	envFaroTracing: "browser RUM: a tracing toggle on the page agent, handed to " +
 		"ui.SetFaroConfig with the URL and the key. It changes what the BROWSER emits, and " +
 		"nothing about what this process will or will not do at boot",
+	envHostOrder: "display only: the order of the Agents list's host tabs, handed to " +
+		"ui.SetHostPreferences. No server posture changes with it, and a value it refuses " +
+		"stops the boot in loadConfig, so there is no silent refusing state to announce",
+	envHostIcons: "display only: a host's icon by its name, handed to ui.SetHostPreferences " +
+		"with MUSTER_HOST_ORDER. Same reason as MUSTER_HOST_ORDER",
 	envTagAutoDispatch: "a feature flag on the task surface (api.Extensions.TagAutoDispatch), " +
 		"not a refusal or a dependency. Nothing about the boot posture changes with it, so " +
 		"a banner line would be noise",

@@ -65,6 +65,8 @@ var apiTitleNames = map[string]bool{"Source": true, "Focus": true}
 // checked below to call Title (or another helper in this set).
 var plainingHelpers = map[string]bool{
 	"mirrorEntryTitle":    true,
+	"mirrorCardTitle":     true,
+	"entryTitle":          true,
 	"mirrorSessionTitle":  true,
 	"mirrorTerminalTitle": true,
 }
@@ -74,6 +76,8 @@ var plainingHelpers = map[string]bool{
 // class) are drawn as written. checkPlainingHelpers holds each helper to it.
 var helperNameArgs = map[string][]int{
 	"mirrorEntryTitle":    {0, 1}, // label, title
+	"mirrorCardTitle":     {0, 1}, // label, title
+	"entryTitle":          {0, 1}, // label, title
 	"mirrorSessionTitle":  {0},    // label
 	"mirrorTerminalTitle": {0},    // title
 	"plainOr":             {0},    // s (the fallback is drawn as written)
@@ -85,14 +89,13 @@ type exemption struct {
 }
 
 const (
-	whyFilter    = "filter haystack / rank key: matched against what the user types, never drawn"
-	whyForm      = "edit form value: the raw stored title, edited as written"
-	whyStatic    = "a fixed UI label (tab, status, preset, model, runtime, quick key, chip), never author text"
-	whyPredicate = "a predicate on the raw value (which subtitle to draw), not a display"
-	whyAccessor  = "the accessor itself; every display caller applies Title to its result"
-	whyOption    = "an answer option: submitted verbatim as the answer, so shown verbatim"
-	whyDispatch  = "a query parameter into the dispatch form; DispatchModalTaskBody applies Title at emit"
-	whyPerson    = "a person's (user account's) display name, not a title"
+	whyFilter   = "filter haystack / rank key: matched against what the user types, never drawn"
+	whyForm     = "edit form value: the raw stored title, edited as written"
+	whyStatic   = "a fixed UI label (tab, status, preset, model, runtime, quick key, chip), never author text"
+	whyAccessor = "the accessor itself; every display caller applies Title to its result"
+	whyOption   = "an answer option: submitted verbatim as the answer, so shown verbatim"
+	whyDispatch = "a query parameter into the dispatch form; DispatchModalTaskBody applies Title at emit"
+	whyPerson   = "a person's (user account's) display name, not a title"
 )
 
 // uiExempt: "file func expr" → exemption.
@@ -104,7 +107,7 @@ var uiExempt = map[string]exemption{
 	"subagent_cards.go subagentSummary s.Description":  {2, "a subagent's tool-call description, shown as Claude Code wrote it, like the transcript row it summarises"},
 	"terminal.go AgentTerminalPage v.DisplayName":      {1, "the raw name, plained once into the <title> and once (inside the plaining helper mirrorTerminalTitle) into the header — never twice (\"applied once\")"},
 	"agents.go agentCard a.DisplayName":                {1, whyFilter},
-	"mirror.go mirrorCard m.Label":                     {4, whyFilter + "; and " + whyPredicate},
+	"mirror.go mirrorCard m.Label":                     {2, whyFilter},
 	"mirror.go mirrorCard m.Title":                     {2, whyFilter},
 	"agents.go agentFields a.DisplayName":              {2, whyFilter},
 	"agents.go agentRenameForm a.DisplayName":          {1, whyForm},

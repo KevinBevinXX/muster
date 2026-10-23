@@ -127,7 +127,8 @@ const cardsOf = (page: Page, host: string) => page.locator(`#agents-list article
 const mangoCard = (page: Page, host: string) => cardsOf(page, host).filter({ has: page.locator('[data-mirror-label]', { hasText: /^mango:1$/ }) });
 
 // The TITLE as shown: the name element's text, minus the raw tmux session name
-// drawn small beside a label (it is not part of the title).
+// a window's PAGE draws small beside a label (it is not part of the title; a
+// card draws none).
 async function shownTitle(scope: Locator): Promise<string> {
   return scope.locator('[data-mirror-name]').first().evaluate((el) => {
     const c = el.cloneNode(true) as HTMLElement;
@@ -446,4 +447,47 @@ test('back and forward restore the filter each /agents entry had', async ({ page
   await expect(visible(hostC)).toHaveCount(1);
   await expect(visible(hostA)).toHaveCount(0);
   await page.locator('#agents-search-clear').tap();
+});
+
+// ONE HOST, ONE CODENAME, TWO SESSIONS — and no raw session name on the card.
+// The card no longer draws the raw tmux session beside a codename (an operator
+// ask: the resolved title only), so what tells two "violet:1" windows of ONE
+// host apart is their qualifier: the tmux address (mirror.qualify), part of the
+// title. A codename no other window shares carries no qualifier, and its card
+// spells no session name at all.
+//
+// 🔴 Red before: each labelled card also drew its session name (`scratch7`,
+// `scratch9`) muted beside the title, so the "no raw session text" assertions
+// fail there.
+test('two sessions of one host given one codename: two distinct titles, and no raw session name on a labelled card', async ({ page }) => {
+  const hostD = 'e2e-dupd-' + stamp;
+  // The codenames are written before host D starts; hosts A–C have none of
+  // these sessions, so their titles are unchanged.
+  writeFileAtomic(path.join(dir, 'labels.json'), JSON.stringify({ mango: 'mango', scratch7: 'violet', scratch8: 'violet', scratch9: 'amber' }));
+  writeWindows(hostD, [
+    { session: 'scratch7', id: '@1', index: 1, active: true, command: 'zsh', activity: now - 30 },
+    { session: 'scratch8', id: '@2', index: 1, active: true, command: 'zsh', activity: now - 40 },
+    { session: 'scratch9', id: '@3', index: 1, active: true, command: 'zsh', activity: now - 50 },
+  ]);
+  startHost(hostD, mint(hostD));
+  await signIn(page);
+  await page.goto(origin + '/agents');
+  await expect(cardsOf(page, hostD), `host D's cards (log:\n${mirrorLog})`).toHaveCount(3, { timeout: 20_000 });
+  await takeNew(page);
+  const violet = cardsOf(page, hostD).filter({ has: page.locator('[data-mirror-label]', { hasText: /^violet:1$/ }) });
+  await expect(violet).toHaveCount(2);
+  const titles = (await violet.evaluateAll((els) => els.map((e) => (e.querySelector('[data-mirror-name]')?.textContent ?? '').trim()))).sort();
+  expect(titles, 'each carries its tmux address as its qualifier').toEqual(['violet:1 · scratch7:1', 'violet:1 · scratch8:1']);
+  const amber = cardsOf(page, hostD).filter({ has: page.locator('[data-mirror-label]', { hasText: /^amber:1$/ }) });
+  await expect(amber.locator('[data-mirror-name]')).toHaveText('amber:1');
+  await expect(amber.locator('[data-mirror-qualifier]')).toHaveCount(0);
+  for (const c of [amber, violet.first(), violet.last()]) await expect(c.locator('[data-mirror-session]')).toHaveCount(0);
+  expect(await amber.innerText(), 'a unique codename\'s card spells no session name').not.toContain('scratch9');
+  // The violet cards spell their session ONLY in the qualifier, once each.
+  for (const c of [violet.first(), violet.last()]) {
+    const text = await c.innerText();
+    expect((text.match(/scratch[78]/g) ?? []).length, `one mention, the qualifier's: ${text}`).toBe(1);
+  }
+  const [sw, cw] = await page.evaluate(() => [document.documentElement.scrollWidth, document.documentElement.clientWidth]);
+  expect(sw, 'no sideways scroll').toBeLessThanOrEqual(cw);
 });

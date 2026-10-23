@@ -186,8 +186,9 @@ test.describe('phone 390×844, the strip', () => {
 test('one tab per host with its count; a tab filters; the dropdowns are gone; the strip scrolls, not the page', async ({ page }) => {
     await openList(page);
     await expect(page.locator('#agents-filter select'), 'no dropdown filter is left').toHaveCount(0);
-    // All, then each host by name — the pod agents under "cluster".
-    await expect.poll(() => labels(page)).toEqual(['All', 'cluster', hostA, hostB]);
+    // All, then each host by name — the pod agents under "cluster", last
+    // (hostTabOrder: this server names no host in MUSTER_HOST_ORDER).
+    await expect.poll(() => labels(page)).toEqual(['All', hostA, hostB, 'cluster']);
     await expect(allTab(page)).toHaveAttribute('aria-selected', 'true');
     // Each count is that host's cards; All's is every card.
     const total = await page.locator('#agents-list > article').count();
@@ -227,9 +228,9 @@ test('one tab per host with its count; a tab filters; the dropdowns are gone; th
     expect(await strip(page).evaluate((e) => getComputedStyle(e).overflowX)).toBe('auto');
     await noPageOverflow(page);
     // The last tab is reachable by scrolling the strip, and works.
-    await tab(page, hostB).scrollIntoViewIfNeeded();
-    await tapOn(tab(page, hostB));
-    await expect(shownOn(page, hostB)).toHaveCount(2);
+    await tab(page, 'cluster').scrollIntoViewIfNeeded();
+    await tapOn(tab(page, 'cluster'));
+    await expect(agentCard(page)).toBeVisible();
     await expect(shownOn(page, hostA)).toHaveCount(0);
     await noPageOverflow(page);
     await tapOn(allTab(page));
@@ -240,17 +241,17 @@ test('one tab per host with its count; a tab filters; the dropdowns are gone; th
   // page — when it is chosen and when a load restores it.
   test('the selected tab is brought into the strip on load, without scrolling the page', async ({ page }) => {
     await openList(page);
-    await tab(page, hostB).scrollIntoViewIfNeeded();
-    await tab(page, hostB).tap();
+    await tab(page, 'cluster').scrollIntoViewIfNeeded();
+    await tab(page, 'cluster').tap();
     await page.reload();
-    await expect(tab(page, hostB)).toHaveAttribute('aria-selected', 'true', { timeout: 20_000 });
+    await expect(tab(page, 'cluster')).toHaveAttribute('aria-selected', 'true', { timeout: 20_000 });
     const inside = () =>
       page.evaluate((h) => {
         const s = document.getElementById('agents-hosts')!;
         const t = s.querySelector(`[role="tab"][data-host="${h}"]`)!;
         const sr = s.getBoundingClientRect(), tr = t.getBoundingClientRect();
         return [s.scrollLeft > 0, tr.left >= sr.left - 1 && tr.right <= sr.right + 1, window.scrollY];
-      }, hostB);
+      }, 'cluster');
     expect(await inside(), 'scrolled into the strip, the page not scrolled').toEqual([true, true, 0]);
     // Picking a tab off the strip's left edge brings it in too.
     await strip(page).evaluate((e) => (e.scrollLeft = e.scrollWidth));
@@ -264,19 +265,20 @@ test.describe('desktop 1280×800, behaviour', () => {
 
   test('the arrow keys, Home and End move between tabs and choose them', async ({ page }) => {
     await openList(page);
-    await expect.poll(() => labels(page)).toEqual(['All', 'cluster', hostA, hostB]);
+    await expect.poll(() => labels(page)).toEqual(['All', hostA, hostB, 'cluster']);
     await allTab(page).focus();
     await page.keyboard.press('ArrowRight');
-    await expect(tab(page, 'cluster')).toBeFocused();
-    await expect(tab(page, 'cluster')).toHaveAttribute('aria-selected', 'true');
-    await expect(shownOn(page, hostA)).toHaveCount(0);
+    await expect(tab(page, hostA)).toBeFocused();
+    await expect(tab(page, hostA)).toHaveAttribute('aria-selected', 'true');
+    await expect(shownOn(page, hostB)).toHaveCount(0);
     await page.keyboard.press('End');
-    await expect(tab(page, hostB)).toBeFocused();
-    await expect(shownOn(page, hostB)).toHaveCount(2);
+    await expect(tab(page, 'cluster')).toBeFocused();
+    await expect(agentCard(page)).toBeVisible();
+    await expect(shownOn(page, hostA)).toHaveCount(0);
     await page.keyboard.press('ArrowRight');
     await expect(allTab(page), 'Right wraps to the first tab').toBeFocused();
     await page.keyboard.press('ArrowLeft');
-    await expect(tab(page, hostB), 'Left wraps to the last').toBeFocused();
+    await expect(tab(page, 'cluster'), 'Left wraps to the last').toBeFocused();
     await page.keyboard.press('Home');
     await expect(allTab(page)).toHaveAttribute('aria-selected', 'true');
     await expect(shownOn(page, hostB)).toHaveCount(2);
@@ -295,7 +297,7 @@ test.describe('desktop 1280×800, behaviour', () => {
     expect(await countOf(tab(page, hostB))).toBe('1');
     expect(await countOf(tab(page, 'cluster'))).toBe('0');
     // The tabs stay, though one counts nothing.
-    expect(await labels(page)).toEqual(['All', 'cluster', hostA, hostB]);
+    expect(await labels(page)).toEqual(['All', hostA, hostB, 'cluster']);
 
     await tab(page, hostB).click();
     await expect(shownOn(page, hostB)).toHaveCount(1);
@@ -408,14 +410,14 @@ test.describe('desktop 1280×800, behaviour', () => {
   test('a host that connects gets a tab, live, in its place', async ({ page }) => {
     await openList(page);
     await page.evaluate(() => ((window as unknown as { __noReload: number }).__noReload = 1));
-    await expect.poll(() => labels(page)).toEqual(['All', 'cluster', hostA, hostB]);
+    await expect.poll(() => labels(page)).toEqual(['All', hostA, hostB, 'cluster']);
     rig.extraHost(hostC, { MUSTER_MIRROR_E2E_WINDOWS_FILE: filesC });
     await expect
       .poll(async () => {
         await takeNew(page);
         return labels(page);
       }, { timeout: 30_000, message: `host C connected (log:\n${rig.log})` })
-      .toEqual(['All', 'cluster', hostA, hostB, hostC]);
+      .toEqual(['All', hostA, hostB, hostC, 'cluster']);
     expect(await countOf(tab(page, hostC))).toBe('1');
     await tab(page, hostC).click();
     await expect(shownOn(page, hostC)).toHaveCount(1);

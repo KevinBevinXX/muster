@@ -3,18 +3,33 @@ package ui
 import (
 	"strings"
 	"testing"
+
+	"golang.org/x/net/html"
 )
 
+// visibleText is markup's text nodes, concatenated: what a reader sees, with
+// no attribute (a title= tooltip, a data-* value) in it.
+func visibleText(t *testing.T, markup string) string {
+	t.Helper()
+	doc, err := html.Parse(strings.NewReader(markup))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return nodeText(doc)
+}
+
 // PRETTY NAMES on the mirrored surfaces: a host's label ("mango:1") is what a
-// card and a page are TITLED by, the raw tmux session name stays visible beside
-// it, and every link and socket keeps addressing the session by its NAME.
+// card and a page are TITLED by, and every link and socket keeps addressing the
+// session by its NAME. A window's own PAGES keep the raw tmux session name
+// visible beside the label; the Agents list's CARD does not (an operator ask:
+// the resolved title only) — it keeps it as the name's tooltip and a search
+// term.
 
 func TestAMirrorCardShowsTheLabelAndKeepsTheRawNameAndAddress(t *testing.T) {
 	m := MirrorCardView{Host: "laptop", Session: "scratch13", Label: "mango:1", Online: true}
 	html := renderNode(t, mirrorCard(m))
 	for _, want := range []string{
 		`<span data-mirror-label="">mango:1</span>`,
-		`>scratch13</span>`,
 		`title="tmux session scratch13"`,
 		`href="` + strings.ReplaceAll(MirrorTerminalPath("laptop", "scratch13"), "&", "&amp;") + `"`,
 	} {
@@ -29,6 +44,44 @@ func TestAMirrorCardShowsTheLabelAndKeepsTheRawNameAndAddress(t *testing.T) {
 	}
 	if strings.Contains(MirrorCardHref(m), "mango") {
 		t.Errorf("the card's link carries the label: %s", MirrorCardHref(m))
+	}
+}
+
+// TestALabelledCardDoesNotSpellTheRawSessionName: the operator's ask "hide the
+// Scratch X copy". A card whose host sent a label shows the label — and the
+// raw tmux session name is NOT drawn as text anywhere on the card (it is the
+// name's tooltip and a filter term only). Covered for each place a card draws
+// its title: the plain title, a focus card's subtitle, and a long name's own
+// title row. Red before: each drew `<span data-mirror-session>scratch13</span>`.
+func TestALabelledCardDoesNotSpellTheRawSessionName(t *testing.T) {
+	long := strings.Repeat("a long codename ", 5)
+	for name, m := range map[string]MirrorCardView{
+		"title":    {Host: "laptop", Session: "scratch13", Window: "@1", Label: "mango:1", Online: true},
+		"subtitle": {Host: "laptop", Session: "scratch13", Window: "@1", Label: "mango:1", Online: true, Focus: &FocusView{Title: "Ship the release notes"}},
+		"long":     {Host: "laptop", Session: "scratch13", Window: "@1", Label: long, Online: true},
+	} {
+		html := renderNode(t, mirrorCard(m))
+		if _, clamped := clampTitle(m.Label); clamped != (name == "long") {
+			t.Fatalf("instrument check FAILED: %s: clamped = %v", name, clamped)
+		}
+		if strings.Contains(html, "data-mirror-session") {
+			t.Errorf("%s: the card still draws the raw session span:\n%s", name, html)
+		}
+		if got := strings.Count(visibleText(t, html), "scratch13"); got != 0 {
+			t.Errorf("%s: the raw session name is visible text on the card %d time(s):\n%s", name, got, visibleText(t, html))
+		}
+		// Still the tooltip, and still found by the filter.
+		if !strings.Contains(html, `title="tmux session scratch13"`) && name != "long" {
+			t.Errorf("%s: the name lost its tmux-session tooltip:\n%s", name, html)
+		}
+		if !strings.Contains(html, `data-f-session="scratch13"`) {
+			t.Errorf("%s: the session is no longer a filter field:\n%s", name, html)
+		}
+	}
+	// Control: the window's own pages still show it beside the label.
+	view := renderNode(t, MirrorViewPage(MirrorViewView{Host: "laptop", Session: "scratch13", Label: "mango:1"}))
+	if !strings.Contains(view, `data-mirror-session="" class="ml-1.5 text-xs text-muted">scratch13</span>`) {
+		t.Errorf("control: the rendered view no longer shows the session beside its label:\n%s", view)
 	}
 }
 
@@ -91,8 +144,8 @@ func TestAQualifiedMirrorTitleIsPartOfTheTitleEverywhere(t *testing.T) {
 	const q = `<span data-mirror-qualifier=""> · tower</span>`
 
 	labelled := renderNode(t, mirrorCard(MirrorCardView{Host: "tower", Session: "mango", Window: "@7", Label: "mango:1", Qualifier: "tower", Online: true}))
-	if !strings.Contains(labelled, `<span data-mirror-label="">mango:1</span>`+q+`<span data-mirror-session=""`) {
-		t.Errorf("a labelled card's qualifier is not between its label and its session:\n%s", labelled)
+	if !strings.Contains(labelled, `<span data-mirror-label="">mango:1</span>`+q+`</span>`) {
+		t.Errorf("a labelled card's qualifier does not follow its label inside its name:\n%s", labelled)
 	}
 	if !strings.Contains(labelled, `data-filter="mango:1 mango:1 · tower mango tower `) {
 		t.Errorf("the filter does not carry the qualified title:\n%s", labelled)

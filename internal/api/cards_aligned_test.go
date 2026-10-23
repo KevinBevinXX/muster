@@ -46,7 +46,7 @@ func TestAMirroredCardWithNoActivityPrintsNone(t *testing.T) {
 	if strings.Contains(card, "data-card-active") {
 		t.Errorf("a window with no reported activity printed one:\n%s", card)
 	}
-	if !strings.Contains(card, `data-mirror-host=""`) {
+	if !strings.Contains(card, `data-card-slot="footer"`) {
 		t.Errorf("instrument check FAILED: the card has no footer at all:\n%s", card)
 	}
 }

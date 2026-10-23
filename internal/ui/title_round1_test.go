@@ -14,8 +14,6 @@ func TestATitleThatIsAllMarkupFallsBack(t *testing.T) {
 	for _, c := range []struct {
 		name, want, out string
 	}{
-		// (The mirror card also draws the raw session name beside the label, so
-		// the name position is asserted by count below.)
 		{"agent card", ">agent_17<", renderString(t, agentCard(AgentCardView{ID: 17, Name: "agent_17", Status: "running", DisplayName: "<b></b>"}))},
 		{"agent detail <title>", "<title>agent_18 · muster</title>", renderString(t, AgentDetailPage(AgentDetailView{Name: "agent_18", Status: "running", DisplayName: "<b></b>"}, Features{}))},
 		{"agent detail <h1>", ">agent_19</h1>", renderString(t, agentTitle(AgentDetailView{Name: "agent_19", Status: "running", DisplayName: "<i> </i>"}))},
@@ -23,12 +21,8 @@ func TestATitleThatIsAllMarkupFallsBack(t *testing.T) {
 		{"mirror card", ">_s21_<", renderString(t, mirrorCard(MirrorCardView{Host: "h", Session: "_s21_", Label: "<b></b>", Online: true}))},
 		{"recents", ">agent_22<", renderString(t, recentStrip(recentItems([]AgentCardView{{ID: 22, Name: "agent_22", DisplayName: "<b></b>"}}, nil, []RecentRef{{AgentID: 22}}), false))},
 	} {
-		min := 1
-		if c.name == "mirror card" {
-			min = 2 // the name AND the session beside it
-		}
-		if n := strings.Count(c.out, c.want); n < min {
-			t.Errorf("%s: %q drawn %d time(s), want ≥%d (the fallback, as written)", c.name, c.want, n, min)
+		if n := strings.Count(c.out, c.want); n < 1 {
+			t.Errorf("%s: %q drawn %d time(s), want ≥1 (the fallback, as written)", c.name, c.want, n)
 		}
 	}
 }

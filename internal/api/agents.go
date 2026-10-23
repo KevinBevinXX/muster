@@ -603,7 +603,7 @@ func (s *Server) cardViewIndexed(a agents.Agent, idx map[string]*provision.Insta
 		Pinned: pinned.Agent(a.ID),
 		// The agent's focus (internal/focus), read once per render by the caller.
 		Focus: focused.view(focus.AgentSubject(a.ID)),
-		// The polled badge's own answer (in memory), so "Waiting on ask" finds an
+		// The polled badge's own answer (in memory), so "Waiting on you" finds an
 		// agent blocked at a permission prompt.
 		AwaitingApproval: s.AwaitingApproval(a.ID),
 		// The pod's live work counts (agent_work.go): none unless it is running,
