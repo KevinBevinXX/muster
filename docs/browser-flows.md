@@ -13,21 +13,28 @@ A job moves through these states: `queued` → `running` (held for 2 minutes and
 extended by heartbeats) → `done`, `failed` or `needs_operator`.
 
 A `queued` job that is not claimed before its ttl (`--ttl`, default 15 minutes)
-becomes `expired` and never runs late. Only one job runs at a time on each of
-your browser instances (owner, host, instance), so a job can wait behind a
-running one. **That wait does not count against its ttl.** It is never expired
-while a job on the same instance is running, and when that job finishes (or its
-lease runs out) the time it blocked is added to the queued job's deadline. The
-job's `expiresAt` stays the deadline as enqueued.
+becomes `expired`. Only one job runs at a time on each of your browser
+instances (owner, host, instance), so a job can wait behind a running one.
+**That wait does not count against its ttl, up to a ceiling per blocking
+job.** The job's `expiresAt` stays the deadline as enqueued.
 
-That credit has an absolute ceiling, `MaxTTLPause` = **90 minutes**. It is
-sized from the longest legitimate hold of one instance, a muse dispatch: the
-10-minute pacing gap, plus `wait` up to 3600 s, plus 240 s of runner slack, is
-74 minutes, and the rest is headroom. A queued job is expired once it is 90
-minutes past its `expiresAt`, even if the job blocking it is still running (a
-runner can keep heartbeating a wedged flow forever). So no job runs more than
-ttl + 90 minutes after it was queued, and an owner's pending cap (20) always
-clears.
+The ceiling is `MaxTTLPause` = **90 minutes for each job it waits behind**,
+not in total. It is sized from the longest legitimate hold of one instance, a
+muse dispatch: the 10-minute pacing gap, plus `wait` up to 3600 s, plus 240 s
+of runner slack, is 74 minutes, and the rest is headroom. Exactly:
+
+- While blocked, a job's deadline is `expiresAt` + the credit it already has
+  + the time the job blocking it has held it, counted up to 90 minutes.
+- When that job finishes (or its lease runs out), the time it blocked (up to
+  90 minutes) is added to the credit of every job still queued behind it.
+
+So a job behind two long dispatches survives both. A blocked job expires only
+if its own ttl had already run out before the block began, or if the job
+blocking it has run longer than 90 minutes (a runner can keep heartbeating a
+wedged flow forever). In that case the queue behind a wedged job clears within
+90 minutes of the block starting, plus each job's remaining ttl, and an
+owner's pending cap (20) always clears. The expiry detail says which of the
+two happened.
 
 Cancelling (`POST /api/flows/jobs/{id}/cancel`, or the button on `/flows`)
 withdraws a `queued` job and dismisses a `needs_operator` one. A `running` job
@@ -53,7 +60,7 @@ now.
 
 A dispatch job can stay `running` for a long time and still be healthy: up to
 about 10 minutes waiting out Muse's pacing gap, then `wait`, then 240 seconds.
-Nothing caps how long a job may run (the jobs queued behind it still expire at the 90-minute ceiling above). A job is only taken from its runner when
+Nothing caps how long a job may run (the jobs queued behind it still expire once it has held them past the 90-minute per-blocker ceiling above). A job is only taken from its runner when
 the runner stops heartbeating and the 2-minute lease runs out.
 
 ## Three ways in

@@ -13,14 +13,21 @@
 -- effective deadline is expires_at + ttl_paused. expires_at itself stays the
 -- immutable, as-enqueued audit fact (flow_jobs_input_immutable); this column is
 -- deliberately NOT in that trigger's list. The store:
---   * never expires a queued job while a same owner/host/instance job is
---     running (sweep), and
+--   * while a job is blocked, counts the current blocker's hold toward its
+--     deadline, up to MaxTTLPause (90 min) PER BLOCKER (sweep), and
 --   * when the blocking job leaves `running` (Report, or the lease sweep), adds
---     to each job still queued behind it the time it was blocked by that job:
---     now() - greatest(its created_at, the blocker's claimed_at) — in the SAME
+--     to each job still queued behind it the time it was blocked by that job,
+--     at most MaxTTLPause: now() - greatest(its created_at, the blocker's
+--     claimed_at) — in the SAME
 --     statement as the transition, so no sweep can see the blocker gone and
 --     the pause not yet applied.
 --
 -- Additive; an older muster ignores it (and goes back to expiring blocked
 -- jobs on the recorded expires_at).
+--
+-- The ALTER takes an ACCESS EXCLUSIVE lock on flow_jobs, which every runner
+-- claim and heartbeat touches. Fail fast rather than queue behind (and in
+-- front of) them; the same convention as 0040, 0041 and 0043.
+SET LOCAL lock_timeout = '3s';
+
 ALTER TABLE flow_jobs ADD COLUMN IF NOT EXISTS ttl_paused INTERVAL NOT NULL DEFAULT interval '0';

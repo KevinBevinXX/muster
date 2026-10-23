@@ -418,11 +418,19 @@ func runningSend(t *testing.T, s *PGStore, pool *pgxpool.Pool, ago time.Duration
 	return send
 }
 
-// TestABlockedJobStillExpiresAtTheAbsoluteCeiling (round-2 F-A): a runner that
-// keeps heartbeating a wedged flow must not hold the jobs behind it forever. A
-// poll blocked past expires_at + MaxTTLPause expires even though its blocker
-// is STILL running, and its detail says so truthfully. CONTROL: a poll blocked
-// just inside the ceiling stays queued.
+// The two expiry details, pinned whole: a reader must be able to tell a job
+// that waited out a wedged blocker from one whose own ttl ran out.
+const (
+	wantBlockedExpiry = "not claimed within its ttl plus up to 90 minutes of credit for each running job it waited behind on the same browser, and the job blocking it has run longer than that; it will not run later than that"
+	wantPlainExpiry   = "not claimed before its ttl (plus its credit for time spent blocked); it will not run later than that"
+)
+
+// TestABlockedJobStillExpiresAtTheAbsoluteCeiling (round-2 F-A, round-3 (b)):
+// a runner that keeps heartbeating a wedged flow must not hold the jobs behind
+// it forever. A poll blocked by ONE blocker for longer than MaxTTLPause, with
+// its own ttl spent, expires even though that blocker is STILL running, and
+// its detail is the blocked-branch message, whole. CONTROL: a poll blocked
+// just inside the bound stays queued.
 func TestABlockedJobStillExpiresAtTheAbsoluteCeiling(t *testing.T) {
 	s, pool := pgStore(t)
 	runningSend(t, s, pool, 3*time.Hour)
@@ -432,11 +440,78 @@ func TestABlockedJobStillExpiresAtTheAbsoluteCeiling(t *testing.T) {
 	if err != nil || got.Status != StatusExpired {
 		t.Fatalf("a poll blocked past the ceiling reads %+v %v; want expired while the blocker still runs", got, err)
 	}
-	if !strings.Contains(got.Detail, "blocked") || strings.HasSuffix(got.Detail, "will not run late") {
-		t.Fatalf("detail %q: want it to name the blocked-wait ceiling, not claim it never runs late", got.Detail)
+	if got.Detail != wantBlockedExpiry {
+		t.Fatalf("detail = %q\nwant      %q", got.Detail, wantBlockedExpiry)
 	}
 	if got, err := s.Get(session(2), inside); err != nil || got.Status != StatusQueued {
 		t.Fatalf("CONTROL: a poll blocked just inside the ceiling reads %+v %v; want still queued", got, err)
+	}
+}
+
+// TestAnUnblockedJobsExpiryDetailIsThePlainOne: the other branch, pinned whole.
+func TestAnUnblockedJobsExpiryDetailIsThePlainOne(t *testing.T) {
+	s, pool := pgStore(t)
+	id := insertPoll(t, pool, 20*time.Minute, DefaultTTL)
+	got, err := s.Get(session(2), id)
+	if err != nil || got.Status != StatusExpired || got.Detail != wantPlainExpiry {
+		t.Fatalf("an unblocked aged poll reads %+v %v; want expired with %q", got, err, wantPlainExpiry)
+	}
+}
+
+// TestAJobBehindTwoLongDispatchesSurvives (round-3 (a)): two muse.send
+// wait=3600 queued, then a muse.poll with the default 15-min ttl. Send 1 held
+// the instance ~63 min (credited to the poll when it reported) and send 2 has
+// now been running 64 min, legitimately. ~127 min of total waiting exceeds
+// ttl + 90, but no single blocker exceeded MaxTTLPause, so the poll is still
+// queued and is claimed once send 2 reports.
+func TestAJobBehindTwoLongDispatchesSurvives(t *testing.T) {
+	s, pool := pgStore(t)
+	send2 := runningSend(t, s, pool, 64*time.Minute)
+	poll := insertPoll(t, pool, 127*time.Minute, DefaultTTL)
+	sys(t, pool, `UPDATE flow_jobs SET ttl_paused = interval '63 minutes' WHERE id = $1`, poll) // send 1's credit
+	if got, err := s.Get(session(2), poll); err != nil || got.Status != StatusQueued {
+		t.Fatalf("the poll behind the second long dispatch reads %+v %v; want still queued", got, err)
+	}
+	if _, err := s.Report(runner(2), send2.ID, "laptop", Result{Outcome: OutcomeDone}); err != nil {
+		t.Fatalf("report send 2: %v", err)
+	}
+	if c, ok, err := s.Claim(runner(2), "laptop", []string{"personal"}, 0); err != nil || !ok || c.ID != poll {
+		t.Fatalf("after send 2 reported, claim = %+v ok=%v %v; want the poll %d", c, ok, err, poll)
+	}
+	if got := pausedSeconds(t, pool, poll); got < (63+64)*60-5 || got > (63+64)*60+5 {
+		t.Fatalf("ttl_paused = %.0fs; want ~%ds (63m + 64m, each under the per-blocker cap)", got, (63+64)*60)
+	}
+}
+
+// TestACreditedJobBlockedAgainHasTheDocumentedBound (round-3 (c)): the bound is
+// expires_at + its credit so far + up to MaxTTLPause for the CURRENT blocker.
+// A poll already credited 30 min, then blocked by a wedged send running 100
+// min: expired once expires_at + 30m + 90m has passed; a twin 30 min younger is
+// still queued.
+func TestACreditedJobBlockedAgainHasTheDocumentedBound(t *testing.T) {
+	s, pool := pgStore(t)
+	runningSend(t, s, pool, 100*time.Minute)
+	old := insertPoll(t, pool, 150*time.Minute, DefaultTTL)   // deadline -135+30+90 = -15m
+	young := insertPoll(t, pool, 120*time.Minute, DefaultTTL) // deadline -105+30+90 = +15m
+	sys(t, pool, `UPDATE flow_jobs SET ttl_paused = interval '30 minutes' WHERE id IN ($1, $2)`, old, young)
+	if got, err := s.Get(session(2), old); err != nil || got.Status != StatusExpired || got.Detail != wantBlockedExpiry {
+		t.Fatalf("the credited poll past its bound reads %+v %v; want expired (blocked branch)", got, err)
+	}
+	if got, err := s.Get(session(2), young); err != nil || got.Status != StatusQueued {
+		t.Fatalf("CONTROL: the credited poll inside its bound reads %+v %v; want still queued", got, err)
+	}
+}
+
+// TestTheCurrentBlockersCreditIsTheTimeItHasBlocked: while blocked, a job's
+// clock is paused only for the time THIS blocker has actually held it (up to
+// MaxTTLPause), not a flat MaxTTLPause. A poll whose ttl ran out while nothing
+// blocked it (queued 30m ago, 15m ttl), then blocked 10m ago, is expired.
+func TestTheCurrentBlockersCreditIsTheTimeItHasBlocked(t *testing.T) {
+	s, pool := pgStore(t)
+	runningSend(t, s, pool, 10*time.Minute)
+	id := insertPoll(t, pool, 30*time.Minute, DefaultTTL) // deadline -15m + 10m blocked = -5m
+	if got, err := s.Get(session(2), id); err != nil || got.Status != StatusExpired {
+		t.Fatalf("a poll whose own ttl ran out before the blocker came reads %+v %v; want expired", got, err)
 	}
 }
 

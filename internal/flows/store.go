@@ -252,29 +252,41 @@ func enqueueTx(ctx context.Context, tx pgx.Tx, f Flow, r Request, params []byte,
 // round-1 F1). A claim refuses a job while a job of the same owner, host and
 // instance is running, and a muse dispatch may hold that instance for over an
 // hour; a job queued behind it must not expire merely for waiting. So a queued
-// job's deadline is expires_at + ttl_paused, the sweep never expires it while
-// it is blocked (blockedBy), and when the blocker leaves `running` the same
-// statement adds the blocked time to each job still queued behind it
-// (resumeBehind). Doing it in the transition's own statement is what makes it
+// job's deadline is expires_at + ttl_paused (credit from finished blockers) +
+// the time the current blocker has held it, at most MaxTTLPause (blockSpan,
+// in the sweep). When the blocker leaves `running` the same statement banks
+// that time — again at most MaxTTLPause — into ttl_paused of each job still
+// queued behind it (resumeBehind). Doing it in the transition's own statement is what makes it
 // race-safe: no other statement can observe the blocker gone and the pause not
 // yet applied.
 
-// MaxTTLPause is the ABSOLUTE ceiling on the ttl credit a queued job earns
-// while blocked (round-2 F-A). Without it a runner that keeps heartbeating a
-// wedged flow — nothing caps how long a job may run — would hold every job
-// behind it forever, and the owner's MaxPendingPerOwner would never clear.
-// Sized from the longest LEGITIMATE hold of one instance, a muse dispatch:
-// the pacing gap waited inside the job (10 min, the muse wrapper's default
-// MUSE_MIN_SEND_GAP_MIN) + MaxWaitSeconds (60 min) + the runner's 240 s slack
-// = 74 min, plus 16 min of headroom = 90 min. A queued job therefore runs no
-// later than expires_at + 90 min, however long it is blocked: the sweep
-// expires it at that point even while the blocker is still running, and the
-// credit added when a blocker finishes is capped at the same 90 min.
+// MaxTTLPause is the PER-BLOCKER ceiling on the ttl credit a queued job earns
+// while it waits behind one running job on its browser instance (round-2 F-A,
+// round-3). Sized from the longest LEGITIMATE hold of one instance, a muse
+// dispatch: the pacing gap waited inside the job (10 min, the muse wrapper's
+// default MUSE_MIN_SEND_GAP_MIN) + MaxWaitSeconds (60 min) + the runner's 240 s
+// slack = 74 min, plus 16 min of headroom = 90 min.
+//
+// It caps EACH blocking interval, never a job's lifetime total: a job behind
+// two long dispatches is credited both holds. While a job is blocked its
+// deadline is expires_at + ttl_paused (credit from earlier blockers) + the
+// time the CURRENT blocker has held it, at most MaxTTLPause. So a job only
+// expires while blocked if its ttl ran out before this block began, or if the
+// blocker has run longer than MaxTTLPause — a wedged runner heartbeating
+// forever. Then the queue behind it clears within MaxTTLPause + the jobs'
+// remaining ttl of the block starting, and the owner's MaxPendingPerOwner
+// self-clears.
 const MaxTTLPause = 90 * time.Minute
 
 // maxTTLPauseSQL is MaxTTLPause as an SQL interval literal (a constant, not
 // input, so it is spliced rather than bound).
 var maxTTLPauseSQL = fmt.Sprintf("interval '%d seconds'", int64(MaxTTLPause.Seconds()))
+
+// blockSpan is how long the job currently blocking q (at most one: the 0012
+// one-running index) has held it, or NULL when nothing blocks q.
+const blockSpan = `(SELECT greatest(now() - greatest(q.created_at, r.claimed_at), interval '0') FROM flow_jobs r
+		                     WHERE r.status = 'running' AND r.owner_id = q.owner_id
+		                       AND r.host = q.host AND r.instance = q.instance LIMIT 1)`
 
 // blockedBy is the NOT EXISTS body: a running job holds q's browser instance.
 const blockedBy = `SELECT 1 FROM flow_jobs r
@@ -284,7 +296,7 @@ const blockedBy = `SELECT 1 FROM flow_jobs r
 // resumeBehind, inside a statement with a CTE `fin` (the rows that just left
 // running, with owner_id, host, instance and claimed_at), adds to each job
 // still queued on the same instance the time that job blocked it.
-var resumeBehind = `UPDATE flow_jobs q SET ttl_paused = least(q.ttl_paused + greatest(now() - greatest(q.created_at, fin.claimed_at), interval '0'), ` + maxTTLPauseSQL + `)
+var resumeBehind = `UPDATE flow_jobs q SET ttl_paused = q.ttl_paused + least(greatest(now() - greatest(q.created_at, fin.claimed_at), interval '0'), ` + maxTTLPauseSQL + `)
 		  FROM fin
 		 WHERE q.status = 'queued' AND q.owner_id = fin.owner_id
 		   AND q.host = fin.host AND q.instance = fin.instance`
@@ -304,12 +316,11 @@ var resumeBehind = `UPDATE flow_jobs q SET ttl_paused = least(q.ttl_paused + gre
 func (s *PGStore) sweep(ctx context.Context) error {
 	rows, err := s.pool.Query(ctx, `
 		UPDATE flow_jobs q SET status = 'expired', finished_at = now(),
-		       detail = CASE WHEN EXISTS (`+blockedBy+`)
-		           THEN 'not claimed within its ttl plus `+strconv.Itoa(int(MaxTTLPause.Minutes()))+` minutes of credit for waiting blocked behind a running job on the same browser; it will not run later than that'
-		           ELSE 'not claimed before its ttl (plus any credit for time spent blocked); it will not run later than that' END
+		       detail = CASE WHEN coalesce(`+blockSpan+`, interval '0') >= `+maxTTLPauseSQL+`
+		           THEN 'not claimed within its ttl plus up to `+strconv.Itoa(int(MaxTTLPause.Minutes()))+` minutes of credit for each running job it waited behind on the same browser, and the job blocking it has run longer than that; it will not run later than that'
+		           ELSE 'not claimed before its ttl (plus its credit for time spent blocked); it will not run later than that' END
 		 WHERE q.status = 'queued'
-		   AND ((q.expires_at + q.ttl_paused <= now() AND NOT EXISTS (`+blockedBy+`))
-		        OR q.expires_at + `+maxTTLPauseSQL+` <= now())
+		   AND q.expires_at + q.ttl_paused + least(coalesce(`+blockSpan+`, interval '0'), `+maxTTLPauseSQL+`) <= now()
 		RETURNING q.flow`)
 	if err != nil {
 		return fmt.Errorf("flows: sweep ttl: %w", err)
