@@ -515,6 +515,9 @@ var bannerExempt = map[string]string{
 	envTaskReapAfter: "the reaper announces its own state with the VALUE, at the point it " +
 		"starts (internal/api/server.go: \"task reaper: sweeping every %s for tasks idle for " +
 		">%s\"), which is where a reader looking for it will be",
+	envAgentReapStoppedAfter: "the agent reaper announces its own state with the VALUE, or that it " +
+		"is off, at the point it starts (internal/api/server.go: \"agent reaper: sweeping every %s " +
+		"for agents stopped for >%s\" / \"agent reaper: off\"); a value it refuses stops the boot",
 	envRouterToken: "reported by the permission-router line, which names whichever credential " +
 		"is MISSING (missingRouterCredential). A fully configured deployment deliberately " +
 		"says nothing about it, so it cannot satisfy the both-directions rule — " +

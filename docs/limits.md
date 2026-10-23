@@ -2,9 +2,11 @@
 
 ## Deployment
 
-- **Run one replica.** `internal/db` holds no lease, so the daily retention pass
-  and the idle-task reaper run on every pod. Both are idempotent, so a second
-  replica duplicates work rather than effects. But other state lives only in
+- **Run one replica.** `internal/db` holds no lease, so the daily retention pass,
+  the idle-task reaper and the stopped-agent reaper run on every pod. The first
+  two are idempotent, and the stopped-agent reaper claims each agent with a
+  conditional update before destroying it, so a second replica duplicates work
+  rather than effects. But other state lives only in
   memory: the mirror tunnel, the approval-relay ledger, and the send-nonce table.
   A second replica would split all three. The kickoff, status and memo loops use
   per-row claims and are safe either way.

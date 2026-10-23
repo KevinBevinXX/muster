@@ -278,6 +278,70 @@ host and session are in muster's server log only.
 
 A task becoming `complete` **stops** (never destroys) the agent the chief started for it: see [plugins.md](plugins.md#completing-a-task-stops-the-chiefs-agent).
 
+### Reaping stopped agents
+
+An agent whose stored status has been `stopped` for
+`MUSTER_AGENT_REAP_STOPPED_AFTER` (default `336h`, 14 days) is destroyed by
+the **stopped-agent reaper**, through the same teardown as the two doors above
+(`destroyAgent`, acting as the agent's owner): the chief is refused, then the
+provisioner's `Destroy` removes the instance and then the row, and after a
+successful teardown the chief's start on the agent's task is released and your
+open tabs are told, exactly as for the Agents page's Delete. Like that Delete,
+it leaves the agent's task as it was.
+
+- **The clock** is `agents.stopped_at` (migration 0045): the time the row last
+  moved into `stopped`, stamped by a database trigger (today the writers of
+  `stopped` are Stop and a saved dispatch). Writing `stopped` over a row that
+  already is `stopped` does not move it. **Start** moves the row out of
+  `stopped`, so the next Stop starts a new clock: a restarted agent that is
+  stopped again waits a full window. Agents already stopped when 0045 was
+  applied have their clock started at that moment.
+- **Never reaped:** the chief (either kind, [below](#the-chief)); an agent in
+  any other status, `error` included; a [pool worker](jobs.md#worker-pools)
+  (`worker_pool` set); and an agent that **never ran** — saved for later and
+  never started. "Ran" is `agents.first_started_at` (migration 0045), stamped
+  by the same trigger the first time the row is written `provisioning` or
+  `running`: a dispatch writes `provisioning` only after the instance was
+  created, and Start only after it was brought up, while a save writes
+  `stopped` straight away and a refused or failed dispatch writes `error`.
+  Started once, it stays stamped. When 0045 was applied, a row counted as
+  having run only if it was `running` or a first turn had been handed to an
+  instance (`kicked_off`, a recorded kickoff pod, or a delivery attempt);
+  every other row, including a stopped agent that was started but never got
+  its first turn, counts as never started until it is Started again.
+- **When:** the reaper rides the idle-task reaper's sweep, every 30 minutes,
+  on every pod (`muster-server` installs no leader gate for these loops; see
+  [limits.md](limits.md#deployment)). Before it starts a teardown it claims the agent with one
+  conditional update that re-checks the stored conditions above (status,
+  pool, ran, window) and that no other claim is live, so two pods never both
+  destroy an agent, and an agent Started after the sweep read it (now
+  `provisioning` or `running`, or stopped again with a fresh `stopped_at`) is
+  left alone. A claim excludes other claims for an hour.
+- **The instance is checked too.** A stored `stopped` is not proof the
+  instance is down: Start brings the instance up before it writes
+  `provisioning`, so a Start whose status write failed leaves a running
+  instance under a `stopped` row. Before claiming anything, each pass reads
+  the provisioner's instances and skips (and logs: `agent-reap: agent <id>
+  (<name>) is stored stopped but its instance reads <status>; not reaped`)
+  any due agent whose instance reads anything but stopped, by the same rule
+  the Agents page uses. No instance at all, or one scaled to zero, counts as
+  stopped. If the instances cannot be read, or the read has not answered
+  within 30 seconds, the pass destroys nothing.
+- **The record** is one server log line per agent whose teardown it started
+  (`agent-reap: destroying agent <id> (<name>) of user <owner>, task <id or
+  none>: stopped since <time>, longer than <window>`). No task comment and no
+  audit row are written. A teardown that could not remove the instance is
+  logged and keeps the row with status `error` (rule 2 below), so it is not
+  retried; one that removed the instance but not the row leaves it `stopped`,
+  and it is claimed again once the hour has passed.
+- **Off:** `MUSTER_AGENT_REAP_STOPPED_AFTER=0` (or `off`). The boot log says
+  which (`agent reaper: sweeping every …` or `agent reaper: off`).
+
+⚠ A Start in flight — instance being brought up, `provisioning` not yet
+written — whose instance the pass's read did not yet see as up still reads
+`stopped` on both counts. A claim landing then wins, and the teardown removes
+what the Start brought up: the same race as pressing Start and Delete at once.
+
 ## The chief
 
 The **chief** is an ordinary agent row: your fleet agent. Its slug is `chief` for

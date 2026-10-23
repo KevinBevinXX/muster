@@ -118,6 +118,13 @@ const (
 	// internal/api's askPrincipal — handed the owner of the question its host's
 	// hook registered.
 	ViaAsk Via = "ask"
+	// ViaReap is the STOPPED-AGENT REAPER (internal/api's reapStoppedAgents)
+	// destroying one owner's agent that has been stopped for
+	// MUSTER_AGENT_REAP_STOPPED_AFTER: a background job acting as the agent's
+	// OWNER only, through the same teardown the owner's own Delete takes. One
+	// site mints it — internal/api's reapPrincipal — handed each owner after
+	// agents.PGStore.ListReapableStopped read the due rows under System.
+	ViaReap Via = "agent-reap"
 	// ViaMirrorHost is a mirror host's token (`mmt_…`) on the mirrored
 	// sessions' MCP door (POST /mirror/mcp): a Claude Code session on that host,
 	// through the host's muster-mirror, acting as the token's owner — and only
@@ -155,6 +162,9 @@ var requestVias = map[Via]bool{
 	// The question watcher, per owner (internal/api's askPrincipal). Without it
 	// the first watch PANICS here.
 	ViaAsk: true,
+	// The stopped-agent reaper, per owner (internal/api's reapPrincipal).
+	// Without it the first reap PANICS here.
+	ViaReap: true,
 	// A mirrored session's MCP door (internal/api's requireMirrorHostToken).
 	ViaMirrorHost: true,
 	ViaDevice:     true,
