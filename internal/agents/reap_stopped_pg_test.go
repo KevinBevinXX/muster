@@ -33,11 +33,11 @@ func newReapFixture(t *testing.T) *reapFixture {
 	return &reapFixture{ctx: ctx, store: requirePGStore(t, ctx), stamp: time.Now().Format("150405.000000")}
 }
 
-// agent creates a row in status (a gateway agent, or a claude-code pool worker
-// when pool is set).
-func (f *reapFixture) agent(t *testing.T, name, status, pool string) Agent {
+// created inserts a row the way every agent row is inserted: `provisioning`
+// (a gateway agent, or a claude-code pool worker when pool is set).
+func (f *reapFixture) created(t *testing.T, name, pool string) Agent {
 	t.Helper()
-	a := Agent{Name: name + "-" + f.stamp, Namespace: "ns-" + name, Status: status}
+	a := Agent{Name: name + "-" + f.stamp, Namespace: "ns-" + name, Status: StatusProvisioning}
 	if pool != "" {
 		a.Kind, a.CCAccount, a.WorkerPool = KindClaudeCode, "acct", pool
 	}
@@ -47,6 +47,30 @@ func (f *reapFixture) agent(t *testing.T, name, status, pool string) Agent {
 	}
 	t.Cleanup(func() { cleanupAgent(f.ctx, f.store.pool, got.ID) })
 	return got
+}
+
+// agent is an agent that RAN — created, brought up (`provisioning`, then
+// `running`, as a dispatch or a Start writes them) — and is now in status.
+func (f *reapFixture) agent(t *testing.T, name, status, pool string) Agent {
+	t.Helper()
+	a := f.created(t, name, pool)
+	for _, st := range []string{StatusProvisioning, StatusRunning, status} {
+		if err := f.store.UpdateStatus(f.ctx, a.ID, st, "", ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return a
+}
+
+// saved is an agent saved for later and never started: inserted, then
+// `stopped` with no instance built (Dispatch without a kickoff).
+func (f *reapFixture) saved(t *testing.T, name string) Agent {
+	t.Helper()
+	a := f.created(t, name, "")
+	if err := f.store.UpdateStatus(f.ctx, a.ID, StatusStopped, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	return a
 }
 
 // age moves agent id's stopped_at to `days` days before the database's now.
@@ -258,5 +282,29 @@ func TestOnlyOneClaimWins(t *testing.T) {
 	}
 	if !f.claim(t, a.ID) {
 		t.Fatal("a claim older than the lease could not be taken over")
+	}
+}
+
+// TestANeverStartedAgentIsNotReapable: two stopped agents, both 15 days into
+// the window — one saved for later and never started, one that ran and was
+// stopped. Only the one that ran is listed and claimable.
+func TestANeverStartedAgentIsNotReapable(t *testing.T) {
+	f := newReapFixture(t)
+	saved := f.saved(t, "reap-saved")
+	ran := f.agent(t, "reap-ran", StatusStopped, "")
+	f.age(t, saved.ID, 15)
+	f.age(t, ran.ID, 15)
+	got := f.listed(t, saved.ID, ran.ID)
+	if _, ok := got[saved.ID]; ok {
+		t.Error("a never-started (saved) agent is listed for reaping")
+	}
+	if _, ok := got[ran.ID]; !ok {
+		t.Error("control: a started-then-stopped agent is not listed")
+	}
+	if f.claim(t, saved.ID) {
+		t.Error("a never-started (saved) agent was claimed")
+	}
+	if !f.claim(t, ran.ID) {
+		t.Error("control: a started-then-stopped agent could not be claimed")
 	}
 }

@@ -43,6 +43,8 @@ type StoppedAgent struct {
 //   - an empty worker_pool: a pool worker is never reaped. Pool workers are
 //     long-lived agents whose membership is fixed at creation (docs/jobs.md
 //     "Worker pools"), and a stopped one is a pool member to Start again.
+//   - first_started_at set: the agent ran at least once (migration 0045). An
+//     agent saved for later and never started is never reaped.
 //   - stopped_at <= now() - window: stopped for at least the window.
 //   - no live claim: another pod is not already tearing it down.
 //
@@ -51,6 +53,7 @@ type StoppedAgent struct {
 // destroyAgent, which refuses the chief before it claims anything.
 const reapableStopped = `status = 'stopped'
 	AND worker_pool = ''
+	AND first_started_at IS NOT NULL
 	AND stopped_at <= now() - ($1::bigint * interval '1 microsecond')
 	AND (reap_claimed_at IS NULL OR reap_claimed_at <= now() - ($2::bigint * interval '1 microsecond'))`
 

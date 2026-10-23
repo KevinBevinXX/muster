@@ -54,9 +54,36 @@ func newReapAPIFixture(t *testing.T) *reapAPIFixture {
 	return f
 }
 
-// stopAged moves agent id to `stopped` through the store (as the provisioner's
-// Stop does), then ages its stopped_at to `days` days ago.
+// stopAged is an agent that RAN and was stopped: agent id is brought up
+// (`provisioning`, `running`, as a dispatch or a Start writes them), moved to
+// `stopped` through the store (as the provisioner's Stop does), and its
+// stopped_at aged to `days` days ago.
 func (f *reapAPIFixture) stopAged(t *testing.T, id int64, days int) {
+	t.Helper()
+	f.setAgentStatus(t, id, agents.StatusProvisioning)
+	f.setAgentStatus(t, id, agents.StatusRunning)
+	f.ageStopped(t, id, days)
+}
+
+// savedAged is an agent saved for later and never started: inserted
+// `provisioning` (as every agent row is), then `stopped` with no instance built
+// (Dispatch without a kickoff), its stopped_at aged to `days` days ago.
+func (f *reapAPIFixture) savedAged(t *testing.T, name string, days int) agents.Agent {
+	t.Helper()
+	a, err := agents.NewPG(f.pool).Create(asUser(1), agents.Agent{Name: name + "-" + strconv.FormatInt(time.Now().UnixNano(), 36),
+		Namespace: "devpod-" + name, Status: agents.StatusProvisioning})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = f.pool.Exec(authz.System(context.Background()), `DELETE FROM agents WHERE id = $1`, a.ID)
+	})
+	f.ageStopped(t, a.ID, days)
+	return a
+}
+
+// ageStopped moves agent id to `stopped` and ages its stopped_at.
+func (f *reapAPIFixture) ageStopped(t *testing.T, id int64, days int) {
 	t.Helper()
 	f.setAgentStatus(t, id, agents.StatusStopped)
 	if _, err := f.pool.Exec(authz.System(context.Background()),
@@ -163,6 +190,22 @@ func TestTheReaperDestroysOnlyAnAgentStoppedPastTheWindow(t *testing.T) {
 
 	f.reap(t)
 	f.destroyedOnly(t, watch, due.ID)
+}
+
+// TestANeverStartedAgentIsNotReaped: an agent saved for later and never
+// started, stopped 15 days, survives a pass; an agent that ran and was then
+// stopped 15 days is destroyed by the same pass.
+func TestANeverStartedAgentIsNotReaped(t *testing.T) {
+	f := newReapAPIFixture(t)
+	saved := f.savedAged(t, "rpsaved", 15)
+	ran := f.agentOn(t, 1, "rpran", nil)
+	f.stopAged(t, ran.ID, 15)
+	f.reap(t)
+	f.waitGone(t, ran.ID)
+	if !f.exists(t, saved.ID) {
+		t.Fatal("a never-started (saved) agent stopped for 15 days was destroyed")
+	}
+	f.destroyedOnly(t, []int64{saved.ID, ran.ID}, ran.ID)
 }
 
 // TestARestartedAgentWaitsAFreshWindow: an agent stopped 15 days ago is Started

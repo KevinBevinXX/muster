@@ -298,8 +298,17 @@ it leaves the agent's task as it was.
   applied have their clock started at that moment.
 - **Never reaped:** the chief (either kind, [below](#the-chief)); an agent in
   any other status, `error` included; a [pool worker](jobs.md#worker-pools)
-  (`worker_pool` set). A saved agent that was never started is `stopped`, so
-  it is reaped like any other.
+  (`worker_pool` set); and an agent that **never ran** — saved for later and
+  never started. "Ran" is `agents.first_started_at` (migration 0045), stamped
+  by the same trigger the first time the row is written `provisioning` or
+  `running`: a dispatch writes `provisioning` only after the instance was
+  created, and Start only after it was brought up, while a save writes
+  `stopped` straight away and a refused or failed dispatch writes `error`.
+  Started once, it stays stamped. When 0045 was applied, a row counted as
+  having run only if it was `running` or a first turn had been handed to an
+  instance (`kicked_off`, a recorded kickoff pod, or a delivery attempt);
+  every other row, including a stopped agent that was started but never got
+  its first turn, counts as never started until it is Started again.
 - **When:** the reaper rides the idle-task reaper's sweep, every 30 minutes,
   on every pod. Before it starts a teardown it claims the agent with one
   conditional update that re-checks all of the above and that the agent's

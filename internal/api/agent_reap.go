@@ -28,6 +28,8 @@ import (
 //   - the chief: destroyAgent refuses it (agentIsChief) before the claim;
 //   - any agent whose stored status is not `stopped` — `error` included;
 //   - a pool worker (worker_pool set);
+//   - an agent that never ran: saved for later and never started (no
+//     first_started_at, migration 0045);
 //   - an agent Started since the scan read it: the claim re-checks the status
 //     and the window. A Stop after a Start stamps a new stopped_at (migration
 //     0045's trigger), so a restarted agent that is stopped again waits a
