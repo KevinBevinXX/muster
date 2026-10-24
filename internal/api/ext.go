@@ -347,9 +347,6 @@ type Routing struct {
 	// WITHOUT the owner's approval (MUSTER_ROUTE_RELAY_ALLOW); everyone else's
 	// fall back to a pending draft.
 	Allow plugins.RelayAllowlist
-	// Timeout is how long a routed message waits for its session's answer
-	// before it is handed back to the chief (0: DefaultRouteTimeout).
-	Timeout time.Duration
 }
 
 // Mirror is the mirror plugin as this package consumes it. *mirror.Service

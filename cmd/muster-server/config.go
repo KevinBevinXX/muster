@@ -164,12 +164,6 @@ const (
 	// or owner/*>,…", each matched only on mail that plugin marked sender_verified. Unset: every
 	// routed answer becomes a pending draft the owner approves.
 	envRouteRelayAllow = "MUSTER_ROUTE_RELAY_ALLOW"
-	// How long a routed message waits for its session's answer before it is
-	// handed back to the chief (api.DefaultRouteTimeout, 30m, when unset). A Go
-	// duration between api.MinRouteTimeout and api.MaxRouteTimeout, and — with
-	// routing on — longer than MUSTER_SEND_QUEUE_IDLE; anything else refuses to
-	// boot.
-	envRouteTimeout = "MUSTER_ROUTE_TIMEOUT"
 	// TASK ROUTING (internal/api/task_routing.go): "1" lets a plugin hand a task
 	// it files (POST /plugin/v1/tasks, route_to_chief) to the owner's chief,
 	// which routes it with task_route_attention / task_forward. Needs the plugin
@@ -566,9 +560,6 @@ type config struct {
 	SessionRouting     bool
 	RouteRelayAllowRaw string
 	RouteRelayAllow    plugins.RelayAllowlist
-	// RouteTimeout is MUSTER_ROUTE_TIMEOUT (api.DefaultRouteTimeout when unset):
-	// a route's deadline.
-	RouteTimeout time.Duration
 	// TaskRouting is MUSTER_TASK_ROUTING=1; ChiefDispatchOwners
 	// MUSTER_CHIEF_DISPATCH_OWNERS, parsed (loadConfig refuses one that does not
 	// parse) — non-empty turns task_dispatch on.
@@ -1217,24 +1208,15 @@ func loadConfig(getenv func(string) string) (config, error) {
 	if c.SuggestModel == "" {
 		c.SuggestModel = suggest.DefaultModel
 	}
-	c.RouteTimeout = api.DefaultRouteTimeout
-	if v := strings.TrimSpace(getenv(envRouteTimeout)); v != "" {
-		d, err := time.ParseDuration(v)
-		if err != nil || d < api.MinRouteTimeout || d > api.MaxRouteTimeout {
-			return config{}, fmt.Errorf("invalid %s %q: want a Go duration between %s and %s (e.g. 30m)",
-				envRouteTimeout, v, api.MinRouteTimeout, api.MaxRouteTimeout)
-		}
-		c.RouteTimeout = d
-	}
 	// 🔴 A ROUTE MUST OUTLAST ITS OWN PASTE. A routed message is pasted only
 	// once the window has been idle for MUSTER_SEND_QUEUE_IDLE, so a deadline
 	// no longer than that wait times the route out before its message can
 	// reach the session — every route would go back to the chief unread.
 	// Checked only with routing on: with it off neither value is about routes,
 	// and a long idle wait alone is a valid setting.
-	if c.SessionRouting && c.RouteTimeout <= c.SendQueueIdle {
-		return config{}, fmt.Errorf("invalid %s %s: it must be longer than %s (%s), the idle wait before a routed message is even pasted",
-			envRouteTimeout, c.RouteTimeout, envSendQueueIdle, c.SendQueueIdle)
+	if c.SessionRouting && api.RouteTimeout <= c.SendQueueIdle {
+		return config{}, fmt.Errorf("invalid %s %s: with %s=1 it must be shorter than a route's deadline (%s), or every route would time out before its message is even pasted",
+			envSendQueueIdle, c.SendQueueIdle, envSessionRouting, api.RouteTimeout)
 	}
 	if c.RouteRelayAllowRaw != "" {
 		l, err := plugins.ParseRelayAllowlist(c.RouteRelayAllowRaw)

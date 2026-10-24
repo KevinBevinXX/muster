@@ -684,10 +684,10 @@ func approvalGateFor(cfg config) api.GatePort {
 }
 
 // sessionRouting is session routing's configuration from cfg: the relay
-// allowlist and the route deadline (MUSTER_ROUTE_TIMEOUT). buildApp wires it
-// when MUSTER_SESSION_ROUTING=1 and the plugin interface is on.
+// allowlist. buildApp wires it when MUSTER_SESSION_ROUTING=1 and the plugin
+// interface is on.
 func sessionRouting(cfg config) *api.Routing {
-	return &api.Routing{Allow: cfg.RouteRelayAllow, Timeout: cfg.RouteTimeout}
+	return &api.Routing{Allow: cfg.RouteRelayAllow}
 }
 
 // buildSessionLiveness decides what answers "does this session still have a
@@ -1230,8 +1230,8 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 		l.Printf("session routing: ON (%s=1) — the chief may hand a plugin message to one of its owner's sessions "+
 			"(route_to_session); a mirrored window gets it through the send queue, its row marked and gated on its ROUTE "+
 			"instead of a sign-in (see internal/api/session_routes.go); %d owner(s) have plugin-bound senders whose verified "+
-			"answers relay without approval (%s); a route unanswered after %s goes back to the chief (%s)",
-			envSessionRouting, ext.Routing.Allow.Owners(), envRouteRelayAllow, ext.Routing.Timeout, envRouteTimeout)
+			"answers relay without approval (%s); a route unanswered after %s goes back to the chief",
+			envSessionRouting, ext.Routing.Allow.Owners(), envRouteRelayAllow, api.RouteTimeout)
 		if a.cfg.HookToken == "" {
 			l.Printf("WARNING — session routing: %s is unset, so a session answers a route (POST /api/routes/{id}/reply) "+
 				"ONLY with a personal API token; a host on the shared hook credential is refused (503) and its routes time "+
@@ -1241,7 +1241,7 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 		l.Printf("session routing: INERT — %s=1 but the plugin interface is off, so nothing is routed", envSessionRouting)
 	default:
 		l.Printf("session routing: OFF — %s is unset, so the chief has no route_to_session and POST /api/routes/{id}/reply "+
-			"answers 404 (%s and %s are not read)", envSessionRouting, envRouteRelayAllow, envRouteTimeout)
+			"answers 404 (%s is not read)", envSessionRouting, envRouteRelayAllow)
 	}
 	switch {
 	case ext.TaskRouting != nil && len(ext.TaskRouting.DispatchOwners) > 0:

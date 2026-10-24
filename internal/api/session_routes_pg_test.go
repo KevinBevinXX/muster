@@ -430,23 +430,17 @@ func TestATimedOutRouteCancelsItsInjectionAndGoesBackToTheChief(t *testing.T) {
 	}
 }
 
-// TestARouteTakesItsDeadlineFromRoutingTimeout: the deadline a route is created
-// with is Routing.Timeout (MUSTER_ROUTE_TIMEOUT) when set — two values distinct
-// from each other and from the 30m default — and the default when it is 0.
-func TestARouteTakesItsDeadlineFromRoutingTimeout(t *testing.T) {
+// TestARouteTakesItsDeadlineFromRouteTimeout: a route is created with a
+// deadline RouteTimeout after it.
+func TestARouteTakesItsDeadlineFromRouteTimeout(t *testing.T) {
 	f := newRouteFixture(t)
-	for i, c := range []struct {
-		set, want time.Duration
-	}{{7 * time.Minute, 7 * time.Minute}, {3 * time.Hour, 3 * time.Hour}, {0, DefaultRouteTimeout}} {
-		f.routing.Timeout = c.set
-		id := f.route(t, f.deliveredMessage(t, f.owner, f.chief.ID, "route-deadline-"+strconv.Itoa(i)))
-		r, err := f.plugins.Route(f.asOwner, id)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if got := r.TimeoutAt.Sub(r.CreatedAt); got < c.want-5*time.Second || got > c.want+5*time.Second {
-			t.Errorf("Routing.Timeout %v: the route's deadline is %v after it was made, want %v", c.set, got, c.want)
-		}
+	id := f.route(t, f.deliveredMessage(t, f.owner, f.chief.ID, "route-deadline"))
+	r, err := f.plugins.Route(f.asOwner, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := r.TimeoutAt.Sub(r.CreatedAt); got < RouteTimeout-5*time.Second || got > RouteTimeout+5*time.Second {
+		t.Errorf("the route's deadline is %v after it was made, want %v", got, RouteTimeout)
 	}
 }
 

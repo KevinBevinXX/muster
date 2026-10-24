@@ -72,19 +72,12 @@ import (
 
 const (
 	routeToSessionToolName = "route_to_session"
-	// DefaultRouteTimeout is how long a routed message waits for its session's
-	// answer before it is handed back to the chief, when MUSTER_ROUTE_TIMEOUT
-	// (Routing.Timeout) is unset.
-	DefaultRouteTimeout = 30 * time.Minute
-	// MinRouteTimeout and MaxRouteTimeout bound MUSTER_ROUTE_TIMEOUT. Under a
-	// minute is finer than the sweep that enforces it (RouteSweepInterval); over
-	// a day holds an outside party's message in a session nobody is watching
-	// instead of handing it back. The other floor — longer than the send
-	// queue's idle wait (MUSTER_SEND_QUEUE_IDLE), before which the message
-	// cannot even be pasted — depends on that setting, so cmd/muster-server's
-	// loadConfig enforces it at boot when routing is on.
-	MinRouteTimeout = time.Minute
-	MaxRouteTimeout = 24 * time.Hour
+	// RouteTimeout is how long a routed message waits for its session's answer
+	// before it is handed back to the chief. A constant, not a setting: it must
+	// stay longer than the send queue's idle wait (MUSTER_SEND_QUEUE_IDLE),
+	// before which the message cannot even be pasted, so cmd/muster-server's
+	// loadConfig refuses an idle wait that is not shorter when routing is on.
+	RouteTimeout = 30 * time.Minute
 	// RouteSweepInterval is how often due routes are timed out.
 	RouteSweepInterval = 30 * time.Second
 	// routedCutMark ends a body cut to fit one paste.
@@ -99,12 +92,7 @@ func routingOn(ext Extensions) bool {
 	return ext.Routing != nil && ext.Routes != nil && ext.Plugins != nil
 }
 
-func (s *Server) routeTimeout() time.Duration {
-	if s.ext.Routing != nil && s.ext.Routing.Timeout > 0 {
-		return s.ext.Routing.Timeout
-	}
-	return DefaultRouteTimeout
-}
+func (s *Server) routeTimeout() time.Duration { return RouteTimeout }
 
 func routeToolDef() agents.ToolDef {
 	return agents.ToolDef{Type: "function", Name: routeToSessionToolName,

@@ -756,8 +756,7 @@ itself. It finds the session by [focus](focus.md) (`focus_search`,
 turn for each message says when to do this.
 
 1. **The route.** muster records a route (`session_routes`, migration `0021`):
-   the message, the chief, the target and a deadline, `MUSTER_ROUTE_TIMEOUT`
-   away (30 minutes unless set; [configuration](configuration.md)). The
+   the message, the chief, the target and a deadline 30 minutes away. The
    message must be one delivered to that chief, replyable, not already routed,
    and with no reply already approved and on its way.
 2. **Into the session.** Only a **mirrored Claude Code window** can take a
