@@ -134,8 +134,18 @@ test('Account → Devices shows a paired phone and its push registration without
     w.musterApp = { postMessage: (m: string) => w.__appMsgs.push(m) };
   });
   await signIn(page);
+  // The operator's phones are shared with the other specs on this database. A
+  // phone another spec left behind, freshly paired and unregistered, would keep
+  // the list polling, so every one is removed first, through the page's own
+  // Remove route.
+  const listed = await (await page.request.get(origin + '/account')).text();
+  for (const [, id] of listed.matchAll(/data-testid="paired-device" data-device-id="(\d+)"/g)) {
+    const removed = await page.request.post(origin + `/account/devices/${id}/remove`, { headers: { Origin: origin }, maxRedirects: 0 });
+    expect(removed.status(), `removing leftover phone ${id}`).toBe(303);
+  }
   await page.goto(origin + '/account');
   const section = page.getByTestId('paired-devices');
+  await expect(section.getByTestId('paired-device')).toHaveCount(0);
   await section.getByRole('button', { name: 'Pair this phone' }).click();
   await expect(page.locator('#pair-status')).toHaveText('The app is finishing the pairing.');
   const msgs = await page.evaluate(() => (window as unknown as { __appMsgs: string[] }).__appMsgs);
@@ -146,44 +156,47 @@ test('Account → Devices shows a paired phone and its push registration without
   const paired = await request.post(origin + '/api/device/pair', { data: { code, name, app_version: '0.0.2' } });
   expect(paired.status(), await paired.text()).toBe(201);
   const body = (await paired.json()) as { token: string; device: { id: number } };
-  await page.reload();
-  let navigations = 0;
-  page.on('framenavigated', (f) => {
-    if (f === page.mainFrame()) navigations++;
-  });
-  const refetches: string[] = [];
-  page.on('request', (r) => {
-    if (new URL(r.url()).pathname === '/account/devices/live') refetches.push(r.url());
-  });
-  const row = section.getByTestId('paired-device').filter({ hasText: name });
-  await expect(row).toContainText('push not registered');
-  // The Notifications section lists the phone by the label the claim gives it.
-  // (Its test button may already be there for another device of the
-  // operator's, so the phone's own entry is what is asserted.)
-  const notifications = page.getByTestId('push-devices');
-  const pushEntry = notifications.getByTestId('push-device').filter({ hasText: 'muster app: ' + name });
-  await expect(pushEntry).toHaveCount(0);
+  try {
+    await page.reload();
+    let navigations = 0;
+    page.on('framenavigated', (f) => {
+      if (f === page.mainFrame()) navigations++;
+    });
+    const refetches: string[] = [];
+    page.on('request', (r) => {
+      if (new URL(r.url()).pathname === '/account/devices/live') refetches.push(r.url());
+    });
+    const row = section.getByTestId('paired-device').filter({ hasText: name });
+    await expect(row).toContainText('push not registered');
+    // The Notifications section lists the phone by the label the claim gives
+    // it. (Its test button may already be there for another device of the
+    // operator's, so the phone's own entry is what is asserted.)
+    const notifications = page.getByTestId('push-devices');
+    const pushEntry = notifications.getByTestId('push-device').filter({ hasText: 'muster app: ' + name });
+    await expect(pushEntry).toHaveCount(0);
 
-  // The app registers its push endpoint. The page shows it with no further
-  // reload.
-  execFileSync('go', ['run', './e2e/devicefix', 'push', String(body.device.id), 'https://fcm.googleapis.com/fcm/send/e2e-live-' + Date.now()], {
-    cwd: repoRoot, env: { ...process.env, DATABASE_URL: dsn }, stdio: ['ignore', 'inherit', 'inherit'],
-  });
-  await expect(row).toContainText('push registered');
-  await expect(row).not.toContainText('push not registered');
-  await expect(pushEntry).toBeVisible();
-  await expect(notifications.getByRole('button', { name: 'Send a test notification' })).toBeVisible();
-  expect(navigations, 'the page was not reloaded or navigated').toBe(0);
-  expect(refetches.length, 'the list re-fetched itself').toBeGreaterThan(0);
+    // The app registers its push endpoint. The page shows it with no further
+    // reload.
+    execFileSync('go', ['run', './e2e/devicefix', 'push', String(body.device.id), 'https://fcm.googleapis.com/fcm/send/e2e-live-' + Date.now()], {
+      cwd: repoRoot, env: { ...process.env, DATABASE_URL: dsn }, stdio: ['ignore', 'inherit', 'inherit'],
+    });
+    await expect(row).toContainText('push registered');
+    await expect(row).not.toContainText('push not registered');
+    await expect(pushEntry).toBeVisible();
+    await expect(notifications.getByRole('button', { name: 'Send a test notification' })).toBeVisible();
+    expect(navigations, 'the page was not reloaded or navigated').toBe(0);
+    expect(refetches.length, 'the list re-fetched itself').toBeGreaterThan(0);
 
-  // Nothing is pending now: the list stops polling. Its interval is 3s, so
-  // 4.5s without a re-fetch is a missed tick, not a slow one.
-  const settled = refetches.length;
-  await page.waitForTimeout(4500);
-  expect(refetches.length, 'no re-fetch once nothing is pending').toBe(settled);
-
-  // The app unpairs; the shared database keeps no phone of this spec's.
-  expect((await request.delete(origin + '/api/device', { headers: { Authorization: 'Bearer ' + body.token } })).status()).toBe(204);
+    // Nothing is pending now: the list stops polling. Its interval is 3s, so
+    // 4.5s without a re-fetch is a missed tick, not a slow one.
+    const settled = refetches.length;
+    await page.waitForTimeout(4500);
+    expect(refetches.length, 'no re-fetch once nothing is pending').toBe(settled);
+  } finally {
+    // The app unpairs, pass or fail: the shared database keeps no phone of
+    // this spec's.
+    expect((await request.delete(origin + '/api/device', { headers: { Authorization: 'Bearer ' + body.token } })).status()).toBe(204);
+  }
 });
 
 test('Enable subscribes with the server key and the device appears on the account page', async ({ page }) => {

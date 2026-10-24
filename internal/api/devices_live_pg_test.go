@@ -104,4 +104,22 @@ func TestTheDeviceListNoticesAPhonesPushRegistration(t *testing.T) {
 	if tr := trigger(live()); strings.Contains(tr, "every") {
 		t.Fatalf("a phone paired 11 minutes ago with no push still polls: %q", tr)
 	}
+
+	// On a server that serves no push, a phone can never register, so a fresh
+	// unregistered one is not waited on, and there is no Notifications list to
+	// carry out of band.
+	r.pair(at, rt, "Pixel on a push-less server")
+	if tr := trigger(live()); !strings.Contains(tr, poll) {
+		t.Fatalf("CONTROL: a fresh unregistered phone with push served: trigger %q; want %q", tr, poll)
+	}
+	served := r.s.ext.Push
+	r.s.ext.Push = nil
+	defer func() { r.s.ext.Push = served }()
+	frag = live()
+	if tr := trigger(frag); strings.Contains(tr, "every") {
+		t.Fatalf("with no push served a fresh unregistered phone still polls: %q", tr)
+	}
+	if strings.Contains(frag, `id="push-device-list"`) {
+		t.Fatalf("with no push served the refetch carries a Notifications list:\n%s", frag)
+	}
 }
