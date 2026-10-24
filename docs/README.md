@@ -38,4 +38,5 @@ Start with the [project README](../README.md) for the pitch and a quickstart.
 - [design/android.md](design/android.md) — proposed: a native Android app (actionable notifications, bubbles, widgets, live status)
 - [design/hermes.md](design/hermes.md) — Hermes mirroring
 - [design/agent-cards.md](design/agent-cards.md) — proposed: live subagent and shell counts, and tmux identity colours, on agent cards
+- [design/host-sessions.md](design/host-sessions.md) — proposed: start a tmux-backed session on one of your hosts from muster, mirrored automatically
 - [../CONTRIBUTING.md](../CONTRIBUTING.md)
