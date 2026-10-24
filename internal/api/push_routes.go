@@ -359,11 +359,27 @@ func (s *Server) accountNotificationsSection(r *http.Request) string {
 	case "saved":
 		b.WriteString(`<p role="status" class="text-sm font-semibold text-fg">Notification settings saved.</p>`)
 	}
+	b.WriteString(s.accountPushDeviceList(r, false))
+	b.WriteString(s.pushPreferencesForm(r))
+	b.WriteString(`</section>`)
+	return b.String()
+}
+
+// accountPushDeviceList is the Notifications section's devices and its "Send a
+// test notification" button. Account → Devices' live list re-renders it out of
+// band (oob), so a phone's push registration shows here without a reload.
+func (s *Server) accountPushDeviceList(r *http.Request, oob bool) string {
+	var b strings.Builder
+	b.WriteString(`<div id="push-device-list" class="flex flex-col gap-3"`)
+	if oob {
+		b.WriteString(` hx-swap-oob="true"`)
+	}
+	b.WriteString(`>`)
 	devs, err := s.ext.Push.Store().Devices(r.Context())
 	if err != nil {
 		s.logger.Printf("push: list devices: %v", err)
 		b.WriteString(problemNode("The device list could not be read."))
-		b.WriteString(`</section>`)
+		b.WriteString(`</div>`)
 		return b.String()
 	}
 	if len(devs) == 0 {
@@ -396,8 +412,7 @@ func (s *Server) accountNotificationsSection(r *http.Request) string {
 <form method="POST" action="` + accountPushTestPath + `">
 <button type="submit" class="press min-h-[44px] w-full rounded-md bg-bg px-3 py-2 text-base font-semibold text-fg ring-1 ring-inset ring-edge">Send a test notification</button></form>`)
 	}
-	b.WriteString(s.pushPreferencesForm(r))
-	b.WriteString(`</section>`)
+	b.WriteString(`</div>`)
 	return b.String()
 }
 

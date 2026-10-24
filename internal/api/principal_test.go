@@ -147,6 +147,8 @@ var routeVias = map[authz.Via][]string{
 		// session's own (a device credential cannot reach either).
 		"POST /account/devices/pair",
 		"POST /account/devices/{id}/remove",
+		// …and Account → Devices' live list, the session's own devices.
+		"GET /account/devices/live",
 		// Passkeys: the caller's own, acted on AS the caller at GoTrue.
 		"GET /account/passkeys",
 		"POST /account/passkeys/options",
