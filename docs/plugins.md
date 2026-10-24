@@ -886,7 +886,7 @@ to no dispatched agent (the chief included):
 
 | tool | what it does |
 |---|---|
-| `plugin_messages_list` | Your **30 most recent** routable inbound messages, **newest first by arrival** (past 30 the older ones are left out; `truncated` says so). Routable means: delivered (or being delivered) to your chief, not `no_reply`, and not a task event or a notice muster routed itself. Each: `message_id`, the plugin, the sender (followed by the `UNVERIFIED` mark unless the plugin verified it — the same mark the chief's turn shows), the subject, the first 280 characters of the body, when it was received, and its route: `none`, `pending` (routed, not yet answered — with its deadline), `relayed` (answered: sent, or a draft awaiting you) or `handed_back` (timed out or failed: back with the chief). Read-only. |
+| `plugin_messages_list` | Your **30 most recent** routable inbound messages, **newest first by arrival** (past 30 the older ones are left out; `truncated` says so). Routable means: delivered (or being delivered) to your chief, and not `no_reply` (so never a task event or a notice muster routed itself: those always are). Each: `message_id`, the plugin, the sender (followed by the `UNVERIFIED` mark unless the plugin verified it — the same mark the chief's turn shows), the subject, the first 280 characters of the body, when it was received, and its route: `none`, `pending` (routed, not yet answered — with its deadline), `relayed` (answered: sent, or a draft awaiting you) or `handed_back` (timed out or failed: back with the chief). Read-only. |
 | `plugin_message_route {message_id, subject?}` | Routes that message. **With no `subject` it goes to the calling session** — pasted once that session has been idle for `MUSTER_SEND_QUEUE_IDLE`, so the session ends its turn to receive it, then answers with `route_reply`. `subject` names another session: `mirror:<claude session id>` (the chief's form), a prefix of at least 4 characters of the session id, or part of its window title (`work:1 @ tower`, case-insensitive). |
 
 It is **the chief's route**, not a copy (`routeMessage`): the same target
@@ -903,11 +903,12 @@ that already has a route waiting for an answer (`already_routed`, naming the
 route, its target and its deadline); a message not yet delivered to your chief
 (`not_delivered` — route it once the chief has it); a subject that matches no
 online mirrored session (`subject_not_found`) or several (`subject_ambiguous`),
-each listing the `candidates` to choose from; another owner's message, a task
-event and a missing id (all *"no such plugin message: N"*); and every target the
-chief's route refuses (an offline or read-only host, a window that does not
-report Claude Code's status — the session must be the active pane of its
-window).
+each listing the `candidates` to choose from; another owner's message and a
+missing id (both *"no such plugin message: N"*); and everything the chief's
+route refuses — a `no_reply` message (every task event is one), a message with
+a reply already on its way, and a target that cannot take one now (an offline
+or read-only host, a window that does not report Claude Code's status — the
+session must be the active pane of its window).
 
 ⚠ **What a mirror token can now read and do** ([auth.md](auth.md)): with
 routing on, a leaked mirror token (or a mirrored session fed outside text) can

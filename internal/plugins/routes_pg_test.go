@@ -272,6 +272,20 @@ func TestRoutableMessagesIsTheOwnersDeliveredRepliableMessages(t *testing.T) {
 		t.Fatal(err)
 	}
 	later := w.delivered(t, "m-later", false)
+	// A message whose chief was deleted since (agent_id goes NULL): no chief
+	// to file the reply as, so not routable.
+	gone := mustAgent(t, w.dsn, 2, "plg-gone-chief")
+	orphan, _, err := w.s.Submit(plugin(2), w.p.ID, msg("m-orphan"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := w.s.BeginDelivery(plugin(2), orphan.ID, gone.ID); err != nil || !ok {
+		t.Fatal(ok, err)
+	}
+	if ok, err := w.s.RecordDelivery(plugin(2), orphan.ID, gone.ID, StatusDelivered); err != nil || !ok {
+		t.Fatal(ok, err)
+	}
+	dbtest.OwnerExec(t, w.dsn, `DELETE FROM agents WHERE id = $1`, gone.ID)
 	_, p3 := mustCreate(t, w.s, 3, "example-inbox")
 	chief3 := mustAgent(t, w.dsn, 3, "plg-chief-3")
 	theirs, _, err := w.s.Submit(plugin(3), p3.ID, msg("m-theirs"))
@@ -291,9 +305,12 @@ func TestRoutableMessagesIsTheOwnersDeliveredRepliableMessages(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if m, _ := w.s.Message(session(2), orphan.ID); m.AgentID != nil || m.Status != StatusDelivered {
+		t.Fatalf("precondition: the orphan is %+v", m)
+	}
 	if len(got) != 2 || got[0].Message.ID != later.ID || got[1].Message.ID != w.m.ID {
-		t.Fatalf("RoutableMessages = %+v; want exactly [%d %d] (no_reply %d, queued %d, another owner's %d left out)",
-			got, later.ID, w.m.ID, noReply.ID, queued.ID, theirs.ID)
+		t.Fatalf("RoutableMessages = %+v; want exactly [%d %d] (no_reply %d, queued %d, chief-less %d, another owner's %d left out)",
+			got, later.ID, w.m.ID, noReply.ID, queued.ID, orphan.ID, theirs.ID)
 	}
 	if got[0].Route.RouteID != "" || got[1].Route.RouteID != second.RouteID || got[1].Route.State != RouteRouted ||
 		got[1].Route.TargetKey != target.Key || got[1].PluginLabel != w.p.Label {

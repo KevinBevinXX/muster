@@ -247,9 +247,8 @@ func (s *Server) toolPluginMessageRoute(ctx context.Context, c toolCaller, argum
 		return notFound
 	}
 	owner := requestOwner(ctx)
-	if m.OwnerID != owner || m.TaskID != nil || m.RoutedTo != nil {
-		// A task event or a notice muster routed itself is not an inbound
-		// message: plugin_messages_list does not offer it either.
+	if m.OwnerID != owner {
+		// Held whatever store is wired (DeliveredTo's owner conjunct, too).
 		return notFound
 	}
 	if m.AgentID == nil || !plugins.DeliveredTo(m, *m.AgentID, owner) {

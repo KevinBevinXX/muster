@@ -257,11 +257,12 @@ func (s *PGStore) CreateRouteFrom(ctx context.Context, chiefID, ownerID, message
 }
 
 // RoutableMessages is the principal's newest inbound plugin messages that a
-// route can take — delivered (or being delivered) to a chief, not no_reply,
-// neither a task event nor a notice muster routed itself — newest first (by
-// id), at most limit, each with its plugin's label and its LATEST route, if
-// any. Row-level security scopes it to the principal; the owner conjunct is
-// DeliveredTo's, for a store without it.
+// route can take — handed to a chief that still exists (agent_id set, which
+// 0015 allows only on a delivering, delivered or unconfirmed row) and not
+// no_reply (which every task event and notice muster routed itself is: their
+// writers refuse one that is not) — newest first (by id), at most limit, each
+// with its plugin's label and its LATEST route, if any. Row-level security
+// scopes it to the principal.
 func (s *PGStore) RoutableMessages(ctx context.Context, limit int) ([]RoutableMessage, error) {
 	if limit <= 0 {
 		return []RoutableMessage{}, nil
@@ -273,8 +274,7 @@ func (s *PGStore) RoutableMessages(ctx context.Context, limit int) ([]RoutableMe
 		  JOIN plugins p ON p.id = m.plugin_id
 		  LEFT JOIN LATERAL (SELECT route_id, state, target_kind, target_key, target_label, timeout_at
 		                       FROM session_routes WHERE plugin_message_id = m.id ORDER BY id DESC LIMIT 1) r ON true
-		 WHERE m.task_id IS NULL AND m.routed_to IS NULL AND NOT m.no_reply AND m.agent_id IS NOT NULL
-		   AND m.status IN ('delivering', 'delivered', 'unconfirmed')
+		 WHERE NOT m.no_reply AND m.agent_id IS NOT NULL
 		 ORDER BY m.id DESC LIMIT $1`, limit)
 	if err != nil {
 		return nil, err

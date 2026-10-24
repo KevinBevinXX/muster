@@ -196,6 +196,38 @@ func TestPluginMessagesListIsTheOwnersRoutableMessages(t *testing.T) {
 	}
 }
 
+// TestPluginMessagesListIsCapped: with 31 routable messages the listing is the
+// 30 NEWEST and says truncated; with exactly 30 it is all of them and does not.
+func TestPluginMessagesListIsCapped(t *testing.T) {
+	f := newMsgRouteFixture(t)
+	var ids []int64
+	for i := 0; i < pluginMessagesListMax; i++ {
+		ids = append(ids, f.deliveredMessage(t, f.owner, f.chief.ID, "pml-cap-"+strconv.Itoa(i)).ID)
+	}
+	read := func() ([]map[string]any, bool) {
+		text, isErr := f.mcpCall(t, f.tok, routeSID, pluginMessagesListTool, map[string]any{})
+		var out struct {
+			Messages  []map[string]any `json:"messages"`
+			Truncated bool             `json:"truncated"`
+		}
+		if err := json.Unmarshal([]byte(text), &out); isErr || err != nil {
+			t.Fatalf("plugin_messages_list: %s", text)
+		}
+		return out.Messages, out.Truncated
+	}
+	if ms, tr := read(); len(ms) != pluginMessagesListMax || tr {
+		t.Fatalf("exactly %d messages: listed %d, truncated %v", pluginMessagesListMax, len(ms), tr)
+	}
+	newest := f.deliveredMessage(t, f.owner, f.chief.ID, "pml-cap-last").ID
+	ms, tr := read()
+	if len(ms) != pluginMessagesListMax || !tr {
+		t.Fatalf("%d messages: listed %d, truncated %v", pluginMessagesListMax+1, len(ms), tr)
+	}
+	if byMessageID(ms, newest) == nil || byMessageID(ms, ids[0]) != nil || int64(ms[0]["message_id"].(float64)) != newest {
+		t.Fatalf("listed the wrong 30: first %v, oldest %d present %v", ms[0]["message_id"], ids[0], byMessageID(ms, ids[0]) != nil)
+	}
+}
+
 func sprintIDs(ids []int64) string {
 	s := make([]string, len(ids))
 	for i, id := range ids {
@@ -358,6 +390,18 @@ func TestPluginMessageRouteRefusesAMessageWithAWaitingRoute(t *testing.T) {
 	queued := f.deliveredMessage(t, f.owner, 0, "pmr-queued")
 	if out, text, isErr := f.routeAs(t, routeSID, queued.ID, ""); !isErr || out["refused"] != RefusedNotDelivered {
 		t.Fatalf("an undelivered message: %s", text)
+	}
+	// A no_reply message is refused by the chief's route itself (CreateRoute).
+	ps, _ := f.plugins.List(f.asOwner)
+	nr, _, err := f.plugins.Submit(f.asOwner, ps[0].ID, plugins.MessageIn{ExternalID: "pmr-noreply", Sender: "x@example.invalid", Body: "fyi", NoReply: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := f.plugins.BeginDelivery(f.asOwner, nr.ID, f.chief.ID); err != nil || !ok {
+		t.Fatal(ok, err)
+	}
+	if out, text, isErr := f.routeAs(t, routeSID, nr.ID, ""); !isErr || out["refused"] != RefusedNoReply {
+		t.Fatalf("a no_reply message: %s", text)
 	}
 }
 
