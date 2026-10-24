@@ -33,7 +33,7 @@ func TestTheGuardRefusesEveryOpenCodeShapeAndNothingElse(t *testing.T) {
 			f.add(7021, root, ".opencode-wrapp", "/work/b", nixOC, "serve", "--port", "4096")
 		}, 7021},
 		{"an upstream binary install", func(f *fakeProc, root int) {
-			f.add(7031, root, "opencode", "/work/c", "/home/someone/.opencode/bin/opencode", "run", "hello")
+			f.add(7031, root, "opencode", "/work/c", "/opt/opencode/bin/opencode", "run", "hello")
 		}, 7031},
 		{"argv[0] alone (a renamed comm)", func(f *fakeProc, root int) {
 			f.add(7041, root, "MainThread", "/work/d", "/usr/local/bin/opencode")
