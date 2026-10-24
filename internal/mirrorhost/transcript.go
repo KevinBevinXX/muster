@@ -540,6 +540,15 @@ func (h *hostSide) paste(m mirror.Msg) {
 		reply(errNotClaudeNow)
 		return
 	}
+	// 🔴 THE PASTE GUARD FIRST (guardPane, hermes.go), then Claude's: a
+	// Claude pane with Hermes or opencode in its foreground shows THAT
+	// program's screen, which the Claude prompt guard would misread (no input
+	// box) and hold as Claude's. It is the other program's refusal, in its
+	// words. typeInto runs the guard again at the moment of typing.
+	if err := h.guardPane(ctx, p.Pane); err != nil {
+		reply(err)
+		return
+	}
 	// 🔴 THE CLAUDE PROMPT GUARD (claude_guard.go): never into a pane waiting
 	// on the person. Checked once here, so a refusal touches nothing (not even
 	// this connection's copy-mode), and again immediately before the paste and

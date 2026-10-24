@@ -102,6 +102,7 @@ const (
 	noticeHermes      = "hermes"
 	noticeMultiplexer = "multiplexer"
 	noticeUnchecked   = "unchecked"
+	noticeOpenCode    = "opencode"
 	// A queued message's Edit (send_queue_edit.go).
 	noticeEditing           = "editing"
 	noticeEdited            = "edited"
@@ -124,6 +125,7 @@ var pasteGuardNotices = map[string]string{
 	mirror.PasteRefusalHermes:      noticeHermes,
 	mirror.PasteRefusalMultiplexer: noticeMultiplexer,
 	mirror.PasteRefusalUnchecked:   noticeUnchecked,
+	mirror.PasteRefusalOpenCode:    noticeOpenCode,
 }
 
 // claudeGuardNotices is the notice for each kind of Claude prompt guard
@@ -212,6 +214,7 @@ var composerNotices = map[string]struct {
 	noticeHermes:            {mirror.PasteRefusedHermesText, false},
 	noticeMultiplexer:       {mirror.PasteRefusedMultiplexerText, false},
 	noticeUnchecked:         {mirror.PasteRefusedUncheckedText, false},
+	noticeOpenCode:          {mirror.PasteRefusedOpenCodeText, false},
 	noticeEditing:           {SendQueueEditingText, true},
 	noticeEdited:            {SendQueueEditedText, true},
 	noticeEditCancelled:     {SendQueueEditCancelledText, true},

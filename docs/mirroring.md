@@ -371,6 +371,36 @@ Known gaps:
   the message box away from every macOS user, and no deployment runs Hermes on
   a macOS host.
 
+### muster does not send to opencode yet
+
+🔴 The same host guard refuses to type into a pane whose process tree holds
+[opencode](https://github.com/anomalyco/opencode): a process whose name or
+first argument is `opencode` (the Nix wrapper's `.opencode-wrapped`
+included), **and that is on the pane's terminal**: its stdin, or its
+controlling terminal, is the pane's. An opencode started with no terminal
+(Claude Code's Bash tool running `opencode run`, stdin `/dev/null`) does not
+make its Claude pane refuse. When either terminal cannot be read, the host
+refuses. An npm or bun install's JavaScript shim is refused through the
+native `opencode` it starts, which is in the same tree. A paste
+into opencode is blind, because nothing checks what its screen shows, and
+Enter there can answer a permission request it is showing. Every send is
+refused this way, Send, Queue and Send now alike, and the page says
+"Sending to opencode isn't supported yet…". A later version sends to opencode
+through its own API, never keystrokes. Type into opencode in the terminal.
+
+Like the Hermes refusal, the host decides this itself, from the pane's
+processes at the moment it types, not from the window's `opencode` label: a
+window labelled `zsh` whose pane runs opencode is refused too.
+
+Known gaps (the host types into these panes as into any other):
+
+- an opencode that runs inside a JavaScript runtime (`bun` or `node`) and
+  starts no native `opencode` binary: neither process is named opencode;
+- an opencode over `ssh`, or inside a container (`docker exec`, `podman
+  exec`): its processes are not in the pane's tree;
+- a renamed binary, or one run through a symlink of another name: its name
+  and first argument do not say opencode.
+
 ### Hermes windows
 
 A window whose pane runs the Hermes CLI (`hermes chat`, or bare `hermes`) is
