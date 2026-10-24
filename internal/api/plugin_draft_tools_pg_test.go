@@ -5,6 +5,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"io"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -18,16 +20,16 @@ import (
 	"github.com/ZacxDev/muster/internal/focus"
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/plugins"
+	"github.com/ZacxDev/muster/internal/push"
 )
 
-// plugin_drafts_list / plugin_draft_decide (plugin_draft_tools.go, migration
-// 0048), through the real server against a real Postgres: the owner decides a
-// pending reply draft through one of their own MIRRORED Claude Code sessions
-// (POST /mirror/mcp) — the Asks page's own decision (decideDraftAs), with no
-// fresh sign-in, with where it came from recorded — and the refusals that
-// stand in for the page's step-up: the exact body's SHA-256, and never from
-// the session the draft's route was sent to. Nobody but the owner's mirrored
-// sessions can call them.
+// plugin_drafts_list / plugin_draft_decide (plugin_draft_tools.go), through
+// the real server against a real Postgres: the owner decides a pending reply
+// draft through one of their own MIRRORED Claude Code sessions (POST
+// /mirror/mcp) — the Asks page's own decision (decideDraftAs), with no fresh
+// sign-in, with where it came from on its audit row — refused unless it names
+// the exact body's SHA-256. Any of the owner's mirrored sessions may decide,
+// the one a message was routed to included; nobody else can call them.
 //
 // The fixture is the session-routing one (routeFixture): the owner's host
 // "tower" lists routeSID (a route's target) and otherRouteSID (another of the
@@ -144,34 +146,20 @@ func (f *draftToolFixture) browser(t *testing.T, id int64, how string) *httptest
 		"Cookie": sessionCookieFor(f.srv), "Origin": "http://example.com", "Sec-Fetch-Dest": "document", "Sec-Fetch-Mode": "navigate"})
 }
 
-// draftRow is draft id read straight from the row ("" for NULL).
-type draftRow struct{ status, via, host, session string }
+// draftRow is draft id's status, read straight from the row, and the
+// decided_via of its newest decision audit row ("" when none names one).
+type draftRow struct{ status, via string }
 
 func (f *draftToolFixture) row(t *testing.T, id int64) draftRow {
 	t.Helper()
 	var r draftRow
-	if err := f.pool.QueryRow(authz.System(context.Background()), `SELECT status, coalesce(decided_via, ''),
-		coalesce(decided_via_host, ''), coalesce(decided_via_session, '') FROM plugin_reply_drafts WHERE id = $1`, id).
-		Scan(&r.status, &r.via, &r.host, &r.session); err != nil {
+	if err := f.pool.QueryRow(authz.System(context.Background()), `SELECT d.status, coalesce((SELECT a.detail->>'decided_via'
+		FROM audit_log a WHERE a.object = $2 AND a.action IN ('plugin.draft.approved', 'plugin.draft.rejected', 'plugin.draft.withdrawn')
+		ORDER BY a.id DESC LIMIT 1), '') FROM plugin_reply_drafts d WHERE d.id = $1`, id, plugins.DraftObject(id)).
+		Scan(&r.status, &r.via); err != nil {
 		t.Fatalf("read draft %d: %v", id, err)
 	}
 	return r
-}
-
-// auditVia is the decided_via of draft id's audit row for action ("" when the
-// row carries none; "<missing>" when there is no such row).
-func (f *draftToolFixture) auditVia(t *testing.T, id int64, action string) string {
-	t.Helper()
-	var via *string
-	err := f.pool.QueryRow(authz.System(context.Background()), `SELECT detail->>'decided_via' FROM audit_log
-		WHERE object = $1 AND action = $2 ORDER BY id DESC LIMIT 1`, plugins.DraftObject(id), action).Scan(&via)
-	if err != nil {
-		return "<missing>"
-	}
-	if via == nil {
-		return ""
-	}
-	return *via
 }
 
 // listedByID is the listing's draft id, or nil.
@@ -188,11 +176,12 @@ func listedByID(ds []map[string]any, id int64) map[string]any {
 // drafts a reply to an UNVERIFIED sender; the owner's mirrored session lists it
 // (sender marked UNVERIFIED, the message, the exact reply and its SHA-256) and
 // approves it — with no fresh sign-in — and a plugin's claim that was already
-// WAITING wakes with exactly that text, as it does for the Asks page's
-// approval; the row and its audit line say mcp from tower/<session>. The
-// CONTROL is a second draft approved on the Asks page: decided_via 'browser',
-// no host or session — so the provenance is the door's, not a constant. A
-// rejected draft is not listed, and neither is an approved one.
+// WAITING wakes with exactly that text at once — the approval's signal, not the
+// claim's own poll, which this test lengthens to a minute — as it does for the
+// Asks page's approval; the audit row says mcp from tower/<session>. The
+// CONTROL is a second draft approved on the Asks page: decided_via 'browser' —
+// so the provenance is the door's, not a constant. A rejected draft is not
+// listed, and neither is an approved one.
 func TestAMirroredSessionListsAndApprovesAReplyDraft(t *testing.T) {
 	f := newDraftToolFixture(t)
 	const body = "Yes, noon works."
@@ -217,6 +206,11 @@ func TestAMirroredSessionListsAndApprovesAReplyDraft(t *testing.T) {
 		t.Fatalf("control: a VERIFIED sender is listed as %v", c["sender"])
 	}
 
+	// Only draftWake can wake the claim within the bound below: its own re-read
+	// comes a minute later, past the claim's 20-second wait.
+	prevPoll := claimPollInterval
+	claimPollInterval = time.Minute
+	t.Cleanup(func() { claimPollInterval = prevPoll })
 	waited := make(chan *httptest.ResponseRecorder, 1)
 	go func() {
 		waited <- f.call(t, http.MethodPost, "/plugin/v1/drafts/claim", strings.NewReader(`{"wait_seconds":20}`),
@@ -225,11 +219,15 @@ func TestAMirroredSessionListsAndApprovesAReplyDraft(t *testing.T) {
 	time.Sleep(300 * time.Millisecond) // the claim is waiting before the decision
 
 	text, isErr := f.decide(t, f.tok, otherRouteSID, id, "approve", sha(body))
+	decided := time.Now()
 	if isErr || !strings.Contains(text, `"status":"approved"`) || !strings.Contains(text, `"decided_from":"tower/`+otherRouteSID+`"`) {
 		t.Fatalf("plugin_draft_decide approve: %s", text)
 	}
 	select {
 	case w := <-waited:
+		if took := time.Since(decided); took > 3*time.Second {
+			t.Fatalf("the waiting claim answered %s after the approval; the approval did not wake it", took)
+		}
 		var c struct {
 			DraftID int64  `json:"draft_id"`
 			Body    string `json:"body"`
@@ -237,14 +235,11 @@ func TestAMirroredSessionListsAndApprovesAReplyDraft(t *testing.T) {
 		if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &c) != nil || c.DraftID != id || c.Body != body {
 			t.Fatalf("the waiting claim: %d %s", w.Code, w.Body)
 		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("the waiting claim did not wake on the MCP approval")
+	case <-time.After(3 * time.Second):
+		t.Fatal("the waiting claim did not wake on the MCP approval within 3s (its own poll is a minute)")
 	}
-	if r := f.row(t, id); r != (draftRow{status: "approved", via: "mcp", host: "tower", session: otherRouteSID}) {
+	if r := f.row(t, id); r != (draftRow{status: "approved", via: "mcp from tower/" + otherRouteSID}) {
 		t.Fatalf("the approved draft: %+v", r)
-	}
-	if got := f.auditVia(t, id, "plugin.draft.approved"); got != "mcp from tower/"+otherRouteSID {
-		t.Fatalf("the approval's audit row says decided_via %q", got)
 	}
 
 	// CONTROL: the Asks page approves the other one.
@@ -253,9 +248,6 @@ func TestAMirroredSessionListsAndApprovesAReplyDraft(t *testing.T) {
 	}
 	if r := f.row(t, ctl); r != (draftRow{status: "approved", via: "browser"}) {
 		t.Fatalf("the page's approval: %+v", r)
-	}
-	if got := f.auditVia(t, ctl, "plugin.draft.approved"); got != "browser" {
-		t.Fatalf("the page's audit row says decided_via %q", got)
 	}
 	if r := f.row(t, gone); r != (draftRow{status: "rejected", via: "browser"}) {
 		t.Fatalf("the page's rejection: %+v", r)
@@ -274,11 +266,8 @@ func TestAMirroredSessionRejectsAReplyDraft(t *testing.T) {
 	if text, isErr := f.decide(t, f.tok, routeSID, id, "reject", sha(body)); isErr || !strings.Contains(text, `"status":"rejected"`) {
 		t.Fatalf("reject: %s", text)
 	}
-	if r := f.row(t, id); r != (draftRow{status: "rejected", via: "mcp", host: "tower", session: routeSID}) {
+	if r := f.row(t, id); r != (draftRow{status: "rejected", via: "mcp from tower/" + routeSID}) {
 		t.Fatalf("the rejected draft: %+v", r)
-	}
-	if got := f.auditVia(t, id, "plugin.draft.rejected"); got != "mcp from tower/"+routeSID {
-		t.Fatalf("the rejection's audit row: %q", got)
 	}
 	if _, ok, err := f.plugins.ClaimDraft(f.asOwner, f.plugin.ID); ok || err != nil {
 		t.Fatalf("a rejected draft was claimable (%v %v)", ok, err)
@@ -318,49 +307,71 @@ func TestPluginDraftDecideRefusesABodyItDidNotRead(t *testing.T) {
 	}
 }
 
-// TestTheRoutedSessionCannotDecideItsOwnReply: a message routed to routeSID,
-// answered there, becomes a pending draft. routeSID's listing marks it
-// this_session; its approve AND its reject are refused (the store's route
-// check), the draft stays pending and undecided. CONTROL: another session of
-// the SAME host lists it as not this_session and approves it, and the Asks
-// page (a second routed draft) may decide one too.
-func TestTheRoutedSessionCannotDecideItsOwnReply(t *testing.T) {
+// TestTheRoutedSessionMayDecideItsOwnReply: a message routed to routeSID,
+// answered there, becomes a pending draft that names its route. Any of the
+// owner's mirrored sessions may decide it — the routed one included (the
+// accepted cost of no step-up): routeSID approves the reply it wrote. The Asks
+// page decides a second routed draft as usual.
+func TestTheRoutedSessionMayDecideItsOwnReply(t *testing.T) {
 	f := newDraftToolFixture(t)
 	const body = "I will look into it."
 	id, rid := f.routedDraft(t, "dt-routed", body)
 
-	if d := listedByID(f.listed(t, f.tok, routeSID), id); d == nil || d["route"] == nil {
+	d := listedByID(f.listed(t, f.tok, routeSID), id)
+	if d == nil || d["route"] == nil {
 		t.Fatalf("the routed draft as its target lists it: %v", d)
-	} else if r := d["route"].(map[string]any); r["route_id"] != rid || r["target_kind"] != "mirror" || r["target"] != routeSID || r["this_session"] != true {
-		t.Fatalf("the routed draft's route, to its target: %v", r)
 	}
-	for _, d := range []string{"approve", "reject"} {
-		text, isErr := f.decide(t, f.tok, routeSID, id, d, sha(body))
-		want := toolErr("draft %d: %s", id, "That reply was written by the session its message was routed to, so that session cannot decide it: "+
-			"decide it on the Asks page, or from another of your sessions.")
-		if !isErr || text != want {
-			t.Fatalf("%s from the route's target: %s", d, text)
-		}
+	if r := d["route"].(map[string]any); r["route_id"] != rid || r["target_kind"] != "mirror" || r["target"] != routeSID || r["target_label"] != "work:1 @ tower" || len(r) != 4 {
+		t.Fatalf("the routed draft's route: %v", r)
 	}
-	if r := f.row(t, id); r != (draftRow{status: "pending"}) {
-		t.Fatalf("the routed session moved its own draft: %+v", r)
+	if text, isErr := f.decide(t, f.tok, routeSID, id, "approve", sha(body)); isErr || !strings.Contains(text, `"status":"approved"`) {
+		t.Fatalf("the route's target approving its own reply: %s", text)
 	}
-	if r := listedByID(f.listed(t, f.tok, otherRouteSID), id)["route"].(map[string]any); r["this_session"] != false {
-		t.Fatalf("control: another session sees this_session %v", r["this_session"])
-	}
-	if text, isErr := f.decide(t, f.tok, otherRouteSID, id, "approve", sha(body)); isErr || !strings.Contains(text, `"status":"approved"`) {
-		t.Fatalf("control, another session of the same host: %s", text)
-	}
-	if r := f.row(t, id); r != (draftRow{status: "approved", via: "mcp", host: "tower", session: otherRouteSID}) {
-		t.Fatalf("control: %+v", r)
+	if r := f.row(t, id); r != (draftRow{status: "approved", via: "mcp from tower/" + routeSID}) {
+		t.Fatalf("the routed session's approval: %+v", r)
 	}
 
 	page, _ := f.routedDraft(t, "dt-routed-page", "Second answer.")
 	if w := f.browser(t, page, "reject"); w.Code != http.StatusSeeOther {
-		t.Fatalf("control, the Asks page on a routed draft: %d %s", w.Code, w.Body)
+		t.Fatalf("the Asks page on a routed draft: %d %s", w.Code, w.Body)
 	}
 	if r := f.row(t, page); r != (draftRow{status: "rejected", via: "browser"}) {
-		t.Fatalf("control, the page's decision on a routed draft: %+v", r)
+		t.Fatalf("the page's decision on a routed draft: %+v", r)
+	}
+}
+
+// TestAnMCPDecisionWithdrawsTheDraftsNotification: the chief's draft sends the
+// owner its `plugin` push; deciding it over MCP withdraws that notification
+// (one `resolved` message with the draft's tag), exactly as the Asks page's
+// decision does. CONTROL: before the decision there is none.
+func TestAnMCPDecisionWithdrawsTheDraftsNotification(t *testing.T) {
+	f := newDraftToolFixture(t)
+	store, pusher := &memPush{}, &payloadPusher{}
+	claim(t, store, f.owner, ep("dt-owner"))
+	f.srv.ext.Push = push.NewService(store, pusher, push.VAPIDConfig{PublicKey: "k"}, log.New(io.Discard, "", 0))
+	const body = "See you then."
+	id := f.draft(t, "dt-notify", "Ada <ada@example.invalid>", true, body)
+	tag := "plugin-draft-" + strconv.FormatInt(id, 10)
+	resolved := func() (announced, cleared int) {
+		f.srv.WaitForPushes()
+		for _, p := range pusher.to(ep("dt-owner")) {
+			switch {
+			case p.Type == "plugin" && p.Tag == tag:
+				announced++
+			case p.Type == push.TypeResolved && p.Tag == tag:
+				cleared++
+			}
+		}
+		return
+	}
+	if a, c := resolved(); a != 1 || c != 0 {
+		t.Fatalf("control: before the decision the draft was announced %d time(s) and cleared %d; want 1 and 0", a, c)
+	}
+	if text, isErr := f.decide(t, f.tok, otherRouteSID, id, "reject", sha(body)); isErr {
+		t.Fatal(text)
+	}
+	if _, c := resolved(); c != 1 {
+		t.Fatalf("the MCP decision cleared draft %d's notification %d time(s); want 1: %+v", id, c, pusher.to(ep("dt-owner")))
 	}
 }
 
@@ -379,7 +390,7 @@ func TestPluginDraftDecideRefusesADecidedDraft(t *testing.T) {
 			t.Fatalf("%s of an approved draft: %s", d, text)
 		}
 	}
-	if r := f.row(t, a); r != (draftRow{status: "approved", via: "mcp", host: "tower", session: otherRouteSID}) {
+	if r := f.row(t, a); r != (draftRow{status: "approved", via: "mcp from tower/" + otherRouteSID}) {
 		t.Fatalf("the approved draft after refused decisions: %+v", r)
 	}
 	r := f.draft(t, "dt-dec-r", "Ada <ada@example.invalid>", true, "Second.")
@@ -461,7 +472,7 @@ func TestOnlyTheOwnersMirroredSessionsDecideAReplyDraft(t *testing.T) {
 
 // TestRouteTargetMirrorIsFocusKindMirror pins the two spellings of a mirrored
 // session's route target kind equal (an invariant guard: the route tool writes
-// focus's, the decision refusal reads plugins').
+// focus's, route_reply's binding reads plugins').
 func TestRouteTargetMirrorIsFocusKindMirror(t *testing.T) {
 	if plugins.RouteTargetMirror != string(focus.KindMirror) {
 		t.Fatalf("plugins.RouteTargetMirror %q != focus.KindMirror %q", plugins.RouteTargetMirror, focus.KindMirror)

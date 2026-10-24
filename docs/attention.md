@@ -283,8 +283,9 @@ and, through `connector_request_decide`, **an approval as the operator of any
 of the owner's agents' pending connector requests** (recorded and shown as via
 MCP from that host; the accepted risk is in
 [connectors.md](connectors.md#deciding-a-request-from-your-own-session)) — and,
-through `plugin_draft_decide`, **an approval as the operator of any of the
-owner's pending reply drafts**, which sends that text to an outside party
+through `plugin_drafts_list` / `plugin_draft_decide`, **a read of every one of
+the owner's pending reply drafts and an approval as the operator of any of
+them**, which sends that text to an outside party
 (recorded as via MCP from that host; the accepted risk is in
 [plugins.md](plugins.md#deciding-a-draft-from-your-own-session)) — and,
 through `agent_destroy`, it can **destroy any of the owner's agents but the

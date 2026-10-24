@@ -47,7 +47,9 @@ const pluginDraftsShown = 50
 
 // claimPollInterval is how often a waiting claim looks again when nothing in
 // this process signalled an approval (another replica may have approved one).
-const claimPollInterval = time.Second
+// A var so a test can lengthen it: then only the signal (draftWake) can wake a
+// claim promptly.
+var claimPollInterval = time.Second
 
 // DraftStepUpWhy is the confirm dialog's sentence on the Asks page.
 func DraftStepUpWhy() string {
@@ -290,8 +292,8 @@ type draftRefusal struct {
 // decideDraftAs is THE OWNER'S DECISION ON REPLY DRAFT id, for both doors: the
 // Asks page (decideDraft, after its step-up) and plugin_draft_decide
 // (plugin_draft_tools.go, from a mirrored session). One store call —
-// plugins.PGStore.DecideDraftFrom, which makes the route-target, body and state
-// refusals under the row lock — one wording of every refusal, and one
+// plugins.PGStore.DecideDraftFrom, which makes the body and state refusals
+// under the row lock — one wording of every refusal, and one
 // aftermath: an approval wakes waiting claims, and the decided draft leaves the
 // attention queue with its notification withdrawn on the owner's devices.
 func (s *Server) decideDraftAs(ctx context.Context, id int64, dec plugins.DraftDecision) (plugins.Draft, *draftRefusal) {
@@ -320,9 +322,6 @@ func draftDecisionRefusal(d plugins.Draft, err error, approve bool) draftRefusal
 	switch {
 	case errors.Is(err, plugins.ErrNotFound):
 		return draftRefusal{http.StatusNotFound, "No such draft.", asksTabDrafts}
-	case errors.Is(err, plugins.ErrDecidedByRouteTarget):
-		return draftRefusal{http.StatusForbidden, "That reply was written by the session its message was routed to, " +
-			"so that session cannot decide it: decide it on the Asks page, or from another of your sessions.", asksTabDrafts}
 	case errors.Is(err, plugins.ErrDraftBodyMismatch):
 		return draftRefusal{http.StatusConflict, "body_sha256 is not the SHA-256 of that draft's text: " +
 			"read the draft again and decide on the text it holds.", asksTabDrafts}

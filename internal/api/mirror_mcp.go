@@ -47,11 +47,13 @@ import (
 // row name the host it came from) — and 🔴 through connector_request_decide,
 // an APPROVAL AS THE OPERATOR of any of the owner's agents' pending connector
 // requests (operator decision "Build connector_approve MCP"; the grant and the
-// audit line name the host it came from) — and 🔴 through plugin_draft_decide,
-// an APPROVAL AS THE OPERATOR of any of the owner's pending reply drafts,
-// which SENDS that text to an outside party, with no fresh sign-in (operator
-// decision; the row and audit line name the host, and the session a draft's
-// route was sent to is refused) — and 🔴 through agent_destroy
+// audit line name the host it came from) — and 🔴 through plugin_drafts_list
+// and plugin_draft_decide, a READ of every pending reply draft of the owner's
+// (the inbound sender, subject and text, and the reply) and an APPROVAL AS THE
+// OPERATOR of any of them, which SENDS that text to an outside party, with no
+// fresh sign-in (operator decision; the audit row names the host; any of the
+// owner's sessions may approve, the one a message was routed to included) —
+// and 🔴 through agent_destroy
 // (agent_destroy_tool.go, operator decision), the teardown of any agent of
 // the owner's but the chief, with NO audit row (the server log names the host). Never another task, another host's session, another owner's ask
 // or request, a secret, or a chief tool. The SESSION a call names is the caller's claim (its pane);

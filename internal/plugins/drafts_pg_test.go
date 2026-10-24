@@ -66,7 +66,7 @@ func (w draftWorld) file(t *testing.T, m Message, body string) Draft {
 
 func (w draftWorld) approve(t *testing.T, d Draft) Draft {
 	t.Helper()
-	got, err := w.s.DecideDraft(session(2), d.ID, true)
+	got, err := w.s.DecideDraftFrom(session(2), d.ID, DraftDecision{Approve: true})
 	if err != nil || got.Status != DraftApproved || got.ApprovedAt == nil {
 		t.Fatalf("approve %d: %+v %v", d.ID, got, err)
 	}
@@ -254,22 +254,22 @@ func TestTheScreenRefusesWhatTheOwnerCouldNotSeeOrShouldNotSend(t *testing.T) {
 func TestOnlyAPendingDraftIsDecided(t *testing.T) {
 	w := newDraftWorld(t)
 	d := w.file(t, w.m, "yes")
-	if _, err := w.s.DecideDraft(session(3), d.ID, true); !errors.Is(err, ErrNotFound) {
+	if _, err := w.s.DecideDraftFrom(session(3), d.ID, DraftDecision{Approve: true}); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("another owner approving: %v; want ErrNotFound", err)
 	}
 	w.approve(t, d)
-	if _, err := w.s.DecideDraft(session(2), d.ID, true); !errors.Is(err, ErrDraftState) {
+	if _, err := w.s.DecideDraftFrom(session(2), d.ID, DraftDecision{Approve: true}); !errors.Is(err, ErrDraftState) {
 		t.Fatalf("approving an approved draft: %v; want ErrDraftState", err)
 	}
-	if _, err := w.s.DecideDraft(session(3), d.ID, false); !errors.Is(err, ErrNotFound) {
+	if _, err := w.s.DecideDraftFrom(session(3), d.ID, DraftDecision{Approve: false}); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("another owner withdrawing: %v; want ErrNotFound", err)
 	}
 	r := w.file(t, w.delivered(t, "m-2", false), "no")
-	got, err := w.s.DecideDraft(session(2), r.ID, false)
+	got, err := w.s.DecideDraftFrom(session(2), r.ID, DraftDecision{Approve: false})
 	if err != nil || got.Status != DraftRejected || got.ApprovedAt != nil {
 		t.Fatalf("reject: %+v %v", got, err)
 	}
-	if _, err := w.s.DecideDraft(session(2), r.ID, true); !errors.Is(err, ErrDraftState) {
+	if _, err := w.s.DecideDraftFrom(session(2), r.ID, DraftDecision{Approve: true}); !errors.Is(err, ErrDraftState) {
 		t.Fatalf("approving a rejected draft: %v; want ErrDraftState", err)
 	}
 }
@@ -422,7 +422,7 @@ func TestALapsedLeaseIsUnconfirmedAndNeverReoffered(t *testing.T) {
 	}
 	// Approve (the pending decision) does not apply to it: an unconfirmed draft
 	// is never offered again, whatever its owner does.
-	if _, err := w.s.DecideDraft(session(2), d.ID, true); !errors.Is(err, ErrDraftState) {
+	if _, err := w.s.DecideDraftFrom(session(2), d.ID, DraftDecision{Approve: true}); !errors.Is(err, ErrDraftState) {
 		t.Fatalf("approving an unconfirmed draft: %v; want ErrDraftState", err)
 	}
 	if _, ok, _ := w.s.ClaimDraft(plugin(2), w.p.ID); ok {
@@ -440,7 +440,7 @@ func TestALapsedLeaseIsUnconfirmedAndNeverReoffered(t *testing.T) {
 func TestAnApprovalCanBeWithdrawnUntilItIsClaimed(t *testing.T) {
 	w := newDraftWorld(t)
 	d := w.approve(t, w.file(t, w.m, "oops"))
-	got, err := w.s.DecideDraft(session(2), d.ID, false)
+	got, err := w.s.DecideDraftFrom(session(2), d.ID, DraftDecision{Approve: false})
 	if err != nil || got.Status != DraftRejected || got.ApprovedAt != nil {
 		t.Fatalf("withdraw: %+v %v", got, err)
 	}
@@ -456,7 +456,7 @@ func TestAnApprovalCanBeWithdrawnUntilItIsClaimed(t *testing.T) {
 	if _, ok, _ := w.s.ClaimDraft(plugin(2), w.p.ID); !ok {
 		t.Fatal("claim the corrected draft")
 	}
-	if _, err := w.s.DecideDraft(session(2), d2.ID, false); !errors.Is(err, ErrDraftState) {
+	if _, err := w.s.DecideDraftFrom(session(2), d2.ID, DraftDecision{Approve: false}); !errors.Is(err, ErrDraftState) {
 		t.Fatalf("withdrawing a claimed draft: %v; want ErrDraftState", err)
 	}
 	// The card flag: a pending draft whose message has an unconfirmed sibling.
@@ -486,7 +486,7 @@ func TestOneReplyPerMessageIsInFlight(t *testing.T) {
 	}
 	// Another message's draft is unaffected.
 	other := w.file(t, w.delivered(t, "m-other", false), "other")
-	if _, err := w.s.DecideDraft(session(2), other.ID, true); err != nil {
+	if _, err := w.s.DecideDraftFrom(session(2), other.ID, DraftDecision{Approve: true}); err != nil {
 		t.Fatalf("approving a draft for ANOTHER message: %v", err)
 	}
 	if _, ok, _ := w.s.ClaimDraft(plugin(2), w.p.ID); !ok {
@@ -496,7 +496,7 @@ func TestOneReplyPerMessageIsInFlight(t *testing.T) {
 		t.Fatal(err)
 	}
 	d2 := w.file(t, w.m, "a follow-up after the first was sent")
-	if _, err := w.s.DecideDraft(session(2), d2.ID, true); err != nil {
+	if _, err := w.s.DecideDraftFrom(session(2), d2.ID, DraftDecision{Approve: true}); err != nil {
 		t.Fatalf("approving a follow-up after the first settled: %v", err)
 	}
 	// Approving while another reply is in flight: d3 is pending for m-race when
@@ -507,10 +507,10 @@ func TestOneReplyPerMessageIsInFlight(t *testing.T) {
 	dbtest.OwnerExec(t, w.dsn, `INSERT INTO plugin_reply_drafts (owner_id, message_id, agent_id, agent_name, body, expires_at,
 		status, decided_at, approved_at) VALUES (2, $1, $2, 'x', 'already approved', now() + interval '1 day', 'approved', now(), now())`,
 		race.ID, w.chief.ID)
-	if _, err := w.s.DecideDraft(session(2), d3.ID, true); !errors.Is(err, ErrReplyInFlight) {
+	if _, err := w.s.DecideDraftFrom(session(2), d3.ID, DraftDecision{Approve: true}); !errors.Is(err, ErrReplyInFlight) {
 		t.Fatalf("approving while another reply is in flight: %v; want ErrReplyInFlight", err)
 	}
-	if got, err := w.s.DecideDraft(session(2), d3.ID, false); err != nil || got.Status != DraftRejected {
+	if got, err := w.s.DecideDraftFrom(session(2), d3.ID, DraftDecision{Approve: false}); err != nil || got.Status != DraftRejected {
 		t.Fatalf("rejecting while another reply is in flight: %+v %v; want rejected", got, err)
 	}
 }
@@ -537,7 +537,7 @@ func TestDraftsExpireAfterSevenDays(t *testing.T) {
 	if got, _ := w.s.Draft(session(2), oldApproved.ID); got.ApprovedAt == nil {
 		t.Error("an approved draft that expired lost its approval time")
 	}
-	if _, err := w.s.DecideDraft(session(2), oldPending.ID, true); !errors.Is(err, ErrDraftState) {
+	if _, err := w.s.DecideDraftFrom(session(2), oldPending.ID, DraftDecision{Approve: true}); !errors.Is(err, ErrDraftState) {
 		t.Fatalf("approving an expired draft: %v; want ErrDraftState", err)
 	}
 }
@@ -760,10 +760,10 @@ func TestTheDraftTriggersHoldUnderTheScopeAllPrincipal(t *testing.T) {
 }
 
 // TestDecideDraftFromRefusesAMalformedSource: DecideDraftFrom refuses, before
-// it touches the row, a source the 0048 CHECK would refuse and an MCP decision
-// that does not name the body it decides; the draft stays pending. CONTROL: a
-// well-formed MCP decision with the right hash (spelled out here, not derived
-// from DraftBodySHA256) approves it and records where it came from.
+// it touches the row, a malformed source and an MCP decision that does not
+// name the body it decides; the draft stays pending. CONTROL: a well-formed MCP
+// decision with the right hash (spelled out here, not derived from
+// DraftBodySHA256) approves it, and its audit row names where it came from.
 func TestDecideDraftFromRefusesAMalformedSource(t *testing.T) {
 	w := newDraftWorld(t)
 	d := w.file(t, w.m, "Noon works.")
@@ -783,12 +783,17 @@ func TestDecideDraftFromRefusesAMalformedSource(t *testing.T) {
 			t.Errorf("%s: %v, want ErrInvalid", what, err)
 		}
 	}
-	if got, _ := w.s.Draft(session(2), d.ID); got.Status != DraftPending || got.DecidedVia != (DraftDecisionSource{}) {
+	if got, _ := w.s.Draft(session(2), d.ID); got.Status != DraftPending {
 		t.Fatalf("after refused decisions: %+v", got)
 	}
 	via := DraftDecisionSource{Via: DraftViaMCP, Host: "ws", Session: sid}
 	got, err := w.s.DecideDraftFrom(session(2), d.ID, DraftDecision{Approve: true, Via: via, BodySHA256: noonSHA})
-	if err != nil || got.Status != DraftApproved || got.DecidedVia != via {
+	if err != nil || got.Status != DraftApproved {
 		t.Fatalf("control: %+v %v", got, err)
+	}
+	var detail string
+	if err := w.s.pool.QueryRow(authz.System(context.Background()), `SELECT detail->>'decided_via' FROM audit_log
+		WHERE object = $1 AND action = 'plugin.draft.approved'`, DraftObject(d.ID)).Scan(&detail); err != nil || detail != "mcp from ws/"+sid {
+		t.Fatalf("the approval's audit row: decided_via %q (%v)", detail, err)
 	}
 }

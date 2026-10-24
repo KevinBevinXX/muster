@@ -103,10 +103,6 @@ type Draft struct {
 	// RouteID is the session route this draft was relayed from (0021), when
 	// it is one: a routed session's answer that fell back to the owner.
 	RouteID *string `json:"-"`
-	// DecidedVia is where the owner's decision was made (migration 0048): ""
-	// for none recorded (pending, decided by time, auto-approved by a relay,
-	// or decided before 0048).
-	DecidedVia DraftDecisionSource `json:"-"`
 }
 
 // Claim is what the claim route hands a plugin: an approved draft to send.
@@ -153,13 +149,10 @@ var (
 	// ErrDraftBodyMismatch: the decision named a body_sha256 that is not the
 	// draft's body (DraftDecision.BodySHA256).
 	ErrDraftBodyMismatch = errors.New("plugins: the draft's body is not the one the decision names")
-	// ErrDecidedByRouteTarget: a mirrored session deciding a draft relayed from
-	// a route that was sent to THAT session (DecideDraftFrom).
-	ErrDecidedByRouteTarget = errors.New("plugins: the session a message was routed to may not decide the reply it wrote")
 )
 
-// Where an owner's decision on a draft was made: plugin_reply_drafts.decided_via
-// (migration 0048).
+// Where an owner's decision on a draft was made: the decided_via its
+// plugin.draft.* audit row records.
 const (
 	// DraftViaBrowser: the Asks page's Reply drafts tab.
 	DraftViaBrowser = "browser"
@@ -175,7 +168,7 @@ type DraftDecisionSource struct {
 	Via, Host, Session string
 }
 
-// String is the source as an audit line names it: "mcp from ws/<session>".
+// String is the source as the audit row names it: "mcp from ws/<session>".
 func (src DraftDecisionSource) String() string {
 	if src.Via == DraftViaMCP {
 		return src.Via + " from " + src.Host + "/" + src.Session
@@ -188,7 +181,7 @@ type DraftDecision struct {
 	// Approve sends it; otherwise it is rejected (or, on the Asks page, an
 	// unclaimed approval withdrawn).
 	Approve bool
-	// Via is where the decision was made, recorded on the row and the audit line.
+	// Via is where the decision was made, recorded on its audit row.
 	Via DraftDecisionSource
 	// BodySHA256, when set, must be the lowercase hex SHA-256 of the draft's
 	// stored body (ErrDraftBodyMismatch): the decision is on exactly the text
@@ -257,29 +250,11 @@ func (s *PGStore) WithAgentDenyWords(words []string) *PGStore {
 }
 
 const draftCols = `id, owner_id, message_id, agent_id, agent_name, body, status, created_at, expires_at, decided_at,
-	approved_at, claimed_at, lease_until, finished_at, external_ref, detail, route_id,
-	decided_via, decided_via_host, decided_via_session`
-
-// orEmpty scans a nullable text column into *s, NULL as "" (draftCols stays a
-// plain column list, so prefixed can qualify it).
-type orEmpty struct{ s *string }
-
-func (o orEmpty) Scan(src any) error {
-	switch v := src.(type) {
-	case nil:
-		*o.s = ""
-	case string:
-		*o.s = v
-	default:
-		return fmt.Errorf("plugins: a text column scanned %T", src)
-	}
-	return nil
-}
+	approved_at, claimed_at, lease_until, finished_at, external_ref, detail, route_id`
 
 func draftDest(d *Draft, st *string) []any {
 	return []any{&d.ID, &d.OwnerID, &d.MessageID, &d.AgentID, &d.AgentName, &d.Body, st, &d.CreatedAt, &d.ExpiresAt,
-		&d.DecidedAt, &d.ApprovedAt, &d.ClaimedAt, &d.LeaseUntil, &d.FinishedAt, &d.ExternalRef, &d.Detail, &d.RouteID,
-		orEmpty{&d.DecidedVia.Via}, orEmpty{&d.DecidedVia.Host}, orEmpty{&d.DecidedVia.Session}}
+		&d.DecidedAt, &d.ApprovedAt, &d.ClaimedAt, &d.LeaseUntil, &d.FinishedAt, &d.ExternalRef, &d.Detail, &d.RouteID}
 }
 
 func scanDraft(row pgx.Row) (Draft, error) {
@@ -538,14 +513,9 @@ func lockedDraft(ctx context.Context, tx pgx.Tx, id int64) (Draft, error) {
 	return cur, inFlight
 }
 
-// DecideDraft is DecideDraftFrom with no source recorded (decided_via NULL).
-func (s *PGStore) DecideDraft(ctx context.Context, id int64, approve bool) (Draft, error) {
-	return s.DecideDraftFrom(ctx, id, DraftDecision{Approve: approve})
-}
-
 // DecideDraftFrom approves or rejects one of the principal's PENDING, unexpired
 // drafts (ErrDraftState otherwise), recording where the decision was made
-// (dec.Via, migration 0048). An approved draft is what the plugin's next claim
+// (dec.Via) on its audit row. An approved draft is what the plugin's next claim
 // may hand out. Approving while another reply to the same message is in flight
 // is ErrReplyInFlight; rejecting is always allowed.
 //
@@ -557,18 +527,10 @@ func (s *PGStore) DecideDraft(ctx context.Context, id int64, approve bool) (Draf
 // page's alone: an MCP decision acts only on a PENDING draft, the one
 // plugin_drafts_list showed it.
 //
-// 🔴 THREE REFUSALS ARE MADE HERE, UNDER THE ROW LOCK, SO EVERY DOOR GETS THEM:
-//   - an MCP decision from the mirrored session a draft's ROUTE was sent to
-//     (ErrDecidedByRouteTarget): that session wrote the reply, and must not
-//     approve its own text. Structural — the route row's target (kind mirror,
-//     key = the caller's Claude session id: Route.SentToMirrorSession, the
-//     predicate route_reply binds with) — never a name or label;
-//   - a BodySHA256 that is not the stored body's (ErrDraftBodyMismatch), which
-//     an MCP decision must carry;
-//   - a draft that is no longer pending (ErrDraftState).
-//
-// The body is immutable (0016's trigger), so the hash names one text for the
-// draft's whole life; it is still compared under the lock, beside the state.
+// 🔴 A BodySHA256 THAT IS NOT THE STORED BODY'S IS REFUSED HERE, under the row
+// lock beside the state (ErrDraftBodyMismatch), so every door gets it; an MCP
+// decision must carry one. The body is immutable (0016's trigger), so the hash
+// names one text for the draft's whole life.
 func (s *PGStore) DecideDraftFrom(ctx context.Context, id int64, dec DraftDecision) (Draft, error) {
 	switch dec.Via.Via {
 	case "", DraftViaBrowser:
@@ -600,17 +562,6 @@ func (s *PGStore) DecideDraftFrom(ctx context.Context, id int64, dec DraftDecisi
 			return err
 		}
 		inFlight := err
-		// Who may decide before whether they may decide NOW (FileDraft's order).
-		if dec.Via.Via == DraftViaMCP && cur.RouteID != nil {
-			r, err := scanRoute(tx.QueryRow(ctx, `SELECT `+routeCols+` FROM session_routes WHERE route_id = $1`, *cur.RouteID))
-			if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-				return err
-			}
-			if err == nil && r.SentToMirrorSession(dec.Via.Session) {
-				d = cur
-				return ErrDecidedByRouteTarget
-			}
-		}
 		if dec.BodySHA256 != "" && dec.BodySHA256 != DraftBodySHA256(cur.Body) {
 			d = cur
 			return ErrDraftBodyMismatch
@@ -619,35 +570,31 @@ func (s *PGStore) DecideDraftFrom(ctx context.Context, id int64, dec DraftDecisi
 			d = cur
 			return inFlight
 		}
-		via := map[string]any{}
+		detail := map[string]any{}
 		if dec.Via.Via != "" {
-			via["decided_via"] = dec.Via.String()
+			detail["decided_via"] = dec.Via.String()
 		}
 		if !approve && cur.Status == DraftApproved && cur.ClaimedAt == nil && dec.Via.Via != DraftViaMCP {
 			if d, err = scanDraft(tx.QueryRow(ctx, `UPDATE plugin_reply_drafts
-				SET status = 'rejected', decided_at = now(), approved_at = NULL,
-				    decided_via = nullif($2, ''), decided_via_host = nullif($3, ''), decided_via_session = nullif($4, '')
-				WHERE id = $1 RETURNING `+draftCols, id, dec.Via.Via, dec.Via.Host, dec.Via.Session)); err != nil {
+				SET status = 'rejected', decided_at = now(), approved_at = NULL WHERE id = $1 RETURNING `+draftCols, id)); err != nil {
 				return err
 			}
-			via["message_id"], via["approved_at"] = d.MessageID, cur.ApprovedAt.UTC().Format(time.RFC3339)
-			return audit(ctx, tx, "plugin.draft.withdrawn", DraftObject(id), via)
+			detail["message_id"], detail["approved_at"] = d.MessageID, cur.ApprovedAt.UTC().Format(time.RFC3339)
+			return audit(ctx, tx, "plugin.draft.withdrawn", DraftObject(id), detail)
 		}
 		if cur.Status != DraftPending {
 			d = cur
 			return ErrDraftState
 		}
-		set, action := `status = 'rejected', decided_at = now()`, "plugin.draft.rejected"
+		q, action := `UPDATE plugin_reply_drafts SET status = 'rejected', decided_at = now() WHERE id = $1 RETURNING `+draftCols, "plugin.draft.rejected"
 		if approve {
-			set, action = `status = 'approved', decided_at = now(), approved_at = now()`, "plugin.draft.approved"
+			q, action = `UPDATE plugin_reply_drafts SET status = 'approved', decided_at = now(), approved_at = now() WHERE id = $1 RETURNING `+draftCols, "plugin.draft.approved"
 		}
-		if d, err = scanDraft(tx.QueryRow(ctx, `UPDATE plugin_reply_drafts SET `+set+`,
-			decided_via = nullif($2, ''), decided_via_host = nullif($3, ''), decided_via_session = nullif($4, '')
-			WHERE id = $1 RETURNING `+draftCols, id, dec.Via.Via, dec.Via.Host, dec.Via.Session)); err != nil {
+		if d, err = scanDraft(tx.QueryRow(ctx, q, id)); err != nil {
 			return err
 		}
-		via["message_id"] = d.MessageID
-		return audit(ctx, tx, action, DraftObject(id), via)
+		detail["message_id"] = d.MessageID
+		return audit(ctx, tx, action, DraftObject(id), detail)
 	})
 	return d, err
 }

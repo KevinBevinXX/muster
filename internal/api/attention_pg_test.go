@@ -588,7 +588,7 @@ func TestTheReadModelHasEachSource(t *testing.T) {
 	if got := kinds(); len(got["session"]) != 0 {
 		t.Fatalf("an offline host's window is listed: %v", got)
 	}
-	if _, err := f.plugins.DecideDraft(ctx, d.ID, false); err != nil {
+	if _, err := f.plugins.DecideDraftFrom(ctx, d.ID, plugins.DraftDecision{Approve: false}); err != nil {
 		t.Fatal(err)
 	}
 	if got := kinds(); containsStr(got["plugin"], draftKey(d.ID)) {
