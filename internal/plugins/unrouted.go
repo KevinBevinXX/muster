@@ -141,7 +141,8 @@ func (s *PGStore) UnroutedDue(ctx context.Context, asOf time.Time, limit int) ([
 // it, when the ask exists and the closing sweep (UnroutedAsksToClose) ends it.
 // It is FOR NO KEY UPDATE, not FOR UPDATE: raise inserts an ask whose foreign
 // key to this row takes FOR KEY SHARE on another connection, which FOR UPDATE
-// would block for ever.
+// blocks — until the statement timeout cancels the insert, on every sweep, so
+// no ask would ever be raised (measured with that mutant).
 func (s *PGStore) RaiseUnrouted(ctx context.Context, id int64, asOf time.Time, raise func(Message) error) (bool, error) {
 	raised := false
 	err := s.inTx(ctx, func(tx pgx.Tx) error {
