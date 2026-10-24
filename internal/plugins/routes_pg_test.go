@@ -219,27 +219,11 @@ func TestARelayThatCannotBeMadeFailsTheRoute(t *testing.T) {
 }
 
 // TestCreateRouteFromRecordsWhoRoutedIt: an MCP origin's route is the same row
-// and audit action as the chief's, with routed_via "mcp from <host>/<session>";
-// a malformed origin is refused before anything is written. CONTROL: the
-// chief's (zero) origin records no routed_via.
+// and audit action as the chief's, with routed_via "mcp from <host>/<session>".
+// CONTROL: the chief's (zero) origin records no routed_via.
 func TestCreateRouteFromRecordsWhoRoutedIt(t *testing.T) {
 	w := newDraftWorld(t)
 	const sid = "0b2c3d4e-5f60-4718-8a9b-0c1d2e3f4a5b"
-	for what, o := range map[string]RouteOrigin{
-		"mcp without a session":      {Via: RouteViaMCP, Host: "tower"},
-		"mcp without a host":         {Via: RouteViaMCP, Session: sid},
-		"the chief naming a host":    {Host: "tower"},
-		"the chief naming a session": {Session: sid},
-		"an unknown origin":          {Via: "browser", Host: "tower", Session: sid},
-	} {
-		if _, err := w.s.CreateRouteFrom(session(2), w.chief.ID, 2, w.m.ID, target, time.Hour, o); !errors.Is(err, ErrInvalid) {
-			t.Errorf("%s: %v, want ErrInvalid", what, err)
-		}
-	}
-	var n int
-	if err := w.s.pool.QueryRow(authz.System(context.Background()), `SELECT count(*) FROM session_routes WHERE plugin_message_id = $1`, w.m.ID).Scan(&n); err != nil || n != 0 {
-		t.Fatalf("a refused origin wrote %d route(s) (%v)", n, err)
-	}
 	via := func(r Route) string {
 		var v string
 		if err := w.s.pool.QueryRow(authz.System(context.Background()), `SELECT coalesce(detail->>'routed_via', '') FROM audit_log
@@ -263,7 +247,6 @@ func TestCreateRouteFromRecordsWhoRoutedIt(t *testing.T) {
 // TestRoutableMessagesIsTheOwnersDeliveredRepliableMessages: newest first, only
 // messages delivered to a chief that may be replied to, each with its LATEST
 // route — not a queued one, not a no_reply one, not another owner's.
-// MessageRoute is that latest route too.
 func TestRoutableMessagesIsTheOwnersDeliveredRepliableMessages(t *testing.T) {
 	w := newDraftWorld(t)
 	noReply := w.delivered(t, "m-noreply", true)
@@ -318,12 +301,6 @@ func TestRoutableMessagesIsTheOwnersDeliveredRepliableMessages(t *testing.T) {
 	}
 	if one, err := w.s.RoutableMessages(session(2), 1); err != nil || len(one) != 1 || one[0].Message.ID != later.ID {
 		t.Fatalf("limit 1: %+v %v", one, err)
-	}
-	if r, err := w.s.MessageRoute(session(2), w.m.ID); err != nil || r.RouteID != second.RouteID {
-		t.Fatalf("MessageRoute = %+v %v; want %s", r, err, second.RouteID)
-	}
-	if _, err := w.s.MessageRoute(session(2), later.ID); !errors.Is(err, ErrRouteNotFound) {
-		t.Fatalf("MessageRoute of an unrouted message: %v", err)
 	}
 	// Another owner's view is theirs alone.
 	if g3, err := w.s.RoutableMessages(session(3), 10); err != nil || len(g3) != 1 || g3[0].Message.ID != theirs.ID {

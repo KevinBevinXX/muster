@@ -299,57 +299,52 @@ func TestPluginMessageRouteWithNoSubjectRoutesTheCallingSession(t *testing.T) {
 	}
 }
 
-// TestPluginMessageRouteResolvesASubject: from otherRouteSID, a subject naming
-// routeSID — in the chief's form, by a session id prefix, or by its window
-// title — routes to routeSID (not to the caller); each lands in routeSID's
-// window queue.
+// TestPluginMessageRouteResolvesASubject: from otherRouteSID, the chief's form
+// "mirror:<routeSID>" routes to routeSID (not to the caller) and lands in its
+// window queue; the caller naming itself is a route to itself.
 func TestPluginMessageRouteResolvesASubject(t *testing.T) {
 	f := newMsgRouteFixture(t)
-	for i, sub := range []string{"mirror:" + routeSID, routeSID[:8], "WORK:1"} {
-		m := f.deliveredMessage(t, f.owner, f.chief.ID, "pmr-sub-"+strconv.Itoa(i))
-		out, text, isErr := f.routeAs(t, otherRouteSID, m.ID, sub)
-		if isErr || out["subject"] != "mirror:"+routeSID || out["this_session"] != false || out["session"] != "work:1 @ tower" {
-			t.Fatalf("subject %q: %s", sub, text)
-		}
-		r, _ := f.plugins.Route(f.asOwner, out["route_id"].(string))
-		if r.TargetKey != routeSID {
-			t.Fatalf("subject %q routed to %s", sub, r.TargetKey)
-		}
-		if n := len(f.queued(t)); n != i+1 {
-			t.Fatalf("subject %q: %d rows queued in routeSID's window, want %d", sub, n, i+1)
-		}
+	m := f.deliveredMessage(t, f.owner, f.chief.ID, "pmr-sub")
+	out, text, isErr := f.routeAs(t, otherRouteSID, m.ID, "mirror:"+routeSID)
+	if isErr || out["subject"] != "mirror:"+routeSID || out["this_session"] != false || out["session"] != "work:1 @ tower" {
+		t.Fatalf("subject mirror:<routeSID>: %s", text)
 	}
-	// The caller naming itself is a route to itself.
-	m := f.deliveredMessage(t, f.owner, f.chief.ID, "pmr-sub-self")
-	if out, text, _ := f.routeAs(t, otherRouteSID, m.ID, otherRouteSID[:6]); out["subject"] != "mirror:"+otherRouteSID || out["this_session"] != true {
+	if r, _ := f.plugins.Route(f.asOwner, out["route_id"].(string)); r.TargetKey != routeSID {
+		t.Fatalf("routed to %s", r.TargetKey)
+	}
+	if n := len(f.queued(t)); n != 1 {
+		t.Fatalf("%d rows queued in routeSID's window, want 1", n)
+	}
+	self := f.deliveredMessage(t, f.owner, f.chief.ID, "pmr-sub-self")
+	if out, text, _ := f.routeAs(t, otherRouteSID, self.ID, "mirror:"+otherRouteSID); out["subject"] != "mirror:"+otherRouteSID || out["this_session"] != true {
 		t.Fatalf("the caller naming itself: %s", text)
 	}
 }
 
-// TestPluginMessageRouteRefusesAnUnknownOrAmbiguousSubject: a subject matching
-// both sessions is ambiguous and one matching none is not found — each listing
-// the candidates, flagged an error — and none writes a route or queues a row.
-func TestPluginMessageRouteRefusesAnUnknownOrAmbiguousSubject(t *testing.T) {
+// TestPluginMessageRouteRefusesAnyOtherSubject: only "mirror:<claude session
+// id>" of a session an online window shows is a subject. "mirror:" with an
+// empty id, an unknown session id, a bare session id, a window title and
+// another subject kind are each refused subject_not_found, flagged an error,
+// listing the online sessions as the candidates — and none writes a route or
+// queues a row.
+func TestPluginMessageRouteRefusesAnyOtherSubject(t *testing.T) {
 	f := newMsgRouteFixture(t)
 	m := f.deliveredMessage(t, f.owner, f.chief.ID, "pmr-bad-subject")
 	both := []string{"mirror:" + otherRouteSID, "mirror:" + routeSID}
-	for _, c := range []struct {
-		subject, refused string
-		cands            []string
-	}{
-		{"work", RefusedSubjectAmbiguous, both},
-		{"tower", RefusedSubjectAmbiguous, both},
-		{"nowhere", RefusedSubjectNotFound, both},
-		{"mirror:5e55a1d0-0000-4000-8000-0000000dead0", RefusedSubjectNotFound, both},
-		{"5e5", RefusedSubjectNotFound, both}, // shorter than a usable prefix
+	for _, subject := range []string{
+		"mirror:",
+		"mirror:5e55a1d0-0000-4000-8000-0000000dead0",
+		routeSID,
+		"work:1",
+		"agent:" + strconv.FormatInt(f.worker.ID, 10),
 	} {
-		_, text, isErr := f.routeAs(t, routeSID, m.ID, c.subject)
+		_, text, isErr := f.routeAs(t, routeSID, m.ID, subject)
 		var res struct {
 			Error, Refused string
 			Candidates     []routeCandidate
 		}
-		if err := json.Unmarshal([]byte(text), &res); err != nil || !isErr || res.Refused != c.refused || res.Error == "" {
-			t.Errorf("subject %q: %s (error %v); want refused=%s", c.subject, text, isErr, c.refused)
+		if err := json.Unmarshal([]byte(text), &res); err != nil || !isErr || res.Refused != RefusedSubjectNotFound || res.Error == "" {
+			t.Errorf("subject %q: %s (error %v); want refused=%s", subject, text, isErr, RefusedSubjectNotFound)
 			continue
 		}
 		var got []string
@@ -357,8 +352,8 @@ func TestPluginMessageRouteRefusesAnUnknownOrAmbiguousSubject(t *testing.T) {
 			got = append(got, cd.Subject)
 		}
 		sort.Strings(got)
-		if strings.Join(got, " ") != strings.Join(c.cands, " ") {
-			t.Errorf("subject %q: candidates %v, want %v", c.subject, got, c.cands)
+		if strings.Join(got, " ") != strings.Join(both, " ") {
+			t.Errorf("subject %q: candidates %v, want %v", subject, got, both)
 		}
 	}
 	if n := f.routeRows(t, f.owner); n != 0 || len(f.queued(t)) != 0 {
@@ -367,17 +362,21 @@ func TestPluginMessageRouteRefusesAnUnknownOrAmbiguousSubject(t *testing.T) {
 }
 
 // TestPluginMessageRouteRefusesAMessageWithAWaitingRoute: a message the chief
-// routed to routeSID cannot be routed again while that route waits — the
-// refusal names the route and its target — and once the route timed out back
-// to the chief it can be. A message not yet delivered to the chief is refused
-// as such.
+// routed to routeSID cannot be routed again while that route waits — refused
+// already_routed by the route's own store check (CreateRouteFrom's
+// ErrAlreadyRouted), with no second row — and once the route timed out back to
+// the chief it can be. A message not yet delivered to the chief, and a no_reply
+// one, are refused as such.
 func TestPluginMessageRouteRefusesAMessageWithAWaitingRoute(t *testing.T) {
 	f := newMsgRouteFixture(t)
 	m := f.deliveredMessage(t, f.owner, f.chief.ID, "pmr-twice")
 	first := f.route(t, m)
 	out, text, isErr := f.routeAs(t, otherRouteSID, m.ID, "")
-	if !isErr || out["refused"] != RefusedAlreadyRouted || !strings.Contains(text, first) || !strings.Contains(text, "mirror:"+routeSID) {
+	if !isErr || out["refused"] != RefusedAlreadyRouted {
 		t.Fatalf("a second route of a waiting message: %s", text)
+	}
+	if n := f.routeRows(t, f.owner); n != 1 {
+		t.Fatalf("a refused second route left %d route rows, want 1", n)
 	}
 	dbtest.OwnerExec(t, dbtest.DSN(t), `UPDATE session_routes SET timeout_at = now() - interval '1 minute' WHERE route_id = '`+first+`'`)
 	if n, err := f.srv.RouteTimeoutPass(context.Background()); err != nil || n < 1 {
@@ -405,20 +404,10 @@ func TestPluginMessageRouteRefusesAMessageWithAWaitingRoute(t *testing.T) {
 	}
 }
 
-// otherOwnerPlugins is the real plugin store whose Message reads every owner's
-// rows (as a store without row-level security would), so the tool's own owner
-// check is what refuses another member's message.
-type otherOwnerPlugins struct{ plugins.Store }
-
-func (o otherOwnerPlugins) Message(ctx context.Context, id int64) (plugins.Message, error) {
-	return o.Store.Message(authz.System(ctx), id)
-}
-
-// TestPluginMessageRouteRefusesAnotherOwnersMessage: another member's message
-// reads exactly as a missing id — through row-level security, AND through the
-// tool's own owner check when the store does not scope (otherOwnerPlugins) — and
-// another member's session cannot route the owner's. Nothing is routed.
-// CONTROL: the owner routes their own.
+// TestPluginMessageRouteRefusesAnotherOwnersMessage: through the real
+// row-level-security store, another member's message reads exactly as a
+// missing id, and another member's session cannot route the owner's. Nothing is
+// routed. CONTROL: the owner routes their own.
 func TestPluginMessageRouteRefusesAnotherOwnersMessage(t *testing.T) {
 	f := newMsgRouteFixture(t)
 	mine := f.deliveredMessage(t, f.owner, f.chief.ID, "pmr-mine")
@@ -427,17 +416,11 @@ func TestPluginMessageRouteRefusesAnotherOwnersMessage(t *testing.T) {
 	want := func(id int64) string {
 		return routeRefusal(RefusedMessageNotFound, "no such plugin message: "+strconv.FormatInt(id, 10))
 	}
-	for _, unscoped := range []bool{false, true} {
-		if unscoped {
-			f.srv.ext.Plugins = otherOwnerPlugins{f.plugins}
-		}
-		for _, id := range []int64{theirs.ID, missing} {
-			if _, text, isErr := f.routeAs(t, routeSID, id, ""); !isErr || text != want(id) {
-				t.Errorf("unscoped=%v: routing message %d: %s; want %s", unscoped, id, text, want(id))
-			}
+	for _, id := range []int64{theirs.ID, missing} {
+		if _, text, isErr := f.routeAs(t, routeSID, id, ""); !isErr || text != want(id) {
+			t.Errorf("routing message %d: %s; want %s", id, text, want(id))
 		}
 	}
-	f.srv.ext.Plugins = f.plugins
 	text, isErr := f.mcpCall(t, f.strangers, routeSID, pluginMessageRouteTool, map[string]any{"message_id": mine.ID})
 	if !isErr || text != want(mine.ID) {
 		t.Errorf("another member's session routing the owner's message: %s", text)

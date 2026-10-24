@@ -50,8 +50,6 @@ type RouteStore interface {
 	// RoutableMessages is the principal's newest inbound messages a route can
 	// take, each with its latest route (RoutableMessage), at most limit.
 	RoutableMessages(ctx context.Context, limit int) ([]RoutableMessage, error)
-	// MessageRoute is a message's latest route (ErrRouteNotFound for none).
-	MessageRoute(ctx context.Context, messageID int64) (Route, error)
 	Route(ctx context.Context, routeID string) (Route, error)
 	SetRouteQueued(ctx context.Context, routeID string, sendQueueID int64) error
 	// FailRoute ends an open route as failed; handBack, when not "", is the
@@ -206,18 +204,6 @@ func (s *PGStore) CreateRouteFrom(ctx context.Context, chiefID, ownerID, message
 	if chiefID <= 0 || ownerID <= 0 {
 		return Route{}, invalid("the agent has no owner")
 	}
-	switch origin.Via {
-	case "":
-		if origin.Host != "" || origin.Session != "" {
-			return Route{}, invalid("only a route made over MCP names a host and session")
-		}
-	case RouteViaMCP:
-		if origin.Host == "" || origin.Session == "" {
-			return Route{}, invalid("a route made over MCP names its host and session")
-		}
-	default:
-		return Route{}, invalid("unknown route origin %q", origin.Via)
-	}
 	var r Route
 	err := s.inTx(ctx, func(tx pgx.Tx) error {
 		m, inFlight := lockMessage(ctx, tx, messageID, 0)
@@ -300,17 +286,6 @@ func (s *PGStore) RoutableMessages(ctx context.Context, limit int) ([]RoutableMe
 		out = append(out, rm)
 	}
 	return out, rows.Err()
-}
-
-// MessageRoute reads the principal's LATEST route of message messageID
-// (ErrRouteNotFound for none).
-func (s *PGStore) MessageRoute(ctx context.Context, messageID int64) (Route, error) {
-	r, err := scanRoute(s.pool.QueryRow(ctx, `SELECT `+routeCols+` FROM session_routes
-		WHERE plugin_message_id = $1 ORDER BY id DESC LIMIT 1`, messageID))
-	if errors.Is(err, pgx.ErrNoRows) {
-		return Route{}, ErrRouteNotFound
-	}
-	return r, err
 }
 
 // Route reads one of the principal's routes.

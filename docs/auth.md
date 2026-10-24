@@ -85,17 +85,31 @@ offered only in gotrue mode, and only when GoTrue reports `passkeys_enabled`.
 | Plugin token (`mpl_…`) | its owner, on `/plugin/v1/*` only | Minted at `/plugins` and shown once. Every other route refuses it. See [plugins.md](plugins.md). |
 | Device credential (`mdv_…`) | its owner, on `/api/device/*` only | A phone paired with the [Android app](design/android.md). See [Paired devices](#paired-devices). Every other route refuses it. |
 
-With [session routing](plugins.md#routing-a-message-from-your-own-session) on,
-a mirror token also reaches, through `plugin_messages_list`, a **read of its
-owner's 30 most recent routable inbound plugin messages** (the sender with its
-`UNVERIFIED` mark, the subject, the first 280 characters of the body, the route
-state) and, through `plugin_message_route`, a **route of any of them into any of
-its owner's mirrored Claude Code sessions that can take one** — the stored
-message, fenced as untrusted, never text the caller writes; the
-`session_route.routed` audit row names the host and session it came from.
-
 The two shared secrets may not start with `mst_`, `mpl_` or `mdv_`. The server
 refuses to boot if one does.
+
+### Mirror tokens and session routing
+
+With [session routing](plugins.md#routing-a-message-from-your-own-session) on,
+`POST /mirror/mcp` also offers `plugin_messages_list` and `plugin_message_route`.
+Through them a mirror token **reads its owner's 30 most recent routable inbound
+plugin messages** (the sender with its `UNVERIFIED` mark, the subject, the first
+280 characters of the body, the route state) and **routes any of them into any
+of its owner's mirrored Claude Code sessions that can take one**. The text
+pasted is always the stored message, fenced as untrusted, never words the
+caller writes, and the `session_route.routed` audit row names the host and
+session the route came from.
+
+🔴 **Accepted risk: a mirrored session can route a message to itself and
+answer it.** Any of the owner's mirrored sessions — or anyone holding a leaked
+mirror token — can route any of the owner's recent repliable messages **to
+itself** and answer it with `route_reply`. When the sender is verified and on
+the owner's allowlist for that plugin (`MUSTER_ROUTE_RELAY_ALLOW`), that answer
+is **sent with no human review**. For any other sender it becomes a pending
+reply draft for the owner — and **if this muster has the `plugin_draft_decide`
+tool**, the same session can approve that draft, its own reply, over the same
+door, so that reply too reaches the outside sender with no other review.
+Revoke a token you suspect.
 
 ## Paired devices
 

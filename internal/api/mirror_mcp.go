@@ -60,12 +60,9 @@ import (
 // cannot ask, wait or read as another host's session. initialize and
 // tools/list need only the token: they say nothing session-specific.
 //
-// 🔴 WITH SESSION ROUTING ON, plugin_messages_list and plugin_message_route
-// (plugin_message_route_tools.go) add, for a leaked mmt_: a READ of the owner's
-// recent inbound plugin messages (sender, subject, a body preview, route state)
-// and a ROUTE of any of them into any of the owner's mirrored sessions that can
-// take one — the stored message, fenced, never text the caller writes; the
-// audit row names the host and session it came from.
+// With session routing on, plugin_messages_list and plugin_message_route
+// (plugin_message_route_tools.go) widen what an mmt_ reaches: docs/auth.md
+// ("Mirror tokens and session routing").
 // ---------------------------------------------------------------------------
 
 // mirrorSessionHeader carries the calling Claude Code session's id.
