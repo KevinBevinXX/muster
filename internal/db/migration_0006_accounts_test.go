@@ -101,9 +101,10 @@ func applyThroughFrom(ctx context.Context, t *testing.T, pool *pgxpool.Pool, max
 //   - jobs (0037, the machine job API's jobs).
 //   - devices, device_pairing_codes (0039, the Android app's paired phones).
 //   - connector_standing_grants (0043, an owner's shared connector approvals).
+//   - suggest_preferences (0048, suggested replies' per-user toggle).
 var ownedAfter0006 = []string{"agent_focus", "agent_focus_history", "attention_asks", "cc_account_marks", "connector_standing_grants", "device_pairing_codes", "devices", "flow_jobs", "flow_requests", "flow_runner_tokens",
 	"jobs", "mirror_tokens", "pins", "plugin_messages", "plugin_reply_drafts", "plugins", "push_preferences",
-	"push_subscriptions", "recents", "send_queue", "session_routes", "uploads", "user_credentials"}
+	"push_subscriptions", "recents", "send_queue", "session_routes", "suggest_preferences", "uploads", "user_credentials"}
 
 // rlsTables is every owned table today: ownedTables plus ownedAfter0006.
 func rlsTables() []string { return append(slices.Clone(ownedTables), ownedAfter0006...) }
@@ -150,6 +151,7 @@ var wantForeignKeys = []string{
 	"connector_grants|connector_grants_standing_grant_owner_fkey|FOREIGN KEY (standing_grant_id, owner_id) REFERENCES connector_standing_grants(id, owner_id)",
 	"connector_standing_grants|connector_standing_grants_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"connectors|connectors_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
+	"suggest_preferences|suggest_preferences_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"github_connection|github_connection_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"invites|invites_claim_user_id_fkey|FOREIGN KEY (claim_user_id) REFERENCES users(id)",
 	"invites|invites_created_by_fkey|FOREIGN KEY (created_by) REFERENCES users(id)",

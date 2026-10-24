@@ -81,6 +81,7 @@ import (
 	"github.com/ZacxDev/muster/internal/sendqueue"
 	"github.com/ZacxDev/muster/internal/sse"
 	"github.com/ZacxDev/muster/internal/stepup"
+	"github.com/ZacxDev/muster/internal/suggest"
 	"github.com/ZacxDev/muster/internal/ui"
 )
 
@@ -433,6 +434,15 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		ext.FocusSummarizer = &focus.ScaleDown{Key: plane.OpenRouterKey, Missing: credentials.IsNoCredential}
 		ext.FocusRetention = cfg.FocusRetention
 	}
+	// Suggested replies: the same per-owner OpenRouter key as focus, through
+	// the same plane — no new credential. ON unless MUSTER_SUGGEST=off; the
+	// per-user toggle needs the database (no database: everyone is on).
+	ext.Suggest = &suggest.Engine{Off: cfg.SuggestOff, Logger: logger,
+		Gen: &suggest.OpenRouter{Key: plane.OpenRouterKey, Missing: credentials.IsNoCredential, Model: cfg.SuggestModel}}
+	if a.pool != nil {
+		ext.Suggest.Prefs = suggest.NewPGPrefs(a.pool)
+	}
+	logger.Print(suggestBootLine(cfg))
 	ccPool, err := buildClaudePool(cfg, plane, marks)
 	if err != nil {
 		a.Close()
@@ -837,6 +847,11 @@ func (a *app) startBackgroundLoops(ctx context.Context) {
 	// when there is none.
 	if a.srv != nil {
 		go a.srv.RunJobReaper(ctx, jobReapEvery)
+	}
+	// Suggested replies' text leaves memory past its TTL (suggest.CacheTTL).
+	// In memory, no database.
+	if a.srv != nil {
+		go a.srv.RunSuggestSweep(ctx)
 	}
 	if a.pool == nil {
 		return
@@ -1760,4 +1775,15 @@ func connectStaticGitHub(ctx context.Context, store github.Store, token string, 
 		return
 	}
 	logger.Printf("github: connected as %q from %s", login, envGitHubToken)
+}
+
+// suggestBootLine is the boot banner's suggested-replies line: off, or on
+// with its model — and, until the chip row ships (P2), that nothing triggers
+// a generation yet.
+func suggestBootLine(cfg config) string {
+	if cfg.SuggestOff {
+		return "suggest: suggested replies are OFF (MUSTER_SUGGEST=off): nothing is generated or shown"
+	}
+	return "suggest: suggested replies are on with " + cfg.SuggestModel + ", but NOT GENERATED YET: no turn end triggers them " +
+		"until the composer's chip row ships (P2); the read route and the per-user toggle are live"
 }

@@ -24,6 +24,7 @@ import (
 	"github.com/ZacxDev/muster/internal/provision"
 	"github.com/ZacxDev/muster/internal/recents"
 	"github.com/ZacxDev/muster/internal/sendqueue"
+	"github.com/ZacxDev/muster/internal/suggest"
 	"github.com/ZacxDev/muster/internal/uploads"
 )
 
@@ -232,6 +233,12 @@ type Extensions struct {
 	// FocusRetention is how long a mirrored session's focus outlives the last
 	// time a pass saw it (MUSTER_FOCUS_RETENTION); 0 keeps it forever.
 	FocusRetention time.Duration
+
+	// Suggest is SUGGESTED REPLIES (internal/suggest, suggest.go): the engine
+	// a rendered view's turn end asks for a set, and the composer's routes
+	// read. nil: no set is ever generated and the routes answer 404. Its Off
+	// (MUSTER_SUGGEST=off) keeps the routes and generates nothing.
+	Suggest *suggest.Engine
 
 	// Routes is session routing's store (internal/plugins/routes.go, migration
 	// 0021) and Routing its configuration. Routing nil — MUSTER_SESSION_ROUTING

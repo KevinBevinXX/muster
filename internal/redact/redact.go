@@ -36,6 +36,14 @@ import (
 //   - a token with a well-known prefix: ghp_ (and gho_ ghu_ ghs_ ghr_),
 //     github_pat_, glpat-, sk-, xoxb-/xoxp- (and kin), AKIA…, mst_, mmt_, mpl_.
 //
+//   - and a second batch: a PEM/OpenSSH private key block (multi-line), a
+//     Stripe sk_/rk_ live or test key, a JWT, a JSON "api_key" / "token" /
+//     "secret" / "password" value, a YAML password: / token: value,
+//     NAME = '…' with spaces, "the password is …", an age secret key, a
+//     Google AIza… key, a Discord bot token, a hf_ token, an X-Api-Key /
+//     Api-Key / X-Auth-Token header, and a 40-character AWS secret access key
+//     in text that says aws or secret.
+//
 // ⚠ A HEURISTIC, NOT A GUARANTEE: a secret in a shape this does not know
 // passes. It is a second line behind the first, which is that only one line
 // of a call's input is ever summarised, and that no push carries it.
@@ -51,6 +59,24 @@ var (
 	reUserinfo   = regexp.MustCompile(`(?i)\b([a-z][a-z0-9+.-]*://)[^/\s@'"]+@`)
 	reQuery      = regexp.MustCompile(`(?i)([?&;][a-z0-9_.-]*(?:token|key|secret|sig|signature|password|passwd|pass|auth)[a-z0-9_.-]*=)[^&\s#'"]+`)
 	rePrefix     = regexp.MustCompile(`\b(?:gh[pousr]_|github_pat_|glpat-|xox[abposr]-|sk-|mst_|mmt_|mpl_)[A-Za-z0-9_-]{6,}|\bAKIA[A-Z0-9]{12,}`)
+
+	// The second batch (secrets, after rePrefix).
+	rePEM        = regexp.MustCompile(`(?s)-----BEGIN [A-Z ]*PRIVATE KEY-----.*?(?:-----END [A-Z ]*PRIVATE KEY-----|\z)`)
+	reStripe     = regexp.MustCompile(`\b[sr]k_(?:live|test)_[A-Za-z0-9]{6,}`)
+	reJWT        = regexp.MustCompile(`\beyJ[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}`)
+	reJSONSecret = regexp.MustCompile(`(?i)("[a-z0-9_-]*(?:api_?key|apikey|token|secret|password|passwd)"\s*:\s*)"[^"]*"`)
+	reYAMLSecret = regexp.MustCompile(`(?im)^(\s*-?\s*[a-z0-9_.-]*(?:password|passwd|token|secret|api_?key|apikey)[ \t]*:[ \t]*)("[^"]*"|'[^']*'|[^\s"'].*)$`)
+	reAssignSp   = regexp.MustCompile(`(?i)\b([a-z0-9_]*(?:key|token|secret|password|passwd|pwd)\s*=\s*)("[^"]+"|'[^']+')`)
+	reSaid       = regexp.MustCompile(`(?i)\b((?:password|passphrase|passwd|secret)\s+(?:is|was)\s*:?\s*)("[^"]+"|'[^']+'|[^\s,;.]+)`)
+	// Spelled in two parts so the leak gate's credential rule (which matches
+	// the literal prefix followed by key characters) does not read the
+	// pattern itself as a key.
+	reAge       = regexp.MustCompile(`AGE-SECRET-` + `KEY-1[0-9A-Z]{10,}`)
+	reGoogle    = regexp.MustCompile(`\bAIza[0-9A-Za-z_-]{20,}`)
+	reDiscord   = regexp.MustCompile(`\b[MNO][A-Za-z0-9_-]{23,27}\.[A-Za-z0-9_-]{6,7}\.[A-Za-z0-9_-]{27,40}\b`)
+	reHF        = regexp.MustCompile(`\bhf_[A-Za-z0-9]{20,}`)
+	reKeyHeader = regexp.MustCompile(`(?i)\b((?:x-api-key|api-key|x-auth-token|x-access-token)\s*[:=]\s*)("[^"]*"|'[^']*'|[^\s'"]+)`)
+	reAWSSecret = regexp.MustCompile(`[A-Za-z0-9/+=]+`)
 )
 
 // Secrets is s with every value that looks like a secret replaced by
@@ -128,7 +154,74 @@ func secrets(s string, filter bool) string {
 		"xoxa-", "xoxb-", "xoxp-", "xoxo-", "xoxs-", "xoxr-", "sk-", "mst_", "mmt_", "mpl_", "AKIA") {
 		set(rePrefix.ReplaceAllString(s, Mark))
 	}
+	// THE SECOND BATCH. An audit ran 19 realistic secret shapes through the
+	// patterns above and 13 passed; these are those 13. Each still runs only
+	// when a literal it needs is present (the filter's rule above).
+	if may("private key") {
+		set(rePEM.ReplaceAllString(s, Mark))
+	}
+	if may("k_live_", "k_test_") {
+		set(reStripe.ReplaceAllString(s, Mark))
+	}
+	if may("eyj") {
+		set(reJWT.ReplaceAllString(s, Mark))
+	}
+	if may(`key"`, `token"`, `secret"`, `password"`, `passwd"`) {
+		set(reJSONSecret.ReplaceAllString(s, `${1}"`+Mark+`"`))
+	}
+	if may("password", "passwd", "token", "secret", "key") && strings.Contains(s, ":") {
+		set(reYAMLSecret.ReplaceAllString(s, "${1}"+Mark))
+	}
+	if may("key", "token", "secret", "password", "passwd", "pwd") && strings.Contains(s, "=") {
+		set(reAssignSp.ReplaceAllString(s, "${1}"+Mark))
+	}
+	if may("password", "passphrase", "passwd", "secret") {
+		set(reSaid.ReplaceAllString(s, "${1}"+Mark))
+	}
+	if may("age-secret-key-1") {
+		set(reAge.ReplaceAllString(s, Mark))
+	}
+	if may("aiza") {
+		set(reGoogle.ReplaceAllString(s, Mark))
+	}
+	if may(".") {
+		set(reDiscord.ReplaceAllString(s, Mark))
+	}
+	if may("hf_") {
+		set(reHF.ReplaceAllString(s, Mark))
+	}
+	if may("api-key", "auth-token", "access-token") {
+		set(reKeyHeader.ReplaceAllString(s, "${1}"+Mark))
+	}
+	// An AWS secret access key: exactly 40 base64 characters, mixed case with
+	// a digit, in text that says aws or secret (a lowercase git sha is 40
+	// characters too, and is left alone).
+	if may("aws", "secret") {
+		set(reAWSSecret.ReplaceAllStringFunc(s, func(m string) string {
+			if len(m) != 40 || !hasUpperLowerDigit(m) {
+				return m
+			}
+			return Mark
+		}))
+	}
 	return s
+}
+
+// hasUpperLowerDigit reports whether s has an ASCII upper-case letter, a
+// lower-case one and a digit.
+func hasUpperLowerDigit(s string) bool {
+	var up, low, dig bool
+	for _, r := range s {
+		switch {
+		case r >= 'A' && r <= 'Z':
+			up = true
+		case r >= 'a' && r <= 'z':
+			low = true
+		case r >= '0' && r <= '9':
+			dig = true
+		}
+	}
+	return up && low && dig
 }
 
 // fold is s lowercased the way the patterns' (?i) matches it: an ASCII

@@ -28,6 +28,7 @@ import (
 	"github.com/ZacxDev/muster/internal/push"
 	"github.com/ZacxDev/muster/internal/sendqueue"
 	"github.com/ZacxDev/muster/internal/stepup"
+	"github.com/ZacxDev/muster/internal/suggest"
 	"github.com/ZacxDev/muster/internal/ui"
 )
 
@@ -131,6 +132,13 @@ const (
 	// session on any host. A Go duration, 168h when unset, refused outside
 	// 1h–2160h (90 days).
 	envFocusRetention = "MUSTER_FOCUS_RETENTION"
+	// Suggested replies (internal/suggest): "off" is the kill switch — no set
+	// is generated or served. Anything else, or unset, is ON (operator
+	// decision); each user can still turn them off for themselves.
+	envSuggest = "MUSTER_SUGGEST"
+	// The OpenRouter model suggestions are generated with (suggest.DefaultModel
+	// when unset), spelled as OpenRouter's model list names it.
+	envSuggestModel = "MUSTER_SUGGEST_MODEL"
 	// The Agents list's Idle section (internal/ui/idle_section.go): how long an
 	// entry must have had no activity to be drawn under the collapsed "Idle"
 	// header. Days ("14d") or a Go duration, 14d when unset, "0"/"off" turns it
@@ -533,6 +541,10 @@ type config struct {
 	FocusInterval time.Duration
 	// FocusRetention is MUSTER_FOCUS_RETENTION (focus.DefaultRetention unset).
 	FocusRetention time.Duration
+	// SuggestOff is MUSTER_SUGGEST=off: the suggested-replies kill switch.
+	SuggestOff bool
+	// SuggestModel is MUSTER_SUGGEST_MODEL (suggest.DefaultModel unset).
+	SuggestModel string
 	// AgentsIdleAfter is MUSTER_AGENTS_IDLE_AFTER (ui.DefaultIdleSectionAfter
 	// when unset; 0 = no Idle section). AgentsIdleAfterRaw is the value as
 	// set ("" unset), for the banner.
@@ -1189,6 +1201,17 @@ func loadConfig(getenv func(string) string) (config, error) {
 			return config{}, fmt.Errorf("invalid %s %q: want a Go duration between 1h and 2160h (e.g. 168h)", envFocusRetention, v)
 		}
 		c.FocusRetention = d
+	}
+	switch v := strings.ToLower(strings.TrimSpace(getenv(envSuggest))); v {
+	case "", "on", "1", "true":
+	case "off", "0", "false":
+		c.SuggestOff = true
+	default:
+		return config{}, fmt.Errorf("invalid %s %q: want off (the kill switch) or on", envSuggest, v)
+	}
+	c.SuggestModel = strings.TrimSpace(getenv(envSuggestModel))
+	if c.SuggestModel == "" {
+		c.SuggestModel = suggest.DefaultModel
 	}
 	c.RouteTimeout = api.DefaultRouteTimeout
 	if v := strings.TrimSpace(getenv(envRouteTimeout)); v != "" {

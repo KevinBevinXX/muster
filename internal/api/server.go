@@ -214,6 +214,10 @@ type Server struct {
 	focusOnce      sync.Once
 	focusRefresher *focus.Refresher
 
+	// suggestIdleWaitFor overrides suggestIdleWait (a test's; 0 = the
+	// constant).
+	suggestIdleWaitFor time.Duration
+
 	// listPullRequests is the GitHub PR read, injectable for tests.
 	listPullRequests func(ctx context.Context, token, repo, state string) ([]github.PullRequest, error)
 
@@ -565,6 +569,9 @@ func (s *Server) registerAll(mux Mux) {
 	s.registerApprovalRoutes(mux)
 	s.registerAgentWorkRoutes(mux)
 	s.registerMirrorRoutes(mux)
+	// Suggested replies (suggest.go): the composer's set, its counts and the
+	// per-user toggle.
+	s.registerSuggestRoutes(mux)
 	// Browser flows (internal/flows): /flows, /api/flows/jobs, /runner/flows/*.
 	s.registerFlowRoutes(mux)
 	// Plugins (internal/plugins): /plugins and /plugin/v1/*, 404 while off.

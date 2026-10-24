@@ -92,6 +92,7 @@ func writeEveryOwnedTable(ctx context.Context, pool *pgxpool.Pool, tag string) e
 		{`INSERT INTO cc_account_marks (account, rate_limited_detail) VALUES ($1, 'x')`, func() []any { return []any{"acct-" + tag} }, nil},
 		{`INSERT INTO push_subscriptions (endpoint, p256dh, auth) VALUES ($1, 'k', 'a')`, func() []any { return []any{"https://fcm.googleapis.com/fcm/send/" + tag} }, nil},
 		{`INSERT INTO push_preferences (muted) VALUES ('{}')`, func() []any { return nil }, nil},
+		{`INSERT INTO suggest_preferences (disabled) VALUES (true)`, func() []any { return nil }, nil},
 		{`INSERT INTO devices (name, token_sha256, paired_signin_at) VALUES ($1, sha256(convert_to($1, 'UTF8')), now())`, func() []any { return []any{"phone-" + tag} }, nil},
 		{`INSERT INTO device_pairing_codes (code_sha256, signin_at, expires_at) VALUES (sha256(convert_to($1, 'UTF8')), now(), now() + interval '1 minute')`, func() []any { return []any{"code-" + tag} }, nil},
 		{`INSERT INTO plugins (name, label, token_hash, data_scope) VALUES ($1, 'Example inbox', $2, 'example') RETURNING id`, func() []any { return []any{"plugin-" + strings.ToLower(tag), "pluginhash-" + tag} }, &plugin},

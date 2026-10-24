@@ -506,6 +506,11 @@ var bannerExempt = map[string]string{
 		"with no database there is no queue and nothing reads it, and an out-of-bounds value refuses to boot",
 	envFocusRetention: "the focus refresher's pruning logs each prune with the VALUE (internal/focus: \"pruned %d " +
 		"mirrored session(s) not seen for %s\"); an out-of-bounds value refuses to boot",
+	envSuggest: "suggested replies announce their own state at boot (cmd/muster-server/main.go: " +
+		"\"suggest: suggested replies are OFF (MUSTER_SUGGEST=off)…\" / \"…are on with %s, but NOT GENERATED YET…\"); " +
+		"a value it refuses stops the boot",
+	envSuggestModel: "announced with the VALUE on the same boot line as MUSTER_SUGGEST " +
+		"(\"suggest: suggested replies are on with %s…\")",
 	envFocusInterval: "the focus refresher announces its own state with the VALUE when it starts " +
 		"(internal/api/focus.go: \"focus: refresh every %s …\"); with no database or no " +
 		"summarizer nothing reads it, and an out-of-bounds value refuses to boot",
