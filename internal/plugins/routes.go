@@ -107,6 +107,22 @@ type RouteTarget struct {
 	Kind, Key, Label string
 }
 
+// The route errors.
+var (
+	// ErrAlreadyRouted: the message already has an open route.
+	ErrAlreadyRouted = errors.New("plugins: this message is already routed to a session and not yet answered")
+	// ErrRouteNotFound: no such route for this principal (another owner's is the same).
+	ErrRouteNotFound = errors.New("plugins: no such route")
+	// ErrRouteClosed: the route is no longer waiting for an answer (timed out,
+	// failed, or answered with a different text).
+	ErrRouteClosed = errors.New("plugins: this route is no longer waiting for an answer")
+	// ErrRouteNotAnswered: a relay of a route with no answer.
+	ErrRouteNotAnswered = errors.New("plugins: this route has no answer to relay")
+)
+
+// MaxRouteError bounds a route's recorded error (0021's cap).
+const MaxRouteError = 1024
+
 // RouteViaMCP is RouteOrigin.Via for a route the OWNER made from one of their
 // mirrored Claude Code sessions (internal/api/plugin_message_route_tools.go).
 const RouteViaMCP = "mcp"
@@ -137,22 +153,6 @@ type RoutableMessage struct {
 	PluginLabel string
 	Route       Route
 }
-
-// The route errors.
-var (
-	// ErrAlreadyRouted: the message already has an open route.
-	ErrAlreadyRouted = errors.New("plugins: this message is already routed to a session and not yet answered")
-	// ErrRouteNotFound: no such route for this principal (another owner's is the same).
-	ErrRouteNotFound = errors.New("plugins: no such route")
-	// ErrRouteClosed: the route is no longer waiting for an answer (timed out,
-	// failed, or answered with a different text).
-	ErrRouteClosed = errors.New("plugins: this route is no longer waiting for an answer")
-	// ErrRouteNotAnswered: a relay of a route with no answer.
-	ErrRouteNotAnswered = errors.New("plugins: this route has no answer to relay")
-)
-
-// MaxRouteError bounds a route's recorded error (0021's cap).
-const MaxRouteError = 1024
 
 var routeIDPattern = regexp.MustCompile(`^rt_[0-9a-f]{24}$`)
 
