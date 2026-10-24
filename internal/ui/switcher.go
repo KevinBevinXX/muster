@@ -316,7 +316,8 @@ func switcherEntry(it SwitcherItem) g.Node {
 		Href(it.Href),
 		hx("hx-boost", "false"),
 		// A link to a window's Rendered view is a warming source for the view
-		// snapshots (a[data-snap-warm]); inert until something reads it.
+		// snapshots: web/static/mirror-snap.js's candidates() reads
+		// a[data-snap-warm] (at most WARM_MAX a pass).
 		g.If(strings.HasPrefix(it.Href, "/mirror/view?"), g.Attr("data-snap-warm", "")),
 		g.Attr("data-switcher-entry", it.Kind),
 		g.Attr("title", it.Label),
