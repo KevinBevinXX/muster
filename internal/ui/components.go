@@ -1182,7 +1182,7 @@ func panelID(key string) string { return "panel-" + key }
 func appScript(feat Features) g.Node {
 	return Script(g.Raw(`
 (function () {
-` + navRegistryJS(feat) + `
+` + navRegistryJS(feat) + restoreJS(feat) + `
 
   // --- Navigation state persistence ----------------------------------------
   // Persist the active tab + its scroll offset so the PWA reopens where the

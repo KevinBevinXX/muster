@@ -435,16 +435,18 @@ func TestAFurtherRedirectKeepsTheNotice(t *testing.T) {
 	}
 }
 
-// TestAViewsDocumentIsNeverStored: a view's page is its markup and its inline
-// script together, bound to the routes of the build that rendered it. Each is
-// served `Cache-Control: no-store`, so neither the HTTP cache nor the
-// back/forward cache can show one build's document against another's server.
-func TestAViewsDocumentIsNeverStored(t *testing.T) {
+// TestAViewsDocumentIsKeptForBackButNeverShared: a view's page is its markup
+// and its inline script together, bound to the routes of the build that
+// rendered it. It used to be no-store so no cache could show one build's
+// document against another's server; it is now private, no-cache
+// (viewDocument), so Back can restore it, and the page's restore handler
+// (ui restoreJS) does the build check instead. private: no shared cache.
+func TestAViewsDocumentIsKeptForBackButNeverShared(t *testing.T) {
 	s, ts := viewServer(t, goldHost())
 	for _, p := range []string{ref("scratch2", "@7").ViewPath(), ref("scratch2", "@4").TerminalPath()} {
 		resp, _ := mirrorGet(t, s, ts, p)
-		if resp.StatusCode != http.StatusOK || resp.Header.Get("Cache-Control") != "no-store" {
-			t.Errorf("GET %s = %d, Cache-Control %q; want 200 and no-store", p, resp.StatusCode, resp.Header.Get("Cache-Control"))
+		if resp.StatusCode != http.StatusOK || resp.Header.Get("Cache-Control") != "private, no-cache" {
+			t.Errorf("GET %s = %d, Cache-Control %q; want 200 and private, no-cache", p, resp.StatusCode, resp.Header.Get("Cache-Control"))
 		}
 		// Through the whole middleware chain, which sets no-referrer on
 		// everything: a page with a form the browser may submit itself must

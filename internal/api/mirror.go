@@ -261,7 +261,7 @@ func (s *Server) handleMirrorTerminalPage(w http.ResponseWriter, r *http.Request
 	}
 	v.Nav = ui.NavChrome{Feat: s.shellFeatures(r.Context())}
 	allowSameOriginFrame(w)
-	formDocument(w)
+	viewDocument(w)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := ui.AgentTerminalPage(v).Render(w); err != nil {
 		s.logger.Printf("mirror: render terminal page: %v", err)

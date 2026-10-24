@@ -209,7 +209,7 @@ func TestTheSwitcherBarIsServerRenderedAtAFixedHeight(t *testing.T) {
 		t.Error("the bar's row is not a fixed h-11")
 	}
 	for _, v := range switcherViews {
-		row := regexp.MustCompile(`<div data-switcher-list="` + v.key + `"( hidden="")? class="flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto"><p data-switcher-empty="" class="truncate text-xs text-muted">` + v.empty + `</p></div>`).FindStringSubmatch(nav)
+		row := regexp.MustCompile(`<div data-switcher-list="` + v.key + `" data-restore-refresh="switcher-` + v.key + `"( hidden="")? class="flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto"><p data-switcher-empty="" class="truncate text-xs text-muted">` + v.empty + `</p></div>`).FindStringSubmatch(nav)
 		if row == nil {
 			t.Errorf("%s: no empty row saying %q in:\n%s", v.key, v.empty, nav)
 			continue

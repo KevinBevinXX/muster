@@ -297,6 +297,10 @@ func switcherRow(key, empty string, items []SwitcherItem, hidden bool) g.Node {
 	}
 	return Div(
 		g.Attr("data-switcher-list", key),
+		// A page restored from the back/forward cache redraws its rows from
+		// its own fresh copy (restore.go), so Pins and Recent are current —
+		// and every entry still links the session it names now.
+		g.Attr(RestoreRefreshAttr, "switcher-"+key),
 		g.If(hidden, g.Attr("hidden", "")),
 		Class("flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto"),
 		body,

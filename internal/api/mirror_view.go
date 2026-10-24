@@ -104,7 +104,7 @@ func (s *Server) handleMirrorViewPage(w http.ResponseWriter, r *http.Request) {
 	// The session switcher below the composer (ui/switcher.go).
 	v.Switcher = s.switcher(r.Context(), ui.SwitcherCurrent{Mirror: ui.MirrorRef{Host: h.Host, Session: e.Session, Window: e.Window}})
 	allowSameOriginFrame(w)
-	formDocument(w)
+	viewDocument(w)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := ui.MirrorViewPage(v).Render(w); err != nil {
 		s.logger.Printf("mirror: render view page: %v", err)

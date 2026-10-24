@@ -221,6 +221,7 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	if s.hasValidSession(r) {
 		s.forgetPushDevice(w, r, s.sessionUserID(r))
 	}
+	clearCachesOnSignOut(w)
 	http.SetCookie(w, &http.Cookie{
 		Name:     sessionCookieName,
 		Value:    "",
@@ -231,6 +232,25 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 		MaxAge:   -1,
 	})
 	http.Redirect(w, r, loginPath, http.StatusSeeOther)
+}
+
+// clearCachesOnSignOut asks the browser to drop everything it CACHED for this
+// origin — the HTTP cache and the back/forward cache — on the response that
+// ends a session. The agent page, the Rendered view and the terminals are
+// cacheable (viewDocument), so without it Back after a sign-out could show
+// one of them from a cache to whoever holds the device next.
+//
+// 🔴 "cache" ONLY, NEVER "storage". "storage" also unregisters the service
+// worker (and with it this device's push subscription) and empties IndexedDB,
+// where the Rendered view's snapshots live — and those have their own purge
+// (ui.SnapPurgeHTML, on the sign-in page every sign-out lands on). Asked for
+// the caches only, the next person's device keeps its app.
+//
+// ⚠ IT IS ONE OF TWO GUARDS, NOT THE ONLY ONE. A restored page also
+// re-requests itself (ui restoreJS) and reloads to the sign-in when that is
+// refused, so a browser that ignored this header still shows no content.
+func clearCachesOnSignOut(w http.ResponseWriter) {
+	w.Header().Set("Clear-Site-Data", `"cache"`)
 }
 
 // renderLoginPage writes the whole document. Hand-written rather than composed,

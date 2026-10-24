@@ -277,7 +277,9 @@ func AgentTerminalPage(v AgentTerminalView) g.Node {
 						g.Raw(`<svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg>`),
 					),
 					Div(
-						Class("min-w-[6rem] flex-1"),
+						// relative: a restore's Updating… chip (restore.go) sits at
+						// the right of the status line, taking none of its width.
+						Class("relative min-w-[6rem] flex-1"),
 						H1(Class("truncate text-sm font-semibold"),
 							g.If(v.RawName == "" && v.TitleQualifier == "", g.Text(title)),
 							// A mirrored entry: its label with the raw session name
@@ -285,6 +287,7 @@ func AgentTerminalPage(v AgentTerminalView) g.Node {
 							g.If(v.RawName != "" || v.TitleQualifier != "", mirrorTerminalTitle(raw, v.RawName, v.TitleQualifier)),
 							g.If(v.Badge != "", Span(g.Attr("data-term-badge", ""), Class("ml-2"), mirrorBadge(v.Badge, v.BadgeHost, v.BadgeHostIcon)))),
 						P(ID("term-status"), Class("truncate text-xs text-muted"), g.Attr("aria-live", "polite"), g.Text("Not connected")),
+						updatingChip("term-updating", "bottom-0 right-0"),
 					),
 					// Fit width: shown only while the far side is wider than this
 					// page. It scales the VIEW (the far side's size is untouched).
@@ -775,19 +778,22 @@ func agentTerminalScript() g.Node {
         var m;
         try { m = JSON.parse(ev.data); } catch (e) { return; }
         if (m.type === 'ready') {
+          caughtUp();
           justConfirmed = false;
           setStatus(m.mode === 'rw' ? '` + StatusLiveKeys + `' : '` + StatusConnected + `');
         } else if (m.type === 'error') {
           refused = true;
+          caughtUp();
           showError(m.message, true);
         } else if (m.type === 'exit') {
           refused = true;
+          caughtUp();
           showError(m.message, true);
         }
         return;
       }
       var bytes = readReport(new Uint8Array(ev.data));
-      if (bytes.length) term.write(bytes);
+      if (bytes.length) { caughtUp(); term.write(bytes); }
     };
     sock.onclose = function () {
       if (ws !== sock) return;
@@ -1129,6 +1135,17 @@ func agentTerminalScript() g.Node {
 
   // Leaving the page ends the stream now rather than when the socket times out.
   window.addEventListener('pagehide', function () { if (ws) { ws.onclose = null; ws.close(); } });
+  // Back and Forward (restore.go): a restored terminal attaches again — the
+  // far side redraws its screen on an attach — and is caught up at its first
+  // answer: ready, the first bytes, or a refusal.
+  var restoring = null;
+  function caughtUp() { if (restoring) { var r = restoring; restoring = null; r(); } }
+  ` + restoreJoinJS(`{
+    show: function () {
+      if (unavailable) return null;
+      return new Promise(function (resolve) { restoring = resolve; connect(); });
+    }
+  }`) + `
 
   if (confirmPath && remembered() && fresh()) mode = 'rw';
   applyMode();

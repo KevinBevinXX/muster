@@ -306,6 +306,9 @@ func withNotice(path, code string) string {
 // stores these documents (web/static/sw.js caches the shell, the stylesheet
 // and the manifest, and nothing else); this is the same statement to the
 // browser's own caches.
+//
+// The four VIEW documents no longer say it: viewDocument replaces this guard
+// with a build check on restore. Every other caller keeps it.
 func noStore(w http.ResponseWriter) { w.Header().Set("Cache-Control", "no-store") }
 
 // formDocument marks a page that carries one of the forms a browser may submit
@@ -323,6 +326,42 @@ func noStore(w http.ResponseWriter) { w.Header().Set("Cache-Control", "no-store"
 // none of these pages has a secret in its URL.
 func formDocument(w http.ResponseWriter) {
 	noStore(w)
+	w.Header().Set("Referrer-Policy", "same-origin")
+}
+
+// viewDocumentCacheControl is what a VIEW document says to caches: the agent
+// page, the mirrored Rendered view and both terminals (viewDocument).
+const viewDocumentCacheControl = "private, no-cache"
+
+// viewDocument is formDocument for the four VIEW documents — an agent's chat
+// page, the mirrored Rendered view, a mirrored window's terminal and an agent's
+// terminal — minus no-store, so Back and Forward can RESTORE them from the
+// back/forward cache instead of loading them again (operator ask: "so that I
+// don't have to wait for full reloads every time I hit the back button").
+//
+// 🔴 no-store WAS THE BUILD GUARD (noStore), AND IT IS REPLACED, NOT DROPPED.
+// A restored document runs the script of the build that rendered it. The
+// page's restore handler (ui restoreJS, in appScript) answers that instead: on
+// a restore it asks /health which build is serving and reloads when it is not
+// the page's, reloads a page that was hidden for more than ten minutes, and
+// re-requests the page itself, so a refused one (signed out) reloads to the
+// sign-in. Sign-out also sends Clear-Site-Data: "cache" (handleLogout), which
+// drops these documents from both caches.
+//
+// 🔴 ANY VALUE BUT no-store LETS THE HTTP CACHE KEEP THE DOCUMENT, AND A
+// HISTORY LOAD THAT IS NOT A RESTORE TAKES IT FROM THERE WITHOUT ASKING.
+// MEASURED (Chromium 153, a two-page probe): with no header, `no-cache` or
+// `max-age=0, must-revalidate`, Back with the back/forward cache unavailable
+// made no request and ran the stored document (navigation type back_forward,
+// transferSize 0); only no-store made it ask. So restoreJS runs the same
+// checks on such a load as on a restore. private keeps every shared cache
+// (an edge, a proxy) out of a per-user page; no-cache makes every ordinary
+// navigation ask the server.
+//
+// ⚠ ONLY THESE FOUR. Every page that shows or takes a secret keeps no-store:
+// TestTheNoStoreLedger names both sets and fails when either changes.
+func viewDocument(w http.ResponseWriter) {
+	w.Header().Set("Cache-Control", viewDocumentCacheControl)
 	w.Header().Set("Referrer-Policy", "same-origin")
 }
 

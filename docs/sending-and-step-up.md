@@ -351,10 +351,19 @@ the first answer was lost, it is delivered once. Delivered nonces are remembered
 in memory for 15 minutes, up to 4096 of them, keyed by owner, nonce and text. A
 server restart forgets them.
 
-Pages that carry such a form are served with `Referrer-Policy: same-origin` and
-`Cache-Control: no-store`. The rest of the app uses `no-referrer`. Under that
-policy, a browser sends `Origin: null` with a form it submits itself, and the
-same-origin check refuses `Origin: null`.
+Pages that carry such a form are served with `Referrer-Policy: same-origin`. The
+rest of the app uses `no-referrer`. Under that policy, a browser sends
+`Origin: null` with a form it submits itself, and the same-origin check refuses
+`Origin: null`.
+
+The plain confirm pages are also `Cache-Control: no-store`, because they carry
+the message. The four view pages (an agent's chat, the Rendered view and both
+terminals) are `Cache-Control: private, no-cache`, so Back and Forward can
+restore them from the browser's back/forward cache. A restored page checks
+that the same build is still serving and reloads if not. It also reloads if it
+was hidden for more than 10 minutes, and when re-requesting it is refused (for
+example after you signed out). Otherwise it reconnects its streams and catches
+up. Signing out sends `Clear-Site-Data: "cache"`.
 
 ## Step-up: "Confirm it's you"
 

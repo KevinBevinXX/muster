@@ -355,14 +355,15 @@ func TestTheSameMessagePostedToAnAgentTwiceIsOneTurn(t *testing.T) {
 // the agent's send route "from the terminal" with a nonce — enabled for a
 // running agent, DISABLED with the reason on screen for one that is not, and
 // for a build with no gateway to deliver through. The chat page has the switch
-// too, and both documents are never stored.
+// too, and both documents are cacheable VIEW documents (viewDocument): kept for
+// Back and Forward, never by a shared cache.
 func TestAnAgentsTerminalPageHasTheSwitchAndTheComposer(t *testing.T) {
 	store := newSendAgents()
 	s, ts := sendServer(t, store, &turnGateway{})
 	get := func(path string) (*http.Response, string) { return mirrorGet(t, s, ts, path) }
 
 	resp, term := get(ui.AgentTerminalPath("keen-wren"))
-	if resp.StatusCode != http.StatusOK || resp.Header.Get("Cache-Control") != "no-store" {
+	if resp.StatusCode != http.StatusOK || resp.Header.Get("Cache-Control") != viewDocumentCacheControl {
 		t.Fatalf("the terminal page = %d, Cache-Control %q", resp.StatusCode, resp.Header.Get("Cache-Control"))
 	}
 	if got := resp.Header.Get("Referrer-Policy"); got != "same-origin" {
@@ -400,9 +401,9 @@ func TestAnAgentsTerminalPageHasTheSwitchAndTheComposer(t *testing.T) {
 	}
 	store.status["keen-wren"] = agents.StatusRunning
 
-	// The chat page: the switch, the form's fallback, never stored.
+	// The chat page: the switch, the form's fallback, a view document.
 	resp, chat := get("/agents/keen-wren?session=41")
-	if resp.StatusCode != http.StatusOK || resp.Header.Get("Cache-Control") != "no-store" {
+	if resp.StatusCode != http.StatusOK || resp.Header.Get("Cache-Control") != viewDocumentCacheControl {
 		t.Fatalf("the chat page = %d, Cache-Control %q", resp.StatusCode, resp.Header.Get("Cache-Control"))
 	}
 	if got := resp.Header.Get("Referrer-Policy"); got != "same-origin" {

@@ -45,10 +45,11 @@ func SnapScript(f Features) g.Node {
 // (e2e sidenav.spec "the Rendered view header is one row" — an in-flow chip
 // wrapped it). It is `invisible` (visibility: hidden), never `hidden`
 // (display: none), so showing it moves nothing and its box is where it shows.
+//
+// It is the same chip a restore shows (updatingChip, restore.go), and the same
+// element: a Rendered view restored from the back/forward cache shows this one.
 func mirrorUpdatingChip() g.Node {
-	return Span(ID("mv-updating"), g.Attr("aria-hidden", "true"),
-		Class("invisible absolute right-0 top-1/2 -translate-y-1/2 whitespace-nowrap rounded-full bg-s2 px-2 py-0.5 text-[11px] text-fg2 ring-1 ring-inset ring-line"),
-		g.Text("Updating…"))
+	return updatingChip("mv-updating", "right-0 top-1/2 -translate-y-1/2")
 }
 
 // SnapPurgeHTML is the inline script every server-written auth page carries

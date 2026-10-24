@@ -342,6 +342,10 @@ func agentDetailHeader(v AgentDetailView) g.Node {
 					g.If(v.WorkerPool != "", workerPoolChip(v.WorkerPool)),
 					Div(Class("ml-auto"), viewToggle(true, "", AgentTerminalPath(v.Name))))),
 		),
+		// A restore's "Updating…" (restore.go): hung just below the header (a
+		// sticky box, so it is the chip's containing block), over the top of
+		// the transcript, taking no room in either.
+		updatingChip("agent-updating", "right-3 top-full mt-1"),
 	)
 }
 
@@ -938,6 +942,11 @@ func agentChatPane(v AgentDetailView) g.Node {
 //     it was reconnecting) never arrives, and the page showed "working" for
 //     ever. Re-fetching when the stream opens catches up on whatever it missed
 //     (e2e agent-composer: "a reply stored before the event stream connects").
+//   - muster:restored — the page came back from the back/forward cache
+//     (restore.go). Its stream was closed while it was hidden and is reopened
+//     by the restore, which fires the arm above too; this one does not wait for
+//     the stream, so the transcript catches up one round trip sooner. Both are
+//     the conditional refetch, so the second costs a 204.
 //
 // 🔴 THE agent.changed ARM IS WHAT CLEARS "Provisioning agent…" WHEN NO MESSAGE
 // EVER ARRIVES. The provisioning row and the empty state are both decided
@@ -1013,7 +1022,7 @@ func chatLogTrigger(agentName string) string {
 	quoted, _ := json.Marshal(agentName) // a string always marshals
 	return "sse:chat.reply from:body, task:changed from:body, " +
 		"sse:agent.changed[JSON.parse(detail.data).id===" + string(quoted) + "] from:body, " +
-		"htmx:sseOpen from:body"
+		"htmx:sseOpen from:body, muster:restored from:body"
 }
 
 // sessionDrawer renders the previous-sessions UI as a slide-out RIGHT-side
@@ -2011,6 +2020,24 @@ func agentChatScript(name string) g.Node {
     ws.onclose = function () { if (!session.disposed) setTimeout(connect, 2000); };
   }
   connect();
+  // Back and Forward (restore.go): the socket is closed as the page is hidden
+  // and opened again, at once, when it is restored. Caught up is the chat
+  // log's refetch on the restore landing (chatLogTrigger's muster:restored).
+  ` + restoreJoinJS(`{
+    alive: function () { return !session.disposed; },
+    hide: function () { try { if (ws) { ws.onclose = null; ws.close(); } } catch (e) {} ws = null; session.ws = null; },
+    show: function () {
+      if (!ws || ws.readyState > 1) connect();
+      return new Promise(function (resolve) {
+        function done(e) {
+          if (!e.detail || !e.detail.elt || e.detail.elt.id !== 'chat-log') return;
+          document.body.removeEventListener('htmx:afterRequest', done);
+          resolve();
+        }
+        document.body.addEventListener('htmx:afterRequest', done);
+      });
+    }
+  }`) + `
   // The interim observer of window.__cgLayoutLog, when it ran for THIS log:
   // torn down, and a reader who scrolled away meanwhile stays where they are.
   // ⚠ NOT NAMED pre: start() already has a function pre() (the tool chip's

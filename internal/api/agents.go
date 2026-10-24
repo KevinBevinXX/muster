@@ -1477,7 +1477,7 @@ func (s *Server) handleAgentDetail(w http.ResponseWriter, r *http.Request) {
 	if agents.ResolveKind(view.Kind) == agents.KindClaudeCode {
 		allowSameOriginFrame(w)
 	}
-	formDocument(w)
+	viewDocument(w)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := ui.RenderAgentDetail(w, view, s.shellFeatures(r.Context())); err != nil {
 		s.logger.Printf("agents: render detail: %v", err)

@@ -917,8 +917,8 @@ func mirrorViewScript() g.Node {
     sock.onopen = function () { retry = 0; };
     sock.onmessage = function (ev) {
       var m; try { m = JSON.parse(ev.data); } catch (e) { return; }
-      if (m.type === 'batch') { if (provisional) settled(); clearError(); statusEl.textContent = 'Live'; apply(m); remember(m, ev.data.length); }
-      else if (m.type === 'error') { if (provisional) discard(); showError(m.message || 'The view ended.'); }
+      if (m.type === 'batch') { if (provisional) settled(); clearError(); statusEl.textContent = 'Live'; apply(m); remember(m, ev.data.length); caughtUp(); }
+      else if (m.type === 'error') { if (provisional) discard(); showError(m.message || 'The view ended.'); caughtUp(); }
       // The window's questions changed (mirror_ask.go): read them now.
       else if (m.type === 'asks') { if (window.musterAskPoll) window.musterAskPoll(); }
       // Suggested replies (suggest_row.go): pending, ready or none.
@@ -944,6 +944,20 @@ func mirrorViewScript() g.Node {
     new ResizeObserver(function () { if (atEnd) log.scrollTop = log.scrollHeight; }).observe(log);
   }
   window.addEventListener('pagehide', function () { closed = true; save(); if (sock) sock.close(); });
+  // Back and Forward (restore.go): the pagehide above closed the socket; a
+  // restore opens it again, resuming from the offset the page already drew,
+  // so nothing is painted twice. Caught up is the socket's first answer.
+  var restoring = null;
+  function caughtUp() { if (restoring) { var r = restoring; restoring = null; r(); } }
+  ` + restoreJoinJS(`{
+    show: function () {
+      closed = false; retry = 0;
+      return new Promise(function (resolve) {
+        restoring = resolve;
+        if (!sock || sock.readyState > 1) connect();
+      });
+    }
+  }`) + `
   document.addEventListener('visibilitychange', function () { if (document.hidden) save(); });
   // Open: paint this window's snapshot, if there is one this user may see,
   // then connect — resuming from its offset. Storage that is slow or absent

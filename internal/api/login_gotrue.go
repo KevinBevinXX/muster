@@ -318,6 +318,7 @@ func (s *Server) handleGoTrueLogout(w http.ResponseWriter, r *http.Request) {
 			s.logger.Printf("logout: user %d signed out (%s)", sess.user.ID, scope)
 		}
 	}
+	clearCachesOnSignOut(w)
 	s.clearGoTrueCookies(w)
 	if failed != "" {
 		s.renderNotice(w, r, http.StatusInternalServerError, "Sign out everywhere did not finish", failed)

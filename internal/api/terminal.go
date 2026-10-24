@@ -108,7 +108,7 @@ func (s *Server) handleAgentTerminalPage(w http.ResponseWriter, r *http.Request)
 	// (ui/view_swap.go).
 	v.Nav = ui.NavChrome{Feat: s.shellFeatures(r.Context())}
 	allowSameOriginFrame(w)
-	formDocument(w)
+	viewDocument(w)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := ui.AgentTerminalPage(v).Render(w); err != nil {
 		s.logger.Printf("agents: render terminal page: %v", err)
