@@ -3,7 +3,6 @@ package api
 import (
 	"context"
 	"errors"
-	"html"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -147,8 +146,8 @@ func askerAsksHTML(items []attentionItem, returnTo string, now time.Time) string
 	if len(items) > 1 {
 		n = strconv.Itoa(len(items)) + " questions"
 	}
-	return `<h2 class="text-xs font-semibold uppercase tracking-wide text-fg2" data-asker-asks-heading>Waiting on your answer: ` + html.EscapeString(n) +
-		`</h2><ul class="flex flex-col gap-2" data-testid="asker-asks">` + attentionItemsHTMLTo(items, now, returnTo) + `</ul>`
+	// The heading row carries "Hide until next ask" (ui.AskerAsksHeading).
+	return ui.AskerAsksHeading(n) + `<ul class="flex flex-col gap-2" data-testid="asker-asks">` + attentionItemsHTMLTo(items, now, returnTo) + `</ul>`
 }
 
 // askerAsksBlock is ctx's principal's block for r: its content and its

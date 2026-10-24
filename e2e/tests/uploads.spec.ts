@@ -334,6 +334,79 @@ test('a pasted image becomes a chip, an attachment alone is a message, and × ta
   expect(pasted).not.toContain(removedId!);
 });
 
+// THE PAPERCLIP IS TRULY SMALL AND INSIDE THE INPUT (operator decision), and
+// the session switcher sits below the input row — at a phone and a desktop
+// size. 🔴 A REGRESSION TEST: at the base the paperclip is a 44px button BESIDE
+// the input, and there is no #session-switcher.
+for (const vp of [
+  { name: 'phone 390×844', viewport: { width: 390, height: 844 }, mobile: true },
+  { name: 'desktop 1280×800', viewport: { width: 1280, height: 800 }, mobile: false },
+]) {
+  test(`${vp.name}: the paperclip is ~24px inside the input on its left, text clears it as the box grows, and the switcher is below`, async ({ browser }) => {
+    const ctx = await browser.newContext({ viewport: vp.viewport, hasTouch: vp.mobile, isMobile: vp.mobile, storageState: { cookies: [], origins: [] } });
+    const page = await ctx.newPage();
+    try {
+      await openView(page);
+      const input = page.locator('#mv-input');
+      const clip = page.locator('#mv-attach');
+      const at = async () => ({ i: (await input.boundingBox())!, c: (await clip.boundingBox())! });
+      let { i, c } = await at();
+      // ~24px: icon and tap area.
+      expect(Math.round(c.width), 'the paperclip is 24px wide').toBe(24);
+      expect(Math.round(c.height), 'and 24px tall').toBe(24);
+      // Inside the input, on its left.
+      expect(c.x, 'inside the input (left edge)').toBeGreaterThanOrEqual(i.x);
+      expect(c.x + c.width, 'on the input\'s left side').toBeLessThan(i.x + 40);
+      expect(c.y, 'inside the input (top)').toBeGreaterThanOrEqual(i.y);
+      expect(c.y + c.height, 'inside the input (bottom)').toBeLessThanOrEqual(i.y + i.height);
+      // Text never runs under it: the input's content box starts past its right edge.
+      const padLeft = await input.evaluate((el) => parseFloat(getComputedStyle(el).paddingLeft));
+      expect(i.x + padLeft, 'the text starts right of the paperclip').toBeGreaterThan(c.x + c.width);
+      // The paperclip is the one the file input answers, and still works as a button.
+      await expect(clip).toBeEnabled();
+      // Typed into, the box grows (to its cap) and the paperclip stays inside it,
+      // on the last line; the text still starts past it.
+      const h0 = i.height;
+      await input.fill(Array.from({ length: 12 }, (_, n) => `line ${n + 1} of a message long enough to wrap on a phone screen`).join('\n'));
+      await expect.poll(async () => (await input.boundingBox())!.height, { message: 'the box grows with its text' }).toBeGreaterThan(h0 * 2);
+      ({ i, c } = await at());
+      expect(i.height, 'up to 40% of the viewport').toBeLessThanOrEqual(Math.ceil(vp.viewport.height * 0.4) + 1);
+      expect(c.y + c.height, 'the paperclip is still inside the grown box').toBeLessThanOrEqual(i.y + i.height);
+      expect(c.y, 'at its bottom').toBeGreaterThan(i.y + i.height - 40);
+      expect(i.x + (await input.evaluate((el) => parseFloat(getComputedStyle(el).paddingLeft))), 'the text still starts right of it').toBeGreaterThan(c.x + c.width);
+      // A click on it reaches the file picker (the hidden input's click).
+      const chooser = page.waitForEvent('filechooser');
+      await clip.click();
+      await (await chooser).setFiles({ name: 'tiny.png', mimeType: 'image/png', buffer: PNG });
+      await expect(chips(page)).toHaveCount(1);
+      await chips(page).first().getByRole('button', { name: 'Remove attachment' }).click();
+      await input.fill('');
+
+      // The session switcher: below the input row, inside the pinned composer,
+      // on screen, and the page never scrolls sideways.
+      const bar = page.locator('#session-switcher');
+      await expect(bar).toBeVisible();
+      const form = (await page.locator('#mv-form').boundingBox())!;
+      const b = (await bar.boundingBox())!;
+      expect(b.y, 'the switcher is below the input row').toBeGreaterThanOrEqual(form.y + form.height - 1);
+      expect(b.y + b.height, 'and on screen').toBeLessThanOrEqual(vp.viewport.height + 1);
+      expect(await page.locator('#mv-compose #session-switcher').count(), 'inside the pinned composer').toBe(1);
+      const log = (await page.locator('#mv-log').boundingBox())!;
+      const compose = (await page.locator('#mv-compose').boundingBox())!;
+      expect(log.y + log.height, 'the conversation ends above the composer').toBeLessThanOrEqual(compose.y + 1);
+      const [sw, cw] = await page.evaluate(() => [document.documentElement.scrollWidth, document.documentElement.clientWidth]);
+      expect(sw, 'no page-level horizontal overflow').toBeLessThanOrEqual(cw);
+      // This window is current in All (and not a link).
+      await page.locator('#switcher-toggle').click();
+      await page.locator('#switcher-toggle').click();
+      await expect(page.locator('#switcher-toggle')).toHaveText('All');
+      await expect(bar.locator('[data-switcher-list="all"] [data-switcher-current]')).toHaveAttribute('data-switcher-entry', 'mirror');
+    } finally {
+      await ctx.close();
+    }
+  });
+}
+
 test('with no S3 configured there is no paperclip, and the routes do not exist', async ({ page }) => {
   await openView(page, offOrigin, offHost);
   // The same composer, enabled — without the paperclip.

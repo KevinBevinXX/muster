@@ -52,7 +52,12 @@ import (
 //     drawn with textContent: a host's skill description is host file content.
 
 // composerSendSplitClass is Send's look as the left half of the split button.
-const composerSendSplitClass = "press min-h-[44px] shrink-0 rounded-l-xl rounded-r-none bg-accent px-4 text-sm font-semibold text-on-accent transition disabled:opacity-40"
+// Its side padding is px-2.5 (operator ask: "reduce the padding on the send
+// button"), the same as the plain Send's (composerSendClass): the room goes
+// to the input. It is still 44px tall, and
+// the caret keeps its 44px square (it has no padding to cut: it is the glyph
+// centred in its tap target).
+const composerSendSplitClass = "press min-h-[44px] shrink-0 rounded-l-xl rounded-r-none bg-accent px-2.5 text-sm font-semibold text-on-accent transition disabled:opacity-40"
 
 // sendMoreClass is the caret: the right half, 44px square.
 const sendMoreClass = "press inline-flex min-h-[44px] min-w-[44px] shrink-0 items-center justify-center rounded-l-none rounded-r-xl border-l border-on-accent/30 bg-accent text-on-accent transition disabled:opacity-40"

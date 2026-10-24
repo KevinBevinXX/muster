@@ -448,3 +448,71 @@ for (const vp of [
     });
   });
 }
+
+// HIDE UNTIL NEXT ASK, on the Rendered view (ui/attention.go): the operator's
+// "close it without taking any action". The block hides here and NOTHING is
+// sent — no request of any kind, so the session's wait still says pending and
+// the ask is still in the queue; an "N waiting" chip takes its place and
+// reopens it; a NEW ask (arriving live, by the queue's SSE event) brings the
+// block back by itself. 🔴 A REGRESSION TEST: at the base the block has no hide.
+test('the rendered view\'s asks hide until the next ask, without answering or sending anything', async ({ page }) => {
+  test.setTimeout(120_000);
+  await expect.poll(() => fs.existsSync(mcpSecretFile), { timeout: 30_000 }).toBe(true);
+  const secret = fs.readFileSync(mcpSecretFile, 'utf8').trim();
+  const auth = { Authorization: 'Bearer ' + secret, 'X-Muster-Pane': '%e2e-work-@1', 'X-Muster-Tmux': fakeTMUX };
+  const askLocal = async (question: string, options: string[] = []) => {
+    const r = (await (await localCall('attention_ask', { question, options }, auth)).json()) as { result: { content: { text: string }[] } };
+    return (JSON.parse(r.result.content[0].text) as { id: number }).id;
+  };
+  const status = async (id: number) => {
+    const r = (await (await localCall('attention_wait', { id, wait_seconds: 0 }, auth)).json()) as { result: { content: { text: string }[] } };
+    return (JSON.parse(r.result.content[0].text) as { status: string }).status;
+  };
+  const id = await askLocal('Rotate the staging key?', ['rotate', 'later']);
+
+  await page.goto(origin + '/login');
+  await page.fill('#muster-password', password);
+  await Promise.all([page.waitForURL((u) => !u.pathname.startsWith('/login')), page.click('button[type=submit]')]);
+  const view = origin + `/mirror/view?host=${encodeURIComponent(host)}&session=work&window=%401`;
+  await page.goto(view);
+  const block = page.locator('#asker-asks');
+  const chip = page.locator('#asker-asks-chip');
+  await expect(block.locator(`#ask-${id}`)).toBeVisible();
+  // The window may hold an earlier test's open ask too (the split pane's): the
+  // chip counts what the block holds.
+  const n = await block.locator('[data-attention-item]').count();
+  expect(n).toBeGreaterThanOrEqual(1);
+
+  const sent: string[] = [];
+  page.on('request', (r) => {
+    if (r.resourceType() !== 'eventsource' && r.resourceType() !== 'websocket') sent.push(`${r.method()} ${new URL(r.url()).pathname}`);
+  });
+  await block.getByRole('button', { name: 'Hide until next ask' }).click();
+  await expect(block).toBeHidden();
+  await expect(chip).toHaveText(`${n} waiting`);
+  await page.waitForTimeout(500);
+  expect(sent.filter((s) => !s.startsWith('GET /mirror/view/asks')), 'the hide sent nothing (the asks poll aside, a GET)').toEqual([]);
+  expect(sent.filter((s) => !s.startsWith('GET ')), 'no POST of any kind').toEqual([]);
+  expect(await status(id), 'the session still waits: nothing answered or cancelled it').toBe('pending');
+  expect(await (await page.request.get(origin + '/attention')).text(), 'still in the Asks queue').toContain(`id="ask-${id}"`);
+
+  // A new ask arrives live: the block comes back by itself, with both.
+  const id2 = await askLocal('And the prod key?');
+  await expect(block.locator(`#ask-${id2}`)).toBeAttached({ timeout: 15_000 });
+  await expect(block).toBeVisible();
+  await expect(chip).toBeHidden();
+  // Hidden again, then reopened by the chip.
+  await block.getByRole('button', { name: 'Hide until next ask' }).click();
+  await expect(chip).toHaveText(`${n + 1} waiting`);
+  await chip.click();
+  await expect(block).toBeVisible();
+  await expect(chip).toBeHidden();
+  expect(sent.filter((s) => !s.startsWith('GET ')), 'still no POST').toEqual([]);
+
+  // Cleanup by the block's own answer forms (the queue is shared by the spec).
+  await Promise.all([page.waitForURL(view), block.locator(`#ask-${id}`).getByRole('button', { name: 'later', exact: true }).click()]);
+  const second = block.locator(`#ask-${id2}`);
+  await second.locator('textarea').fill('not now');
+  await Promise.all([page.waitForURL(view), second.getByRole('button', { name: 'Answer', exact: true }).click()]);
+  expect(await status(id2)).toBe('answered');
+});

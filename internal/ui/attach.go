@@ -14,8 +14,8 @@ import (
 // FILE ATTACHMENTS IN THE COMPOSER (internal/uploads; internal/api's
 // uploads.go).
 //
-// A paperclip beside the input (and pasting an image, or dropping a file on
-// the composer) uploads the file at once; it then sits ABOVE the input as a
+// A paperclip inside the input, on its left (and pasting an image, or dropping
+// a file on the composer) uploads the file at once; it then sits ABOVE the input as a
 // chip — a thumbnail for an image, an icon for anything else, its name and
 // size, and × to take it off again (which revokes its link). On Send, each
 // chip's line (uploads.AgentLine: a short description and a muster-signed
@@ -53,9 +53,27 @@ const (
 	AttachStillUploading = "Wait for the attachment to finish uploading."
 )
 
-// attachButtonClass is the paperclip's look: the mic's (dictateButtonClass)
-// 44px square at rest.
-const attachButtonClass = "press inline-flex min-h-[44px] min-w-[44px] shrink-0 items-center justify-center rounded-xl bg-s2 text-fg2 ring-1 ring-inset ring-line transition disabled:opacity-60"
+// attachButtonClass is the paperclip's look: TRULY SMALL (operator decision) —
+// icon and tap area both 24px, absolutely placed INSIDE the input on its left
+// (attachField), its bottom on the first line's baseline box so it stays with
+// the last line as the box grows. The input is padded past it
+// (attachInputPad), so no text ever runs under it.
+const attachButtonClass = "press absolute bottom-2.5 left-1.5 z-10 inline-flex h-6 w-6 items-center justify-center rounded-md text-fg2 transition hover:bg-s3 hover:text-fg disabled:opacity-60"
+
+// attachInputPad is the input's left padding while the paperclip sits in it:
+// 36px, past the button's 6px inset plus its 24px, so text clears it by 6px.
+// (pl-* is emitted after px-*, so it wins over composerInputClass's px-3.)
+const attachInputPad = " pl-9"
+
+// attachField is the input with the paperclip inside it: one positioned box
+// that takes the input's place in the composer's row. Without uploads (path
+// "") it is the input alone, unpadded.
+func attachField(path string, input func(pad string) g.Node) g.Node {
+	if path == "" {
+		return input("")
+	}
+	return Div(Class("relative flex min-w-0 flex-1"), attachControl(path), input(attachInputPad))
+}
 
 // attachControl is the paperclip and its hidden file input. Nothing when path
 // is "" (uploads are not configured).
@@ -70,7 +88,7 @@ func attachControl(path string) g.Node {
 			g.Attr("aria-hidden", "true")),
 		Button(ID("mv-attach"), Type("button"), g.Attr("data-upload", path),
 			g.Attr("aria-label", attachLabel), g.Attr("title", attachLabel), Class(attachButtonClass),
-			g.Raw(`<svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>`)),
+			g.Raw(`<svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>`)),
 	})
 }
 

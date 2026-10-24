@@ -43,6 +43,7 @@
     "tests/plugins.spec.ts": 7.3,
     "tests/pins.spec.ts": 3.6,
     "tests/recent-agents.spec.ts": 2.2,
+    "tests/composer-switcher.spec.ts": 25.0,
     "tests/mirror-chat.spec.ts": 14.3,
     "tests/send-queue.spec.ts": 60.9,
     "tests/focus.spec.ts": 5.9,
@@ -72,6 +73,7 @@
   },
   "legs": {
     "1": [
+      "tests/composer-switcher.spec.ts",
       "tests/host-names.spec.ts",
       "tests/claude-code-polish.spec.ts",
       "tests/badge.spec.ts",
