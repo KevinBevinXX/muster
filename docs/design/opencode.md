@@ -60,3 +60,19 @@ Issuing a token takes two HTTP calls. This is what `opencode pair` does
   silently expires is an unknown status, and unknown fails closed.
 - Per-client revocation or a scoped token would need an upstream change. None
   exists at `6ec5682`.
+
+### As built: pairing and renewal
+
+- `muster-mirror opencode-pair` mints the host's first token. It reads the url
+  and password from the service's registration file (`<state>/opencode/service-<channel>.json`,
+  `{id, version, url, pid, password}`, mode 0600; `packages/client/src/effect/service.ts`
+  calls it "the complete discovery contract"), refuses a url that is not
+  loopback, and makes the two calls above. It writes `{url, token}` to
+  `~/.muster/opencode-token`, 0600, and prints the token's fingerprint and
+  expiry only.
+- The daemon never reads the registration file: the server's url comes from
+  the token file.
+- The daemon renews the token within 10 days of its 30-day expiry, with the
+  token itself, and writes the new one to the same file before using it.
+- `internal/opencodehost` makes only GETs, except that renewal (a test reads
+  the source and pins the set of requests it can send).

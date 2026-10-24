@@ -147,6 +147,11 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 	if len(args) > 0 && args[0] == "hermes-allowlist" {
 		return runHermesAllowlist(args[1:], getenv, stdout, stderr)
 	}
+	// `muster-mirror opencode-pair`: mint this host's opencode token
+	// (opencode.go). Run once per host.
+	if len(args) > 0 && args[0] == "opencode-pair" {
+		return runOpenCodePair(args[1:], getenv, stdout, stderr)
+	}
 	fs := flag.NewFlagSet("muster-mirror", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	envBool := func(k string) bool { v := getenv(k); return v == "1" || strings.EqualFold(v, "true") }
@@ -178,6 +183,7 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 	listHermes := fs.Bool("hermes", false, "with -list: diagnose this host's Hermes windows — each window's breadcrumb, session, status file and why it has no rendered view or no status — and, per hook command Hermes's config.yaml declares (its hooks: section only), its consent in the allowlist")
 	hermesHome := fs.String("hermes-home", hermesHomeDefault(getenv), "the Hermes home whose sessions a Hermes window is resolved from — read-only, and only state.db, terminal-sessions/tty-* and shell-hooks-allowlist.json ("+envHermesHome+"; else $HERMES_HOME, else ~/.hermes)")
 	hermesStatusDir := fs.String("hermes-status-dir", hermesStatusDirDefault(getenv), "the directory `muster-mirror hermes-hook` writes Hermes status files in; recorded for the hook with -write-hook-config ("+envHermesStatusDir+")")
+	openCodeTokenFile := fs.String("opencode-token-file", openCodeTokenFileDefault(getenv), "the opencode pair token, {url, token}, mode 0600, written by `muster-mirror opencode-pair` and renewed by this daemon before it expires; missing = no opencode access ("+envOpenCodeTokenFile+"; or the token itself in "+envOpenCodeToken+" with its server in "+envOpenCodeURL+", never renewed)")
 	version := fs.Bool("version", false, "print the version and exit")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -374,6 +380,11 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 		if err != nil {
 			logger.Printf("muster-mirror: clean up stale viewer sessions: %v", err)
 		}
+	}
+	// The opencode token is renewed whether or not a window uses it, so a
+	// paired host stays paired (opencode.go). Never in a browser-test build.
+	if e2eBackend == nil {
+		startOpenCode(ctx, *openCodeTokenFile, getenv, logger)
 	}
 	err = c.Run(ctx)
 	// Give the MCP setup a moment to settle (and say why it is off) before

@@ -401,6 +401,49 @@ Known gaps (the host types into these panes as into any other):
 - a renamed binary, or one run through a symlink of another name: its name
   and first argument do not say opencode.
 
+### opencode's token (`muster-mirror opencode-pair`)
+
+muster-mirror reads a host's opencode v2 server (the background service every
+opencode TUI on the host is a client of, `127.0.0.1:<port>`) through its HTTP
+API, with a **pair token** of its own — never the server's password. Pair each
+host once:
+
+```sh
+muster-mirror opencode-pair
+```
+
+It reads the service's **registration file**, `$XDG_STATE_HOME/opencode/service-prod.json`
+(else `~/.local/state/opencode/…`; `service.json` for the latest, dev, beta
+and next channels; `-registration <file>` names another). That file is where
+opencode keeps the server's url and password for its own clients. The pairing
+step then:
+
+1. refuses a url that is not a loopback address;
+2. asks the server for a pairing code with the password (`POST /api/pair`);
+3. redeems the code for a token (`GET /auth/connect/<code>`);
+4. writes `{"url", "token"}` to `~/.muster/opencode-token` (mode 0600;
+   `-token-file`, or `MUSTER_MIRROR_OPENCODE_TOKEN_FILE`).
+
+It prints the file it read, the server, the token's fingerprint (the first 8
+hex digits of its SHA-256) and its expiry, and the file it wrote. The password
+is used for that one request and kept nowhere, and nothing prints the password,
+the code or the token.
+
+The daemon reads the same file (`-opencode-token-file`,
+`MUSTER_MIRROR_OPENCODE_TOKEN_FILE`; default `~/.muster/opencode-token`). It
+refuses a file others can read, a symlink, and a url that is not loopback. A
+token lives 30 days. Within 10 days of its expiry, the daemon mints its
+replacement with the token itself, writes it to the same file (0600, whole),
+and only then uses it. It checks hourly and logs each renewal and each failure
+by fingerprint. A token handed over in `MUSTER_MIRROR_OPENCODE_TOKEN` (with
+`MUSTER_MIRROR_OPENCODE_URL`) works but is never renewed.
+
+🔴 **A token is not scoped and cannot be revoked on its own** (upstream at
+`6ec5682`, docs/design/opencode.md). It reaches the whole opencode API. muster
+only ever reads with it, and its one other call is the renewal's
+`POST /api/pair`. To take muster's access away, rotate the opencode service
+password. That revokes every token, muster's and every other paired client's.
+
 ### Hermes windows
 
 A window whose pane runs the Hermes CLI (`hermes chat`, or bare `hermes`) is
