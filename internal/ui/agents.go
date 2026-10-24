@@ -417,7 +417,6 @@ func agentCard(a AgentCardView) g.Node {
 				// cards are unchanged. The account is a NAME, never a token.
 				g.If(agents.ResolveKind(a.Kind) == agents.KindClaudeCode,
 					chip("kind", agents.KindLabel(a.Kind)+" · "+a.CCAccount)),
-				g.If(agents.ResolveKind(a.Kind) == agents.KindHermes, chip("kind", agents.KindLabel(a.Kind))),
 				g.If(a.WorkerPool != "", workerPoolChip(a.WorkerPool)),
 			),
 			g.If(a.KickoffFailed, kickoffFailureDetail(a.KickoffFailure,

@@ -97,6 +97,9 @@ type MirrorViewView struct {
 	// overlay — this page is sized to the window) and its hamburger, framed
 	// by the view swap or not (nav_layout.go says why).
 	Nav NavChrome
+	// Switcher is the session switcher below the composer (switcher.go); nil
+	// for none.
+	Switcher *Switcher
 }
 
 // MirrorReadOnlyNote is what a read-only host's composer says instead of
@@ -120,7 +123,11 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 		// Pinned to the visible viewport, not in flow at the bottom of the body:
 		// on a phone the body's bottom can be under the browser's chrome, and
 		// this page cannot be scrolled to bring it back (composerPinScript).
-		Pinned: true}
+		Pinned: true, Switcher: v.Switcher}
+	shell := pinnedShellClass
+	if v.Switcher != nil {
+		shell = pinnedShellSwitcherClass
+	}
 	working := "Claude is working…"
 	switch {
 	case v.Hermes && !v.HermesSend:
@@ -152,7 +159,7 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 			Body(
 				// The app shell (only #mv-log scrolls), sized to the visible
 				// viewport and ending above the pinned composer.
-				Class(pinnedShellClass+" bg-bg text-fg antialiased"),
+				Class(shell+" bg-bg text-fg antialiased"),
 				// The navigation: position:fixed, so it takes no room in the
 				// column (nothing below moves), and an overlay at every width.
 				overlayNav(v.Nav, "agents"),

@@ -445,7 +445,7 @@ type responsesRequest struct {
 }
 
 // promptFrom extracts the LAST user message's text from `input`
-// (internal/podagent.PromptFrom, shared with hermesd).
+// (internal/podagent.PromptFrom).
 func promptFrom(raw json.RawMessage) (string, error) { return podagent.PromptFrom(raw) }
 
 // sanitizePrompt folds line endings and refuses control characters; handleResponses

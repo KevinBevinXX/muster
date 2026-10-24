@@ -94,6 +94,8 @@ func (s *Server) handleMirrorViewPage(w http.ResponseWriter, r *http.Request) {
 	// (attention_asker.go).
 	v.Asks, v.AsksSrc = s.askerAsksBlock(r.Context(), askerRef{mirror: ui.MirrorRef{Host: h.Host, Session: e.Session, Window: e.Window}})
 	v.Nav = ui.NavChrome{Feat: s.shellFeatures(r.Context())}
+	// The session switcher below the composer (ui/switcher.go).
+	v.Switcher = s.switcher(r.Context(), ui.SwitcherCurrent{Mirror: ui.MirrorRef{Host: h.Host, Session: e.Session, Window: e.Window}})
 	allowSameOriginFrame(w)
 	formDocument(w)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")

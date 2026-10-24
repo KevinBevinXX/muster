@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -16,8 +17,9 @@ import (
 
 // TestKindsMatchTheMigrationsCheck pins Kinds to the set the NEWEST migration
 // that re-creates agents_kind_check admits (0003 created it, 0038 widened it for
-// hermes), so a kind added in Go and not in the schema (or the reverse) reddens
-// here instead of as a CHECK violation at a dispatch.
+// hermes, 0047 narrowed it again when that kind was removed), so a kind added
+// in Go and not in the schema (or the reverse) reddens here instead of as a
+// CHECK violation at a dispatch.
 func TestKindsMatchTheMigrationsCheck(t *testing.T) {
 	files, err := filepath.Glob("../db/migrations/*.sql")
 	if err != nil || len(files) == 0 {
@@ -39,7 +41,7 @@ func TestKindsMatchTheMigrationsCheck(t *testing.T) {
 	if m == nil {
 		t.Fatal("instrument check: no migration re-creates agents_kind_check with an IN-list")
 	}
-	if !strings.HasSuffix(newest, "0038_agent_kind_hermes.sql") {
+	if !strings.HasSuffix(newest, "0047_agent_kind_drop_hermes.sql") {
 		t.Fatalf("the newest agents_kind_check is in %s; update this test's expectation with the migration that moved it", newest)
 	}
 	var sqlKinds []string
@@ -66,27 +68,29 @@ func TestKindResolutionAndTurnBudgets(t *testing.T) {
 	if KindTurnTimeout("claude-code") != 35*time.Minute {
 		t.Fatalf("claude-code turn budget = %s, want 35m", KindTurnTimeout("claude-code"))
 	}
-	// Likewise five minutes past hermesd's own fixed 30m turnTimeout
-	// (cmd/hermesd/turn.go).
-	if KindTurnTimeout("hermes") != 35*time.Minute || KindLabel("hermes") != "Hermes" || !ValidKind("hermes") {
-		t.Fatalf("hermes: turn budget %s, label %q, valid %t", KindTurnTimeout("hermes"), KindLabel("hermes"), ValidKind("hermes"))
-	}
-	for kind, want := range map[string]bool{"": false, "gateway": false, "claude-code": true, "hermes": true, "teleport": false} {
+	for kind, want := range map[string]bool{"": false, "gateway": false, "claude-code": true, "hermes": false, "teleport": false} {
 		if RunsPodSupervisor(kind) != want {
 			t.Fatalf("RunsPodSupervisor(%q) = %t", kind, !want)
 		}
 	}
 }
 
-// A hermes agent dispatched with a repository waits for its checkout like a
-// claude-code one (hermesd reports repo.state as ccd does); without one, or as a
-// gateway agent, it never does.
-func TestNeedsCheckoutCoversTheHermesKind(t *testing.T) {
+// The hermes kind is REMOVED: an unknown kind like any other. Red on the
+// commit before its removal, where it was a live kind (ValidKind true).
+func TestTheHermesKindIsGone(t *testing.T) {
+	if ValidKind("hermes") || slices.Contains(Kinds, "hermes") || KindTurnTimeout("hermes") != 0 {
+		t.Fatalf("hermes is still a kind: ValidKind %t, Kinds %v, turn budget %s", ValidKind("hermes"), Kinds, KindTurnTimeout("hermes"))
+	}
+}
+
+// A claude-code agent dispatched with a repository waits for its checkout;
+// without one, or as a gateway agent, it never does.
+func TestNeedsCheckoutCoversOnlyThePodSupervisorKind(t *testing.T) {
 	for _, c := range []struct {
 		kind, repo string
 		want       bool
 	}{
-		{KindHermes, "o/r", true}, {KindClaudeCode, "o/r", true}, {KindGateway, "o/r", false}, {KindHermes, "", false},
+		{KindClaudeCode, "o/r", true}, {KindGateway, "o/r", false}, {KindClaudeCode, "", false},
 	} {
 		if got := NeedsCheckout(Agent{Kind: c.kind, Repo: c.repo}); got != c.want {
 			t.Fatalf("NeedsCheckout(%s, %q) = %t, want %t", c.kind, c.repo, got, c.want)
@@ -127,20 +131,5 @@ func TestPGStoreKindAndAccountRoundTrip(t *testing.T) {
 	got, err = store.Get(ctx, plain.ID)
 	if err != nil || got.Kind != KindGateway || got.CCAccount != "" {
 		t.Fatalf("kindless round trip: kind %q account %q, %v", got.Kind, got.CCAccount, err)
-	}
-
-	// The hermes kind (0038): stored with no account, and refused WITH one
-	// (0003's agents_cc_account_matches_kind holds for it as for gateway).
-	hermes, err := store.Create(ctx, Agent{Name: "kind-hermes-" + stamp, Namespace: "ns", Status: StatusProvisioning, Kind: KindHermes})
-	if err != nil {
-		t.Fatalf("create hermes: %v", err)
-	}
-	defer cleanupAgent(ctx, pool, hermes.ID)
-	if got, err := store.Get(ctx, hermes.ID); err != nil || got.Kind != KindHermes || got.CCAccount != "" {
-		t.Fatalf("hermes round trip: %+v, %v", got, err)
-	}
-	if bad, err := store.Create(ctx, Agent{Name: "kind-hermes-acct-" + stamp, Namespace: "ns", Status: StatusProvisioning, Kind: KindHermes, CCAccount: "work"}); err == nil {
-		cleanupAgent(ctx, pool, bad.ID)
-		t.Fatal("a hermes row naming a Claude account was stored")
 	}
 }

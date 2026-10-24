@@ -51,6 +51,9 @@ func TestEveryKindsRefusalIsReachedOnItsOwn(t *testing.T) {
 		want string
 	}{
 		{"unknown kind", func(c *config) { c.AgentKinds = []string{"gateway", "teleport"} }, `entry "teleport"`},
+		// The removed hermes kind is an unknown kind like any other: a deployment
+		// still listing it is refused at boot, naming the entry.
+		{"removed hermes kind", func(c *config) { c.AgentKinds = []string{"gateway", "claude-code", "hermes"} }, `entry "hermes"`},
 		{"kind twice", func(c *config) { c.AgentKinds = []string{"gateway", "claude-code", "gateway"} }, "listed twice"},
 		{"gateway missing", func(c *config) { c.AgentKinds = []string{"claude-code"} }, "must include gateway"},
 		{"cc image without the kind", func(c *config) { c.AgentKinds = nil; c.AgentCCAccountNames = nil }, "armed switch"},

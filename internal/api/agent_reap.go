@@ -137,8 +137,21 @@ func (s *Server) reapStoppedAgents(ctx context.Context) int {
 		// above is its barrier (provisioner_seam_test.go).
 		destroy := func(ctx context.Context, id int64) error { return s.ext.Provisioner.Destroy(ctx, id) }
 		claim := func(ctx context.Context) (bool, error) { return st.ClaimStoppedReap(ctx, c.ID, after) }
+		hooks := destroyHooks{claim: claim}
+		if signal := s.agentReapDone; signal != nil {
+			// Destroy's failure is signalled here; a success after the shared
+			// after-steps, through done.
+			destroy = func(ctx context.Context, id int64) error {
+				err := s.ext.Provisioner.Destroy(ctx, id)
+				if err != nil {
+					signal(id, err)
+				}
+				return err
+			}
+			hooks.done = func(context.Context, agents.Agent) { signal(c.ID, nil) }
+		}
 		var chief errDestroyChief
-		switch _, err := s.destroyAgent(octx, c.ID, destroy, destroyHooks{claim: claim}); {
+		switch _, err := s.destroyAgent(octx, c.ID, destroy, hooks); {
 		case err == nil:
 		case errors.As(err, &chief), errors.Is(err, errDestroyNotClaimed):
 			// The chief stays (silently: it would be refused again on every

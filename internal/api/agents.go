@@ -16,7 +16,6 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/ZacxDev/muster/internal/agents"
-	"github.com/ZacxDev/muster/internal/agentspec"
 	"github.com/ZacxDev/muster/internal/attention"
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/cctranscript"
@@ -218,12 +217,25 @@ func (s *Server) agentsListCards(ctx context.Context) ([]ui.AgentCardView, []ui.
 // bounded by instancesWithin (0 = unbounded): past it the cards are drawn with
 // their STORED status (a nil index, liveStatusIndexed). See shellData.
 func (s *Server) agentsListCardsWithin(ctx context.Context, instancesWithin time.Duration) ([]ui.AgentCardView, []ui.MirrorCardView, error) {
+	return s.agentsListCardsLive(ctx, instancesWithin, true)
+}
+
+// agentsListCardsLive is agentsListCardsWithin, with the instance read made
+// optional: live false draws every agent with its STORED status and reads no
+// instances at all — for a surface that shows the list's entries but not their
+// live status (the session switcher, switcher.go), which must not hold a page's
+// first byte on the apiserver.
+func (s *Server) agentsListCardsLive(ctx context.Context, instancesWithin time.Duration, live bool) ([]ui.AgentCardView, []ui.MirrorCardView, error) {
 	list, err := s.ext.Agents.List(ctx)
 	if err != nil {
 		return nil, nil, err
 	}
 
-	instIdx := s.instanceIndexWithin(ctx, instancesWithin)
+	// nil = "live state was not observed": the stored status (liveStatusIndexed).
+	var instIdx map[string]*provision.Instance
+	if live {
+		instIdx = s.instanceIndexWithin(ctx, instancesWithin)
+	}
 	// 🔴 MOST RECENTLY ACTIVE FIRST, BY agents.LastActivity — the same definition
 	// GET /api/agents publishes as lastActivityAt. The store's own order
 	// (created_at DESC) is left alone because the machine read documents
@@ -951,21 +963,6 @@ type dispatchParams struct {
 // claudeCodeNoModel is the one sentence both model writes refuse with.
 const claudeCodeNoModel = "a claude-code agent has no per-agent model (the CLI's own settings choose it); leave the model unset"
 
-// hermesModelRefusal applies agentspec.HermesModelID — the rule a hermes pod's
-// spec is built by — to a model a dispatch or a model change names for a
-// hermes agent, so a model the pod cannot run is refused before anything is
-// created or stored. An empty model (the deployment's default) is left to the
-// build. Any other kind: nil.
-func hermesModelRefusal(kind, model string) error {
-	if agents.ResolveKind(kind) != agents.KindHermes || model == "" {
-		return nil
-	}
-	if _, err := agentspec.HermesModelID(model); err != nil {
-		return fmt.Errorf("%w: a %s agent: %v", ErrDispatchRefused, agents.KindHermes, err)
-	}
-	return nil
-}
-
 // ErrDispatchRefused marks a dispatch refused before anything was created: a
 // kind this deployment does not enable, an account pin for a kind that has none,
 // or a claude-code pool with no usable account.
@@ -1010,9 +1007,6 @@ func (s *Server) resolveKindAccount(ctx context.Context, p dispatchParams) (kind
 	if kind != agents.KindClaudeCode {
 		if p.CCAccount != "" {
 			return "", "", fmt.Errorf("%w: a Claude account can only be pinned for a %s agent", ErrDispatchRefused, agents.KindClaudeCode)
-		}
-		if err := hermesModelRefusal(kind, p.Model); err != nil {
-			return "", "", err
 		}
 		return kind, "", nil
 	}
@@ -1098,8 +1092,6 @@ func (s *Server) createAndDispatchAgent(ctx context.Context, p dispatchParams) (
 	// (hooks, env) runs beside the subscription token. One predicate,
 	// connectedRepo, the same task_dispatch applies to every kind before it
 	// reserves. Before the row, so a refusal creates nothing.
-	// The same holds for a hermes agent: hermesd checks the repository out and
-	// Hermes runs in it, loading its AGENTS.md (agents.RunsPodSupervisor).
 	if agents.RunsPodSupervisor(kind) && p.Repo != "" {
 		if why := s.connectedRepo(ctx, p.Repo); why != "" {
 			return agents.Agent{}, fmt.Errorf("%w: %s", ErrDispatchRefused, why)
@@ -1256,12 +1248,6 @@ func (s *Server) handleAgentModel(w http.ResponseWriter, r *http.Request) {
 		s.logger.Printf("agents: set model %d: read kind: %v", id, gerr)
 		http.Error(w, "could not update model", http.StatusInternalServerError)
 		return
-	}
-	if gerr == nil {
-		if err := hermesModelRefusal(cur.Kind, model); err != nil {
-			http.Error(w, err.Error(), http.StatusConflict)
-			return
-		}
 	}
 	if gerr == nil && agents.ResolveKind(cur.Kind) == agents.KindClaudeCode {
 		http.Error(w, ErrDispatchRefused.Error()+": "+claudeCodeNoModel, http.StatusConflict)
@@ -1484,6 +1470,8 @@ func (s *Server) handleAgentDetail(w http.ResponseWriter, r *http.Request) {
 	view.SendNotice, view.SendNoticeOK = composerNotice(r)
 	// The agent's open attention asks, answerable here (attention_asker.go).
 	view.Asks, view.AsksSrc = s.askerAsksBlock(ctx, askerRef{agent: a.Name, session: active.ID})
+	// The session switcher below the chat form (ui/switcher.go).
+	view.Switcher = s.switcher(ctx, ui.SwitcherCurrent{AgentID: a.ID})
 	// A claude-code agent's chat is the Rendered half of its Rendered |
 	// Terminal switch, which its terminal opens in a frame (ui/view_swap.go).
 	if agents.ResolveKind(view.Kind) == agents.KindClaudeCode {

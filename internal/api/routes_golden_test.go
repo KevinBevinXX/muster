@@ -704,12 +704,8 @@ func moduleRoot(t *testing.T) string {
 //     unix socket, each hook authenticated with a credential only ccd's CLIs hold);
 //     GET /{$} is the same health check as /healthz, at muster's default agent
 //     health path ("/").
-//   - cmd/hermesd: the in-pod supervisor of the hermes-agent image (the hermes
-//     kind). The same agent wire as ccd's, and the same health check at both
-//     paths; no hook surface (Hermes runs no hooks of muster's in a pod).
 var otherServerRoutes = map[string][]string{
-	"cmd/ccd":     {"GET /healthz", "GET /{$}", "POST /hook/{event}", "POST /v1/chat/completions", "POST /v1/responses"},
-	"cmd/hermesd": {"GET /healthz", "GET /{$}", "POST /v1/responses"},
+	"cmd/ccd": {"GET /healthz", "GET /{$}", "POST /hook/{event}", "POST /v1/chat/completions", "POST /v1/responses"},
 }
 
 // TestOtherServersRouteLedger is the other half of the exemption above.

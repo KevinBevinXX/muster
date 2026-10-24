@@ -471,9 +471,9 @@ func k8sDriverConfig(cfg config, logger *log.Logger) k8sdriver.Config {
 		Logger:               logger,
 	}
 	if cfg.AgentWorkspacePersist || cfg.confinedKindsEnabled() {
-		// ⚠ ...OR A CONFINED KIND (claude-code, hermes) IS ENABLED: its /data volume
+		// ⚠ ...OR A CONFINED KIND (claude-code) IS ENABLED: its /data volume
 		// is not optional (the conversation `claude --resume <id>` resumes lives on
-		// it; Hermes's state.db, run records and API key do), so the driver
+		// it), so the driver
 		// must accept a persistent workspace even when gateway-kind agents keep
 		// theirs ephemeral. This raises the CAPABILITY only; a gateway-kind spec
 		// still asks for persistence exactly when AgentWorkspacePersist says so.
@@ -570,7 +570,6 @@ func agentSpecConfig(cfg config) (agentspec.Config, error) {
 		Plugins:          cfg.pluginsEnabled(),
 		RuntimeConfig:    rc,
 		ClaudeCode:       claudeCodeSpecConfig(cfg),
-		Hermes:           hermesSpecConfig(cfg),
 		// A claude-code chief runs the gateway runtime beside ccd when its
 		// sessions may be started on that runtime (validateSessionRuntimes
 		// refuses this without the runtime bundle the sidecar is built from).
@@ -614,13 +613,4 @@ func claudeCodeSpecConfig(cfg config) *agentspec.ClaudeCodeConfig {
 	}
 	return &agentspec.ClaudeCodeConfig{Image: cfg.AgentCCImage, Accounts: accounts, StorageSize: cfg.AgentCCStorage,
 		BypassPools: slices.Clone(cfg.AgentCCBypassPools)}
-}
-
-// hermesSpecConfig is the hermes kind's deployment half, or nil when the kind
-// is not enabled.
-func hermesSpecConfig(cfg config) *agentspec.HermesConfig {
-	if !cfg.hermesEnabled() {
-		return nil
-	}
-	return &agentspec.HermesConfig{Image: cfg.AgentHermesImage, StorageSize: cfg.AgentHermesStorage}
 }

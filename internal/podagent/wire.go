@@ -12,8 +12,8 @@ import (
 
 // muster's agent wire as an in-pod supervisor answers it: the OpenAI-Responses
 // shape muster's client parses (internal/agents.parseResponsesSSE and
-// RuntimeError). ccd and hermesd both answer with this one writer; each drives
-// it with muster's own client in its contract test.
+// RuntimeError). ccd answers with this one writer, and drives it with
+// muster's own client in its contract test.
 //
 // 🔴 A FAILED TURN IS ALWAYS A NON-200 WITH A JSON BODY NAMING A STABLE TYPE —
 // NEVER A 200 WITH AN EMPTY REPLY. muster's client (RunToollessTurn) assembles

@@ -390,8 +390,8 @@ const (
 // no traversal.
 var ccRepoDirName = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9._-]*$`)
 
-// podRepo declares a claude-code or hermes agent's repository: the row's
-// owner/name and branch, checked out by the pod's supervisor (ccd, hermesd) at
+// podRepo declares a claude-code agent's repository: the row's
+// owner/name and branch, checked out by the pod's supervisor (ccd) at
 // ClaudeCodeWorkspacePath/<name>. No repository: the zero Repo.
 //
 // 🔴 THE CHECKOUT IS INSIDE THE WORKSPACE, ON THE AGENT'S VOLUME, so a pod

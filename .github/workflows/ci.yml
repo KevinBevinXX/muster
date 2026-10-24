@@ -684,7 +684,7 @@ jobs:
   #
   # 🔴 THIS ADDS A REGISTRY; IT DOES NOT MOVE OFF HARBOR. The existing
   # deployment pulls from a private Harbor, which devrc's `muster-ops release`
-  # (and `make hermes-image` by hand) push to from an operator's host; nothing
+  # pushes to from an operator's host; nothing
   # here touches that. GHCR exists for clusters that cannot reach that registry.
   #
   # TAGS ARE THE HARBOR TAGS, so a deploy can pin either registry the same way:
@@ -694,10 +694,6 @@ jobs:
   #   muster:<7-char sha>                                 on every push to main,
   #       stamped VERSION=<sha>. The semver is minted by muster-ops at release
   #       time, outside this repository, so a main push has no version to give it.
-  #
-  # ⚠ THE hermes-agent IMAGE IS DELIBERATELY NOT PUBLISHED HERE: no GHCR
-  # consumer runs the hermes kind, and its nix build costs ~6 minutes per run.
-  # It stays Harbor-only, via `make hermes-image`.
   #
   # 🔴 PUSHES ONLY ON A `push` EVENT (main, or a vX.Y.Z tag), AND ONLY AFTER
   # EVERY TEST JOB ABOVE IS GREEN (`publish-gate`). A pull request builds every
