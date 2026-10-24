@@ -2066,7 +2066,7 @@ func (s *Server) chatTurn(ctx context.Context, a agents.Agent, sessionKey, text 
 	// The session's runtime and model ride on the requests (session_runtime.go);
 	// a legacy session carries nothing, exactly as before.
 	ctx = s.sessionRoute(ctx, a, sessionKey)
-	instr, tools, dispatch := s.turnInstructions(ctx, a), s.AgentToolDefsFor(ctx, a), s.AgentToolDispatch(ctx, a)
+	instr, tools, dispatch := s.AgentInstructions(a), s.AgentToolDefsFor(ctx, a), s.AgentToolDispatch(ctx, a)
 	reply, err := s.ext.Gateway.ChatWithTools(ctx, a, sessionKey, instr, text, tools, dispatch, emit)
 	// 🔴 ONLY A 404 ON THE FIRST REQUEST MEANS "THIS IMAGE HAS NO /v1/responses". A
 	// 404 on request 2+ comes after the runtime answered request 1 and its tools

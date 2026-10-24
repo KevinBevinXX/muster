@@ -1,8 +1,6 @@
 package ui
 
 import (
-	"strings"
-
 	g "maragu.dev/gomponents"
 	. "maragu.dev/gomponents/html"
 )
@@ -24,16 +22,11 @@ const (
 	// control that makes a thread the default.
 	sessionDefaultAttr = "data-session-default"
 	makeDefaultAttr    = "data-make-default"
-	// sessionModelInputID / sessionModelListID are the OpenRouter model
-	// combobox's own ids: the agent page's header has one of its own
-	// (modelFieldForDisplay's "model-input"), and the panel can be open on it.
-	sessionModelInputID = "chief-session-model-input"
-	sessionModelListID  = "chief-session-model-list"
 )
 
 // SessionRuntimeView names a runtime the picker offers.
 type SessionRuntimeView struct {
-	Runtime string // "claude-code" | "gateway"
+	Runtime string // "claude-code"
 	Label   string
 }
 
@@ -44,8 +37,8 @@ func sessionRuntimeLine(sess SessionView) g.Node {
 		return nil
 	}
 	text := sess.RuntimeLabel
-	if m := strings.TrimPrefix(sess.Model, "openrouter/"); m != "" {
-		text += " · " + m
+	if sess.Model != "" {
+		text += " · " + sess.Model
 	}
 	return Span(
 		g.Attr(sessionRuntimeAttr, sess.Runtime),
@@ -97,22 +90,21 @@ func chiefNewSessionPicker(agentID int64, runtimes []SessionRuntimeView, claudeM
 	}
 	forms := make([]g.Node, 0, len(runtimes))
 	for _, rt := range runtimes {
-		var model g.Node
-		switch rt.Runtime {
-		case "claude-code":
-			opts := make([]g.Node, 0, len(claudeModels))
-			for _, m := range claudeModels {
-				opts = append(opts, Option(Value(m), g.Text(m)))
-			}
-			model = Select(
-				Name("model"),
-				g.Attr("aria-label", rt.Label+" model"),
-				Class("min-h-[40px] min-w-0 flex-1 rounded-lg border-0 bg-bg px-2 text-sm text-fg ring-1 ring-inset ring-edge focus:outline-none focus:ring-2 focus:ring-focus"),
-				g.Group(opts),
-			)
-		default:
-			model = Div(Class("min-w-0 flex-1"), sessionModelCombobox(rt.Label+" model"))
+		// claude-code is the one session runtime (agents.SessionRuntimes): its
+		// model is one of the Claude aliases.
+		if rt.Runtime != "claude-code" {
+			continue
 		}
+		opts := make([]g.Node, 0, len(claudeModels))
+		for _, m := range claudeModels {
+			opts = append(opts, Option(Value(m), g.Text(m)))
+		}
+		model := Select(
+			Name("model"),
+			g.Attr("aria-label", rt.Label+" model"),
+			Class("min-h-[40px] min-w-0 flex-1 rounded-lg border-0 bg-bg px-2 text-sm text-fg ring-1 ring-inset ring-edge focus:outline-none focus:ring-2 focus:ring-focus"),
+			g.Group(opts),
+		)
 		forms = append(forms, Form(
 			g.Attr(newSessionAttr, rt.Runtime),
 			hx("hx-post", agentSessionsPath(agentID)+"?"+ChatSurfaceQueryParam+"="+string(ChatSurfaceChiefPanel)),
@@ -129,49 +121,13 @@ func chiefNewSessionPicker(agentID int64, runtimes []SessionRuntimeView, claudeM
 			),
 		))
 	}
+	if len(forms) == 0 {
+		return nil
+	}
 	return Div(
 		g.Attr(sessionPickerAttr, ""),
 		Class("flex flex-none flex-col gap-2 rounded-lg bg-s1 p-2 ring-1 ring-inset ring-line"),
 		P(Class("text-xs font-semibold text-fg"), g.Text("New session")),
 		g.Group(forms),
-	)
-}
-
-// sessionModelCombobox is the OpenRouter model search for a new session: the
-// shared combobox component (data-combobox, appScript) with the panel's own
-// ids, seeded with the curated models — minus "the cluster default", which is
-// not a model a session can be pinned to.
-func sessionModelCombobox(label string) g.Node {
-	var seeded []g.Node
-	for _, m := range curatedModels() {
-		if m.Value == "" {
-			continue
-		}
-		seeded = append(seeded, seededComboOption(ComboOption{Value: m.Value, Label: m.Label}))
-	}
-	return Div(
-		g.Attr("data-combobox", ""),
-		g.Attr("data-combobox-remote", "/api/openrouter/models"),
-		Class("relative"),
-		Input(Type("hidden"), Name("model"), g.Attr("data-combobox-hidden", "")),
-		Input(
-			Type("text"),
-			ID(sessionModelInputID),
-			g.Attr("data-combobox-input", ""),
-			g.Attr("role", "combobox"),
-			g.Attr("aria-expanded", "false"),
-			g.Attr("aria-controls", sessionModelListID),
-			g.Attr("aria-label", label),
-			g.Attr("autocomplete", "off"),
-			Placeholder("Search OpenRouter models…"),
-			Class("min-h-[40px] w-full rounded-lg border-0 bg-bg px-3 py-2 text-sm text-fg ring-1 ring-inset ring-edge placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-focus"),
-		),
-		Ul(
-			ID(sessionModelListID),
-			g.Attr("data-combobox-list", ""),
-			g.Attr("role", "listbox"),
-			Class("hidden absolute z-30 mt-1 max-h-56 w-full overflow-auto rounded-lg bg-s1 py-1 shadow-2xl ring-1 ring-line"),
-			g.Group(seeded),
-		),
 	)
 }

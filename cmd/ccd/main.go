@@ -33,8 +33,8 @@
 //
 //	MUSTER_GATEWAY_BEARER  the bearer /v1/responses accepts (muster mints it per agent)
 //	HOOKS_TOKEN            alternatively, a token it is derived from (both: must agree)
-//	CCD_GATEWAY_UPSTREAM_BEARER  the gateway runtime's OWN credential, which ccd
-//	                       presents when it hands a gateway turn on (never its own)
+//	CCD_GATEWAY_UPSTREAM_BEARER  retired (the gateway runtime that once ran beside a
+//	                       chief's ccd is gone); still unset if a pod carries it
 //	                       🔴 ccd unsets all three before it starts anything, and
 //	                       refuses a bearer the CLI could derive from what it keeps
 //	                       (MUSTER_HOOK_TOKEN): turncred.go
@@ -55,9 +55,6 @@
 //	                       exists, `claude` on a fresh volume (supervise.go). Without
 //	                       it ccd knows no pane id, so every turn is not_ready.
 //	CCD_CLAUDE_BIN         the CLI binary         (default claude)
-//	CCD_GATEWAY_UPSTREAM   the gateway runtime beside ccd, http://127.0.0.1:<port> (loopback
-//	                       only): a request with X-Muster-Runtime: gateway is handed to it
-//	                       (gateway.go). Unset: such a request is not_ready
 //	CCD_MAX_SESSIONS       how many CLIs ccd runs BESIDE the primary, one per explicit
 //	                       muster session (lanes.go; default 3, 0 = none: a request
 //	                       naming a session is then not_ready)
@@ -181,10 +178,9 @@ func newLaneSet(getenv func(string) string, maxLanes int, newTerm func(target st
 // hookChannel is ccd's hook listener and the credential it accepts.
 //
 // 🔴 A UNIX SOCKET, NOT 127.0.0.1. Every container in a pod shares one network
-// namespace, so a TCP loopback listener is reachable from a sidecar — in a
-// chief's pod, the gateway runtime, which untrusted content can steer. A socket
-// bound to a path is reachable only through the filesystem, and the sidecar has
-// its own (agentspec's gateway sidecar mounts no volume of the chief's). The
+// namespace, so a TCP loopback listener is reachable from any other container
+// in the pod. A socket bound to a path is reachable only through the
+// filesystem, and another container has its own. The
 // directory is os.MkdirTemp's, mode 0700, owned by ccd's user. The credential is
 // per process: 32 random bytes, never written to disk, handed only to the CLIs
 // ccd starts (tmuxTerminal.env). It is defence in depth — it keeps the channel
@@ -230,7 +226,7 @@ func serve() error {
 	// 🔴 FIRST, BEFORE ccd STARTS ANY PROCESS: take the turn-API credentials out of
 	// the environment every child inherits, and make ccd's own /proc unreadable to
 	// its user (turncred.go). The CLI and its tool calls then hold nothing that
-	// drives ccd's turn API or the gateway runtime's.
+	// drives ccd's turn API.
 	creds := takeTurnCredentials()
 	if err := hideFromSameUser(); err != nil {
 		return err
@@ -308,17 +304,6 @@ func serve() error {
 			w, _ := counter.work(context.Background(), srv.workServers())
 			return w
 		}, log.Printf)
-	}
-	if up := os.Getenv("CCD_GATEWAY_UPSTREAM"); up != "" {
-		// A missing or reused runtime credential refuses gateway turns only;
-		// failing the process would take the Claude Code sessions down with it.
-		gwBearer := creds.upstreamBearer
-		if why := gatewayBearerProblem(gwBearer, bearer); why != "" {
-			log.Printf("ccd: gateway turns refused: %s", why)
-			srv.gatewayOff = why
-		} else if srv.gateway, err = newGatewayProxy(up, gwBearer); err != nil {
-			return err
-		}
 	}
 	srv.checkout = co
 	if os.Getenv("CCD_SUPERVISE") == "1" {

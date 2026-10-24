@@ -18,7 +18,6 @@ import (
 
 	"github.com/ZacxDev/muster/internal/agentgateway"
 	"github.com/ZacxDev/muster/internal/agents"
-	"github.com/ZacxDev/muster/internal/agentspec"
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/db"
 	"github.com/ZacxDev/muster/internal/dbtest"
@@ -96,13 +95,13 @@ func (f *routeRuntime) count() int {
 //
 //   - A claude-code chief holding the live shape — its legacy session and a
 //     NEWER plugin session — has the legacy one as its default.
-//   - A session opened on claude-code/opus and one on an OpenRouter model, over
+//   - Two sessions opened on claude-code (opus, haiku), over
 //     POST /agents/{id}/sessions, read back with their runtime and model; a bad
-//     model, an unknown runtime, and any runtime for a worker are refused and
-//     write nothing.
+//     model, an unknown runtime, the retired gateway runtime, and any runtime
+//     for a worker are refused and write nothing.
 //   - Each session's turn carries its route: none for a legacy session (ccd's
-//     original CLI), the session key and model for claude-code, the runtime and
-//     the model override for gateway.
+//     original CLI), the session key and model for claude-code — and never the
+//     retired gateway runtime's headers.
 //   - `chief ask` and a plugin delivery go to the DEFAULT session — not the
 //     latest, and not a session of the plugin's own — and carry its route; after
 //     POST …/default moves the default, both follow it.
@@ -166,7 +165,7 @@ func TestChiefSessionRuntimesThroughTheRealPlane(t *testing.T) {
 	toks := newFakeAPITokens()
 	ownerTok := toks.add(t, owner)
 	srv.UseExtensions(Extensions{Agents: as, Users: users.NewPG(pool), Plugins: ps, PluginGateway: gw, Gateway: gw,
-		APITokens: toks, SessionRuntimes: []string{agents.SessionRuntimeClaudeCode, agents.SessionRuntimeGateway}})
+		APITokens: toks, SessionRuntimes: []string{agents.SessionRuntimeClaudeCode}})
 	const userHeader = "X-Rt-Test-User"
 	srv.sessionUserOverride = func(r *http.Request) int64 {
 		v, _ := strconv.ParseInt(r.Header.Get(userHeader), 10, 64)
@@ -224,17 +223,17 @@ func TestChiefSessionRuntimesThroughTheRealPlane(t *testing.T) {
 	if cc.Runtime != "claude-code" || cc.Model != "opus" || cc.AgentID != chief.ID {
 		t.Fatalf("opening a claude-code/opus session: %d %q → %+v", rec.Code, rec.Body.String(), cc)
 	}
-	or, rec := open(chief, "gateway", "openrouter/vendor-x/model-y")
-	if or.Runtime != "gateway" || or.Model != "openrouter/vendor-x/model-y" {
-		t.Fatalf("opening an OpenRouter session: %d %q → %+v", rec.Code, rec.Body.String(), or)
+	or, rec := open(chief, "claude-code", "haiku")
+	if or.Runtime != "claude-code" || or.Model != "haiku" {
+		t.Fatalf("opening a claude-code/haiku session: %d %q → %+v", rec.Code, rec.Body.String(), or)
 	}
 	before := sessionsOf(chief)
 	for _, bad := range []struct {
 		a              agents.Agent
 		runtime, model string
 	}{
-		{chief, "gateway", "vendor-x/model-y"}, {chief, "claude-code", "opus --dangerously"}, {chief, "webchat", "opus"},
-		{worker, "gateway", "openrouter/vendor-x/model-y"},
+		{chief, "gateway", "openrouter/vendor-x/model-y"}, {chief, "claude-code", "opus --dangerously"}, {chief, "webchat", "opus"},
+		{worker, "claude-code", "opus"},
 	} {
 		if s, rec := open(bad.a, bad.runtime, bad.model); rec.Code != http.StatusBadRequest || s.ID != 0 {
 			t.Errorf("opening %s/%q on %s: %d %+v; want 400", bad.runtime, bad.model, bad.a.Name, rec.Code, s)
@@ -277,7 +276,7 @@ func TestChiefSessionRuntimesThroughTheRealPlane(t *testing.T) {
 	want := map[int64]routedTurn{
 		legacy.ID: {key: legacy.SessionKey},
 		cc.ID:     {key: cc.SessionKey, ccSession: cc.SessionKey, ccModel: "opus"},
-		or.ID:     {key: or.SessionKey, runtime: "gateway", gwModel: "openrouter/vendor-x/model-y"},
+		or.ID:     {key: or.SessionKey, ccSession: or.SessionKey, ccModel: "haiku"},
 	}
 	for _, s := range []agents.ChatSession{legacy, cc, or} {
 		if _, err := srv.runUserTurn(asOwner, chief, s, "hello "+s.SessionKey, nil); err != nil {
@@ -347,21 +346,20 @@ func TestChiefSessionRuntimesThroughTheRealPlane(t *testing.T) {
 	}
 	chiefSessions := sessionsOf(chief)
 
-	// Move the default to the OpenRouter session: both doors follow it.
+	// Move the default to the haiku session: both doors follow it.
 	if rec := do("POST", "/agents/"+strconv.FormatInt(chief.ID, 10)+"/sessions/"+strconv.FormatInt(or.ID, 10)+"/default", "", ""); rec.Code != http.StatusOK {
 		t.Fatalf("POST …/default: %d %s", rec.Code, rec.Body.String())
 	}
 	if got, sid := ask(); got != want[or.ID] || sid != or.ID {
-		t.Errorf("chief ask with the OpenRouter default: %v in session %d; want %v in %d", got, sid, want[or.ID], or.ID)
+		t.Errorf("chief ask with the haiku default: %v in session %d; want %v in %d", got, sid, want[or.ID], or.ID)
 	}
-	// The gateway runtime beside ccd has no standing file of the chief's: the
-	// ask carries the chief's function-tool prose, as a chat turn there does.
-	if got, want := rt.lastInstructions(t), agentspec.ChiefInstructionsFunctionTools(true); got != want || want == "" {
-		t.Errorf("chief ask with the OpenRouter default carried instructions %.60q (%d bytes); want the chief's function-tool prose (%d bytes)",
-			got, len(got), len(want))
+	// A Claude Code CLI reads the chief's CLAUDE.md: this ask carries no
+	// instructions either.
+	if got := rt.lastInstructions(t); got != "" {
+		t.Errorf("chief ask with the haiku default carried %d bytes of instructions; want none", len(got))
 	}
 	if got, sid := deliver(); got != want[or.ID] || sid != or.ID {
-		t.Errorf("a plugin delivery with the OpenRouter default: %v in session %d; want %v in %d", got, sid, want[or.ID], or.ID)
+		t.Errorf("a plugin delivery with the haiku default: %v in session %d; want %v in %d", got, sid, want[or.ID], or.ID)
 	}
 	if got := sessionsOf(chief); got != chiefSessions {
 		t.Errorf("deliveries opened sessions: %d → %d", chiefSessions, got)

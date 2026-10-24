@@ -9,40 +9,32 @@ import (
 
 // A CHAT SESSION'S RUNTIME AND MODEL (migration 0030).
 //
-// The chief's pod runs two runtimes side by side: ccd (Claude Code) and the
-// model-gateway runtime (agentspec's sidecar). A session is tagged with one of
-// them, and a model, when it is created, and both are fixed for its life (a
-// database trigger refuses a change). muster routes each turn by the tag
-// (internal/api's sessionRoute).
+// A claude-code chief's ccd runs more than one Claude Code CLI. A session is
+// tagged with its runtime, and a model, when it is created, and both are fixed
+// for its life (a database trigger refuses a change). muster routes each turn by
+// the tag (internal/api's sessionRoute).
 //
 //	SessionRuntimeLegacy     ""            the agent's own kind; for a claude-code
 //	                                       agent, the ONE CLI ccd has always run.
 //	                                       Every session that existed before 0030.
 //	SessionRuntimeClaudeCode "claude-code" a CLI of its own in ccd, started with
 //	                                       --model when Model is set.
-//	SessionRuntimeGateway    "gateway"     the model-gateway runtime, with Model as
-//	                                       the per-request model override.
+//
+// ⚠ THE COLUMN STILL ADMITS "gateway": a second runtime, run beside ccd in the
+// chief's pod, was offered here until it was removed with no session ever
+// started on it. A row carrying it routes as legacy.
 const (
 	SessionRuntimeLegacy     = ""
 	SessionRuntimeClaudeCode = KindClaudeCode
-	SessionRuntimeGateway    = KindGateway
 )
 
 // SessionRuntimes is every explicit runtime, in the order a picker shows them.
-var SessionRuntimes = []string{SessionRuntimeClaudeCode, SessionRuntimeGateway}
+var SessionRuntimes = []string{SessionRuntimeClaudeCode}
 
 // SessionRuntimeLabel is what the session list and the picker show.
-//
-// ⚠ THE GATEWAY RUNTIME IS LABELLED BY ITS MODEL PROVIDER, NOT BY ITS PRODUCT:
-// the runtime image's own name is a denied token in this public repository
-// (tests/leakscan.py), and what the operator chooses here is "an OpenRouter
-// model" anyway.
 func SessionRuntimeLabel(runtime string) string {
-	switch runtime {
-	case SessionRuntimeClaudeCode:
+	if runtime == SessionRuntimeClaudeCode {
 		return "Claude Code"
-	case SessionRuntimeGateway:
-		return "OpenRouter"
 	}
 	return "Default"
 }
@@ -53,11 +45,6 @@ func SessionRuntimeLabel(runtime string) string {
 // closed character set rather than "anything non-empty"; ccd checks the same
 // set again before it starts a CLI.
 var claudeModelPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]{0,79}(\[1m\])?$`)
-
-// gatewayModelPattern is an OpenRouter model as GET /api/openrouter/models
-// returns it: "openrouter/<vendor>/<model>", the model part allowing the
-// catalogue's ":free"-style suffixes.
-var gatewayModelPattern = regexp.MustCompile(`^openrouter/[a-z0-9][a-z0-9._-]{0,63}/[A-Za-z0-9][A-Za-z0-9._:-]{0,119}$`)
 
 // ClaudeCodeModels are the models the picker offers for a Claude Code session.
 // Aliases, so a model release does not need a muster release; any id matching
@@ -72,10 +59,6 @@ func ValidateSessionRuntime(runtime, model string) (string, error) {
 	case SessionRuntimeClaudeCode:
 		if model != "" && !claudeModelPattern.MatchString(model) {
 			return "", fmt.Errorf("%q is not a Claude model (an alias such as opus, sonnet or haiku, or a model id)", model)
-		}
-	case SessionRuntimeGateway:
-		if !gatewayModelPattern.MatchString(model) {
-			return "", fmt.Errorf("%q is not an OpenRouter model (openrouter/<vendor>/<model>, as the model search returns it)", model)
 		}
 	default:
 		return "", fmt.Errorf("runtime %q is not one a session can be started on (want %s)", runtime, strings.Join(SessionRuntimes, " or "))

@@ -9,7 +9,6 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"net/http/httputil"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -155,13 +154,6 @@ type server struct {
 	// file by it: a hook cannot tell this CLI from a `claude` a tool call ran
 	// inside it (proctree.go), a pid can.
 	cliPID func(ctx context.Context) (int, error)
-
-	// gateway hands a gateway-runtime turn to the runtime beside ccd
-	// (gateway.go); nil when the pod runs none.
-	gateway *httputil.ReverseProxy
-	// gatewayOff is why gateway turns are refused on a pod that has the
-	// runtime beside ccd (gatewayBearerProblem); "" otherwise.
-	gatewayOff string
 }
 
 // started reports whether the session has sent SessionStart and has neither
@@ -217,7 +209,6 @@ func newServer(cfg serverConfig, term terminal, auth *authTracker) *server {
 func (s *server) gatewayHandler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/responses", s.handleResponses)
-	mux.HandleFunc("POST /v1/chat/completions", s.handleChatCompletions)
 	// `/` is the same check: muster's default agent health path is "/"
 	// (agentspec.DefaultGatewayHealthPath), which its renderer uses for the
 	// startup and liveness probes. A per-kind health path for this image is muster
@@ -246,12 +237,12 @@ func (s *server) gatewayHandler() http.Handler {
 // socket and read the credential (it inherits it from the CLI, and could read
 // /proc/<pid>/environ of any same-user process). The credential is defence in
 // depth against everything else, not against that user; and such a process does
-// not need ccd at all to answer a dialog — it can `tmux send-keys` itself. The gateway runtime beside ccd
-// in a chief's pod cannot: it is another container, with its own filesystem
-// (the socket is not in it, and no volume is shared) and its own process
-// namespace (no /proc of ccd's), and a unix socket bound to a PATH — unlike
-// 127.0.0.1, and unlike an abstract unix socket — is not reachable through the
-// network namespace the two share.
+// not need ccd at all to answer a dialog — it can `tmux send-keys` itself.
+// Another container in the pod cannot: it has its own filesystem (the socket is
+// not in it, and no volume is shared) and its own process namespace (no /proc
+// of ccd's), and a unix socket bound to a PATH — unlike 127.0.0.1, and unlike
+// an abstract unix socket — is not reachable through the network namespace the
+// two share.
 func (s *server) hookHandler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /hook/{event}", s.handleHook)
@@ -668,11 +659,6 @@ func neutralizeInputMode(prompt string) string {
 }
 
 func (s *server) handleResponses(w http.ResponseWriter, r *http.Request) {
-	// A turn for the gateway runtime beside ccd is handed over unread (gateway.go).
-	if isGatewayTurn(r) {
-		s.handleGatewayTurn(w, r)
-		return
-	}
 	if !bearerOK(r, s.cfg.Bearer) {
 		writeFailure(w, &failure{Status: http.StatusUnauthorized, Type: failUnauthorized,
 			Message: "missing or wrong bearer"})

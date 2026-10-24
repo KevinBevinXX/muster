@@ -14,7 +14,7 @@ import (
 )
 
 // containerTurnCredentials is what a claude-code container's environment holds
-// that drives a turn API (ccd's, or the gateway sidecar's), as sentinel values:
+// that drives a turn API (ccd's, or the retired gateway runtime's), as sentinel values:
 // every exec muster runs into the container inherits that environment unless
 // muster strips it.
 var containerTurnCredentials = map[string]string{

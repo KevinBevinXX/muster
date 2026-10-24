@@ -10,7 +10,6 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/ZacxDev/muster/internal/agents"
-	"github.com/ZacxDev/muster/internal/agentspec"
 	"github.com/ZacxDev/muster/internal/ui"
 )
 
@@ -49,9 +48,6 @@ func (s *Server) defaultSession(ctx context.Context, a agents.Agent) (agents.Cha
 //	             ccd's original CLI.
 //	claude-code  X-Muster-CC-Session (the key) and X-Muster-CC-Model: ccd runs
 //	             the session in a CLI of its own, started with --model.
-//	gateway      X-Openclaw-Model (the model override) and, in a claude-code
-//	             pod, X-Muster-Runtime: gateway, which ccd answers by handing the
-//	             turn to the gateway runtime beside it.
 //
 // 🔴 A SESSION THAT CANNOT BE READ IS ROUTED AS LEGACY, AND THAT IS THE ONE
 // DIRECTION THAT CANNOT MISROUTE A SESSION THAT EXISTED BEFORE 0030. The cost is
@@ -81,11 +77,6 @@ func withSessionRoute(ctx context.Context, a agents.Agent, sess agents.ChatSessi
 		if sess.Model != "" {
 			h.Set(agents.HeaderCCModel, sess.Model)
 		}
-	case agents.SessionRuntimeGateway:
-		if agents.ResolveKind(a.Kind) == agents.KindClaudeCode {
-			h.Set(agents.HeaderRuntime, agents.RuntimeGateway)
-		}
-		h.Set(agents.HeaderGatewayModel, sess.Model)
 	default:
 		return ctx
 	}
@@ -177,53 +168,6 @@ func (s *Server) handleAgentSessionDefault(w http.ResponseWriter, r *http.Reques
 	}
 	w.Header().Set("HX-Redirect", ui.AgentSessionHref(a.Name, sess.ID))
 	w.WriteHeader(http.StatusOK)
-}
-
-// turnInstructions is a turn's instructions: the agent's own (AgentInstructions)
-// — EXCEPT for a claude-code chief's session on the gateway runtime beside ccd.
-// That runtime has no standing file of the chief's (its prose is ccd's managed
-// CLAUDE.md, which only the Claude Code CLI reads), so the chief's prose,
-// written for function tools, travels with each turn
-// (agentspec.ChiefInstructionsFunctionTools).
-func (s *Server) turnInstructions(ctx context.Context, a agents.Agent) string {
-	if sidecarTurn(ctx, a) {
-		return agentspec.ChiefInstructionsFunctionTools(s.ext.Plugins != nil)
-	}
-	return s.AgentInstructions(a)
-}
-
-// sidecarTurn reports whether ctx routes a's turn to the gateway runtime BESIDE
-// ccd: a claude-code agent's session on the gateway runtime. That runtime has no
-// standing file of the agent's, so such a turn must carry its instructions.
-func sidecarTurn(ctx context.Context, a agents.Agent) bool {
-	r, ok := agents.TurnRouteFrom(ctx)
-	return ok && r.Runtime == agents.SessionRuntimeGateway && agents.ResolveKind(a.Kind) == agents.KindClaudeCode
-}
-
-// askTurn is the tool-less turn `chief ask` (POST /api/agents/{name}/messages)
-// runs, on ctx carrying the session's route.
-//
-// 🔴 A TURN FOR THE GATEWAY RUNTIME BESIDE ccd CARRIES turnInstructions.
-// Gateway.Chat sends no instructions, which is parity everywhere else: the agent's
-// own runtime reads its standing files. The sidecar has none of the chief's, so a
-// `chief ask` to a gateway DEFAULT session reached a model that had never been
-// told it was the chief. Such a turn goes over ChatWithTools with no tools (the
-// route stays tool-less, as it has always been) and the instructions chatTurn
-// sends, falling back to Chat exactly where chatTurn does.
-func (s *Server) askTurn(ctx context.Context, a agents.Agent, sessionKey, message string) (string, error) {
-	if !sidecarTurn(ctx, a) {
-		return s.ext.Gateway.Chat(ctx, a, sessionKey, message, nil)
-	}
-	reply, err := s.ext.Gateway.ChatWithTools(ctx, a, sessionKey, s.turnInstructions(ctx, a), message, nil, noTools, nil)
-	if errors.Is(err, agents.ErrResponsesUnsupported) && !agents.PastFirstRequest(err) {
-		return s.ext.Gateway.Chat(ctx, a, sessionKey, message, nil)
-	}
-	return reply, err
-}
-
-// noTools answers a call to a tool a tool-less turn never offered.
-func noTools(string, string) string {
-	return `{"error":"no tools are offered on this turn; nothing was run"}`
 }
 
 // sessionViews renders a's sessions for a switcher: active marks the open one,

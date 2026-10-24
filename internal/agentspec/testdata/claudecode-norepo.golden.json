@@ -18,10 +18,6 @@
       {
         "Name": "GIT_TERMINAL_PROMPT",
         "Value": "0"
-      },
-      {
-        "Name": "CCD_GATEWAY_UPSTREAM",
-        "Value": "http://127.0.0.1:18791"
       }
     ],
     "Secrets": [
@@ -35,10 +31,6 @@
       },
       {
         "Name": "CLAUDE_CODE_OAUTH_TOKEN",
-        "Value": "«redacted in the golden; see goldenView»"
-      },
-      {
-        "Name": "CCD_GATEWAY_UPSTREAM_BEARER",
         "Value": "«redacted in the golden; see goldenView»"
       }
     ],
@@ -101,83 +93,6 @@
       "muster.agent/group": "devpod-harbour-kestrel",
       "muster.agent/kind": "claude-code",
       "muster.agent/name": "harbour-kestrel"
-    },
-    "Sidecar": {
-      "Name": "gateway",
-      "Runtime": {
-        "Image": "ghcr.io/example-org/agent-runtime:3.11.0",
-        "Command": [
-          "sh",
-          "-c",
-          "child=\ntrap 'kill -TERM \"$child\" 2\u003e/dev/null; wait \"$child\"; exit 0' TERM INT\nwhile :; do\n  sh -eu /muster/runtime/install \u0026\n  child=$!\n  wait \"$child\"\n  rc=$?\n  echo \"muster: the gateway runtime exited ($rc); running it again in 10s (ccd is unaffected)\" \u003e\u00262\n  sleep 10 \u0026\n  child=$!\n  wait \"$child\"\ndone"
-        ],
-        "Args": null,
-        "WorkingDir": ""
-      },
-      "Env": [
-        {
-          "Name": "MUSTER_API_URL",
-          "Value": "http://muster.example.test:8105"
-        },
-        {
-          "Name": "GIT_TERMINAL_PROMPT",
-          "Value": "0"
-        },
-        {
-          "Name": "NODE_OPTIONS",
-          "Value": "--max-old-space-size=3072"
-        },
-        {
-          "Name": "MUSTER_RUNTIME_CONFIG",
-          "Value": "/muster/runtime/config"
-        },
-        {
-          "Name": "HOME",
-          "Value": "/home/node"
-        },
-        {
-          "Name": "MUSTER_GATEWAY_PORT",
-          "Value": "18791"
-        },
-        {
-          "Name": "MUSTER_CONFIG",
-          "Value": "{\"model\":{\"fallbacks\":[\"openrouter/vendor-c/model-three\",\"openrouter/vendor-d/model-four\"],\"primary\":\"openrouter/vendor-b/model-two\"}}"
-        }
-      ],
-      "Secrets": [
-        {
-          "Name": "HOOKS_TOKEN",
-          "Value": "1ab06910bd6b9f32ddb0aa2ecd6e50791ab67718693692a8cc62077e80a6fc7b"
-        },
-        {
-          "Name": "MUSTER_GATEWAY_BEARER",
-          "Value": "fixture-derived-bearer\u003c1ab06910bd6b9f32ddb0aa2ecd6e50791ab67718693692a8cc62077e80a6fc7b\u003e"
-        },
-        {
-          "Name": "OPENROUTER_API_KEY",
-          "Value": "fixture-shared-provider-key-2b84af"
-        }
-      ],
-      "Files": [
-        {
-          "Path": "/muster/runtime/config",
-          "Content": "eyJleGFtcGxlIjp7Im5lc3RlZCI6eyJjcmVkZW50aWFsIjoiPGluamVjdGVkPiJ9fX0K",
-          "Mode": 0,
-          "Secret": false
-        },
-        {
-          "Path": "/muster/runtime/install",
-          "Content": "c2V0IC1ldQpleGVjIC9leGFtcGxlL2VudHJ5cG9pbnQgLS1mbGFnIC0tcG9ydCAiJHtNVVNURVJfR0FURVdBWV9QT1JUOi0xODc4OX0iCg==",
-          "Mode": 0,
-          "Secret": false
-        }
-      ],
-      "Resources": {
-        "CPURequest": "100m",
-        "CPULimit": "",
-        "MemoryRequest": "512Mi",
-        "MemoryLimit": "1536Mi"
-      }
     }
   },
   "plain": {

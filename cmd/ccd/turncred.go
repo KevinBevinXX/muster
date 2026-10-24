@@ -9,8 +9,9 @@ import (
 	"github.com/ZacxDev/muster/internal/agentgateway"
 )
 
-// The credentials that drive a turn API — ccd's own /v1/responses, or the
-// gateway runtime's beside it — as ccd receives them in its environment.
+// The credentials that drive a turn API — ccd's own /v1/responses, and the
+// retired gateway runtime's (envGatewayUpstreamBearer) — as ccd receives them
+// in its environment.
 //
 // 🔴 ccd READS THEM ONCE AND REMOVES THEM FROM ITS OWN ENVIRONMENT BEFORE IT
 // STARTS ANYTHING (takeTurnCredentials), because everything ccd starts inherits
@@ -34,11 +35,15 @@ var turnCredentialEnv = []string{envGatewayBearer, envGatewayUpstreamBearer, env
 const (
 	envHooksToken    = "HOOKS_TOKEN"
 	envGatewayBearer = "MUSTER_GATEWAY_BEARER"
+	// envGatewayUpstreamBearer is agentspec.EnvCCDGatewayUpstreamBearer: the
+	// credential of the gateway runtime that once ran beside a chief's ccd. A pod
+	// built before it was removed still carries it, so ccd still unsets it.
+	envGatewayUpstreamBearer = "CCD_GATEWAY_UPSTREAM_BEARER"
 )
 
 // turnCredentials is what takeTurnCredentials took out of the environment.
 type turnCredentials struct {
-	hooksToken, gatewayBearer, upstreamBearer string
+	hooksToken, gatewayBearer string
 }
 
 // takeTurnCredentials reads every turnCredentialEnv variable and unsets it, so no
@@ -49,9 +54,8 @@ type turnCredentials struct {
 // hideFromSameUser is for.
 func takeTurnCredentials() turnCredentials {
 	c := turnCredentials{
-		hooksToken:     os.Getenv(envHooksToken),
-		gatewayBearer:  os.Getenv(envGatewayBearer),
-		upstreamBearer: os.Getenv(envGatewayUpstreamBearer),
+		hooksToken:    os.Getenv(envHooksToken),
+		gatewayBearer: os.Getenv(envGatewayBearer),
 	}
 	for _, name := range turnCredentialEnv {
 		_ = os.Unsetenv(name)

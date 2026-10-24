@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"net"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"os/exec"
 	"reflect"
@@ -14,26 +13,49 @@ import (
 	"time"
 
 	"github.com/ZacxDev/muster/internal/agentgateway"
+	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/agentspec"
 	"github.com/ZacxDev/muster/internal/provision"
 )
 
+// chiefSpec is the claude-code chief's spec as muster builds it, with the REAL
+// credential scheme ccd uses. Synthetic fixture values only.
+func chiefSpec(t *testing.T) provision.Spec {
+	t.Helper()
+	cfg := agentspec.Config{
+		ImageRepo:  "ghcr.io/example-org/agent-runtime",
+		APIBaseURL: "http://muster.example.test:8105",
+		ClaudeCode: &agentspec.ClaudeCodeConfig{
+			Image:    "ghcr.io/example-org/claude-code-agent:0a1b2c3",
+			Accounts: map[string]string{"acct": "sk-ant-oat01-FAKE-fixture"},
+		},
+	}
+	a := agents.Agent{ID: 7, Name: "chief", Kind: agents.KindClaudeCode, CCAccount: "acct", HooksToken: knownHooksToken,
+		GatewaySecret: "fixture-turn-credential-chief-4be1"}
+	spec, err := agentspec.Build(a, cfg, agentspec.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return spec
+}
+
 // 🔴 TestNothingTheCLIKeepsDrivesTheTurnAPI is the seam between agentspec (what
 // ccd's container is handed), ccd's own scrub (what it passes on) and ccd's
 // turn API (what it accepts). ccd's environment is set from the claude-code
-// chief's spec exactly as muster builds it; ccd takes its turn credentials as
-// serve does; then EVERY value the CLI is started with — ccd's environment
-// after the take, plus the hook channel ccd adds — and the hooks-sha256
-// derivation of each, is presented on every authenticated ccd route and is
-// refused 401, and none of them is the gateway runtime's own credential either.
+// chief's spec exactly as muster builds it — plus the retired
+// CCD_GATEWAY_UPSTREAM_BEARER an older spec carried — ccd takes its turn
+// credentials as serve does; then EVERY value the CLI is started with — ccd's
+// environment after the take, plus the hook channel ccd adds — and the
+// hooks-sha256 derivation of each, is presented on /v1/responses and is
+// refused 401.
 //
 // The controls: the instrument check that what the CLI keeps includes the agent's
 // muster token, the model token and the hook credential (the scan has the values
-// worth worrying about), and muster's own bearer, which IS accepted and reaches
-// the runtime under the runtime's credential.
+// worth worrying about), and muster's own bearer, which IS accepted.
 func TestNothingTheCLIKeepsDrivesTheTurnAPI(t *testing.T) {
-	spec := chiefSpecWithSidecar(t)
+	spec := chiefSpec(t)
 	given := append(append([]provision.EnvVar{}, spec.Env...), spec.Secrets...)
+	given = append(given, provision.EnvVar{Name: envGatewayUpstreamBearer, Value: "fixture-retired-upstream-credential-5a1"})
 	for _, e := range given {
 		t.Setenv(e.Name, e.Value)
 	}
@@ -74,24 +96,12 @@ func TestNothingTheCLIKeepsDrivesTheTurnAPI(t *testing.T) {
 		}
 	}
 
-	rt := &fakeGatewayRuntime{}
-	up := httptest.NewServer(rt)
-	t.Cleanup(up.Close)
 	srv := newServer(serverConfig{Bearer: bearer, HookSecret: hooks.secret, ConfigDir: t.TempDir()}, nil, newAuthTracker())
-	if why := gatewayBearerProblem(creds.upstreamBearer, bearer); why != "" {
-		t.Fatalf("ccd would refuse gateway turns: %s", why)
-	}
-	if srv.gateway, err = newGatewayProxy(up.URL, creds.upstreamBearer); err != nil {
-		t.Fatal(err)
-	}
 	gw := gatewayServer(t, srv)
-	post := func(path, cred string, gateway bool) int {
+	post := func(cred string) int {
 		t.Helper()
-		req, _ := http.NewRequest(http.MethodPost, gw.URL+path, strings.NewReader(`{"input":"x"}`))
+		req, _ := http.NewRequest(http.MethodPost, gw.URL+"/v1/responses", strings.NewReader(`{"input":"x"}`))
 		req.Header.Set("Authorization", "Bearer "+cred)
-		if gateway {
-			req.Header.Set(headerRuntime, runtimeGateway)
-		}
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
 			t.Fatal(err)
@@ -99,32 +109,16 @@ func TestNothingTheCLIKeepsDrivesTheTurnAPI(t *testing.T) {
 		resp.Body.Close()
 		return resp.StatusCode
 	}
-	routes := []struct {
-		path    string
-		gateway bool
-	}{{"/v1/responses", false}, {"/v1/responses", true}, {"/v1/chat/completions", true}}
-	sidecarOwn := envOf(spec.Sidecar.Secrets)[agentspec.EnvGatewayBearer]
 	for name, v := range kept {
 		for what, cred := range map[string]string{name: v, "hooks-sha256(" + name + ")": agentgateway.HooksSHA256().Bearer(v)} {
-			if cred == sidecarOwn {
-				t.Errorf("%s is the gateway runtime's own credential", what)
-			}
-			for _, r := range routes {
-				if code := post(r.path, cred, r.gateway); code != http.StatusUnauthorized {
-					t.Errorf("%s on %s (gateway=%v): %d, want 401", what, r.path, r.gateway, code)
-				}
+			if code := post(cred); code != http.StatusUnauthorized {
+				t.Errorf("%s on /v1/responses: %d, want 401", what, code)
 			}
 		}
 	}
-	if rt.count() != 0 {
-		t.Errorf("the runtime saw %d requests made with what the CLI keeps; want none", rt.count())
-	}
-	// Positive control: muster's bearer is accepted on both shapes.
-	if code := post("/v1/responses", bearer, false); code == http.StatusUnauthorized {
-		t.Fatalf("control: muster's bearer on a plain turn: 401")
-	}
-	if code := post("/v1/responses", bearer, true); code != http.StatusOK || rt.count() != 1 {
-		t.Fatalf("control: muster's bearer on a gateway turn: %d (runtime saw %d); want 200 and one hand-off", code, rt.count())
+	// Positive control: muster's bearer is accepted.
+	if code := post(bearer); code == http.StatusUnauthorized {
+		t.Fatalf("control: muster's bearer on a turn: 401")
 	}
 }
 

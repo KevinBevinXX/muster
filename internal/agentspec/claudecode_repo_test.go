@@ -16,14 +16,14 @@ import (
 // 🔴 IT WAS WRITTEN FROM THE CODE BEFORE REPOSITORY SUPPORT EXISTED (the base of
 // feat/claude-code-agent-repo, ab08b60), so it is the "today" a repo-less
 // claude-code agent — the live chief among them — must stay identical to. Two
-// cases: a plain worker, and a chief-shaped one (instructions + the gateway
-// sidecar). Like spec.golden.json it is evidence about CHANGE only; secrets are
+// cases: a plain worker, and a chief-shaped one (instructions; it also carried
+// the gateway sidecar until that was removed). Like spec.golden.json it is evidence about CHANGE only; secrets are
 // redacted to their names (goldenView).
 const ccNoRepoGoldenPath = "testdata/claudecode-norepo.golden.json"
 
 func TestAClaudeCodeSpecWithoutARepoIsUnchanged(t *testing.T) {
 	plain := mustBuild(t, ccAgent(), ccConfig(), Options{})
-	chief := mustBuild(t, ccAgent(), sidecarConfig(), Options{Instructions: "# chief\n\nprose\n", GatewaySidecar: &GatewaySidecar{}})
+	chief := mustBuild(t, ccAgent(), ccConfig(), Options{Instructions: "# chief\n\nprose\n"})
 	got, err := json.MarshalIndent(map[string]any{"plain": goldenView(plain), "chief": goldenView(chief)}, "", "  ")
 	if err != nil {
 		t.Fatal(err)

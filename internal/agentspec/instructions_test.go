@@ -765,8 +765,6 @@ func TestTheChiefDoesNotStopWhenNoSessionIsOnAMessage(t *testing.T) {
 			rule("`attention_ask`")},
 		{"gateway with cairn", ChiefInstructions(true, true), ChiefInstructions(true, false), "`route_to_session`",
 			rule("`attention_ask`")},
-		{"function tools", ChiefInstructionsFunctionTools(true), ChiefInstructionsFunctionTools(false), "`route_to_session`",
-			rule("`attention_ask`")},
 		{"claude-code", ChiefInstructionsClaudeCode(true), ChiefInstructionsClaudeCode(false), "`mcp__muster__route_to_session`",
 			rule("`mcp__muster__attention_ask`")},
 	} {

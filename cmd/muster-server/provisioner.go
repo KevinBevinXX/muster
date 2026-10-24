@@ -570,10 +570,6 @@ func agentSpecConfig(cfg config) (agentspec.Config, error) {
 		Plugins:          cfg.pluginsEnabled(),
 		RuntimeConfig:    rc,
 		ClaudeCode:       claudeCodeSpecConfig(cfg),
-		// A claude-code chief runs the gateway runtime beside ccd when its
-		// sessions may be started on that runtime (validateSessionRuntimes
-		// refuses this without the runtime bundle the sidecar is built from).
-		ChiefGatewaySidecar: cfg.claudeCodeEnabled() && slices.Contains(cfg.ChiefSessionRuntimes, agents.SessionRuntimeGateway),
 		// Both or neither: config.validateConnectors refuses a URL without the
 		// port, so a URL here always comes with the pod port its policy allows.
 		ConnectURL:  cfg.AgentConnectURL,

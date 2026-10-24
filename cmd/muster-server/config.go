@@ -174,11 +174,15 @@ const (
 	// task_dispatch, for the listed owners only; empty, it is not offered.
 	envChiefDispatchOwners = "MUSTER_CHIEF_DISPATCH_OWNERS"
 	// CHIEF SESSION RUNTIMES (internal/api/session_runtime.go): the runtimes a
-	// chief chat session may be started on, comma-separated — claude-code (a CLI
+	// chief chat session may be started on, comma-separated. claude-code (a CLI
 	// of its own in ccd, with a chosen Claude model; needs a claude-code chief on
-	// a ccd that runs one CLI per session) and gateway (an OpenRouter model, on
-	// the gateway runtime — in a claude-code chief, the one beside ccd). Unset is
-	// OFF: no picker, and a session is the chief's own kind as before.
+	// a ccd that runs one CLI per session) is the only one. Unset is OFF: no
+	// picker, and a session is the chief's own kind as before.
+	//
+	// ⚠ `gateway` WAS THE OTHER ENTRY, AND IS IGNORED WITH ONE WARNING (its
+	// runtime, run beside a claude-code chief's ccd, was removed), so a
+	// deployment still naming it boots on this image unchanged. Any other
+	// unknown entry still refuses to boot.
 	envChiefSessionRuntimes = "MUSTER_CHIEF_SESSION_RUNTIMES"
 	// How long a sign-in stays fresh enough to TYPE into a mirrored session
 	// (internal/stepup): a Go duration, 12h when unset, refused outside
@@ -567,8 +571,11 @@ type config struct {
 	ChiefDispatchOwnersRaw string
 	ChiefDispatchOwners    map[int64]bool
 	// ChiefSessionRuntimes is MUSTER_CHIEF_SESSION_RUNTIMES, split on commas
-	// (validateSessionRuntimes refuses an unknown or repeated entry).
-	ChiefSessionRuntimes []string
+	// (validateSessionRuntimes refuses an unknown or repeated entry), without
+	// the retired `gateway`; ChiefSessionRuntimeGatewayIgnored is whether it
+	// named it (the banner's warning).
+	ChiefSessionRuntimes              []string
+	ChiefSessionRuntimeGatewayIgnored bool
 	// StepUpWindow is internal/stepup's freshness window (MUSTER_STEPUP_WINDOW;
 	// stepup.DefaultWindow when unset). loadConfig refuses an out-of-bounds one.
 	StepUpWindow time.Duration
@@ -1232,7 +1239,7 @@ func loadConfig(getenv func(string) string) (config, error) {
 		return config{}, fmt.Errorf("invalid %s: %v (want user ids, comma-separated)", envChiefDispatchOwners, err)
 	}
 	c.ChiefDispatchOwners = owners
-	c.ChiefSessionRuntimes = splitList(getenv(envChiefSessionRuntimes))
+	c.ChiefSessionRuntimes, c.ChiefSessionRuntimeGatewayIgnored = withoutRetiredSessionRuntime(splitList(getenv(envChiefSessionRuntimes)))
 
 	icons, err := parseHostIcons(getenv(envHostIcons))
 	if err != nil {
@@ -1839,6 +1846,25 @@ func (c config) validateProvisioner() error {
 	return nil
 }
 
+// retiredSessionRuntime is the MUSTER_CHIEF_SESSION_RUNTIMES entry this binary
+// ignores rather than refuses: the gateway runtime that ran beside a
+// claude-code chief's ccd, removed.
+const retiredSessionRuntime = "gateway"
+
+// withoutRetiredSessionRuntime is list without retiredSessionRuntime, and
+// whether it held it.
+func withoutRetiredSessionRuntime(list []string) ([]string, bool) {
+	out, dropped := list[:0:0], false
+	for _, rt := range list {
+		if rt == retiredSessionRuntime {
+			dropped = true
+			continue
+		}
+		out = append(out, rt)
+	}
+	return out, dropped
+}
+
 // validateKinds refuses an agent-kinds configuration that could only fail at a
 // dispatch.
 //
@@ -1860,15 +1886,6 @@ func (c config) validateSessionRuntimes() error {
 			return fmt.Errorf("invalid %s: %q is listed twice", envChiefSessionRuntimes, rt)
 		}
 		seen[rt] = true
-	}
-	// A claude-code chief's gateway sessions run on the gateway runtime BESIDE
-	// ccd, built from the same runtime bundle as a gateway-kind agent: without
-	// it, the chief's next Start would fail to build its spec.
-	if seen[agents.SessionRuntimeGateway] && c.claudeCodeEnabled() && c.agentGateway() == gatewayNone {
-		return fmt.Errorf("invalid %s: it names %s and %s enables %s, so a %s chief runs the gateway runtime beside "+
-			"ccd — and %s is %s, so there is no runtime bundle to build it from",
-			envChiefSessionRuntimes, agents.SessionRuntimeGateway, envAgentKinds, agents.KindClaudeCode,
-			agents.KindClaudeCode, envAgentGateway, gatewayNone)
 	}
 	if seen[agents.SessionRuntimeClaudeCode] && !c.claudeCodeEnabled() {
 		return fmt.Errorf("invalid %s: it names %s, but %s does not enable that kind, so no chief could run such a session",

@@ -32,7 +32,7 @@ import (
 // variable ccd hands the CLI), and the fake CLI's own /proc environ IS readable
 // (the read can succeed where nothing hides it).
 func TestTmuxTheCLIHoldsNoTurnCredential(t *testing.T) {
-	const upstreamBearer = "fixture-sidecar-own-credential-3e9d"
+	const upstreamBearer = "fixture-retired-upstream-credential-3e9d"
 	derived := agentgateway.HooksSHA256().Bearer(knownHooksToken)
 	r := startServe(t, "MUSTER_GATEWAY_BEARER="+derived, envGatewayUpstreamBearer+"="+upstreamBearer)
 	r.waitHealth(t, "primary start", primaryReady)
@@ -66,7 +66,7 @@ func TestTmuxTheCLIHoldsNoTurnCredential(t *testing.T) {
 			}
 		}
 		for what, v := range map[string]string{"the hooks token": knownHooksToken, "ccd's bearer": derived,
-			"the gateway runtime's credential": upstreamBearer} {
+			"the retired gateway runtime's credential": upstreamBearer} {
 			if strings.Contains(env, v) {
 				t.Errorf("%s: the CLI's process tree holds %s's value", filepath.Base(d), what)
 			}

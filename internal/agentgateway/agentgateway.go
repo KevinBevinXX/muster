@@ -307,13 +307,6 @@ func (g *Gateway) noteFailure(ctx context.Context, t Target, err error) error {
 	if err == nil || g.accounts == nil || t.account == "" {
 		return err
 	}
-	// A turn routed to the GATEWAY runtime in a claude-code pod (the chief's
-	// sidecar, agents.TurnRoute) did not run on the Claude account at all: its
-	// failure is an OpenRouter one, and must not push that account to the back
-	// of the pool.
-	if r, ok := agents.TurnRouteFrom(ctx); ok && r.Runtime == agents.SessionRuntimeGateway {
-		return err
-	}
 	var rt *agents.RuntimeError
 	if !errors.As(err, &rt) {
 		return err

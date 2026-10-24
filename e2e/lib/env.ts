@@ -166,10 +166,9 @@ export const docsGotruePort = Number(process.env.MUSTER_E2E_DOCS_GOTRUE_PORT ?? 
 // value here.
 export const agentToken = 'e2e-agent-token-not-a-real-one';
 // The chief's sessions on more than one runtime (chief-runtimes.spec.ts): its
-// own server (the e2eterm binary, both kinds over the noop driver, both session
-// runtimes offered) and the fake OpenRouter model list it searches.
+// own server (the e2eterm binary, both kinds over the noop driver). port + 91
+// was its fake OpenRouter model list, gone with the gateway session runtime.
 export const chiefRuntimesPort = port + 90;
-export const chiefRuntimesFakePort = port + 91;
 // An answer delivered to the chief (attention-delivery.spec.ts): its own server
 // (the e2eterm binary, the agent gateway on, every agent endpoint pointed at the
 // spec's fake runtime), its /mcp door, and that fake runtime.

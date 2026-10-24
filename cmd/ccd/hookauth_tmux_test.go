@@ -21,7 +21,7 @@ import (
 // pod forges a Stop, which — accepted — makes ccd read the session idle, and
 // the next turn's paste-then-Enter would answer the prompt "1. Yes".
 //
-//  1. a forger WITHOUT the credential (the gateway sidecar's position, given a
+//  1. a forger WITHOUT the credential (another container's position, given a
 //     path to the socket it does not in fact have) is refused 401, and the
 //     session stays busy: the next turn is refused and nothing is typed;
 //  2. a forger WITH the credential — any process of ccd's own user, which is

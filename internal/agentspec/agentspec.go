@@ -416,12 +416,6 @@ type Config struct {
 	// It is read ONLY by a claude-code row's build: the gateway kind's spec is
 	// identical whether or not this is set. See claudecode.go.
 	ClaudeCode *ClaudeCodeConfig
-
-	// ChiefGatewaySidecar: a claude-code CHIEF runs the gateway runtime beside
-	// ccd (chief_sidecar.go), for its chat sessions on that runtime
-	// (MUSTER_CHIEF_SESSION_RUNTIMES names gateway). Read by agentprovision,
-	// which asks for the sidecar through Options.GatewaySidecar.
-	ChiefGatewaySidecar bool
 }
 
 // Options is the per-call part that is neither deployment config nor a column on
@@ -472,11 +466,6 @@ type Options struct {
 	// configured a store unable to dispatch its supervisor at all.
 	CairnEligible bool
 
-	// GatewaySidecar, for a claude-code agent only, runs the gateway runtime
-	// beside ccd in its pod (chief_sidecar.go). A gateway-kind agent refuses it:
-	// its own process IS that runtime.
-	GatewaySidecar *GatewaySidecar
-
 	// JobBypassVeto, for a claude-code agent only, is why its JOB lanes must NOT
 	// run with permissions bypassed even though its worker pool is listed in
 	// ClaudeCodeConfig.BypassPools — e.g. it holds an approved grant on a
@@ -515,10 +504,6 @@ func Build(a agents.Agent, cfg Config, opts Options) (provision.Spec, error) {
 	// runtime-config bundle, model or provider key.
 	switch kind := agents.ResolveKind(a.Kind); kind {
 	case agents.KindGateway:
-		if opts.GatewaySidecar != nil {
-			return provision.Spec{}, fmt.Errorf("agentspec: agent %q is kind %s, whose own process is the gateway "+
-				"runtime; only a %s agent runs one beside it", a.Name, kind, agents.KindClaudeCode)
-		}
 		if a.CCAccount != "" {
 			return provision.Spec{}, fmt.Errorf("agentspec: agent %q is kind %s and names a Claude account; "+
 				"only a %s agent may", a.Name, kind, agents.KindClaudeCode)

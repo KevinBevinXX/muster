@@ -822,7 +822,7 @@ func (d *Driver) renderInitContainer(spec provision.Spec, main corev1.Container)
 // ⚠ NO PROBE IS DELIBERATE, NOT MISSING: every container's readiness gates the
 // pod's, so a probe here could only add ways for a sidecar fault to drop the
 // INSTANCE's endpoint. A sidecar that must survive its own process's exit says
-// so in its command (agentspec's gateway sidecar runs a supervisor); the kubelet
+// so in its command (the removed gateway sidecar ran a supervisor); the kubelet
 // restarting an exited sidecar takes the pod NotReady while it does.
 func (d *Driver) renderSidecar(spec provision.Spec, ns string) (corev1.Container, error) {
 	sc := spec.Sidecar

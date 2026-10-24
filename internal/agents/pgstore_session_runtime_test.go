@@ -46,15 +46,15 @@ func TestPGStoreSessionRuntimeAndDefault(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	gw, err := store.CreateSessionOn(ctx, a.ID, a.Name, SessionRuntimeGateway, "openrouter/vendor-x/model-y:free")
+	cc2, err := store.CreateSessionOn(ctx, a.ID, a.Name, SessionRuntimeClaudeCode, "claude-sonnet-4-5[1m]")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if cc.Runtime != "claude-code" || cc.Model != "opus" || cc.IsDefault {
 		t.Errorf("claude-code session read back as %+v", cc)
 	}
-	if got, err := store.GetSession(ctx, gw.ID); err != nil || got.Runtime != "gateway" || got.Model != "openrouter/vendor-x/model-y:free" {
-		t.Errorf("gateway session read back as %+v, %v", got, err)
+	if got, err := store.GetSession(ctx, cc2.ID); err != nil || got.Runtime != "claude-code" || got.Model != "claude-sonnet-4-5[1m]" {
+		t.Errorf("the second claude-code session read back as %+v, %v", got, err)
 	}
 	if got, err := store.SessionByKey(ctx, a.ID, cc.SessionKey); err != nil || got.ID != cc.ID {
 		t.Errorf("SessionByKey(%q) = %+v, %v", cc.SessionKey, got, err)
@@ -63,7 +63,7 @@ func TestPGStoreSessionRuntimeAndDefault(t *testing.T) {
 		t.Errorf("SessionByKey found the session under another agent's id")
 	}
 	for _, bad := range []struct{ runtime, model string }{
-		{"", ""}, {"gateway", "not-a-slug"}, {"claude-code", "opus; rm -rf /"}, {"webchat", "opus"},
+		{"", ""}, {"gateway", "openrouter/vendor-x/model-y"}, {"claude-code", "opus; rm -rf /"}, {"webchat", "opus"},
 	} {
 		before, _ := store.ListSessions(ctx, a.ID)
 		if s, err := store.CreateSessionOn(ctx, a.ID, a.Name, bad.runtime, bad.model); err == nil {
@@ -74,7 +74,7 @@ func TestPGStoreSessionRuntimeAndDefault(t *testing.T) {
 		}
 	}
 
-	// gw is now the LATEST session; the election must still pick the legacy one.
+	// cc2 is now the LATEST session; the election must still pick the legacy one.
 	var wg sync.WaitGroup
 	got := make([]ChatSession, 6)
 	errs := make([]error, 6)
@@ -92,11 +92,11 @@ func TestPGStoreSessionRuntimeAndDefault(t *testing.T) {
 		}
 	}
 
-	if err := store.SetDefaultSession(ctx, a.ID, gw.ID); err != nil {
+	if err := store.SetDefaultSession(ctx, a.ID, cc2.ID); err != nil {
 		t.Fatal(err)
 	}
-	if d, err := store.DefaultSession(ctx, a.ID, a.Name); err != nil || d.ID != gw.ID {
-		t.Errorf("after SetDefaultSession(gw), default %+v, %v", d, err)
+	if d, err := store.DefaultSession(ctx, a.ID, a.Name); err != nil || d.ID != cc2.ID {
+		t.Errorf("after SetDefaultSession(cc2), default %+v, %v", d, err)
 	}
 	var n int
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM chat_sessions WHERE agent_id=$1 AND is_default`, a.ID).Scan(&n); err != nil || n != 1 {
@@ -110,7 +110,7 @@ func TestPGStoreSessionRuntimeAndDefault(t *testing.T) {
 	if err := store.SetDefaultSession(ctx, other.ID, cc.ID); err == nil {
 		t.Errorf("SetDefaultSession accepted another agent's session")
 	}
-	if d, _ := store.DefaultSession(ctx, a.ID, a.Name); d.ID != gw.ID {
+	if d, _ := store.DefaultSession(ctx, a.ID, a.Name); d.ID != cc2.ID {
 		t.Errorf("a refused SetDefaultSession moved the default to %d", d.ID)
 	}
 
@@ -125,7 +125,7 @@ func TestPGStoreSessionRuntimeAndDefault(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer cleanupAgent(ctx, pool, c.ID)
-	cSess, err := store.CreateSessionOn(ctx, c.ID, c.Name, SessionRuntimeGateway, "openrouter/vendor-x/model-y")
+	cSess, err := store.CreateSessionOn(ctx, c.ID, c.Name, SessionRuntimeClaudeCode, "haiku")
 	if err != nil {
 		t.Fatal(err)
 	}

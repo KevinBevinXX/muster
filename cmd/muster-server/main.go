@@ -1260,6 +1260,10 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 	if len(a.cfg.ChiefDispatchOwners) > 0 && (ext.TaskRouting == nil) {
 		l.Printf("chief dispatch: INERT — %s is set but task routing is off (%s)", envChiefDispatchOwners, envTaskRouting)
 	}
+	if a.cfg.ChiefSessionRuntimeGatewayIgnored {
+		l.Printf("WARNING — %s names %q, which is no longer a chief session runtime (the gateway runtime beside the "+
+			"chief was removed); it is ignored — drop it from the deployment", envChiefSessionRuntimes, retiredSessionRuntime)
+	}
 	if rts := ext.SessionRuntimes; len(rts) > 0 {
 		l.Printf("chief session runtimes: ON (%s=%s) — a chief chat session may be started on %s, with a model of its own",
 			envChiefSessionRuntimes, strings.Join(rts, ","), strings.Join(rts, " or "))

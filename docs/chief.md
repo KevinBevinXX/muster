@@ -87,90 +87,33 @@ predicate, never by the kind.
 
 ## Sessions on more than one runtime
 
-With `MUSTER_CHIEF_SESSION_RUNTIMES` set, each new chief chat session can be
-started on a runtime and a model of its own, both fixed for the session's life:
+With `MUSTER_CHIEF_SESSION_RUNTIMES=claude-code`, each new chief chat session
+can be started on a Claude Code CLI of its own, with a model of its own, both
+fixed for the session's life:
 
 | runtime | model | what runs the session |
 |---|---|---|
 | (none) | the chief's own | the chief's own runtime. On a `claude-code` chief, the one CLI `ccd` has always run. Every session that existed before migration 0030 is one of these. |
 | `claude-code` | a Claude model (`opus`, `sonnet`, `haiku`, or a model id) | a Claude Code CLI of its own in the chief's pod, started with `--model`. Needs a `claude-code` chief. |
-| `gateway` | an OpenRouter model, as the model search returns it (`openrouter/<vendor>/<model>`) | the gateway runtime. On a `claude-code` chief that is the runtime beside `ccd` in the same pod, sharing the chief's instructions, tools and identity. |
 
-Open one from the chief panel: its thread list has a **New session** picker
-(a Claude model for Claude Code; an OpenRouter model, searched, for OpenRouter).
+Open one from the chief panel: its thread list has a **New session** picker.
 Each thread names its runtime and model. The route underneath is
 `POST /agents/{id}/sessions` with `runtime` and `model` form fields. A session's
 runtime and model never change; open a new session to use another.
 
-**How a `claude-code` chief runs both.** One pod, two containers:
+A turn for a `claude-code` session runs in a CLI of its own (tmux session
+`cc-<id>`, started with the session's `--model`); a turn for a session with no
+runtime runs in the original CLI, as before. At most `CCD_MAX_SESSIONS` (3) such
+CLIs run at once. `ccd` on port 18789 is still the only port the pod exposes.
 
-- `agent` (the Claude Code image): `ccd` on port 18789 — still the only port the
-  pod exposes. A turn for a `claude-code` session runs in a CLI of its own
-  (tmux session `cc-<id>`, started with the session's `--model`); a turn for a
-  session with no runtime runs in the original CLI, as before. At most
-  `CCD_MAX_SESSIONS` (3) such CLIs run at once.
-- `gateway` (the gateway runtime's image, built exactly as a `gateway`-kind
-  agent's): serves on **loopback** port 18791 only. `ccd` hands it a
-  `gateway` session's turn after checking muster's bearer, and presents the
-  runtime's own credential instead. Its own memory budget
-  (512Mi request, 1536Mi limit), its own Secret (OpenRouter key and a gateway
-  credential of its own, derived separately from the chief's) — the Claude Code
-  container never holds the OpenRouter key, and the runtime holds neither the
-  Claude token nor the chief's hooks token or anything `ccd` accepts. It shares
-  `ccd`'s loopback, so a prompt-injected gateway session must not be able to
-  drive `ccd`. Its state lives in its own container, so a pod restart starts its
-  conversations afresh (muster keeps the transcript).
-
-The operator's install script (`MUSTER_AGENT_RUNTIME_INSTALL`) must start the
-runtime on loopback on the port in `MUSTER_GATEWAY_PORT` when that is set — and
-as before when it is not, which is every `gateway`-kind agent:
-
-```sh
-if [ -n "${MUSTER_GATEWAY_PORT:-}" ]; then
-  exec /usr/bin/tini -- <runtime> gateway --bind loopback --port "$MUSTER_GATEWAY_PORT"
-fi
-exec /usr/bin/tini -- <runtime> gateway --bind lan
-```
-
-**Update that script before** naming `gateway` in
-`MUSTER_CHIEF_SESSION_RUNTIMES`. Otherwise the runtime would serve on its
-default port, which is `ccd`'s 18789 in the same pod. So muster refuses to build
-a chief whose script never expands `$MUSTER_GATEWAY_PORT`, and the refusal is
-shown as the chief's error. This is a text check: a script that reads the
-variable and then ignores it still passes.
-
-The `gateway` container runs the script under a small supervisor. When the
-runtime exits, the supervisor starts it again 10 s later, so the container stays
-up. A crashing runtime therefore doesn't take the pod, or `ccd`'s endpoint,
-NotReady: only `gateway` sessions fail, with the reason in that container's log.
-For the same reason the container has no probes, because every container's
-readiness gates the pod's.
-
-`MUSTER_CHIEF_SESSION_RUNTIMES`
-naming `gateway` on a deployment with the `claude-code` kind needs that bundle
-configured (it refuses to boot otherwise). A running chief gains the sidecar on
-its next **Stop → Start** (Start re-applies its spec).
-
-**Upgrading a chief that already has the sidecar.** The sidecar shares `ccd`'s
-network, so it must hold nothing `ccd` accepts, and `ccd` must not be reachable
-from it. That takes a new spec (muster), a new `ccd` (the
-`MUSTER_AGENT_CC_IMAGE` image) and a restart, and each half alone leaves a hole:
-
-- **Old spec, new `ccd`:** the sidecar still holds `ccd`'s bearer, so it can
-  still send Claude Code turns. The chief stays exposed until it is restarted.
-- **New spec, old `ccd`:** `gateway` turns get 401, because the old `ccd`
-  forwards muster's bearer, which the runtime no longer accepts. And because the
-  old `ccd` hands that bearer to whatever listens on the runtime's port, a process
-  that binds the port first can capture it. The old `ccd`'s hook listener is
-  also still TCP on `127.0.0.1:18790`, which the sidecar can reach.
-
-So the `ccd` image bump **must land with or before** the server bump, and then
-each chief needs **Stop → Start**. A chief started before the runtime had its own
-credential gets `gateway` turns refused (`not_ready`, naming Stop → Start) until
-it is restarted that way; Claude Code sessions keep working.
-
-A `gateway` session's turn carries the chief's instructions for function tools,
-since that runtime has no standing file of the chief's.
+**The retired `gateway` runtime.** A `gateway` entry (an OpenRouter model on
+the gateway runtime, run as a second container beside `ccd` in a
+`claude-code` chief's pod, with a memory request of 512 MiB) used to be
+accepted here. It has been removed. muster now ignores a `gateway` entry in
+`MUSTER_CHIEF_SESSION_RUNTIMES` with one warning at boot, so a deployment
+that still names it keeps booting; drop it from the deployment. A chief started
+before the removal keeps that container until its next **Stop → Start**, which
+re-applies its spec without it (and deletes its `<name>-sidecar-env` Secret).
 
 **The default session.** One session per agent is its default. Plugin
 deliveries and `muster chief ask` go to it, so they share one conversation

@@ -1181,14 +1181,7 @@ func (a *Adapter) buildClaudeCodeSpec(ag agents.Agent, cfg agentspec.Config, job
 		a.log.Printf("agentprovision: chief %q is kind %s: the subsystem store (cairn) is configured but is SKIPPED "+
 			"for this kind — the client is not in its image and its network policy cannot reach the store", ag.Name, agents.KindClaudeCode)
 	}
-	opts := agentspec.Options{Instructions: agentspec.ChiefInstructionsClaudeCode(cfg.Plugins)}
-	// The gateway runtime beside ccd, for the chief's sessions on it
-	// (agentspec/chief_sidecar.go). Start re-applies the spec, so a deployment
-	// turning this on reaches a running chief on its next Stop→Start.
-	if cfg.ChiefGatewaySidecar {
-		opts.GatewaySidecar = &agentspec.GatewaySidecar{}
-	}
-	return agentspec.Build(ag, cfg, opts)
+	return agentspec.Build(ag, cfg, agentspec.Options{Instructions: agentspec.ChiefInstructionsClaudeCode(cfg.Plugins)})
 }
 
 // specFor is the deployment-wide spec config with the model-provider
@@ -1220,19 +1213,6 @@ func (a *Adapter) specFor(ctx context.Context, ag agents.Agent) (agentspec.Confi
 			return cfg, fmt.Errorf("agentprovision: agent %q: Claude account %q of its owner: %w", ag.Name, ag.CCAccount, err)
 		}
 		cfg.ClaudeCode.Accounts[ag.CCAccount] = tok
-		// A chief running the gateway runtime beside ccd needs its owner's
-		// OpenRouter key for that runtime. Without one the chief still starts —
-		// its Claude Code sessions do not need it — and its gateway sessions fail
-		// at the model call, naming the provider; that is said here too.
-		if cfg.ChiefGatewaySidecar && agents.IsChiefName(ag.Name) {
-			key, err := a.creds.OpenRouterKey(ctx, ag.OwnerID)
-			if err != nil {
-				a.log.Printf("agentprovision: chief %q: no OpenRouter key of its owner for the gateway runtime beside it "+
-					"(%v); its gateway sessions will fail at the model call", ag.Name, err)
-			} else {
-				cfg.OpenRouterAPIKey = key
-			}
-		}
 	default:
 		key, err := a.creds.OpenRouterKey(ctx, ag.OwnerID)
 		if err != nil {

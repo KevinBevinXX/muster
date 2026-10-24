@@ -104,7 +104,7 @@ func fullyWiredServer(t *testing.T) *Server {
 		// NON-ZERO on purpose: the zero TaskRouting offers no task_dispatch.
 		TaskRouting:     &TaskRouting{DispatchOwners: map[int64]bool{1: true}},
 		ChiefDispatch:   stubChiefDispatch{},
-		SessionRuntimes: []string{"claude-code", "gateway"},
+		SessionRuntimes: []string{"claude-code"},
 		SendQueue:       stubSendQueue{},
 		// NON-ZERO on purpose: the zero value is the default.
 		SendQueueIdle:   time.Second,

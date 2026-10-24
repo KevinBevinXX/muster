@@ -190,8 +190,7 @@ func JobBypassListed(a agents.Agent, cfg Config) bool {
 // REFUSED: SeedFiles, ExtraEnv and CairnEligible — a caller that asked for them
 // would otherwise get an agent silently without them. Instructions IS honoured:
 // it is placed at [ClaudeCodeInstructionsPath], the CLI's managed-policy
-// CLAUDE.md (see that constant for why there and not in the workspace). So is
-// GatewaySidecar (chief_sidecar.go).
+// CLAUDE.md (see that constant for why there and not in the workspace).
 func buildClaudeCode(a agents.Agent, cfg Config, opts Options) (provision.Spec, error) {
 	cc := cfg.ClaudeCode
 	if cc == nil {
@@ -252,12 +251,6 @@ func buildClaudeCode(a agents.Agent, cfg Config, opts Options) (provision.Spec, 
 	labels := buildLabels(a, cfg)
 	labels[LabelKind] = agents.KindClaudeCode
 
-	var sidecar *provision.Sidecar
-	if opts.GatewaySidecar != nil {
-		if sidecar, err = buildGatewaySidecar(a, cfg); err != nil {
-			return provision.Spec{}, err
-		}
-	}
 	spec := provision.Spec{
 		Ref: ref,
 		// 🔴 NO WorkingDir, and the image has none under /data either: a container
@@ -268,14 +261,14 @@ func buildClaudeCode(a agents.Agent, cfg Config, opts Options) (provision.Spec, 
 		// into CCD_WORKSPACE, and ccd starts the CLI there
 		// (images/claude-code-agent/entrypoint.sh).
 		Runtime: provision.Runtime{Image: cc.Image},
-		Env:     claudeCodeEnv(cfg, sidecar != nil, repo, JobBypassListed(a, cfg) && opts.JobBypassVeto == ""),
+		Env:     claudeCodeEnv(cfg, repo, JobBypassListed(a, cfg) && opts.JobBypassVeto == ""),
 		// 🔴 THE ONLY PLACE EnvClaudeOAuthToken IS EVER WRITTEN.
 		//
 		// 🔴 NO EnvGatewayToken (HOOKS_TOKEN): ccd takes its bearer from
 		// EnvGatewayBearer, the agent's own secret, and nothing in the pod derives
 		// one from the hooks token any more. EnvToken stays: it is the session's
-		// muster identity. ccd unsets EnvGatewayBearer (and the sidecar's
-		// credential) before it starts the CLI (cmd/ccd/turncred.go).
+		// muster identity. ccd unsets EnvGatewayBearer before it starts the CLI
+		// (cmd/ccd/turncred.go).
 		Secrets: []provision.EnvVar{
 			{Name: EnvToken, Value: a.HooksToken},
 			{Name: EnvGatewayBearer, Value: a.GatewaySecret},
@@ -288,29 +281,10 @@ func buildClaudeCode(a agents.Agent, cfg Config, opts Options) (provision.Spec, 
 		Security:  ClaudeCodeSecurity,
 		Network:   claudeCodeNetworkFor(cfg),
 		Labels:    labels,
-		Sidecar:   sidecar,
 		Repo:      repo,
 	}
 	if opts.Instructions != "" {
 		spec.Files = []provision.File{{Path: ClaudeCodeInstructionsPath, Content: []byte(opts.Instructions)}}
-	}
-	if sidecar != nil {
-		// ccd presents the sidecar's OWN credential when it hands a gateway turn
-		// on, never the one muster sent it (chief_sidecar.go).
-		var own string
-		for _, e := range sidecar.Secrets {
-			if e.Name == EnvGatewayBearer {
-				own = e.Value
-			}
-		}
-		if own == "" {
-			return provision.Spec{}, fmt.Errorf("agentspec: the gateway runtime beside agent %q has no credential "+
-				"of its own (%s)", a.Name, EnvGatewayBearer)
-		}
-		spec.Secrets = append(spec.Secrets, provision.EnvVar{Name: EnvCCDGatewayUpstreamBearer, Value: own})
-		if err := checkSidecarIsolation(spec, a.GatewaySecret); err != nil {
-			return provision.Spec{}, err
-		}
 	}
 	if err := spec.Validate(); err != nil {
 		return provision.Spec{}, fmt.Errorf("agentspec: built an invalid spec for agent %q: %w", a.Name, err)
@@ -318,9 +292,29 @@ func buildClaudeCode(a agents.Agent, cfg Config, opts Options) (provision.Spec, 
 	return spec, nil
 }
 
-// claudeCodeEnv is the claude-code kind's plain environment. With the gateway
-// sidecar, ccd is told where it is (EnvCCDGatewayUpstream): the one thing that
-// turns a gateway session's turn from not_ready into a hand-off.
+// EnvCCDGatewayUpstreamBearer is the credential an OLDER muster gave ccd for
+// the gateway runtime it ran beside a claude-code chief (a sidecar, removed).
+// Nothing writes it now. It stays in [TurnCredentialEnv] because a pod built by
+// that older muster keeps the variable until it is next started, and muster's
+// execs into such a pod must still strip it.
+//
+// CLOSING CONDITION: delete it, and its entry in TurnCredentialEnv and in ccd's
+// list, once no agent pod's spec carries it (every claude-code chief has been
+// Stop → Started on a muster without the sidecar: its pod has one container).
+const EnvCCDGatewayUpstreamBearer = "CCD_GATEWAY_UPSTREAM_BEARER"
+
+// TurnCredentialEnv names every variable a claude-code container may carry that
+// drives a TURN API: ccd's (EnvGatewayBearer, or EnvGatewayToken it can be
+// derived from), and the retired [EnvCCDGatewayUpstreamBearer].
+//
+// 🔴 NO PROCESS AN AGENT'S SESSION CAN REACH MAY HOLD ONE. ccd unsets them before
+// it starts the CLI (cmd/ccd/turncred.go, whose list a test holds equal to this
+// one); every exec muster runs into the container strips them
+// (internal/agentprovision/scrubexec, the adapter's only driver), because an exec inherits the
+// container's environment, not ccd's.
+var TurnCredentialEnv = []string{EnvGatewayBearer, EnvCCDGatewayUpstreamBearer, EnvGatewayToken}
+
+// claudeCodeEnv is the claude-code kind's plain environment.
 //
 // With a repository (repo.URL set), ccd is also told which one to check out and
 // where, and the CLI's working directory becomes that checkout (EnvCCDWorkspace
@@ -331,16 +325,13 @@ func buildClaudeCode(a agents.Agent, cfg Config, opts Options) (provision.Spec, 
 // With bypassJobs ([JobBypassListed] and no Options.JobBypassVeto), ccd is told to start the pod's JOB lanes with
 // permissions bypassed ([EnvCCDJobPermissionMode]). Without it the variable is
 // absent, never set to some "off" value: ccd refuses every value but the one.
-func claudeCodeEnv(cfg Config, gatewaySidecar bool, repo provision.Repo, bypassJobs bool) []provision.EnvVar {
+func claudeCodeEnv(cfg Config, repo provision.Repo, bypassJobs bool) []provision.EnvVar {
 	env := []provision.EnvVar{
 		{Name: EnvAPIURL, Value: cfg.APIBaseURL},
 		{Name: EnvGitTerminalPrompt, Value: "0"},
 	}
 	if cfg.ClaudeCodeMCPOffered() {
 		env = append(env, provision.EnvVar{Name: EnvConnectURL, Value: cfg.ConnectURL})
-	}
-	if gatewaySidecar {
-		env = append(env, provision.EnvVar{Name: EnvCCDGatewayUpstream, Value: gatewaySidecarUpstream()})
 	}
 	if repo.URL != "" {
 		env = append(env, provision.EnvVar{Name: EnvCCDRepo, Value: repo.URL})

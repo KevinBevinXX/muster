@@ -458,6 +458,14 @@ type Spec struct {
 // Sidecar is a second long-running process in the same instance: on Kubernetes
 // a second container in the same pod.
 //
+// ⚠ NO SPEC muster BUILDS CARRIES ONE NOW: its one user, the gateway runtime
+// beside a claude-code chief's ccd, was removed from agentspec. The support
+// stays because applying a spec WITHOUT a sidecar is what takes one away from
+// an instance built with it — the k8s driver drops the container and deletes
+// the stale `<name>-sidecar-env` Secret. CLOSING CONDITION: remove it once no
+// agent pod has a second container (every claude-code chief Stop → Started on
+// a muster without the sidecar).
+//
 // 🔴 IT SHARES THE INSTANCE'S NETWORK NAMESPACE AND NOTHING ELSE, ON PURPOSE.
 // Same network: the instance's own process reaches it on loopback, so a sidecar
 // needs no port of its own and declares none — it is never exposed (no Service
