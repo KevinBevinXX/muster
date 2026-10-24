@@ -68,6 +68,11 @@ type AgentState struct {
 	Pasted int64
 	// Unknown is why Status is unknown; nil when it is known.
 	Unknown error
+
+	// GuardHeld is, while the window is held by the Claude prompt guard's
+	// backoff (turns.go guardHold), why — the host's refusal, in words — and
+	// "" otherwise. The send queue sends nothing while it is set.
+	GuardHeld string
 }
 
 // AgentState is the state of the agent session (Claude Code or Hermes) in
@@ -116,6 +121,7 @@ func (h *Hub) AgentState(owner int64, host, session, window string) AgentState {
 			st.Observed = t.observed
 		}
 		st.Pasted = t.pasted
+		st.GuardHeld = t.guardHeld(h.now())
 		return st
 	}
 	return AgentState{Runtime: runtime, Unknown: fmt.Errorf("%w (host %q, session %q)", noStatus, host, session)}

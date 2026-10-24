@@ -60,6 +60,18 @@ import (
 // window is recorded in <transcript>.pasted, and one into any other window in
 // MUSTER_MIRROR_E2E_PASTE_FILE — each with the pane it reached.
 //
+// THE CLAUDE PROMPT GUARD: every Claude pane (claudeFake's, and each
+// windowFake Claude window) has both of the guard's capabilities, as tmux
+// does. Its SCREEN is <transcript>.screen when that exists, else Claude
+// Code's idle prompt. Its paste is the REAL checked paste
+// (mirrorhost.CheckedPaste): the text lands in <transcript>.typed (the input
+// box), then — only if the check before the Enter passes — the Enter records
+// it as above. While the text is unsubmitted it is in <transcript>.box, and
+// the screen's input box shows it (so the guard's empty-box check sees it).
+// While <transcript>.prompt-on-paste exists, the text landing
+// opens a permission prompt: the status file is rewritten to waiting and the
+// screen to a permission prompt, as the CLI would show one.
+//
 // AN OLDER HOST: with MUSTER_MIRROR_E2E_NO_PROMPT_INDEX=1 the host sends no
 // prompt index (mirrorhost.Config.NoPromptIndex), as one from before it did.
 //
@@ -185,6 +197,97 @@ func (c claudeFake) PastePane(ctx context.Context, pane, text string) error {
 }
 
 const claudeFakePane = "%9"
+
+// e2eIdleScreen is Claude Code at its idle prompt; e2ePromptScreen at a
+// permission prompt (the shape ccdialog reads: the prompt below the last rule,
+// its footer last).
+const (
+	e2eRule         = "────────────────────────────────────────"
+	e2eIdleScreen   = "● done\n\n" + e2eRule + "\n❯ \n" + e2eRule + "\n  ? for shortcuts\n"
+	e2ePromptScreen = "● Bash(touch /tmp/x)\n\n" + e2eRule + "\n Bash command\n\n Do you want to proceed?\n ❯ 1. Yes\n   2. No\n\n Esc to cancel · Tab to amend\n"
+)
+
+// claudeScreenOf is the screen of the Claude pane writing transcript:
+// <transcript>.screen as written, else the idle prompt with the input box
+// holding <transcript>.box (what was pasted and not yet submitted).
+func claudeScreenOf(transcript string) (string, error) {
+	b, err := os.ReadFile(transcript + ".screen")
+	if err == nil {
+		return string(b), nil
+	}
+	if !os.IsNotExist(err) {
+		return "", err
+	}
+	box, err := os.ReadFile(transcript + ".box")
+	if err != nil && !os.IsNotExist(err) {
+		return "", err
+	}
+	if len(box) == 0 {
+		return e2eIdleScreen, nil
+	}
+	return "● done\n\n" + e2eRule + "\n❯ " + strings.SplitN(string(box), "\n", 2)[0] + "\n" + e2eRule + "\n  ? for shortcuts\n", nil
+}
+
+// checkedClaudePaste is the guard's checked paste into the Claude pane
+// writing transcript: the text into <transcript>.typed, and the Enter is
+// enter (what a plain paste records).
+func checkedClaudePaste(ctx context.Context, transcript, pane, text string, enter func() error, before, beforeEnter func(context.Context) error) error {
+	return mirrorhost.CheckedPaste(ctx,
+		func(context.Context) error {
+			fh, err := os.OpenFile(transcript+".typed", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+			if err != nil {
+				return err
+			}
+			_, err = fh.WriteString(pane + " " + text + "\n")
+			_ = fh.Close()
+			if err != nil {
+				return err
+			}
+			// The text is in the input box until an Enter submits it.
+			if err := writeAtomic(transcript+".box", []byte(text)); err != nil {
+				return err
+			}
+			if _, err := os.Stat(transcript + ".prompt-on-paste"); err == nil {
+				st, _ := json.Marshal(map[string]any{"status": "waiting", "statusUpdatedAt": time.Now().UnixMilli()})
+				if err := writeAtomic(transcript+".status", st); err != nil {
+					return err
+				}
+				return writeAtomic(transcript+".screen", []byte(e2ePromptScreen))
+			}
+			return nil
+		},
+		func(context.Context) error {
+			// Submitted: the box is empty again.
+			if err := os.Remove(transcript + ".box"); err != nil && !os.IsNotExist(err) {
+				return err
+			}
+			return enter()
+		},
+		before, beforeEnter)
+}
+
+// writeAtomic replaces path with b by a rename, so the host's own re-reads
+// never see it half-written.
+func writeAtomic(path string, b []byte) error {
+	tmp := path + ".tmp-e2e"
+	if err := os.WriteFile(tmp, b, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
+}
+
+// ClaudeScreen implements mirrorhost.ClaudeScreenBackend for the one Claude pane.
+func (c claudeFake) ClaudeScreen(_ context.Context, pane string) (string, error) {
+	if pane != claudeFakePane {
+		return "", fmt.Errorf("pane %s is not the Claude pane", pane)
+	}
+	return claudeScreenOf(c.path)
+}
+
+// PasteChecked implements mirrorhost.ClaudeCheckedPaster.
+func (c claudeFake) PasteChecked(ctx context.Context, p mirrorhost.ClaudePane, text string, before, beforeEnter func(context.Context) error) error {
+	return checkedClaudePaste(ctx, c.path, p.Pane, text, func() error { return c.Paste(ctx, p, text) }, before, beforeEnter)
+}
 
 type fakeBackend struct{}
 
@@ -478,6 +581,23 @@ func (w windowFake) ClaudePanes(context.Context, []string) map[string]mirrorhost
 // for whichever Claude window p is.
 func (w windowFake) Paste(_ context.Context, p mirrorhost.ClaudePane, text string) error {
 	return claudeFake{path: p.Transcript}.Paste(context.Background(), p, text)
+}
+
+// ClaudeScreen implements mirrorhost.ClaudeScreenBackend: the screen of the
+// Claude window whose pane it is.
+func (w windowFake) ClaudeScreen(ctx context.Context, pane string) (string, error) {
+	ws, _ := w.Windows(ctx)
+	for _, win := range ws {
+		if win.Pane == pane && win.Claude != nil {
+			return claudeScreenOf(win.Claude.Transcript)
+		}
+	}
+	return "", fmt.Errorf("pane %s is not a Claude window's", pane)
+}
+
+// PasteChecked implements mirrorhost.ClaudeCheckedPaster.
+func (w windowFake) PasteChecked(ctx context.Context, p mirrorhost.ClaudePane, text string, before, beforeEnter func(context.Context) error) error {
+	return checkedClaudePaste(ctx, p.Transcript, p.Pane, text, func() error { return w.Paste(ctx, p, text) }, before, beforeEnter)
 }
 
 // ActivePane is the per-session lookup; a per-window host is never asked it.

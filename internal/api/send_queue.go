@@ -767,6 +767,10 @@ func (s *Server) sendQueueProbe(ctx context.Context, h sendqueue.Head) sendqueue
 	}
 	st := s.ext.Mirror.AgentState(ctx, h.Target.Host, h.Target.Session, h.Target.Window)
 	switch {
+	case st.GuardHeld != "":
+		// The host's Claude prompt guard refused the last paste on what it
+		// read at the moment of typing; held, with its words, and backing off.
+		return sendqueue.AgentState{Why: st.GuardHeld}
 	case st.Unknown != nil:
 		return sendqueue.AgentState{Why: unprefixed(st.Unknown)}
 	case st.Status == mirror.StatusIdle:
@@ -888,6 +892,16 @@ func sendQueueFailure(err error) sendqueue.Outcome {
 			// The host's gated send says it in full ("May have been
 			// submitted: …", "Pasted, not submitted: …", "Not sent: …").
 			return sendqueue.Outcome{MayHaveDelivered: may, Pasted: pr.Refusal == mirror.PasteRefusalHermesPasted, Detail: pr.Why}
+		case mirror.PasteRefusalClaudeWaiting, mirror.PasteRefusalClaudeBox:
+			// The Claude prompt guard, nothing typed, in its own words. A
+			// queued message never gets here (the hub supersedes it, and it is
+			// held); a Send now does, and fails.
+			return sendqueue.Outcome{Detail: pr.Why}
+		case mirror.PasteRefusalClaudePasted:
+			// 🔴 Its text is in Claude Code's input box: it MAY be delivered
+			// (with whatever is typed next), so it is never resent blindly —
+			// its Retry asks first.
+			return sendqueue.Outcome{Pasted: true, MayHaveDelivered: true, Detail: pr.Why}
 		}
 	}
 	if may {

@@ -1126,3 +1126,118 @@ for (const vp of [
     });
   });
 }
+
+// 🔴 THE CLAUDE PROMPT GUARD: a message from muster must never be the keystroke
+// that answers a permission prompt. Each test runs its OWN host and transcript,
+// so it neither reads nor moves the shared one's status.
+test.describe('Claude Code waiting on a permission prompt, desktop 1280×800', () => {
+  test.use({ viewport: { width: 1280, height: 800 }, hasTouch: false, isMobile: false, storageState: { cookies: [], origins: [] } });
+
+  // ownHost starts a host whose Claude window writes transcript t, its status
+  // idle (since now) at its hello; extra overrides its environment.
+  function ownHost(name: string, extra: Record<string, string>) {
+    const host = `e2e-sqpg${name}-${stamp}`;
+    const t = path.join(dir, `eeeeeeee-${name}.jsonl`);
+    fs.writeFileSync(t, prompt('the conversation so far'));
+    const status = (s: string) => writeFileAtomic(t + '.status', JSON.stringify({ status: s, statusUpdatedAt: Date.now() }));
+    status('idle');
+    startMirror(host, t, extra);
+    const typed = () => read(t + '.pasted').split('\n').filter((l) => l !== '');
+    return { host, t, status, typed };
+  }
+  // connected waits until host's muster-mirror says it is connected: a view
+  // opened before that is a page with no composer, which does not recover.
+  const connected = (host: string) =>
+    expect.poll(() => mirrorLog.includes(`as host ${host} `), { message: `${host} connects`, timeout: 20_000 }).toBe(true);
+
+  // The host reports the prompt (its usual refresh): muster itself refuses
+  // Send, and holds a queued message until the prompt is answered.
+  test('Send is refused and types nothing; a queued message is held until the prompt is answered, then sent', async ({ page }) => {
+    const h = ownHost('seen', {});
+    await connected(h.host);
+    await openView(page, h.host);
+    h.status('waiting');
+    await seen();
+    await page.locator('#mv-input').fill('1');
+    await page.locator('#mv-send').click();
+    await expect(page.locator('#mv-note')).toContainText('Claude is waiting on a permission prompt — answer it first');
+    await expect(page.locator('#mv-input'), 'the text stays in the box').toHaveValue('1');
+    await queue(page, 'after the prompt', false);
+    await expect(page.locator('#mv-queue-waiting'), 'the server holds it').toContainText('waiting for you', { timeout: 20_000 });
+    await holdWindow();
+    expect(h.typed(), 'nothing was typed into the prompt').toEqual([]);
+    h.status('idle');
+    await expect.poll(h.typed, { message: 'sent once the prompt is answered', timeout: 20_000 }).toEqual([`${pane} after the prompt`]);
+  });
+
+  // The race only the host can close: a host that last reported IDLE (its
+  // refresh is an hour, so muster never hears of the prompt) — the dispatcher
+  // decides to send, and the host, reading the status at the moment of typing,
+  // refuses. The message stays queued, is never typed into the prompt, and is
+  // sent once the prompt is answered. A person's Send into the same window is
+  // refused by the host in the same words.
+  test('a prompt that opened after the host last reported is refused at the moment of typing; the queued message waits and is then sent', async ({ page }) => {
+    const h = ownHost('race', { MUSTER_MIRROR_E2E_REFRESH: '1h' });
+    await connected(h.host);
+    await openView(page, h.host);
+    h.status('waiting');
+    const logFrom = mirrorLog.length;
+    await page.locator('#mv-input').fill('2');
+    await page.locator('#mv-send').click();
+    await expect(page.locator('#mv-note')).toContainText('Claude is waiting on a permission prompt — answer it first');
+    // The refusal is the HOST's, at the moment of typing (muster never heard
+    // of the prompt): its own log says so.
+    expect(mirrorLog.slice(logFrom), 'the host refused it').toContain(`Claude Code in pane ${pane} is waiting on the person`);
+    const queuedFrom = mirrorLog.length;
+    await queue(page, 'raced the prompt', false);
+    // 🔴 HELD WITH THE HOST'S REASON, BACKING OFF — not re-sent at every
+    // 2-second dispatcher pass with nothing said.
+    await expect(page.locator('#mv-queue-waiting'), 'the hold says why').toContainText('Claude is waiting on a permission prompt', { timeout: 20_000 });
+    await holdWindow();
+    await holdWindow();
+    expect(h.typed(), 'nothing was typed into the prompt').toEqual([]);
+    await expect(row(page, 'raced the prompt'), 'still queued').toHaveAttribute('data-queue-state', 'queued');
+    const tries = mirrorLog.slice(queuedFrom).split(`Claude Code in pane ${pane} is waiting on the person`).length - 1;
+    expect(tries, 'the host was asked again with a backoff (4 s, 8 s, …), not every pass').toBeGreaterThanOrEqual(1);
+    expect(tries, 'the host was asked again with a backoff (4 s, 8 s, …), not every pass').toBeLessThanOrEqual(3);
+    h.status('idle');
+    await expect.poll(h.typed, { message: 'sent once the prompt is answered', timeout: 40_000 }).toEqual([`${pane} raced the prompt`]);
+  });
+
+  // The narrowest window: a prompt that opens AS the message lands, between
+  // the paste and its Enter. The host's checked paste reads the pane again
+  // before the Enter, sees the prompt, and withholds the Enter: the text sits
+  // in the input box, unsubmitted, and the reply says so.
+  test('a prompt that opens as the message lands gets no Enter, and the reply says pasted, not submitted', async ({ page }) => {
+    const h = ownHost('enter', {});
+    await connected(h.host);
+    await openView(page, h.host);
+    fs.writeFileSync(h.t + '.prompt-on-paste', '');
+    await page.locator('#mv-input').fill('3');
+    await page.locator('#mv-send').click();
+    await expect(page.locator('#mv-note')).toContainText('Pasted, not submitted');
+    const inBox = () => read(h.t + '.typed').split('\n').filter((l) => l !== '');
+    expect(inBox(), 'the text landed in the box').toEqual([`${pane} 3`]);
+    expect(h.typed(), 'no Enter was pressed into the prompt').toEqual([]);
+
+    // 🔴 THE LEFTOVER: the prompt is answered, but "3" is still in the input
+    // box. Nothing more is pasted after it — a queued message or a Send would
+    // be submitted WITH it as one turn — until the box is cleared.
+    fs.rmSync(h.t + '.prompt-on-paste');
+    fs.rmSync(h.t + '.screen');
+    h.status('idle');
+    await seen();
+    await queue(page, 'after the leftover', false);
+    await expect(page.locator('#mv-queue-waiting'), 'held, saying why').toContainText('input box already has text', { timeout: 20_000 });
+    await holdWindow();
+    expect(inBox(), 'nothing was pasted after the leftover').toEqual([`${pane} 3`]);
+    expect(h.typed(), 'and nothing submitted').toEqual([]);
+    await page.locator('#mv-input').fill('4');
+    await page.locator('#mv-send').click();
+    await expect(page.locator('#mv-note')).toContainText("Claude's input box already has text — clear or send it first");
+    expect(inBox(), 'a Send into the full box typed nothing').toEqual([`${pane} 3`]);
+    // The person clears the box: the queued message goes, on its own.
+    fs.rmSync(h.t + '.box');
+    await expect.poll(h.typed, { message: 'sent once the box is clear', timeout: 40_000 }).toEqual([`${pane} after the leftover`]);
+  });
+});

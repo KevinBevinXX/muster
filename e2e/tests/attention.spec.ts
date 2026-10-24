@@ -320,6 +320,13 @@ test('a message sent to the asking session answers its ask, live', async ({ page
   await expect(page.locator('[data-attention-item]').first()).toHaveAttribute('id', `ask-${id}`);
 
   // The operator answers in the session: its rendered view, in another tab.
+  // 🔴 The session is BUSY while it asks — a turn is running attention_wait —
+  // as a real one is. A window WAITING on the person (a permission prompt, a
+  // question) takes no Send at all: Enter there would answer the prompt (the
+  // Claude prompt guard), so the fixture's waiting status is lifted first and
+  // put back for the session check below.
+  writeFileAtomic(tr + '.status', JSON.stringify({ status: 'busy', statusUpdatedAt: Date.now() }));
+  await expect(page.locator('[data-attention-item][data-kind="session"]'), 'muster saw it busy').toHaveCount(0, { timeout: 15_000 });
   const view = await page.context().newPage();
   await view.goto(origin + `/mirror/view?host=${encodeURIComponent(host)}&session=work&window=%401`);
   await expect(view.locator('#mv-input'), mirrorLog).toBeEnabled({ timeout: 20_000 });
@@ -337,7 +344,8 @@ test('a message sent to the asking session answers its ask, live', async ({ page
   // Claude Code stops waiting, the host's next report (its refresh, ~5 s)
   // takes the item out of the open queue — measured, not assumed.
   const session = page.locator('[data-attention-item][data-kind="session"]');
-  await expect(session).toHaveCount(1);
+  writeFileAtomic(tr + '.status', JSON.stringify({ status: 'waiting', statusUpdatedAt: Date.now() - 30_000 }));
+  await expect(session).toHaveCount(1, { timeout: 15_000 });
   writeFileAtomic(tr + '.status', JSON.stringify({ status: 'busy', statusUpdatedAt: Date.now() }));
   const flipped = Date.now();
   await expect(session).toHaveCount(0, { timeout: 15_000 });
