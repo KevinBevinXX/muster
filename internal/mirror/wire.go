@@ -278,8 +278,18 @@ type Msg struct {
 	// over (a fresh backfill, a /clear, a rotated or truncated file).
 	Reset bool `json:"reset,omitempty"`
 	// Busy (events): Claude Code reports a turn running (its session status).
-	Busy   bool                 `json:"busy,omitempty"`
-	Events []cctranscript.Event `json:"events,omitempty"`
+	Busy bool `json:"busy,omitempty"`
+	// StatusSince (events) is the time Claude Code wrote the status Busy was
+	// read from (its statusUpdatedAt, Unix ms on the HOST's clock): the same
+	// number the host lists as Window.StatusSince. So a turn end on the stream
+	// names the exact status token of the turn's own idle, and muster can tell
+	// it from the idle BEFORE the turn without guessing (suggested replies,
+	// internal/api's suggestTracker). A status that moved with Busy unchanged
+	// (a turn the host never saw busy) is sent as a marker of its own.
+	// 🔴 NO VERSION BUMP: an older host never sends it (0), and an older muster
+	// ignores it.
+	StatusSince int64                `json:"statusSince,omitempty"`
+	Events      []cctranscript.Event `json:"events,omitempty"`
 	// PromptIndex (events) marks the message that carries the transcript's
 	// PROMPT INDEX: Prompts is every prompt in the WHOLE file up to the
 	// backfill's end (cctranscript.Prompts), the newest BoundPrompts keeps, and

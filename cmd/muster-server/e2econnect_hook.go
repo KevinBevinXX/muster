@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/ZacxDev/muster/internal/connectors"
+	"github.com/ZacxDev/muster/internal/suggest"
 )
 
 // e2eConnectorPolicy, when non-nil, replaces the connector proxy's strict
@@ -18,6 +19,14 @@ var e2eConnectorPolicy *connectors.Policy
 // built with `-tags e2eterm` sets it; TestTheDefaultBuildCarriesNoUpstreamHooks
 // pins that a default build leaves it false.
 var e2eUpstreamHooks bool
+
+// e2eSuggestGen, when non-nil, may replace the suggested replies' model with a
+// fake on loopback (it returns nil to keep the real one). ONLY a binary built
+// with `-tags e2eterm` sets it (e2eupstreams.go, from MUSTER_E2E_SUGGEST_URL),
+// so the browser suite never calls a real model;
+// TestTheDefaultBuildCarriesNoUpstreamHooks pins that a default build leaves
+// it nil.
+var e2eSuggestGen func(model string) suggest.Generator
 
 // e2eGoTrueSkew, when non-nil, is the GoTrue verifier's clock skew (0 =
 // gotrue.DefaultSkew). ONLY a binary built with `-tags e2eterm` sets it

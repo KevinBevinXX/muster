@@ -124,6 +124,16 @@ type ComposerView struct {
 	// Switcher, when set, draws the session switcher below the input row
 	// (switcher.go); nil draws none. Only the Rendered view sets it.
 	Switcher *Switcher
+	// Suggest, when set, is the window's suggested-replies URL
+	// (SuggestPath with its address) and draws the chip row above the
+	// composer (suggest_row.go); "" draws none. Only a Claude Code window's
+	// Rendered view on an interactive host sets it — never a Terminal view,
+	// never Hermes. A disabled composer draws none either way.
+	Suggest string
+	// SuggestPaused draws one line saying the viewer's suggested replies are
+	// paused (the auto-pause), with the way back on (Account). Drawn with the
+	// page, so it moves nothing.
+	SuggestPaused bool
 }
 
 // MirrorComposerView is ComposerView under the name it had while only mirrored
@@ -211,6 +221,14 @@ func mirrorComposer(v ComposerView) g.Node {
 	if v.Pinned {
 		place = "fixed inset-x-0 bottom-0 z-20"
 	}
+	suggest := v.Suggest
+	if off {
+		suggest = ""
+	}
+	if suggest != "" && !v.Pinned {
+		// The row is placed against the composer's top (bottom-full).
+		place += " relative"
+	}
 	formPad := "pb-[max(0.75rem,env(safe-area-inset-bottom))]"
 	if v.Switcher != nil {
 		formPad = "pb-2"
@@ -220,6 +238,10 @@ func mirrorComposer(v ComposerView) g.Node {
 	return Div(
 		ID("mv-compose"),
 		Class(place+" border-t border-line bg-bg"),
+		// The suggested replies (suggest_row.go): above the composer, out of
+		// flow, drawn hidden — or, auto-paused, one line saying so.
+		suggestRow(suggest),
+		g.If(v.SuggestPaused && !off && suggest == "", suggestPausedNote()),
 		// The send's outcome, inline: why it was not sent, or that there was
 		// nothing to send. Empty and hidden otherwise — unless the page was
 		// reached by the redirect that answers a send the browser submitted,
@@ -290,6 +312,7 @@ func mirrorComposer(v ComposerView) g.Node {
 		dictateScript(dictate),
 		attachScript(upload),
 		composerMenuScript(menu),
+		g.If(suggest != "", suggestRowScript()),
 		g.If(v.Pinned, composerPinScript()),
 	)
 }
@@ -323,7 +346,10 @@ const pinnedShellSwitcherClass = "flex h-[var(--mv-vh,100dvh)] flex-col overflow
 //
 // What this script adds on top:
 //   - --mv-compose-h: the composer's measured height (a notice, the mic's
-//     line, a read-only note all change it), which the body reserves;
+//     line, a read-only note all change it) PLUS the suggested replies' row
+//     while it is shown (suggest_row.go: it is out of flow above the
+//     composer, so the box's own height does not count it), which the body
+//     reserves;
 //   - --mv-vh: the bottom of the VISUAL viewport in layout-viewport pixels,
 //     the body's height — so the transcript's end is never behind the
 //     composer or off screen;
@@ -360,7 +386,9 @@ func composerPinScript() g.Node {
     var kb = Math.max(0, Math.round(vw.innerHeight - bottom));
     box.style.bottom = kb ? kb + 'px' : '';
     root.style.setProperty('--mv-vh', Math.round(bottom) + 'px');
-    root.style.setProperty('--mv-compose-h', Math.ceil(box.getBoundingClientRect().height) + 'px');
+    var sg = document.getElementById('mv-suggest');
+    var extra = sg && !sg.hidden ? sg.getBoundingClientRect().height : 0;
+    root.style.setProperty('--mv-compose-h', Math.ceil(box.getBoundingClientRect().height + extra) + 'px');
   }
   function schedule() {
     if (pending) return;
@@ -368,6 +396,8 @@ func composerPinScript() g.Node {
     requestAnimationFrame(measure);
   }
   measure();
+  // The suggested replies' row says when it took or gave back its room.
+  window.musterPinMeasure = measure;
   if (typeof ResizeObserver !== 'undefined') { new ResizeObserver(schedule).observe(box); }
   window.addEventListener('resize', schedule);
   window.addEventListener('pageshow', schedule);
@@ -523,6 +553,9 @@ func mirrorComposerScript() g.Node {
           if (window.musterAttach) window.musterAttach.sent();
           renew();
           if (queued) { sayOK('Queued.'); document.dispatchEvent(new Event('mv-queued')); } else { say(''); }
+          // What was sent, for the suggested replies' edit distance
+          // (suggest_row.go): it stays on this page.
+          document.dispatchEvent(new CustomEvent('mv-sent', { detail: { text: sent, queued: queued } }));
           return;
         }
         if (r.status === 403 && r.headers.get('X-Muster-Step-Up')) {
@@ -561,6 +594,9 @@ func mirrorComposerScript() g.Node {
   input.addEventListener('keydown', function (e) {
     if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
       e.preventDefault();
+      // 🔴 A HELD ENTER SENDS ONCE: its auto-repeats are not more sends (a
+      // focus that moved into the box mid-hold must not send what it holds).
+      if (e.repeat) return;
       // requestSubmit is missing from older Safari; a click on Send is the same
       // submit, through the same handler.
       if (form.requestSubmit) form.requestSubmit(); else send.click();

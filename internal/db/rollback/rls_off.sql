@@ -186,6 +186,12 @@ BEGIN
         ALTER TABLE public.suggest_preferences DISABLE ROW LEVEL SECURITY;
         ALTER TABLE public.suggest_preferences ALTER COLUMN owner_id SET DEFAULT 1;
     END IF;
+    -- 0049 (suggest_usage), when this schema has it; same reason as 0011.
+    IF to_regclass('public.suggest_usage') IS NOT NULL THEN
+        ALTER TABLE public.suggest_usage NO FORCE ROW LEVEL SECURITY;
+        ALTER TABLE public.suggest_usage DISABLE ROW LEVEL SECURITY;
+        ALTER TABLE public.suggest_usage ALTER COLUMN owner_id SET DEFAULT 1;
+    END IF;
 END
 $$;
 
