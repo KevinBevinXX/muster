@@ -308,13 +308,6 @@ type Security struct {
 	// NoServiceAccountToken keeps the backend's own API credential out of the
 	// instance (Kubernetes: automountServiceAccountToken false).
 	NoServiceAccountToken bool
-	// ReadOnlyRoot makes the instance's root filesystem read-only, with a
-	// writable, empty /tmp of its own (Kubernetes: readOnlyRootFilesystem and an
-	// emptyDir at /tmp); the workspace stays writable. No kind declares it
-	// since the hermes kind was removed; it stays a driver capability. ⚠ It
-	// enters the fingerprint on a line of its own, only when set, so no spec
-	// that does not declare it moves.
-	ReadOnlyRoot bool `json:",omitempty"`
 }
 
 // IsZero reports whether nothing is declared.
@@ -460,18 +453,6 @@ type Spec struct {
 	// ⚠ omitempty, so a spec without one serialises exactly as before the field
 	// existed (agentspec's spec golden is a json.Marshal of a Spec).
 	Sidecar *Sidecar `json:",omitempty"`
-
-	// TerminationGraceSeconds is how long the instance is given to stop after
-	// it is asked to (on Kubernetes the pod's terminationGracePeriodSeconds,
-	// SIGTERM to SIGKILL). Zero is the driver's default (Kubernetes: 30 s).
-	//
-	// It was added for the since-removed hermes kind (whose runtime drained for
-	// 30 s on SIGTERM); no kind declares it now, and it stays a driver
-	// capability.
-	//
-	// ⚠ omitempty, like Sidecar, so every spec that declares none serialises as
-	// before.
-	TerminationGraceSeconds int `json:",omitempty"`
 }
 
 // Sidecar is a second long-running process in the same instance: on Kubernetes
@@ -523,9 +504,6 @@ var sidecarName = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$`)
 func (s Spec) Validate() error {
 	if err := s.Ref.Validate(); err != nil {
 		return err
-	}
-	if s.TerminationGraceSeconds < 0 || s.TerminationGraceSeconds > 3600 {
-		return fmt.Errorf("%w: termination grace %ds is outside 0..3600", ErrInvalidSpec, s.TerminationGraceSeconds)
 	}
 	if s.Runtime.Image == "" && len(s.Runtime.Command) == 0 {
 		return fmt.Errorf("%w: runtime must set Image or Command (it is a union; neither is not a third option)", ErrInvalidSpec)

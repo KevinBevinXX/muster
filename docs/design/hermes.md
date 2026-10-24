@@ -1,21 +1,13 @@
-# Design: Hermes mirroring and the `hermes` agent kind
+# Design: Hermes mirroring
 
-> 🔴 **The `hermes` agent kind (Phase 5) was REMOVED** — it was unused.
-> `cmd/hermesd`, `images/hermes-agent`, `agentspec`'s hermes profile and
-> `make hermes-image` / `hermes-smoke` are gone; the last tree carrying them is
-> `d46b22e1`. What remains: migration `0038` (left in place, so a `hermes` row
-> an older build created stays valid — listed as "Hermes (removed)", stoppable
-> and destroyable, never started; `agents.RetiredKinds`), and a boot `WARNING`
-> that ignores a leftover `hermes` entry in `MUSTER_AGENT_KINDS` and
-> `MUSTER_AGENT_HERMES_IMAGE`. **Hermes mirroring (Phases 1–4) is unaffected**:
-> it lives in `internal/hermeshost`, `internal/mirrorhost`, `cmd/muster-mirror`
-> and the server's mirror code, none of which reaches the kind. The kind's
-> sections below are kept as the historical design record.
+> This page also designed a **`hermes` agent kind** (Phase 5: Hermes in a pod
+> behind a supervisor, `hermesd`). It was built and later **removed**, unused;
+> migration `0047` narrows `agents_kind_check` back to `gateway` and
+> `claude-code`. The last tree that had the kind is **`d46b22e1`**; that tree's
+> copy of this page holds the kind's design and its "as built" record.
+> Mirroring (Phases 1–4) is unaffected.
 
-**Status: Phases 0–5 done** (Phase 4 in three stacked parts, 4a–4c). Phase 5, the `hermes`
-agent kind, is implemented (`cmd/hermesd`, `images/hermes-agent`, the kind in
-`internal/agents` and `internal/agentspec`, migration `0038`); what it built
-differently from this page is under [Phase 5 as built](#phase-5-as-built).
+**Status: Phases 0–4 done** (Phase 4 in three stacked parts, 4a–4c).
 Phase 1 is implemented: the
 [host paste guard](#every-paste-into-a-hermes-pane-is-gated-on-the-host)
 (Phase 1a, without its chrome check, moved to Phase 3), and the
@@ -55,14 +47,11 @@ exercised; they are listed under [Risks](#risks).
 
 [Hermes](https://github.com/NousResearch/hermes-agent) (MIT) is a coding agent
 with a terminal CLI, a local gateway process, an OpenAI-compatible API server
-and a SQLite session store. This design adds it to muster in two places:
-
-1. **Mirroring**, at full parity with Claude Code: a tmux window running
-   `hermes chat` gets a rendered conversation view, Send, the send queue, the
-   host icon and listing, and its questions and approvals in muster's asks UI.
-2. **A new in-cluster agent kind, `hermes`**: a pod running Hermes in API
-   server mode behind a small supervisor, `hermesd`, that speaks muster's
-   existing agent wire, the way `ccd` does for `claude-code`.
+and a SQLite session store. This design adds it to muster as **mirroring**, at
+full parity with Claude Code: a tmux window running `hermes chat` gets a
+rendered conversation view, Send, the send queue, the host icon and listing, and
+its questions and approvals in muster's asks UI. (It also added an in-cluster
+`hermes` agent kind, since removed; see the note at the top.)
 
 The design, in one line each:
 
@@ -92,9 +81,6 @@ The design, in one line each:
 - **Every** paste into a pane holding a Hermes CLI, from any view or server
   version, is gated by the host on the pane's process identity. Until the gated
   send exists, it is refused. This closes a hazard in shipped muster.
-- **Pod:** `hermes gateway run` with the API server on loopback, driven
-  through `/v1/runs` and its SSE events by `hermesd`, which also resolves
-  executions left unknown by a crash before it accepts turns.
 
 ## Goals
 
@@ -109,12 +95,6 @@ The design, in one line each:
   a paste followed by Enter on Hermes's approval prompt **approves the command**,
   whatever the pasted text says. The design must make that unreachable from
   muster, not merely unlikely.
-- A `hermes` agent can be dispatched, kicked off, chatted with, and approved,
-  with the same isolation as `claude-code`: uid 1000, no ServiceAccount token,
-  the same NetworkPolicy, and no file on the volume that overrides the pod's
-  provider credentials (no `.env`). The one credential hermesd keeps on the
-  volume is the in-pod API key; see [credentials](#credentials) for what it
-  grants.
 - The Claude-specific code paths become one runtime interface, sized for the
   two runtimes it serves: Claude Code and Hermes.
 
@@ -130,7 +110,6 @@ The design, in one line each:
   data (its read-only SQLite connection does create the `-wal`/`-shm` files a
   WAL reader needs when they are missing, as any reader does).
 - Sending through the gateway viewer (refuted, S1).
-- A Terminal view for `hermes` agent pods in the first release.
 - Supporting more than one Hermes commit. There is one pinned sha.
 
 ## Operator decisions
@@ -143,18 +122,6 @@ The design, in one line each:
   `hermes-hook` command and never edits `~/.hermes/config.yaml`.
 - **Release cadence:** each phase is released, and shipped to the hosts, as it
   merges.
-- **Pod credentials:** `hermes` pods use the OpenRouter credential muster's
-  gateway runtime already uses.
-- **The provider key is readable by the agent (accepted, "same as
-  claude-code"):** a `hermes` pod's agent can read the OpenRouter key from the
-  gateway's environment in `/proc`. Hermes strips it from the shell's own
-  environment, which is not a boundary; the exposure is accepted as parity
-  with `claude-code` pods, and the smoke test claims only the shell's own
-  environment.
-- **The kind merges dormant:** `hermes` is off unless `MUSTER_AGENT_KINDS`
-  includes it **and** `MUSTER_AGENT_HERMES_IMAGE` is set. It is enabled only
-  after a run in a real pod passes, which also measures the NetworkPolicy, the
-  restricted admission and the `Idempotency-Key` replay live.
 - **Send with a residual overlay risk (accepted):** Send and Queue for Hermes
   windows stay **off** until Phase 3's measurements are done. Then they are
   enabled with every mitigation in place, **even if** Phase 3 cannot prove the
@@ -265,10 +232,10 @@ home; a second pane's CLI joins it (S2). It outlives its clients, even
 | **S3** breadcrumb | confirmed | Follows `/new`, keeps the logical id across compression. `/resume` and `/branch` leave it stale, and mark the abandoned session `end_reason` `resumed_other` / `branched`. `parent_session_id` is shared by compression and branching. | [locator](#pane-to-session-resolution), [transcript](#transcript-reading) |
 | **S4** turn lease | confirmed | TTL 300 s, renewed every 60 s, keyed by the logical root, held through approval and clarify waits, deleted at turn end. | [status](#busy-idle-and-waiting) |
 | **S5** pending approval in the DB | refuted | No row records it; only the hooks, the viewer and the screen show it. | [questions](#questions-and-approvals) |
-| **S6** API server | confirmed, with version differences | P's approval body is exact; events are `message.delta`, `approval.settled`. An unanswered approval is denied after 300 s and the run still **completes**. 🔴 After a SIGKILL, later runs on the session report `run.failed unknown_execution` but are only **queued**; `/resolve-unknown` releases them. SIGTERM drains 30 s, then exits 1. | [pod API](#mode-api-server-driven-by-a-supervisor), [restart](#restart-and-resume) |
-| **S7** `-q` | confirmed | At P, `-q` leaves a detached gateway per home that inherits the caller's env, including `API_SERVER_*`. Not used. | [pod mode](#mode-api-server-driven-by-a-supervisor) |
-| **S8** image and env | confirmed, size caveat | A Nix image runs as uid 1000 with a read-only root and no init. With ffmpeg overridden out: 1,149 MiB closure, 425 MiB gzipped (upstream `minimal`: 3,278 MiB). Provider keys, `GH_TOKEN` and `API_SERVER_*` are stripped from the agent's shell; `MUSTER_*` pass. Terminal HOME is `$HERMES_HOME/home` only if it exists and `TERMINAL_HOME_MODE=profile` (or container detection). git through the connector proxy worked. | [image](#image), [volume](#volume-layout), [credentials](#credentials) |
-| **S9** instructions | settled | `/v1/runs` `instructions` is appended to that run's system prompt and leaves identity and `AGENTS.md` intact. SOUL.md replaces only the identity paragraph. `.hermes.md` suppresses `AGENTS.md`. `agent.system_prompt` and `HERMES_EPHEMERAL_SYSTEM_PROMPT` are ignored for API runs. | [instructions](#instructions) |
+| **S6** API server | confirmed, with version differences | P's approval body is exact; events are `message.delta`, `approval.settled`. An unanswered approval is denied after 300 s and the run still **completes**. 🔴 After a SIGKILL, later runs on the session report `run.failed unknown_execution` but are only **queued**; `/resolve-unknown` releases them. SIGTERM drains 30 s, then exits 1. | the removed agent kind |
+| **S7** `-q` | confirmed | At P, `-q` leaves a detached gateway per home that inherits the caller's env, including `API_SERVER_*`. Not used. | the removed agent kind |
+| **S8** image and env | confirmed, size caveat | A Nix image runs as uid 1000 with a read-only root and no init. With ffmpeg overridden out: 1,149 MiB closure, 425 MiB gzipped (upstream `minimal`: 3,278 MiB). Provider keys, `GH_TOKEN` and `API_SERVER_*` are stripped from the agent's shell; `MUSTER_*` pass. Terminal HOME is `$HERMES_HOME/home` only if it exists and `TERMINAL_HOME_MODE=profile` (or container detection). git through the connector proxy worked. | the removed agent kind |
+| **S9** instructions | settled | `/v1/runs` `instructions` is appended to that run's system prompt and leaves identity and `AGENTS.md` intact. SOUL.md replaces only the identity paragraph. `.hermes.md` suppresses `AGENTS.md`. `agent.system_prompt` and `HERMES_EPHEMERAL_SYSTEM_PROMPT` are ignored for API runs. | the removed agent kind |
 | **S10** process identity | confirmed (Nix measured; pip/uv simulated) | `comm=hermes`, `argv[1]` a `hermes` script run by `python*`, `argv[2]=chat`. `#{pane_current_command}` is `python3.14` or `python`: unusable. The gateway is also `comm=hermes`. | [locator](#pane-to-session-resolution) |
 | **S11** paste mechanics | confirmed, two corrections | muster's `PastePane` submits once, idle, at both busy modes. The 50 ms guard applies to bracketed pastes too; 150 ms clears it. 🔴 Paste+Enter on the approval modal approved **once** with `4` pasted. Paste+Enter on a choices clarify picks the recommended choice. Seven screens captured as fixtures. | [send path](#the-send-path), [screen check](#the-screen-check) |
 
@@ -1960,468 +1927,6 @@ From the viewer, before anything leaves the host, muster-mirror **drops**
 `pending[].text`, and every `sudo` frame. What remains passes the rendered
 view's redaction and caps. Nothing is stored on the server.
 
-## The hermes agent kind
-
-> **REMOVED** — this section and [Phase 5 as built](#phase-5-as-built) are the
-> historical record of a kind muster no longer has; see the note at the top.
-
-### Mode: API server, driven by a supervisor
-
-| mode | verdict |
-|---|---|
-| **API server** (`hermes gateway run`, `API_SERVER_ENABLED`, `gateway/platforms/api_server.py`) | **Chosen.** Structured tool, approval and terminal events; steer and stop; sessions persisted; no TTY. |
-| `hermes chat -q … --format stream-json` | Rejected. No approval events (dangerous commands are blocked); at P it leaves a detached gateway per home that **inherits the caller's environment**, `API_SERVER_*` included, and so serves the API too (S7). hermesd must own the only gateway. |
-| ACP (`hermes acp`) | Not chosen. Upstream issue #138949 reports ACP failing with a per-task `HERMES_HOME`. |
-| muster calling Hermes's `/v1/responses` directly | Rejected. Different session header and continuity model; approvals are on `/v1/runs`; the API key would leave the pod; muster's health path is `/`. |
-
-**The API surface hermesd uses**, at P (S6):
-
-- `POST /v1/runs {input, session_id, instructions}` → `202 {run_id, status:
-  "started"}`. `session_id` defaults to the run id when omitted, so hermesd
-  always sends one.
-- `GET /v1/runs/{id}/events`, SSE with `: keepalive` about every 10 s. Events
-  consumed: `message.delta` (streaming text), `tool.started`,
-  `tool.completed`, `tool.failed`, `approval.request`, `approval.settled`, and
-  the terminal `run.completed`, `run.failed`, `run.cancelled`,
-  `run.interrupted`. `run.queued`/`run.started` exist in source but were never
-  observed and are not relied on.
-- `POST /v1/runs/{id}/approval` with **exactly**
-  `{"request_id": <approval.request.prompt_id>, "execution_generation": <n>,
-  "choice": "once"|"deny"}`; any other key set is `400 invalid_params`
-  (`P:gateway/platforms/api_server_authority_runs.py:113-133`).
-- `POST /v1/runs/{id}/stop`, `/steer`; `POST /v1/runs/{id}/resolve-unknown
-  {admission_id, execution_generation}`; `GET /v1/runs/{id}`;
-  `GET /api/sessions/{id}/messages`.
-- 🔴 **Only `/v1/runs` and streaming chat completions can be approved.** They
-  register an approval notifier before the turn; any other API turn resolves
-  from `approvals.unattended_mode` (default deny) without asking
-  (`P:tools/approval.py`, `_presence`).
-- 🔴 **An unanswered approval is denied after `approvals.timeout` (300 s), and
-  the run still ends `run.completed`**, with a tool result starting
-  `BLOCKED: Command timed out without user response`. muster would read that
-  as success. So hermesd's relay timeout is **shorter** than the rendered
-  `approvals.timeout` (proposed: relay 240 s, Hermes 300 s, both rendered
-  explicitly), and a relay timeout is answered `deny` by hermesd itself.
-- **The `clarify` tool is not offered to API-server turns**: the
-  model's call gets "Tool 'clarify' does not exist" (S6). Question cards from
-  pods need a toolset config that adds `clarify`, and then
-  `POST /v1/runs/{id}/clarify` (P-only, untested end to end). Not in the first
-  release of the kind.
-
-### hermesd: the ccd equivalent
-
-A new binary, `cmd/hermesd`, built from this module like `ccd`, so its wire is
-tested against muster's own client. It is the pod's PID 1 parent of the
-gateway.
-
-| responsibility | ccd today | hermesd |
-|---|---|---|
-| serve muster's wire | `POST /v1/responses` on :18789, bearer `sha256("gw-"+HOOKS_TOKEN)` | the same port, bearer and wire; `GET /` and `/healthz` |
-| run the agent | the `claude` TUI in tmux, supervised | `hermes gateway run` with the API server on **127.0.0.1** only, supervised with ccd's backoff, crash-loop latch and `/healthz` failure |
-| the agent's own credential | none | an `API_SERVER_KEY` generated **once** and kept on the volume, `/data/hermesd/api-server-key`, mode 0600; passed only to the child; stripped from the agent's shell by Hermes (S8). It must be **stable across restarts**: see [restart](#restart-and-resume) |
-| one turn | paste, read the transcript, end on the Stop hook | `POST /v1/runs`, stream `/events` |
-| streaming text | output_text deltas | `message.delta` → `response.output_text.delta` |
-| the agent's own tools | `NativeToolItem` items, streamed as `output_item.done`, never in `response.completed` | the same: `tool.*` → `native_tool_call` items, so muster draws them and never dispatches them |
-| permission prompts | `ccd approve` → `MUSTER_APPROVAL_GATE_URL` | `approval.request` → the same relay → the exact P body, `once` or `deny`; relay timeout → `deny` |
-| instructions | the managed `CLAUDE.md` | sent as `instructions` on **every** run (see [instructions](#instructions)) |
-| failure | typed `{"error":{type,code,…}}` | the same shape: `run.failed` → `runtime_error`, `run.interrupted` → `interrupted`, a provider 429 → `rate_limited` |
-| busy | 409 `busy` | 409 `busy` while a run for that session is live |
-| sessions | lanes, one CLI per explicit session | a muster session key → Hermes `session_id` (and last run id) map on the volume; one gateway serves all |
-| readiness | the CLI's SessionStart hook | Hermes `GET /health` 200 (about 2 s after start, S8) **and** start-up recovery done |
-| repository | `CCD_REPO` clone before the CLI starts | the same checkout and `not_ready` reasons; the rendered `terminal.cwd` is the checkout |
-| seed | `ccd seed` | done by `hermesd` itself on every start, before the gateway (see [volume](#volume-layout)); no subcommand |
-
-A muster message arriving while a run is live is a 409, never a steer, until
-muster has a steer concept.
-
-### Restart and resume
-
-No run resumes (S6).
-
-- **SIGTERM** (a rollout): the gateway drains for 30 s, then interrupts the run
-  (`run.interrupted`, status `cancelled` at P) and **exits 1**. The transcript
-  gets a `failed_turn` row. P prefixes the session's next user message with a
-  system note that the previous turn was interrupted. hermesd returns the typed
-  `interrupted` failure and does not retry.
-  - The pod's `terminationGracePeriodSeconds` is **over 30 s** (proposed 45 s),
-    or the kubelet's SIGKILL turns every in-flight run into the unknown case
-    below.
-  - hermesd forwards SIGTERM, and a gateway exit 1 **after hermesd sent
-    SIGTERM** does not count toward the crash latch.
-- 🔴 **SIGKILL or OOM** (P): the run is left `unknown`, and every later run on
-  that session is admitted but **parks behind it**, while its SSE reports
-  `run.failed {error: "unknown_execution"}`. That event is not terminal: once
-  the unknown run is resolved, the queued run executes. A client that treats it
-  as a failure and lets the person resend would run the turn **twice**.
-  hermesd therefore:
-  - 🔴 **keeps the API key stable.** Runs, their idempotency keys and
-    `resolve-unknown` are scoped by a hash of the profile and the **API key**
-    (`P:gateway/platforms/api_server_runs.py:375-386`); `_request_owns_run`
-    (`:1168-1180`) gates `GET /v1/runs/{id}` and `resolve-unknown`
-    (`:1487-1492`) on it. A key minted per start, as an earlier revision
-    proposed, would make every recovery call 404 and let a same-key re-post
-    admit a **second** run. So the key is generated once, kept on the volume
-    (0600) and reused by every start. (Deriving it from the hooks token was
-    rejected: muster may rotate that token, which would orphan every run.)
-  - **records intent before it posts.** For each turn it writes to its map on
-    the volume, **before** `POST /v1/runs`: the session, a fresh idempotency
-    key, the **exact request body bytes**, a **fingerprint of the API key** it
-    posts with (a hash, never the key), and "posting". It sends the key as
-    the `Idempotency-Key` header (`:738`; P keeps keys in the durable
-    `runs_idempotency.db`) and records the run id from the 202. A crash between
-    the POST and that record would otherwise leave a run hermesd cannot name,
-    parking the session for good. On recovery an intent with no run id is
-    re-posted with the **same key and the same bytes**: the request fingerprint
-    hashes the body (`:660-666`), so only an identical body replays the existing
-    run instead of starting a second. That replay across a gateway restart is
-    UNVERIFIED; Phase 5 measures it.
-  - **409 `idempotency_key_conflict`** means the stored key saw a different
-    body. hermesd never retries it with a new key: the turn is reported as
-    "may have run; check the conversation", and the intent is closed.
-  - **Key retention** is 24 h. An intent older than that is never re-posted
-    (a replay could start a second run); it is resolved by reading the
-    session's messages, and otherwise reported as "may have run".
-  - **An intent is never re-posted under a different API key.** If the key's
-    fingerprint differs from the intent's (the key file was lost or replaced),
-    the old run is out of scope for the new key, and a re-post would admit a
-    second run. The intent is resolved from the session's messages, else
-    reported as "may have run".
-  - 🔴 **After a key change, every session posted under the old key is
-    retired.** Scope is a hash of the profile and the key
-    (`P:gateway/platforms/api_server_runs.py:375-386`), and `GET /v1/runs/{id}`
-    and `resolve-unknown` answer only the owner (`:1168-1180`, `:1487-1492`).
-    So under a new key hermesd **cannot see** whether an old run is `unknown`
-    and blocking its session: both calls 404. It cannot retire only the blocked
-    sessions. The session map therefore records, per session, the fingerprint
-    of the key its runs were posted with, and at start hermesd **retires every
-    session whose fingerprint differs from the current key**, **after** first
-    resolving every old-key intent it can from the session's messages (resolve
-    first, then retire, so an intent's outcome is decided against the session it
-    was posted to). Retiring maps the muster
-    session to a fresh Hermes `session_id`. This deliberately costs the history
-    of sessions that were not blocked too; a session that might be blocked
-    forever is worse. The next turn's reply on each starts with: "The previous
-    Hermes session could not be recovered after the agent's API key changed;
-    this turn starts a new session without its history." The key only changes
-    if its file on the volume is deleted or replaced (a lost volume loses
-    `state.db` too), so this is rare; it is logged and counted.
-  - **recovers on every gateway start, not only its own.** The likely SIGKILL is
-    the gateway alone being OOM-killed while hermesd lives on. So after every
-    start of the child (hermesd's own start, and each supervised restart), and
-    before it answers any turn (`/healthz` reports `recovering`), hermesd
-    settles every session with an OPEN intent: it `GET`s that intent's run and
-    calls `POST /v1/runs/{id}/resolve-unknown {admission_id,
-    execution_generation}` when it is `unknown` (outcome `interrupted`),
-    logging what it resolved. A session with no open intent is not called
-    about at all: a run becomes a session's last run only once it has ended.
-    A failure that may pass (transport, timeout, 5xx, 429) — and a 401 or
-    403, which refuses the API key and so every session alike — is retried
-    and never retires a session; if it persists, `/healthz` fails at the
-    7-minute stuck bound. Only a definite 4xx refusal of an open intent's
-    recovery, persisting 5 minutes with no other outcome between, retires that
-    one session — 2 minutes before the stuck bound, more than the liveness
-    probe's 90 s, so the pod is never restarted for a session it would retire;
-  - treats `run.failed` with `unknown_execution` as "queued behind an unknown
-    run": it keeps streaming, resolves the predecessor, and never reports it as
-    a failure.
-- Sessions and their messages survive any restart; the next run on the same
-  `session_id` gets the full history. Run records survive a restart
-  (`GET /v1/runs/{old}` answers with its final status).
-- The `hermes sessions discard` step of the earlier draft is superseded by
-  `resolve-unknown`.
-
-### Image
-
-The upstream image starts through s6-overlay as root and accepts `runAsUser`
-only as 0 or its own uid 10000 (`docker/main-wrapper.sh:40-58`), which
-conflicts with the restricted profile, and a commit pin has no published image.
-
-**A Nix-built image** (measured, S8):
-
-- upstream's flake at the pin, `packages.minimal` **with ffmpeg overridden
-  out**: `minimal.override { ffmpeg = <empty>; }` (`P:nix/hermes-agent.nix`
-  takes `ffmpeg` as a `callPackage` argument). Upstream `minimal` is a
-  3,278 MiB closure, mostly a C toolchain pulled in by ffmpeg; `ffmpeg-headless`
-  still references it. Overridden: **1,149 MiB closure, a 1.2 GB image, 425 MiB
-  gzipped**. ffmpeg serves audio and voice, which the pod does not offer.
-- built with `dockerTools.streamLayeredImage`, with `hermesd`, bash,
-  coreutils, git, curl, cacert, ripgrep and procps;
-- `/etc/passwd` and `/etc/group` entries for uid 1000 (without one,
-  Hermes's real-home lookup falls back to a scratch directory);
-- `/data` created owned by uid 1000; `User = "1000:1000"`;
-- no init: Python as PID 1 handled SIGTERM; with hermesd in front, hermesd is
-  PID 1.
-
-It ran with a read-only root, `--cap-drop ALL` and `no-new-privileges`; the API
-answered about 2 s after start, and a session survived a container restart.
-Not measured: a cold build from an empty Nix store.
-
-### Volume layout
-
-One PVC at `/data`, as for `claude-code`:
-
-| path | what |
-|---|---|
-| `/data/hermes` | `HERMES_HOME`: `state.db` (+ `-wal`/`-shm`), `response_store.db`, `runs_idempotency.db`, `config.yaml` (rendered), `SOUL.md` (fallback only), `memories/`, `skills/`, `sessions/`, `logs/` |
-| `/data/hermes/home` | the agent shell's HOME; **created by hermesd's start-up seed step**; git config lives here |
-| `/data/hermes/cache/scratch` | the agent shell's `TMPDIR`, set by Hermes, pruned after 24 h idle: on the volume |
-| `/data/workspace` | the agent's workspace and checkout |
-| `/data/hermesd` | hermesd's session map |
-
-- 🔴 **`state.db` needs a real local filesystem.** NFS and virtiofs are not
-  supported (`website/docs/user-guide/docker.md:216-225`). A deployment
-  requirement to document.
-- 🔴 **No `.env` on the volume, ever.** `$HERMES_HOME/.env` loads with
-  `override=True`, beating pod environment, and **clears** known keys it does
-  not list (`P:hermes_cli/env_loader.py:510-518`). hermesd's start-up seed step
-  refuses to start when one exists (naming it, deleting nothing it did not write), and the
-  supervisor checks again before every in-pod restart, because the agent can
-  create one with `hermes config set`. The analogue of ccd's
-  `settingsForbidden` strip.
-- **The agent shell's HOME** is `$HERMES_HOME/home` only if that directory
-  exists **and** either container detection succeeds or
-  `TERMINAL_HOME_MODE=profile` is set (`P:hermes_constants.py:743-768`). So
-  hermesd's start-up seed step creates the directory and the spec sets
-  `TERMINAL_HOME_MODE=profile` explicitly rather than relying on detection.
-
-**The rendered `config.yaml`**, rewritten on every start so nothing the session
-writes into it survives a restart:
-
-- `_config_version: 51` (without it every start logs that the config predates
-  auto-migration);
-- `terminal.backend: local`; `terminal.cwd`: the checkout, else
-  `/data/workspace` (the shell's cwd is `terminal.cwd`, else HOME — never the
-  process cwd; it is also what makes the repository's `AGENTS.md` load);
-- `approvals.mode: manual`, `approvals.timeout: 300` (longer than hermesd's
-  relay timeout);
-- `updates.check: false`; telemetry and OTLP export explicitly off (already
-  default off);
-- `sessions.auto_prune` explicit; toolsets without browser, computer use and
-  voice.
-
-### Credentials
-
-- **The provider is OpenRouter, with the credential muster's gateway runtime
-  already uses** (operator decision): the admin's `MUSTER_AGENT_OPENROUTER_KEY`,
-  or a member's own stored OpenRouter key ([connectors.md](../connectors.md)).
-  It goes into the agent's own Secret as `OPENROUTER_API_KEY`, consumed by
-  `envFrom`, as `CLAUDE_CODE_OAUTH_TOKEN` does for `claude-code`, with the same
-  seam-ledger test holding the name to that one place.
-- **The agent's shell environment does not carry it** (S8): provider keys
-  (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY` measured), `GH_TOKEN`, `GITHUB_TOKEN`
-  and every `API_SERVER_*` variable are stripped from terminal subprocesses
-  (`P:tools/environments/local_env_policy.py:38,380`). 🔴 **That is a claim
-  about the shell's own environment only, NOT a boundary:** the agent runs as
-  the gateway's uid and can read the gateway's environment, provider key
-  included, from `/proc/<pid>/environ`. This exposure is **accepted** (operator
-  decision, [above](#operator-decisions)) as parity with `claude-code` pods,
-  whose agent can read its own OAuth token the same way.
-- **The in-pod API key** (`/data/hermesd/api-server-key`, 0600) grants the
-  loopback API server: starting runs on any session, reading them, and
-  answering their approvals. The agent runs as the same uid and **can read
-  it**, as it can already read the gateway's environment in `/proc`. That is
-  acceptable because it grants nothing the agent does not already have: the
-  agent can run any command in its own shell, so approving its own commands
-  through the API is no new power, and the API is bound to loopback inside a
-  pod reachable only by muster. Approvals in a pod are a policy aid, not a
-  boundary against the agent (as for `claude-code`). The key is not a provider
-  credential and does not leave the pod.
-- **`MUSTER_HOOK_TOKEN` and `MUSTER_CONNECT_URL` pass through unchanged** (S8);
-  no `env_passthrough` configuration is needed.
-- **OAuth providers are not offered for pods**: some rotate single-use refresh
-  tokens into `auth.json`.
-- **GitHub: no token in the pod**, as for `claude-code`. git reaches GitHub
-  through muster's connector proxy, which injects a GitHub App token limited to
-  the agent's repository ([github-app.md](../github-app.md)). hermesd's start-up
-  seed step writes ccd's `url.<proxy>.insteadOf`, `followRedirects` and
-  `extraHeader = X-Muster-Token: …` lines with
-  `HOME=$HERMES_HOME/home git config --global`. Measured: the agent's
-  `git clone` went through a stand-in proxy with the token header (S8). The
-  token then sits in `$HERMES_HOME/home/.gitconfig` on the volume, as it sits
-  in ccd's HOME today.
-- **muster's MCP server**, when the connector surface is offered, goes into
-  `mcp_servers:` as an HTTP server with the hook token by `${MUSTER_HOOK_TOKEN}`
-  expansion.
-
-### Instructions
-
-Measured (S9):
-
-- **`/v1/runs` `instructions` is the path.** It is appended at the end of that
-  run's system prompt, and leaves Hermes's identity and the repository's
-  `AGENTS.md` intact (`P:gateway/platforms/api_server_runs.py:825`). It is
-  **not** persisted: hermesd sends it on every run, so a change to muster's
-  instructions takes effect on the next turn. agentspec places the text
-  **outside every volume**, at a fixed read-only path such as
-  `/etc/hermesd/instructions.md` (as `ClaudeCodeInstructionsPath` does for
-  `claude-code`), never in the workspace. It is a
-  read-only file (`Options.Instructions`), which hermesd reads.
-- **Fallback: `SOUL.md`** = the seeded default + muster's text. SOUL.md replaces
-  only the ~670-character identity paragraph; the seeded file *is* that
-  paragraph, so appending keeps it.
-- **Never `.hermes.md`**: when present, the repository's `AGENTS.md` is not
-  loaded.
-- **Never `agent.system_prompt` or `HERMES_EPHEMERAL_SYSTEM_PROMPT`**: both are
-  ignored for API-server turns.
-
-### Sandboxing
-
-Hermes's terminal tool in a pod is the `local` backend, so **the pod is the
-sandbox**, exactly the `claude-code` profile:
-
-- `RunAsUser`/`FSGroup` 1000, `RunAsNonRoot`, `Restricted`,
-  `NoServiceAccountToken`, a read-only root filesystem except `/data` and
-  `/tmp`;
-- the same NetworkPolicy: ingress from muster only, egress to DNS, TCP 443 on
-  public addresses and muster's connect port;
-- `HERMES_WRITE_SAFE_ROOT=/data`.
-
-`hermes egress` (iron-proxy) works with the docker backend only
-(`P:hermes_cli/proxy_cli.py:1-30`). Hermes's hardline blocks and
-`approvals.deny` still apply; `--yolo` and `HERMES_YOLO_MODE` are never set.
-[limits.md](../limits.md)'s statement for `claude-code` holds: "public internet
-on 443" is not "the provider and GitHub".
-
-### muster-side changes for the kind
-
-- `agents.KindHermes = "hermes"`, its `KindLabel`, `KindTurnTimeout` (longer
-  than hermesd's own turn budget, as `ClaudeCodeTurnTimeout` documents), a
-  migration widening `agents_kind_check`, and `Kinds`.
-- `agentspec.buildHermes`, mirroring `buildClaudeCode`: every missing input a
-  refusal naming it; `TERMINAL_HOME_MODE=profile`; a termination grace over
-  30 s; a memory limit (the four-minute soak's RSS rose from about 275 MiB to
-  328 MiB, undiagnosed).
-- Configuration: `MUSTER_AGENT_HERMES_IMAGE` (pinned digest) and
-  `MUSTER_AGENT_HERMES_STORAGE_SIZE`; the OpenRouter key is the existing one; documented in
-  [configuration.md](../configuration.md), which a test checks.
-- No Terminal view for `hermes` agents in the first release: `agents.terminal`
-  refuses kinds other than `claude-code`.
-
-### Phase 5 as built
-
-`cmd/hermesd`, `images/hermes-agent` (the image flake and `smoke/`), the kind
-(`agents.KindHermes`, migration `0038`, `agentspec.buildHermes`, the
-`MUSTER_AGENT_HERMES_*` variables) differ from the sections above in these
-ways, each decided while building it:
-
-- **The kind ships dormant** (operator decision): off unless
-  `MUSTER_AGENT_KINDS` includes `hermes` and `MUSTER_AGENT_HERMES_IMAGE` is
-  set; enabled only after a real-pod run passes (NetworkPolicy, restricted
-  admission, a live `Idempotency-Key` replay).
-- **The pieces ccd and hermesd share moved to `internal/podagent`** — git
-  routing through the connector proxy, the repository checkout (with its
-  self-filed `github` request), the bearer, the `/v1/responses` wire (failure
-  shape, native tool items, the response writer, the prompt reader), the
-  approval-queue client (`ApprovalRelay`: post, poll, fallback on timeout or
-  no relay) and the crash latch with its backoff (`RecordExit`) — unchanged in
-  behaviour; ccd keeps its names as thin delegations, and its untagged and
-  tmux suites pass unchanged. One rule, one implementation.
-- **The turn budget STOPS the run** (`POST /v1/runs/{id}/stop`) and the turn
-  answers a typed `turn_timeout`. Chosen over following the run in the
-  background and storing its outcome for the next reply: a run nobody follows
-  can still ask for approvals nobody sees, spend provider credit unbounded, and
-  hold its session busy with no deadline; a stop ends all three, and the
-  person resends knowing the turn did not finish. 🔴 **Nothing is followed in
-  the background**: the watcher and its stored outcome notice are gone. A run
-  recovery finds still going keeps its intent open (the session answers busy)
-  until the session's next turn settles it under the same rules.
-- **Recovery is bounded, and never forgets a flaky API**: a deadline on every
-  recovery call (15 s); only sessions with an open intent are recovered (an
-  idle session makes no call); a failure that may pass (transport, timeout,
-  5xx, 429, and a 401/403, which refuses the API key and so every session
-  alike) is retried and never retires a session, so a persistent one turns
-  `/healthz` non-200 at the 7-minute stuck bound and the liveness probe acts;
-  only a definite 4xx refusal of a session's recovery, persisting 5 minutes
-  with no other outcome between, retires that session — before the stuck
-  bound by more than the probe's 90 s, so no restart loop. The
-  Hermes API client has a 30 s timeout (the run's event stream has its own
-  client, bounded by the turn budget).
-- **The store writes before it changes memory**: a failed write leaves no
-  intent behind (no phantom `busy`). **Written is written**: once the rename
-  has put the new map in place, memory takes it too, even when the
-  directory's fsync then fails (logged) — memory and disk never disagree on
-  whether an intent exists.
-- **A definite refusal is never replayed**: when Hermes refuses a run (a 4xx)
-  and the intent's close cannot be written, the key is tombstoned in memory
-  (never re-posted), the close is retried until it lands, and the turn answers
-  `may_have_run` — a crash before the close lands would replay it.
-- **A run that completed as the budget ran out is the reply**, not
-  `turn_timeout`.
-- **Approvals are relayed from both paths**: the SSE `approval.request` and
-  the run's `pending_controls` when the status is polled (field names from
-  `P:gateway/session_pending_controls.py`); `tool.failed` ends a native tool
-  row as failed.
-- **Fixed, not configurable** (D6–D8): no `HERMESD_TURN_TIMEOUT`,
-  `HERMESD_HERMES_BIN` or `HERMESD_STATE_DIR`; no separate seed subcommand (`serve`
-  seeds the volume itself on every start); no
-  flake `checks.hermesd` (its tests run in `go test ./...`).
-  `HERMESD_MODEL_BASE_URL` stays as a **test-only** override (the smoke test's
-  fake model), logged at boot when set; `agentspec` never sets it, and a test
-  holds it to that.
-- **The pod's root filesystem is read-only**, with an emptyDir at `/tmp`;
-  hermes only. The field renders nothing for other kinds, and a test pins the
-  gateway and `claude-code` fingerprints and rendered Deployments to their
-  bytes before the field existed, so no existing pod rolls.
-- **`/data` must be a local filesystem**, not NFS or virtiofs: Hermes's sessions and
-  its run records are SQLite (`state.db` in WAL mode; documented in
-  [provisioner.md](../provisioner.md) and [configuration.md](../configuration.md)).
-- **The model is checked where it is set**: a hermes agent's model must be a
-  case-sensitive `openrouter/<vendor>/<model>` slug (or a one-part OpenRouter
-  id such as `openrouter/auto`), at
-  dispatch and at a model change, refused before anything is created or
-  stored.
-- **`task_dispatch` does not dispatch `hermes`** yet: the chief's tool refuses
-  the kind until Hermes's MCP client against muster's `/mcp` is verified.
-- **tini is PID 1, not hermesd.** The gateway's terminal tool leaves processes
-  behind when the gateway is killed; they are reparented to PID 1, which must
-  reap them, and a Go process that also `exec`s git cannot safely reap all
-  children. tini forwards SIGTERM to hermesd, which forwards it to the gateway.
-- **`gateway run --external-supervisor`**: hermesd is the process manager that
-  owns the foreground gateway, so an in-chat restart or update exits back to it
-  rather than spawning a detached replacement (read from the pin's
-  `gateway run --help` and `P:hermes_cli/gateway.py`).
-- **The termination grace is 60 s, not 45 s.** The smoke test measured a stop
-  during a run at 34 s on an idle host and 53 s under load (the 30 s drain, the
-  interrupt, hermesd's own shutdown).
-- **A recovery decision about a turn nobody waits for any more is said on the
-  session's next reply** (a notice): an old-key intent resolved from the
-  messages, an intent past the key retention, a key conflict, a retired
-  session. A timed-out turn is not one of them: it was stopped and answered
-  `turn_timeout`.
-- **No relay, an unreachable relay or a dismissed card is a `deny` too**, not
-  only the relay timeout: there is no terminal prompt to fall back to in a pod,
-  and an unanswered prompt would end `run.completed` at Hermes's 300 s.
-- **Busy is one rule**: a session with an open intent (a live turn, or a run
-  recovery is still following) answers `409 busy`; `beginIntent` is the one
-  place it is checked.
-- **`config.yaml` is written as JSON** (which YAML reads), rewritten before every
-  start of the gateway; `agent.disabled_toolsets` removes browser, computer use
-  and TTS; `${OPENROUTER_API_KEY}` and `${MUSTER_HOOK_TOKEN}` are expanded by
-  Hermes, so no credential is written to the volume.
-- **The model** is muster's slug with its `openrouter/` provider prefix removed
-  (Hermes runs the openrouter provider); `openrouter/auto` keeps its id.
-- **SOUL.md is not written.** The per-run `instructions` path is measured (S9)
-  and is the only one used; the SOUL.md fallback has no caller.
-- **Not in this release**, each refused rather than half-built: a `hermes`
-  chief (every chief tool is an MCP tool, and Hermes's MCP client against
-  muster's `/mcp` is unverified — the smoke test's fake `/mcp` answered 404 and
-  Hermes parked the server and carried on), the Terminal view, and `clarify`
-  (open question 3). The memo relay still skips the kind
-  (`ResultKindUnsupported`), although hermesd answers a second turn with the
-  typed `409 busy` that rule waits for.
-- **Measured by the smoke test (34 checks), against the real pin in a
-  container** (uid 1000, read-only root, no capabilities): the exact approval
-  body, approved and denied through the relay, each with an effect that can
-  fail (the approved command's directory, the denied one's `blocked` status);
-  the agent shell's OWN environment (no bearer, hooks token, provider or API
-  key there — `/proc` exposure is accepted, see the operator decisions; `HOME`
-  and `TMPDIR` on the volume); a real `git ls-remote` through muster's proxy
-  (the fake muster records the `/connect/` path and the bearer); a SIGKILL mid-turn (the turn ends `interrupted`,
-  recovery's `resolve-unknown` with the exact body releases the session); the
-  `Idempotency-Key` replay across a restart (above); SIGTERM during a run; a
-  container restart on the same volume (same API key, history kept). Not
-  measured: a Kubernetes pod, a real provider, a cold image build.
-
 ## Phased plan
 
 Efforts are rough engineer-days, including tests and docs. Phase 0 is done.
@@ -2433,7 +1938,7 @@ Efforts are rough engineer-days, including tests and docs. Phase 0 is done.
 | ~~2~~ | (**done**, see [as built](#phase-2-as-built)) Read-only Hermes mirroring: the strict mirroring identity rule (moved from Phase 1; then pulled forward into 1b by coordinator decision, and landed there — Phase 2 builds on it), breadcrumb locator with the end-reason staleness rule (no view, unknown status), SQLite reader (compaction, compression-only lineage), renderer, the `hermes-hook` command and its status files with lease and newest-row checks, the Home Manager declaration and the locking allowlist writer, mismatch diagnostics, listing and kind chip, secret-path ledger, `-list -hermes` | 6–8 | 1 |
 | ~~3~~ | (**done**, see [as built](#phase-3-as-built)) Gated pane send **and its live harness**. `make test-livehermes`: the pinned Hermes in a scratch tmux server and home; fixtures for every blocking state, and from them the paste guard's chrome check (moved from Phase 1), including the palette, model picker and stash; the overlay-state ledger; measuring the Escape sequence (with the abort rule and waits above `timeoutlen`) against every overlay at its non-default stages (filtered picker, reasoning stage, palette and stash together, the picker opened over a draft, vi mode); re-measuring under load the false-idle slack, the 150 ms Enter margin and the queue gap. Then the send: per-runtime server gates, host `CheckSend` with the image-region and input-line rules and the bounded Escape sequence, the `hermesSend` switch on both sides, the `/`, `!` and trailing-`\` refusals, collapse-aware post-paste check, database-confirmed submit with "may have been submitted", Queue and Send now for Hermes, host docs. Send stays off until these measurements are done and the harness is green; then the operator enables it per host, with the residual cases named in the host docs. | done | 2 |
 | ~~4~~ | (**done**, see [as built](#phase-4-as-built)) Questions and approvals: clarify cards from the DB, approval and sudo attention items from the hooks, viewer discovery through `gateway.sock.path`, attach-to-answer, `approval.respond` with the stale-modal card, measuring the viewer's clarify answer (and wiring it if it passes), the hygiene filters; harness cases for each | 5–7 | 2, 3 |
-| ~~5~~ | (**removed** since; see the note at the top) `hermes` kind: `hermesd` (runs, events, exact approval body, relay timeout, a stable API key on the volume, intent-before-POST with the exact body and `Idempotency-Key`, 409 and retention handling, `resolve-unknown` recovery on every gateway start, SIGTERM handling), the Nix image without ffmpeg, `agentspec`, migration, config, smoke test like `cc-smoke` (**done**; see [as built](#phase-5-as-built)). A first run in a real pod is the release's (muster-ops), not this phase's code. | done | 1 |
+| ~~5~~ | `hermes` agent kind: built, then **removed** (see the note at the top) | — | 1 |
 
 Every phase is implemented. Each phase is released and shipped to the hosts as
 it merges. Phases 2–4 and 5 are independent after Phase 1. The shortest useful
@@ -2454,10 +1959,6 @@ guard already in place. `make test-livehermes` re-runs on every pin bump.
   schema and the send path depends on its key bindings and glyphs. Every pin
   bump re-runs `make test-livehermes` and re-records the fixtures;
   muster-mirror refuses a schema or a screen it cannot read.
-- **The pod's crash path.** An unknown execution blocks a session until
-  resolved, and a mishandled `unknown_execution` doubles a turn. hermesd's
-  start-up recovery is the mitigation; a pod killed before recovery runs leaves
-  the session parked until the next start.
 - **Untested in Phase 0, carried as risk:**
   - a real pip/uv install (S10's row is from a simulated launcher), and the bare
     `hermes` launch form;
@@ -2474,26 +1975,13 @@ guard already in place. `make test-livehermes` re-runs on every pin bump.
   - ~~the command palette, model picker, prompt-stash panel, secret capture,
     connection form and voice states~~ (fixtures recorded in Phase 3; secret,
     connection and voice injected);
-  - ~~an `Idempotency-Key` replay across a gateway restart~~: **measured** in
-    Phase 5's image smoke test: the same key and bytes after a SIGKILL and
-    restart answer `202` with the ORIGINAL run id and `replayed: true`; another
-    key with the same body admits a new run (the control); the same key with
-    another body is `409 idempotency_key_conflict`;
   - ~~the Escape sequence against the palette, model picker and stash at their
     non-default stages~~ (measured in Phase 3);
   - a Hermes CLI run over `ssh` or `docker exec` in a pane, covered only by the
     best-effort chrome check;
-  - in a pod, the agent shares a uid with the gateway and can read its
-    environment and the API key file, so approvals there are a policy aid, not a
-    boundary against the agent itself (as for `claude-code`);
   - ~~every timing under load: the false-idle slack, the Enter boundary, the
     ~0.3 s queue gap~~ (measured in Phase 3: the slack holds, 150 ms submits
     every time, the queue gap reaches about 2 s);
-  - a Kubernetes pod: container detection, the NetworkPolicy and restricted
-    admission, a cold image build;
-  - `/clarify` end to end on the API server;
-  - the RSS growth during the soak (leak or history growth, not told apart);
-  - a real provider: rate limits and compression in a pod;
 - **Hermes's own concurrency issues** at P (upstream #140622, #139959,
   #135487, #133253, #131838, #120888): turns aborted by lock contention or a lost
   lease surface as failed turns in muster.
@@ -2510,10 +1998,6 @@ guard already in place. `make test-livehermes` re-runs on every pin bump.
    `always`?
 2. **Host config advice:** recommend `/busy queue` on mirrored hosts? It changes
    what Enter does at the terminal for the person too.
-3. **Question cards from pods:** add the `clarify` toolset to the pod (it is
-   off for API-server turns), and with it the P-only `/clarify` route?
-4. **A Terminal view for `hermes` pods** (a TUI viewer of the in-pod gateway):
-   in scope for a later release?
 
 ## Recommended improvements
 

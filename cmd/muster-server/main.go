@@ -1006,18 +1006,6 @@ func displayOrDefault(v string) string {
 func (a *app) logBanner(ext api.Extensions, port router.Port) {
 	l := a.logger
 
-	// 🔴 A REMOVED KIND'S LEFTOVER SETTINGS BOOT, LOUDLY (dropRetiredKinds):
-	// refusing them would crash-loop the first rollout of this build on a
-	// deployment that still lists them. Printed whatever else is configured.
-	// Names only, never values.
-	if len(a.cfg.RetiredKindSettings) > 0 {
-		l.Printf("WARNING — agent kinds: IGNORING %s: the %s agent kind was REMOVED from muster, so nothing "+
-			"reads them. Delete them from this deployment. An existing %s agent is listed as \"%s\" and can "+
-			"only be stopped or destroyed",
-			strings.Join(a.cfg.RetiredKindSettings, ", "), agents.RetiredKindHermes, agents.RetiredKindHermes,
-			agents.KindLabel(agents.RetiredKindHermes))
-	}
-
 	// The Agents list's Idle section (internal/ui/idle_section.go), in both
 	// directions: the threshold in force, or OFF.
 	if a.cfg.AgentsIdleAfter > 0 {

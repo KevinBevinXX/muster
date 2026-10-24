@@ -670,13 +670,6 @@ func (a *Adapter) Start(ctx context.Context, agentID int64) error {
 	if err != nil {
 		return fmt.Errorf("agentprovision: start agent %d: load row: %w", agentID, err)
 	}
-	// A legacy row of a REMOVED kind (a hermes agent from an older build) is
-	// refused BEFORE anything is applied or scaled: this build cannot build its
-	// pod, and a bare Scale would revive the old image behind muster's back.
-	// The row is left as it is — it can still be stopped or destroyed.
-	if agents.IsRetiredKind(ag.Kind) {
-		return fmt.Errorf("agentprovision: start agent %d (%s) is kind %s: %w", ag.ID, ag.Name, ag.Kind, agents.ErrRetiredKind)
-	}
 	// 🔴 A START RE-APPLIES THE SPEC instead of only scaling WHENEVER THE SPEC
 	// CARRIES A CREDENTIAL THAT CAN HAVE CHANGED SINCE CREATE: always for
 	// claude-code (the account's setup-token), and for every kind once credentials
@@ -1138,9 +1131,6 @@ func (a *Adapter) buildSpec(ctx context.Context, ag agents.Agent) (provision.Spe
 	switch agents.ResolveKind(ag.Kind) {
 	case agents.KindClaudeCode:
 		return a.buildClaudeCodeSpec(ag, cfg, a.jobBypassVeto(ctx, ag, cfg))
-	}
-	if agents.IsRetiredKind(ag.Kind) {
-		return provision.Spec{}, fmt.Errorf("agentprovision: agent %q is kind %s: %w", ag.Name, ag.Kind, agents.ErrRetiredKind)
 	}
 	if !agents.IsChiefName(ag.Name) {
 		return agentspec.Build(ag, cfg, agentspec.Options{

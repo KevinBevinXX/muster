@@ -1,10 +1,6 @@
 package agents
 
-import (
-	"errors"
-	"slices"
-	"time"
-)
+import "time"
 
 // The agent KINDS: which runtime an agent row is provisioned as.
 //
@@ -25,34 +21,10 @@ const (
 	KindClaudeCode = "claude-code"
 )
 
-// Kinds is every kind this build knows, in the order a picker shows them.
-// Together with [RetiredKinds] it is the set the latest agents_kind_check
-// admits (migration 0038); a test pins the relationship.
+// Kinds is every kind this build knows, in the order a picker shows them. It is
+// the same set the latest agents_kind_check admits (migration 0047); a test
+// pins the two.
 var Kinds = []string{KindGateway, KindClaudeCode}
-
-// RetiredKindHermes is the REMOVED `hermes` kind (a Hermes pod behind
-// hermesd). This build cannot provision one: it is not in [Kinds], so no
-// dispatch, picker or MUSTER_AGENT_KINDS entry enables it.
-//
-// 🔴 IT IS STILL NAMED BECAUSE ROWS OF IT MAY STILL EXIST. Migration 0038's
-// agents_kind_check admits it and the schema is left alone, so a hermes agent
-// created by an older build stays listable, stoppable and destroyable (none of
-// those build a spec); anything that would build its pod — Start, a reapply,
-// a model change — is refused with [ErrRetiredKind].
-const RetiredKindHermes = "hermes"
-
-// RetiredKinds is every kind a stored row may carry that this build no longer
-// provisions.
-var RetiredKinds = []string{RetiredKindHermes}
-
-// ErrRetiredKind is the refusal for an agent whose kind was removed: it can
-// only be stopped or destroyed.
-var ErrRetiredKind = errors.New("this agent's kind was removed from muster; it can only be stopped or destroyed")
-
-// IsRetiredKind reports whether kind is one of [RetiredKinds].
-func IsRetiredKind(kind string) bool {
-	return slices.Contains(RetiredKinds, kind)
-}
 
 // RunsPodSupervisor reports whether kind's image runs muster's OWN in-pod
 // supervisor, ccd (claude-code), rather than the operator's gateway runtime.
@@ -89,8 +61,6 @@ func KindLabel(kind string) string {
 	switch ResolveKind(kind) {
 	case KindClaudeCode:
 		return "Claude Code"
-	case RetiredKindHermes:
-		return "Hermes (removed)"
 	case KindGateway:
 		return "Standard"
 	}

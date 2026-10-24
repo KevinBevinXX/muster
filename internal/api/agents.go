@@ -950,17 +950,6 @@ type dispatchParams struct {
 // claudeCodeNoModel is the one sentence both model writes refuse with.
 const claudeCodeNoModel = "a claude-code agent has no per-agent model (the CLI's own settings choose it); leave the model unset"
 
-// retiredKindRefusal is the one sentence a stored agent of a REMOVED kind
-// (agents.RetiredKinds — a hermes row created by an older build) is refused
-// with by every write that would build its pod: a start or a model change.
-// Stop and destroy build nothing and stay allowed. nil for any live kind.
-func retiredKindRefusal(a agents.Agent) error {
-	if !agents.IsRetiredKind(a.Kind) {
-		return nil
-	}
-	return fmt.Errorf("%w: agent %q is kind %s: %v", ErrDispatchRefused, a.Name, a.Kind, agents.ErrRetiredKind)
-}
-
 // ErrDispatchRefused marks a dispatch refused before anything was created: a
 // kind this deployment does not enable, an account pin for a kind that has none,
 // or a claude-code pool with no usable account.
@@ -973,10 +962,6 @@ var ErrDispatchRefused = errors.New("dispatch refused")
 // it again, through resolveKindAccount.
 func (s *Server) resolveKind(ctx context.Context, want string) (string, error) {
 	kind := agents.ResolveKind(strings.ToLower(want))
-	if agents.IsRetiredKind(kind) {
-		return "", fmt.Errorf("%w: agent kind %q was removed from muster; dispatch a %s or %s agent instead",
-			ErrDispatchRefused, kind, agents.KindGateway, agents.KindClaudeCode)
-	}
 	if !agents.ValidKind(kind) {
 		return "", fmt.Errorf("%w: unknown agent kind %q", ErrDispatchRefused, want)
 	}
@@ -1174,17 +1159,9 @@ func (s *Server) handleAgentStart(w http.ResponseWriter, r *http.Request) {
 	// says why at the door. The row is read as the caller (row-level security),
 	// so another user's agent is not found here and falls through to the
 	// lifecycle path exactly as before.
-	//
-	// A stored agent of a REMOVED kind (a legacy hermes row) is refused here
-	// too, with what it can still do: this build cannot build its pod
-	// (agentprovision.Adapter.Start refuses it again, for any other caller).
 	if s.ext.Kinds != nil && s.ext.Agents != nil {
 		if id, err := strconv.ParseInt(r.PathValue("id"), 10, 64); err == nil {
 			if a, err := s.ext.Agents.Get(r.Context(), id); err == nil {
-				if err := retiredKindRefusal(a); err != nil {
-					http.Error(w, err.Error(), http.StatusConflict)
-					return
-				}
 				if why := s.ext.Kinds.Unavailable(r.Context(), callerID(r.Context()))[agents.ResolveKind(a.Kind)]; why != "" {
 					http.Error(w, fmt.Sprintf("%v: %s", ErrDispatchRefused, why), http.StatusConflict)
 					return
@@ -1258,12 +1235,6 @@ func (s *Server) handleAgentModel(w http.ResponseWriter, r *http.Request) {
 		s.logger.Printf("agents: set model %d: read kind: %v", id, gerr)
 		http.Error(w, "could not update model", http.StatusInternalServerError)
 		return
-	}
-	if gerr == nil {
-		if err := retiredKindRefusal(cur); err != nil {
-			http.Error(w, err.Error(), http.StatusConflict)
-			return
-		}
 	}
 	if gerr == nil && agents.ResolveKind(cur.Kind) == agents.KindClaudeCode {
 		http.Error(w, ErrDispatchRefused.Error()+": "+claudeCodeNoModel, http.StatusConflict)

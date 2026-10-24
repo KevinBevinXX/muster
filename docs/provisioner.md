@@ -51,14 +51,10 @@ What happens when you dispatch:
 `MUSTER_AGENT_KINDS` is a comma list of `gateway` and `claude-code`. It
 defaults to `gateway`, and `gateway` must always be in it.
 
-The `hermes` kind was **removed**. A leftover `hermes` entry, and
-`MUSTER_AGENT_HERMES_IMAGE` / `MUSTER_AGENT_HERMES_STORAGE_SIZE`, are ignored
-with a boot `WARNING` naming them, so an old deployment still boots. A `hermes`
-agent created by an older build is still listed (its kind chip reads
-"Hermes (removed)") and can be **stopped or destroyed**; a start, a model change
-or a reapply is refused, and a new dispatch naming `hermes` is refused as a
-removed kind. The database still admits the kind (migration `0038` is left in
-place), so those rows stay valid.
+A `hermes` kind existed (up to `d46b22e1`) and was removed. A `hermes` entry
+in `MUSTER_AGENT_KINDS` is now an unknown kind and refuses to boot, and
+migration `0047` refuses to run while any `hermes` agent row exists: destroy
+those agents with a build that still has the kind before upgrading.
 
 - **`gateway`** runs your agent image (`MUSTER_AGENT_IMAGE_REPO:TAG`), which
   serves an HTTP chat gateway. muster derives the bearer token the pod accepts as

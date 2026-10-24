@@ -313,14 +313,6 @@ const (
 	// name agents.ValidWorkerPool refuses.
 	envAgentCCBypassPools = "MUSTER_AGENT_CC_BYPASS_POOLS"
 
-	// RETIRED: the removed `hermes` agent kind's image and /data volume size.
-	// 🔴 READ ONLY TO BE NAMED IN A BOOT WARNING, NEVER USED. A deployment that
-	// still sets them (or still lists `hermes` in MUSTER_AGENT_KINDS) boots, and
-	// logBanner says loudly that they are ignored (config.RetiredKindSettings),
-	// rather than crash-looping on its first rollout of this build.
-	envAgentHermesImage   = "MUSTER_AGENT_HERMES_IMAGE"
-	envAgentHermesStorage = "MUSTER_AGENT_HERMES_STORAGE_SIZE"
-
 	// --- the claude-code kind's NetworkPolicy (kubernetes driver only) ---
 	//
 	// A claude-code agent's NetworkPolicy admits connections from MUSTER ITSELF
@@ -815,12 +807,6 @@ type config struct {
 	// "Pr-Review" names the pool "pr-review"). Empty is none.
 	AgentCCBypassPools []string
 
-	// RetiredKindSettings names every setting of a REMOVED kind this
-	// deployment still sets — a `hermes` entry in MUSTER_AGENT_KINDS (dropped
-	// from AgentKinds by loadConfig), MUSTER_AGENT_HERMES_IMAGE, or its storage
-	// size — in the words the boot WARNING prints. Names only, never a value.
-	RetiredKindSettings []string
-
 	// AgentNetpolFromNS and AgentNetpolFromLabels say which pods a claude-code
 	// agent's NetworkPolicy admits: muster's own. AgentNetpolFromLabels is the
 	// variable AS WRITTEN; parsePodLabels is its one parser, and validateKinds
@@ -1064,7 +1050,6 @@ func loadConfig(getenv func(string) string) (config, error) {
 		AgentNetpolFromNS:     strings.TrimSpace(getenv(envAgentNetpolFromNS)),
 		AgentNetpolFromLabels: strings.TrimSpace(getenv(envAgentNetpolFromLabels)),
 	}
-	c.AgentKinds, c.RetiredKindSettings = dropRetiredKinds(c.AgentKinds, getenv)
 	if len(c.AgentCCAccountNames) > 0 {
 		c.AgentCCTokens = make(map[string]string, len(c.AgentCCAccountNames))
 		for _, name := range c.AgentCCAccountNames {
@@ -2028,30 +2013,6 @@ func (c config) validateClaudeCodeKind() error {
 		}
 	}
 	return nil
-}
-
-// dropRetiredKinds removes every REMOVED kind (agents.RetiredKinds — `hermes`)
-// from the MUSTER_AGENT_KINDS list as written, and names each retired setting
-// this deployment still sets, for the boot WARNING (logBanner).
-//
-// 🔴 IGNORED LOUDLY, NOT REFUSED: the live deployment that ran the hermes kind
-// lists it and sets its image, so refusing would crash-loop the first rollout
-// of the build that removed it. Nothing reads these values any more; the
-// WARNING names them so the operator deletes them. Names only, never values.
-func dropRetiredKinds(kinds []string, getenv func(string) string) (kept, ignored []string) {
-	for _, k := range kinds {
-		if agents.IsRetiredKind(k) {
-			ignored = append(ignored, fmt.Sprintf("%s entry %q", envAgentKinds, k))
-			continue
-		}
-		kept = append(kept, k)
-	}
-	for _, name := range []string{envAgentHermesImage, envAgentHermesStorage} {
-		if strings.TrimSpace(getenv(name)) != "" {
-			ignored = append(ignored, name)
-		}
-	}
-	return kept, ignored
 }
 
 // imagePinned reports whether an image reference names a digest or a tag (a ':'

@@ -117,11 +117,6 @@ func TestASpecIsBuiltFromItsOwnersCredentialsOnly(t *testing.T) {
 	if got, err := build(1, agents.KindGateway); err != nil || !strings.Contains(got, envKey) {
 		t.Fatalf("admin gateway: %v\n%s", err, got)
 	}
-	// A legacy row of the REMOVED hermes kind builds nothing, even for the
-	// admin: refused with the retired-kind error.
-	if got, err := build(1, agents.RetiredKindHermes); !errors.Is(err, agents.ErrRetiredKind) || got != "" {
-		t.Fatalf("admin legacy hermes row: %v\n%s", err, got)
-	}
 	// The CONFIG a member's spec is built from carries none of the
 	// environment's credentials either — replaced, not merged — so a kind that
 	// read both (or another account name) still could not reach the admin's.
