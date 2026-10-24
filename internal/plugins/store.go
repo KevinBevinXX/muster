@@ -98,8 +98,9 @@ type Store interface {
 	DraftCards(ctx context.Context, limit int) ([]DraftCard, error)
 	// DraftCard is one of the principal's drafts as a card.
 	DraftCard(ctx context.Context, id int64) (DraftCard, error)
-	// DecideDraft approves or rejects a pending draft.
-	DecideDraft(ctx context.Context, id int64, approve bool) (Draft, error)
+	// DecideDraftFrom approves or rejects a pending draft, recording where the
+	// decision was made (the Asks page or a mirrored session over MCP).
+	DecideDraftFrom(ctx context.Context, id int64, dec DraftDecision) (Draft, error)
 	// ClaimDraft leases one approved, unclaimed draft of pluginID's.
 	ClaimDraft(ctx context.Context, pluginID int64) (c Claim, ok bool, err error)
 	// FinishDraft records pluginID's result for a draft it claimed; a sent one

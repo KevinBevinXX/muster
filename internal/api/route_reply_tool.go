@@ -6,7 +6,6 @@ import (
 	"net/http"
 
 	"github.com/ZacxDev/muster/internal/agents"
-	"github.com/ZacxDev/muster/internal/focus"
 	"github.com/ZacxDev/muster/internal/plugins"
 )
 
@@ -83,7 +82,7 @@ func (s *Server) toolRouteReply(ctx context.Context, c toolCaller, arguments str
 		// Another owner's route reads exactly as a missing one (row-level security).
 		return toolErr("no such route: %s", in.RouteID)
 	}
-	if r.TargetKind != string(focus.KindMirror) || r.TargetKey != c.asker.MirrorSession {
+	if !r.SentToMirrorSession(c.asker.MirrorSession) {
 		s.logger.Printf("routes: %s: route_reply REFUSED from %s/%s: the route was sent to %s:%s",
 			r.RouteID, c.asker.MirrorHost, c.asker.MirrorSession, r.TargetKind, r.TargetKey)
 		return toolErr("route %s was not routed to this session: only the session it was sent to may answer it", r.RouteID)

@@ -758,3 +758,37 @@ func TestTheDraftTriggersHoldUnderTheScopeAllPrincipal(t *testing.T) {
 		t.Fatalf("plugin_reply_drafts FORCED row-level security: %v (%v); want true", forced, err)
 	}
 }
+
+// TestDecideDraftFromRefusesAMalformedSource: DecideDraftFrom refuses, before
+// it touches the row, a source the 0048 CHECK would refuse and an MCP decision
+// that does not name the body it decides; the draft stays pending. CONTROL: a
+// well-formed MCP decision with the right hash (spelled out here, not derived
+// from DraftBodySHA256) approves it and records where it came from.
+func TestDecideDraftFromRefusesAMalformedSource(t *testing.T) {
+	w := newDraftWorld(t)
+	d := w.file(t, w.m, "Noon works.")
+	const sid = "0b2c3d4e-5f60-4718-8a9b-0c1d2e3f4a5b"
+	const noonSHA = "9db1686c34182790eea56d774540580dfdb78c8316b50d277378578a977e0d64"
+	if got := DraftBodySHA256("Noon works."); got != noonSHA {
+		t.Fatalf("DraftBodySHA256 = %s, want %s", got, noonSHA)
+	}
+	for what, dec := range map[string]DraftDecision{
+		"mcp without a body hash":  {Approve: true, Via: DraftDecisionSource{Via: DraftViaMCP, Host: "ws", Session: sid}},
+		"mcp without a session":    {Approve: true, Via: DraftDecisionSource{Via: DraftViaMCP, Host: "ws"}, BodySHA256: noonSHA},
+		"browser naming a session": {Approve: true, Via: DraftDecisionSource{Via: DraftViaBrowser, Session: sid}},
+		"an unknown source":        {Approve: true, Via: DraftDecisionSource{Via: "standing"}},
+		"no source naming a host":  {Approve: true, Via: DraftDecisionSource{Host: "ws"}},
+	} {
+		if _, err := w.s.DecideDraftFrom(session(2), d.ID, dec); !errors.Is(err, ErrInvalid) {
+			t.Errorf("%s: %v, want ErrInvalid", what, err)
+		}
+	}
+	if got, _ := w.s.Draft(session(2), d.ID); got.Status != DraftPending || got.DecidedVia != (DraftDecisionSource{}) {
+		t.Fatalf("after refused decisions: %+v", got)
+	}
+	via := DraftDecisionSource{Via: DraftViaMCP, Host: "ws", Session: sid}
+	got, err := w.s.DecideDraftFrom(session(2), d.ID, DraftDecision{Approve: true, Via: via, BodySHA256: noonSHA})
+	if err != nil || got.Status != DraftApproved || got.DecidedVia != via {
+		t.Fatalf("control: %+v %v", got, err)
+	}
+}

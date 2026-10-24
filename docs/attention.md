@@ -250,7 +250,10 @@ too, through its host's `muster-mirror`:
    `agent_destroy` (the operator tearing down one of their agents) and,
    with a connector store, `connector_requests_list` / `connector_request_decide`
    (the operator deciding a connector request through this session —
-   [connectors.md](connectors.md#deciding-a-request-from-your-own-session)); the
+   [connectors.md](connectors.md#deciding-a-request-from-your-own-session)) and,
+   with the plugin store, `plugin_drafts_list` / `plugin_draft_decide` (the
+   operator approving or rejecting a reply draft —
+   [plugins.md](plugins.md#deciding-a-draft-from-your-own-session)); the
    chief's tools are not on it. The token is checked on every call (a revoked
    one is refused at its next call, `initialize` included). After 10 failed checks of one token from
    one address within a minute, that token from that address is answered 429 —
@@ -280,6 +283,10 @@ and, through `connector_request_decide`, **an approval as the operator of any
 of the owner's agents' pending connector requests** (recorded and shown as via
 MCP from that host; the accepted risk is in
 [connectors.md](connectors.md#deciding-a-request-from-your-own-session)) — and,
+through `plugin_draft_decide`, **an approval as the operator of any of the
+owner's pending reply drafts**, which sends that text to an outside party
+(recorded as via MCP from that host; the accepted risk is in
+[plugins.md](plugins.md#deciding-a-draft-from-your-own-session)) — and,
 through `agent_destroy`, it can **destroy any of the owner's agents but the
 chief** — with no audit row: the only record of which host did it is muster's
 server log.

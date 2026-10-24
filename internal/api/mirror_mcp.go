@@ -28,7 +28,9 @@ import (
 // created (taskScopeOf) — plus attention_answer, the operator answering one of
 // their asks through their own session, and connector_requests_list /
 // connector_request_decide, the operator deciding one of their agents'
-// connector requests through it (connector_decide_tools.go), which no
+// connector requests through it (connector_decide_tools.go), and
+// plugin_drafts_list / plugin_draft_decide, the operator approving or
+// rejecting a plugin reply draft through it (plugin_draft_tools.go), which no
 // dispatched agent gets — and, with session routing on, route_reply: the
 // answer to a message the chief routed to THAT session (route_reply_tool.go).
 //
@@ -45,7 +47,11 @@ import (
 // row name the host it came from) — and 🔴 through connector_request_decide,
 // an APPROVAL AS THE OPERATOR of any of the owner's agents' pending connector
 // requests (operator decision "Build connector_approve MCP"; the grant and the
-// audit line name the host it came from) — and 🔴 through agent_destroy
+// audit line name the host it came from) — and 🔴 through plugin_draft_decide,
+// an APPROVAL AS THE OPERATOR of any of the owner's pending reply drafts,
+// which SENDS that text to an outside party, with no fresh sign-in (operator
+// decision; the row and audit line name the host, and the session a draft's
+// route was sent to is refused) — and 🔴 through agent_destroy
 // (agent_destroy_tool.go, operator decision), the teardown of any agent of
 // the owner's but the chief, with NO audit row (the server log names the host). Never another task, another host's session, another owner's ask
 // or request, a secret, or a chief tool. The SESSION a call names is the caller's claim (its pane);
@@ -180,7 +186,9 @@ func (s *Server) mirrorSessionOf(ctx context.Context, host, sid string) (mirror.
 // task tools, and attention_answer — the operator answering an ask through
 // their own session — with the attention store; and connector_requests_list /
 // connector_request_decide — the operator deciding a connector request through
-// their own session — with the connector store; and agent_destroy — the
+// their own session — with the connector store; plugin_drafts_list /
+// plugin_draft_decide — the operator deciding a reply draft — with the plugin
+// store; and agent_destroy — the
 // operator tearing down one of their agents — with the attention tools. No
 // dispatched agent is offered any operator tool, and their handlers refuse any caller but a mirrored
 // session.
@@ -191,6 +199,11 @@ func (s *Server) mirrorTools() []agents.ToolDef {
 	}
 	if s.connectorDecideToolsOn() {
 		out = append(out, connectorDecideToolDefs()...)
+	}
+	// plugin_drafts_list / plugin_draft_decide — the operator deciding a reply
+	// draft through their own session — with the plugin store.
+	if s.pluginDraftToolsOn() {
+		out = append(out, pluginDraftToolDefs()...)
 	}
 	// route_reply — a routed session's answer (route_reply_tool.go) — with
 	// session routing on.

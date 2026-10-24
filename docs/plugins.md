@@ -693,6 +693,29 @@ Each draft is a card on the Asks page's Reply drafts tab (`/attention?tab=drafts
 - If an earlier reply to the same message is unconfirmed, a pending card says
   the sender may get both.
 
+### Deciding a draft from your own session
+
+One of your own **mirrored** Claude Code sessions can decide a draft for you,
+over the mirror MCP door ([attention.md](attention.md#mirrored-claude-code-sessions)),
+with two tools no dispatched agent (the chief included) is offered:
+
+| tool | what it does |
+|---|---|
+| `plugin_drafts_list` | Your **pending** drafts, at most 50: id, plugin, the sender (followed by the `UNVERIFIED` mark unless the plugin verified it — the same mark the chief's turn shows), the subject and text of the message it answers, the exact reply, its `body_sha256`, when it was written and expires, and the session route it came from (with `this_session` when that route was sent to the calling session). Read-only. |
+| `plugin_draft_decide {id, decision, body_sha256}` | `decision` is `approve` (it is sent: the plugin's next claim collects it) or `reject`. It is the card's own decision — the same refusals, claim wake-up and notification clearing — **without** the card's fresh sign-in (by operator decision; the mirror token is the credential). Refused: a `body_sha256` that is not the SHA-256 of the draft's text (decide on exactly what you read), a call **from the session the draft's route was sent to** (it wrote that reply), a draft that is no longer pending (a withdrawal stays on the card), and another owner's draft or a missing id (both *"No such draft."*). |
+
+Every decision records where it was made (`plugin_reply_drafts.decided_via`,
+migration 0048): `browser` for the card, `mcp` with the host and session for
+`plugin_draft_decide`; the `plugin.draft.*` audit row says the same.
+
+🔴 **Accepted risk: a mirror token can send a reply.** An approval over MCP
+sends text to an outside party in your name with no fresh sign-in. A leaked
+mirror token, or a mirrored session talked into it, can approve any of your
+pending drafts (never edit one: the text is fixed when it is written, and the
+hash must match it). The routed session is refused its own reply, so a session
+answering a routed message cannot also approve that answer through its own
+pane. Revoke a token you suspect.
+
 ### What happens to a draft
 
 | state | meaning |

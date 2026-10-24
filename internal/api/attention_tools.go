@@ -366,6 +366,11 @@ func (s *Server) dispatchCallerTool(ctx context.Context, c toolCaller, name, arg
 	if text, ok := s.dispatchConnectorDecideTool(ctx, c, name, arguments); ok {
 		return text, true
 	}
+	// The reply-draft decision tools likewise: the plugin store, mirrored
+	// sessions only (plugin_draft_tools.go).
+	if text, ok := s.dispatchPluginDraftTool(ctx, c, name, arguments); ok {
+		return text, true
+	}
 	if !s.attentionToolsOn() {
 		return "", false
 	}

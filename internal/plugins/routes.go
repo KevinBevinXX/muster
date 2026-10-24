@@ -99,6 +99,18 @@ type RouteTarget struct {
 	Kind, Key, Label string
 }
 
+// RouteTargetMirror is RouteTarget.Kind for a mirrored Claude Code session
+// (focus.KindMirror's value; internal/api pins the two equal).
+const RouteTargetMirror = "mirror"
+
+// SentToMirrorSession reports whether r was routed to the mirrored Claude Code
+// session sid. 🔴 ONE PREDICATE: route_reply binds an answer to the target
+// with it, and DecideDraftFrom refuses that same session a decision on the
+// draft its answer became.
+func (r Route) SentToMirrorSession(sid string) bool {
+	return sid != "" && r.TargetKind == RouteTargetMirror && r.TargetKey == sid
+}
+
 // The route errors.
 var (
 	// ErrAlreadyRouted: the message already has an open route.

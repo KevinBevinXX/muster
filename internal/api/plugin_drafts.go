@@ -254,14 +254,12 @@ func (s *Server) handleDraftReject(w http.ResponseWriter, r *http.Request) {
 //
 // It answers on the Asks page's Reply drafts tab (asks_drafts.go): a decision
 // lands on the card, now in Archived; a refusal draws the page with the reason
-// on the view the draft is in.
+// on the view the draft is in. The decision itself is decideDraftAs, the one
+// plugin_draft_decide makes too.
 func (s *Server) decideDraft(w http.ResponseWriter, r *http.Request, how string) {
-	// A refusal is drawn on the pending view, except a withdraw (a reject of an
-	// already-approved draft), which comes from Archived.
-	tab := asksTabDrafts
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil || id <= 0 {
-		s.renderAsksPage(w, r, http.StatusNotFound, "No such draft.", tab, id)
+		s.renderAsksPage(w, r, http.StatusNotFound, "No such draft.", asksTabDrafts, id)
 		return
 	}
 	if how != "reject" && !stepup.Fresh(r.Context(), s.stepUpNow()) {
@@ -273,39 +271,75 @@ func (s *Server) decideDraft(w http.ResponseWriter, r *http.Request, how string)
 		refuseStale(w)
 		return
 	}
-	d, err := s.ext.Plugins.DecideDraft(r.Context(), id, how == "approve")
-	switch {
-	case err == nil:
-	case errors.Is(err, plugins.ErrNotFound):
-		s.renderAsksPage(w, r, http.StatusNotFound, "No such draft.", tab, id)
+	d, refused := s.decideDraftAs(r.Context(), id, plugins.DraftDecision{Approve: how == "approve",
+		Via: plugins.DraftDecisionSource{Via: plugins.DraftViaBrowser}})
+	if refused != nil {
+		s.renderAsksPage(w, r, refused.code, refused.msg, refused.tab, id)
 		return
-	case how == "reject" && errors.Is(err, plugins.ErrDraftState) && d.Status == plugins.DraftApproved && d.ClaimedAt != nil:
-		tab = asksTabArchived
-		s.renderAsksPage(w, r, http.StatusConflict, "A plugin has already collected that draft, so it can no longer be withdrawn.", tab, id)
-		return
-	case errors.Is(err, plugins.ErrDraftState) && (d.Status == plugins.DraftPending || d.Status == plugins.DraftApproved) &&
-		d.ClaimedAt == nil && !d.ExpiresAt.After(time.Now()):
-		s.renderAsksPage(w, r, http.StatusConflict, "That draft has expired: it was not sent within 7 days of being written.", tab, id)
-		return
-	case errors.Is(err, plugins.ErrDraftState):
-		s.renderAsksPage(w, r, http.StatusConflict, "That draft is no longer awaiting this decision (it is "+string(d.Status)+").", asksTabArchived, id)
-		return
-	case errors.Is(err, plugins.ErrReplyInFlight):
-		s.renderAsksPage(w, r, http.StatusConflict, "Another reply to that message is already approved and not yet sent. "+
-			"Wait for its result before approving a second one.", asksTabDrafts, id)
-		return
-	default:
-		s.logger.Printf("plugins: draft %d %s: %v", id, how, err)
-		s.renderAsksPage(w, r, http.StatusInternalServerError, "The decision could not be recorded.", tab, id)
-		return
+	}
+	http.Redirect(w, r, draftDecidedLink(d.ID), http.StatusSeeOther)
+}
+
+// draftRefusal is why an owner's decision on a draft was refused: the HTTP
+// status, the sentence the owner reads, and the Asks page view the draft is in.
+type draftRefusal struct {
+	code     int
+	msg, tab string
+}
+
+// decideDraftAs is THE OWNER'S DECISION ON REPLY DRAFT id, for both doors: the
+// Asks page (decideDraft, after its step-up) and plugin_draft_decide
+// (plugin_draft_tools.go, from a mirrored session). One store call —
+// plugins.PGStore.DecideDraftFrom, which makes the route-target, body and state
+// refusals under the row lock — one wording of every refusal, and one
+// aftermath: an approval wakes waiting claims, and the decided draft leaves the
+// attention queue with its notification withdrawn on the owner's devices.
+func (s *Server) decideDraftAs(ctx context.Context, id int64, dec plugins.DraftDecision) (plugins.Draft, *draftRefusal) {
+	d, err := s.ext.Plugins.DecideDraftFrom(ctx, id, dec)
+	if err != nil {
+		r := draftDecisionRefusal(d, err, dec.Approve)
+		if r.code == http.StatusInternalServerError {
+			s.logger.Printf("plugins: draft %d decide (approve %v, via %s): %v", id, dec.Approve, dec.Via, err)
+		}
+		return d, &r
 	}
 	if d.Status == plugins.DraftApproved {
 		s.draftWake.signal()
 	}
 	// Decided: it leaves the attention queue, and its `plugin` notification is
 	// cleared on the owner's other devices (the tag notifyDraftAwaiting set).
-	s.draftSettled(requestOwner(r.Context()), d.ID)
-	http.Redirect(w, r, draftDecidedLink(d.ID), http.StatusSeeOther)
+	s.draftSettled(requestOwner(ctx), d.ID)
+	return d, nil
+}
+
+// draftDecisionRefusal words a refused decision; d is the draft as the store
+// read it (its state, when it was not in the one the decision needs). A
+// refusal is drawn on the pending view, except one about a draft that already
+// left it.
+func draftDecisionRefusal(d plugins.Draft, err error, approve bool) draftRefusal {
+	switch {
+	case errors.Is(err, plugins.ErrNotFound):
+		return draftRefusal{http.StatusNotFound, "No such draft.", asksTabDrafts}
+	case errors.Is(err, plugins.ErrDecidedByRouteTarget):
+		return draftRefusal{http.StatusForbidden, "That reply was written by the session its message was routed to, " +
+			"so that session cannot decide it: decide it on the Asks page, or from another of your sessions.", asksTabDrafts}
+	case errors.Is(err, plugins.ErrDraftBodyMismatch):
+		return draftRefusal{http.StatusConflict, "body_sha256 is not the SHA-256 of that draft's text: " +
+			"read the draft again and decide on the text it holds.", asksTabDrafts}
+	case !approve && errors.Is(err, plugins.ErrDraftState) && d.Status == plugins.DraftApproved && d.ClaimedAt != nil:
+		return draftRefusal{http.StatusConflict, "A plugin has already collected that draft, so it can no longer be withdrawn.", asksTabArchived}
+	case errors.Is(err, plugins.ErrDraftState) && (d.Status == plugins.DraftPending || d.Status == plugins.DraftApproved) &&
+		d.ClaimedAt == nil && !d.ExpiresAt.After(time.Now()):
+		return draftRefusal{http.StatusConflict, "That draft has expired: it was not sent within 7 days of being written.", asksTabDrafts}
+	case errors.Is(err, plugins.ErrDraftState):
+		return draftRefusal{http.StatusConflict, "That draft is no longer awaiting this decision (it is " + string(d.Status) + ").", asksTabArchived}
+	case errors.Is(err, plugins.ErrReplyInFlight):
+		return draftRefusal{http.StatusConflict, "Another reply to that message is already approved and not yet sent. " +
+			"Wait for its result before approving a second one.", asksTabDrafts}
+	case errors.Is(err, plugins.ErrInvalid):
+		return draftRefusal{http.StatusBadRequest, strings.TrimPrefix(err.Error(), plugins.ErrInvalid.Error()+": "), asksTabDrafts}
+	}
+	return draftRefusal{http.StatusInternalServerError, "The decision could not be recorded.", asksTabDrafts}
 }
 
 // draftStatusText is a draft's state in words.
