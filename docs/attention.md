@@ -376,8 +376,10 @@ owner's mirrored sessions may ask (no allowlist, by operator decision).
 2. **To the chief.** muster puts the question to the chief as a **turn** in
    its default session — holding the chief's session claim and turn gate, as
    an answer's [delivery](#delivery) does, so it never overlaps another turn.
-   If the chief is busy or not running, the question is written into that
-   session as a note it reads on its next turn instead. The turn names
+   If the chief is busy or not running, nothing is sent then: the attention
+   sweep retries it as a turn until it has been put to the chief **once**
+   (`chief_turn_at`, taken by one conditional update) or the question closes.
+   The turn names
    the question's id and the asking session's host and Claude session id
    (`mirror:<id>`, for `session_transcript`), and quotes, fenced as data, the
    window's title, the question, its options and — with a route — the routed
@@ -386,13 +388,14 @@ owner's mirrored sessions may ask (no allowlist, by operator decision).
    answer}`, or puts it to you, `escalate_session_question {id, question,
    options?}`: that files the chief's own attention ask — listed on
    `/attention` and pushed like any ask — **linked** to the session's question
-   (`escalates`) and expiring no later than it (with under a minute left, the
-   escalation is refused as too late). Your answer to it, on `/attention` or
+   (`escalates`), at most one open at a time, and expiring no later than it
+   (with under a minute left, the escalation is refused as too late). Your answer to it, on `/attention` or
    through another host's `attention_answer`, is the session's answer, as
    yours (`answered_by: "operator"`, with its provenance); the chief is not
-   sent it. An escalation you answer after the question has closed (the chief
-   answered it itself, or it expired) changes nothing there, and is
-   [delivered](#delivery) to the chief like any answer to its ask.
+   sent it. When the question closes any other way — the chief answers it,
+   the session cancels it, it is answered in the session or it expires — its
+   open escalation is cancelled in the same statement (migration 0049's
+   trigger) and leaves your queue.
 4. **The wait.** The session waits with `attention_wait {id}`, as for any ask:
    only the session that asked can wait on or cancel it. It ends `answered`
    (with `answered_by`) or, past the deadline, `expired`.
@@ -400,7 +403,8 @@ owner's mirrored sessions may ask (no allowlist, by operator decision).
 The question itself is **not** on your Attention queue and is not pushed to
 your phone: it is the chief's first. It shows in the chief's thread, where its
 turn lands; you see it when the chief escalates. Its answer, once given, is
-listed under Answered like any mirrored session's.
+listed under Answered like any mirrored session's — the chief's as *"Your
+chief's answer"*.
 
 Every step writes an audit row on `attention_ask:<question id>`:
 `chief_question.asked` (host, session, deadline, and the `route_id`),

@@ -334,28 +334,90 @@ func TestAnEscalationAnsweredFromAnotherHostCarriesItsProvenance(t *testing.T) {
 	}
 }
 
-// TestAQuestionTheChiefAnsweredKeepsItsAnswerWhenTheOwnerAnswersLate: the chief
-// escalates and then answers the question itself; the owner's later answer to
-// the escalation does not overwrite it — and, having nowhere to go, it is
-// delivered to the chief.
-func TestAQuestionTheChiefAnsweredKeepsItsAnswerWhenTheOwnerAnswersLate(t *testing.T) {
+// TestAChiefAnswerClosesTheQuestionsEscalation: the chief escalates and then
+// answers the question itself; the escalation is cancelled with the answer (no
+// longer open, no longer on the owner's Attention view), so no late owner answer
+// can reach it.
+func TestAChiefAnswerClosesTheQuestionsEscalation(t *testing.T) {
 	f := newChiefAskFixture(t)
 	id, _ := f.chiefAsk(t, focusSID, map[string]any{"question": "Ship today?"})
-	f.turnFor(t, f.def, "session question #"+strconv.FormatInt(id, 10))
-	text, _ := f.chiefTool(t, f.chiefTok, escalateSessionQuestionTool, map[string]any{"id": id, "question": "Ship today?"})
-	var esc struct {
-		ID int64 `json:"id"`
+	e, bad := f.escalate(t, id)
+	if bad != "" {
+		t.Fatal(bad)
 	}
-	_ = json.Unmarshal([]byte(text), &esc)
+	if page := f.page(t, "/attention"); !strings.Contains(page, `id="`+attentionAskKey(e)+`"`) {
+		t.Fatalf("control: the escalation is not on the Attention view")
+	}
 	if text, isErr := f.chiefTool(t, f.chiefTok, answerSessionQuestionTool, map[string]any{"id": id, "answer": "yes"}); isErr {
 		t.Fatalf("the chief's answer: %s", text)
 	}
-	f.answerForm(t, esc.ID, "no")
-	if q := f.askStatus(t, id); q.Answer != "yes" || q.AnsweredBy != attention.ByChief {
-		t.Fatalf("the late owner answer overwrote the chief's: %+v", q)
+	if esc := f.askStatus(t, e); esc.Status != attention.Cancelled {
+		t.Fatalf("the escalation is %s after the chief answered its question, want cancelled", esc.Status)
 	}
-	if e := f.delivery(t, esc.ID); e.Delivery != attention.DeliveryDelivered {
-		t.Fatalf("the late answer's delivery to the chief is %q, want delivered", e.Delivery)
+	if page := f.page(t, "/attention"); strings.Contains(page, `id="`+attentionAskKey(e)+`"`) {
+		t.Fatalf("the closed escalation is still on the Attention view")
+	}
+	if q := f.askStatus(t, id); q.Answer != "yes" || q.AnsweredBy != attention.ByChief {
+		t.Fatalf("the question: %+v", q)
+	}
+}
+
+// TestACancelledQuestionClosesItsEscalation: the session withdraws its question
+// (attention_cancel) after the chief escalated it; the escalation is cancelled
+// with it.
+func TestACancelledQuestionClosesItsEscalation(t *testing.T) {
+	f := newChiefAskFixture(t)
+	id, _ := f.chiefAsk(t, focusSID, map[string]any{"question": "Never mind?"})
+	e, bad := f.escalate(t, id)
+	if bad != "" {
+		t.Fatal(bad)
+	}
+	if text, isErr := f.mirrorTool(t, f.ws, focusSID, attentionCancelTool, map[string]any{"id": id}); isErr || !strings.Contains(text, `"status":"cancelled"`) {
+		t.Fatalf("the session's cancel: %s", text)
+	}
+	if esc := f.askStatus(t, e); esc.Status != attention.Cancelled {
+		t.Fatalf("the escalation is %s after its question was cancelled, want cancelled", esc.Status)
+	}
+}
+
+// TestASecondEscalationIsRefusedWhileOneIsOpen: a question has at most one open
+// escalation; a second escalate is refused and files nothing.
+func TestASecondEscalationIsRefusedWhileOneIsOpen(t *testing.T) {
+	f := newChiefAskFixture(t)
+	id, _ := f.chiefAsk(t, focusSID, map[string]any{"question": "Twice?"})
+	if _, bad := f.escalate(t, id); bad != "" {
+		t.Fatal(bad)
+	}
+	if _, bad := f.escalate(t, id); !strings.Contains(bad, "already put to your owner") {
+		t.Fatalf("a second escalation: %q, want refused", bad)
+	}
+	esc, err := f.attn.Escalations(asUser(1), id)
+	if err != nil || len(esc) != 1 {
+		t.Fatalf("escalations of question %d: %d (%v), want 1", id, len(esc), err)
+	}
+}
+
+// TestTheAnsweredListNamesTheChiefsAnswer: on the owner's Answered list, a
+// question the chief answered reads as the chief's answer; one the owner
+// answered (through the escalation) reads as the owner's (the control).
+func TestTheAnsweredListNamesTheChiefsAnswer(t *testing.T) {
+	f := newChiefAskFixture(t)
+	byChief, _ := f.chiefAsk(t, focusSID, map[string]any{"question": "Which branch?"})
+	if text, isErr := f.chiefTool(t, f.chiefTok, answerSessionQuestionTool, map[string]any{"id": byChief, "answer": "release/1.4"}); isErr {
+		t.Fatal(text)
+	}
+	byOwner, _ := f.chiefAsk(t, focusSID, map[string]any{"question": "Deploy?"})
+	e, bad := f.escalate(t, byOwner)
+	if bad != "" {
+		t.Fatal(bad)
+	}
+	f.answerForm(t, e, "not today")
+	page := f.page(t, "/attention")
+	if item := answeredItem(page, byChief); !strings.Contains(item, "Your chief's answer: release/1.4") || strings.Contains(item, "Your answer:") {
+		t.Errorf("the chief's answer on the Answered list:\n%s", item)
+	}
+	if item := answeredItem(page, byOwner); !strings.Contains(item, "Your answer: not today") {
+		t.Errorf("the owner's answer on the Answered list:\n%s", item)
 	}
 }
 
@@ -477,46 +539,73 @@ func TestAnotherOwnerNeitherSeesNorAnswersTheQuestion(t *testing.T) {
 	}
 }
 
-// TestABusyChiefGetsTheQuestionAsANote: while the chief is in the middle of a
-// turn (its turn gate held, as the operator's own chat turn holds it), the
-// question is not pushed over it: it is written into the chief's default
-// session as a note. Once the chief is idle, the next question is a turn again
-// (the control).
-func TestABusyChiefGetsTheQuestionAsANote(t *testing.T) {
+// TestABusyChiefGetsTheQuestionOnTheSweep: while the chief is in the middle of a
+// turn (its turn gate held, as the operator's own chat turn holds it), nothing
+// is pushed over it; once it is idle, the attention sweep puts the question to
+// it as a turn — exactly once: further sweeps and a direct retry send nothing
+// more.
+func TestABusyChiefGetsTheQuestionOnTheSweep(t *testing.T) {
 	f := newChiefAskFixture(t)
 	if !f.srv.turns.enter(f.chief.ID) {
 		t.Fatal("could not hold the chief's turn gate")
 	}
 	id, _ := f.chiefAsk(t, focusSID, map[string]any{"question": "Asked while you were busy?"})
-	f.srv.turns.leave(f.chief.ID)
+	f.srv.putDueQuestions(context.Background())
 	f.srv.WaitForAttentionDeliveries()
 	if n := len(f.turnsInto(f.def)); n != 0 {
 		t.Fatalf("%d turns pushed over a busy chief", n)
 	}
-	msgs, err := f.agentsStore.ListChatMessages(asUser(1), f.def.ID)
-	if err != nil || len(msgs) != 1 || msgs[0].Role != "user" || !strings.Contains(msgs[0].Content, "session question #"+strconv.FormatInt(id, 10)) {
-		t.Fatalf("the note in the chief's default session: %+v %v", msgs, err)
+	f.srv.turns.leave(f.chief.ID)
+	want := "session question #" + strconv.FormatInt(id, 10)
+	count := func() int {
+		n := 0
+		for _, tn := range f.turnsInto(f.def) {
+			if strings.Contains(tn, want) {
+				n++
+			}
+		}
+		return n
 	}
-	id2, _ := f.chiefAsk(t, focusSID, map[string]any{"question": "And now?"})
-	f.turnFor(t, f.def, "session question #"+strconv.FormatInt(id2, 10))
+	// The attention sweep itself (RunAttentionSweep runs a pass at once).
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { defer close(done); f.srv.RunAttentionSweep(ctx, time.Hour) }()
+	eventuallyAPI(t, "the sweep to put the question to the chief", func() bool { return count() > 0 })
+	cancel()
+	<-done
+	f.srv.WaitForAttentionDeliveries()
+	// Another pass and a direct retry put nothing more.
+	f.srv.putDueQuestions(context.Background())
+	f.srv.retryQuestion(context.Background(), 1, id)
+	f.srv.WaitForAttentionDeliveries()
+	n := count()
+	if n != 1 {
+		t.Fatalf("the chief's runtime got the question %d time(s), want exactly 1: %q", n, f.gw.seen())
+	}
 }
 
 // TestAQuestionWaitsForTheChiefsSessionClaim: while another delivery holds the
-// chief's session claim (a plugin message, a hand-back), the question is a
-// note, not a second concurrent turn.
+// chief's session claim (a plugin message, a hand-back), no second concurrent
+// turn starts; once the claim is released, the sweep puts the question, once.
 func TestAQuestionWaitsForTheChiefsSessionClaim(t *testing.T) {
 	f := newChiefAskFixture(t)
 	if won, err := f.agentsStore.ClaimKickoff(asUser(1), f.chief.ID, "test/another-delivery", time.Minute); err != nil || !won {
 		t.Fatalf("could not hold the chief's claim: %v %v", won, err)
 	}
 	id, _ := f.chiefAsk(t, focusSID, map[string]any{"question": "Asked while a delivery runs?"})
+	f.srv.WaitForAttentionDeliveries()
+	if n := len(f.turnsInto(f.def)); n != 0 {
+		t.Fatalf("%d turns while the claim was held", n)
+	}
 	if err := f.agentsStore.ReleaseKickoffClaim(asUser(1), f.chief.ID, "test/another-delivery"); err != nil {
 		t.Fatal(err)
 	}
+	f.srv.putDueQuestions(context.Background())
 	f.srv.WaitForAttentionDeliveries()
-	msgs, err := f.agentsStore.ListChatMessages(asUser(1), f.def.ID)
-	if n := len(f.turnsInto(f.def)); n != 0 || err != nil || len(msgs) != 1 || !strings.Contains(msgs[0].Content, "session question #"+strconv.FormatInt(id, 10)) {
-		t.Fatalf("%d turns and messages %+v (%v); want a note and no turn", n, msgs, err)
+	f.srv.putDueQuestions(context.Background())
+	f.srv.WaitForAttentionDeliveries()
+	if turns := f.turnsInto(f.def); len(turns) != 1 || !strings.Contains(turns[0], "session question #"+strconv.FormatInt(id, 10)) {
+		t.Fatalf("turns after the claim was released: %q, want exactly the question", turns)
 	}
 }
 

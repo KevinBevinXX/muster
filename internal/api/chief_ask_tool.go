@@ -24,12 +24,15 @@ import (
 //	   routed message it is about, when route_id names one — put to the chief
 //	   as a TURN in its default session, held to the rules an answer's delivery
 //	   holds (attention_delivery.go: the chief's session claim and its turn
-//	   gate), or, when the chief is busy or not running, as a note there
+//	   gate); when the chief is busy or not running, the attention sweep
+//	   retries it as a turn (putDueQuestions) until it is put once or closes
 //	the session waits with attention_wait{id}, the attention machinery unchanged
 //	answer_session_question (chief) ──▶ the answer, answered_by chief
 //	escalate_session_question (chief) ──▶ the chief's own attention ask to the
-//	   owner, LINKED to the question (escalates); the owner's answer to it is
-//	   relayed to the question as the owner's answer (answerAskFrom)
+//	   owner, LINKED to the question (escalates; one open at a time); the
+//	   owner's answer to it is relayed to the question as the owner's answer
+//	   (answerAskFrom), and it is cancelled when the question closes otherwise
+//	   (migration 0049's trigger)
 //	no answer by the deadline (timeout_seconds, DefaultChiefAskTimeout when
 //	   omitted) ──▶ the ask expires, as any ask does
 //
@@ -42,7 +45,7 @@ import (
 // 🔴 IT IS NOT IN THE OWNER'S ATTENTION QUEUE. A question to the chief is the
 // chief's to answer first; listing it (and pushing it to the owner's phone) is
 // what asking the chief avoids. It shows in the chief's thread, where its turn
-// (or note) lands; the owner is asked only if the chief escalates, and the
+// lands; the owner is asked only if the chief escalates, and the
 // escalation is an ordinary ask of the chief's — listed and pushed as one.
 //
 // What a mirror token reaches through it: docs/auth.md ("Mirror tokens and the chief").
@@ -146,7 +149,7 @@ func (s *Server) toolChiefAsk(ctx context.Context, c toolCaller, arguments strin
 	}
 	s.attentionChanged(a.Owner, attentionAskKey(a.ID))
 	delivered := s.putQuestionToChief(ctx, chief, a, about)
-	s.logger.Printf("chief_ask: question %d from %s put to chief %d as a %s", a.ID, c.askerKey(), chief.ID, delivered)
+	s.logger.Printf("chief_ask: question %d from %s for chief %d: %s", a.ID, c.askerKey(), chief.ID, delivered)
 	return toolJSON(map[string]any{"id": a.ID, "status": "pending", "expires_at": a.ExpiresAt.UTC().Format(time.RFC3339),
 		"next": "Call attention_wait{id: " + strconv.FormatInt(a.ID, 10) + "} now, and again while it answers pending."})
 }
@@ -182,8 +185,8 @@ func (s *Server) chiefAskRoute(ctx context.Context, routeID string) (routedAbout
 
 // Where a question reached the chief (logged).
 const (
-	chiefQuestionTurn = "turn"
-	chiefQuestionNote = "note"
+	chiefQuestionTurn = "put as a turn"
+	chiefQuestionLeft = "left for the sweep to retry"
 )
 
 // putQuestionToChief puts question q to chief as a turn in its default
@@ -191,36 +194,70 @@ const (
 // its turn gate idle, exactly as an answer's delivery is (deliverAnswer): it
 // never overlaps a plugin delivery, a hand-back, a delivered answer or the
 // operator's own chat turn. When the chief is not running, has no gateway, or
-// is busy, the question is written into that session as a note it reads on its
-// next turn instead. It says which.
+// is busy, nothing is sent: the question stays due (chief_turn_at NULL) and
+// the attention sweep retries it (putDueQuestions). It says which.
 func (s *Server) putQuestionToChief(ctx context.Context, chief agents.Agent, q attention.Ask, about *routedAbout) string {
 	text := renderChiefQuestion(q, about, fence.NewNonce())
 	sess, err := s.defaultSession(ctx, chief)
 	if err != nil {
 		s.logger.Printf("chief_ask: question %d: open the chief's session: %v", q.ID, err)
-		return chiefQuestionNote
+		return chiefQuestionLeft
 	}
 	if s.startChiefQuestionTurn(ctx, chief, sess, q, text) {
 		return chiefQuestionTurn
 	}
-	s.noteQuestionToChief(ctx, chief, sess, q.ID, text)
-	return chiefQuestionNote
+	return chiefQuestionLeft
 }
 
-// noteQuestionToChief writes text into the chief's session sess as a message
-// its next turn reads.
-func (s *Server) noteQuestionToChief(ctx context.Context, chief agents.Agent, sess agents.ChatSession, id int64, text string) {
-	if _, err := s.ext.Agents.AddChatMessage(context.WithoutCancel(ctx), agents.ChatMessage{AgentID: chief.ID, SessionID: sess.ID,
-		Role: "user", Content: text}); err != nil {
-		s.logger.Printf("chief_ask: question %d: note to the chief: %v", id, err)
+// putDueQuestions is one retry pass over every owner's questions to the chief
+// that have not reached it (attention.QuestionsDue), each as its owner. On the
+// attention sweep.
+func (s *Server) putDueQuestions(ctx context.Context) {
+	if s.ext.Attention == nil || s.ext.Agents == nil {
+		return
 	}
+	due, err := s.ext.Attention.QuestionsDue(ctx, attentionDeliveryBatch)
+	if err != nil {
+		if !errors.Is(err, context.Canceled) {
+			s.logger.Printf("chief_ask: questions due: %v", err)
+		}
+		return
+	}
+	for _, q := range due {
+		got := s.retryQuestion(ctx, q.Owner, q.ID)
+		s.logger.Printf("chief_ask: question %d retried: %s", q.ID, got)
+	}
+}
+
+// retryQuestion puts open question id of owner to that owner's chief, with
+// its routed message when it names one — or leaves it due.
+func (s *Server) retryQuestion(parent context.Context, owner, id int64) string {
+	ctx := s.attentionPrincipal(parent, owner)
+	q, err := s.ext.Attention.Get(ctx, id)
+	if err != nil || !q.ToChief || q.Status != attention.Open {
+		return "not an open question to the chief"
+	}
+	chief, err := s.chiefAgent(ctx)
+	if err != nil {
+		return "the owner has no chief"
+	}
+	var about *routedAbout
+	if q.RouteID != "" {
+		if ra, bad := s.chiefAskRoute(ctx, q.RouteID); bad == "" {
+			about = &ra
+		}
+	}
+	return s.putQuestionToChief(ctx, chief, q, about)
 }
 
 // startChiefQuestionTurn starts the question's turn in the background, holding
 // the chief's session claim and turn gate, or reports false with nothing
-// started. The turn is registered with the answer deliveries' wait group (a
-// shutdown, or a test, waits for it) and ended by EndStreams. A turn the runtime
-// provably did not take (agentgateway.Unsent) leaves the question as a note.
+// started. 🔴 EXACTLY ONCE: after the claim and the gate, the question's own
+// turn is taken by one conditional UPDATE (MarkQuestionTurn) — a question
+// already put (by another pass, another process) is not put again. The turn is
+// registered with the answer deliveries' wait group (a shutdown, or a test,
+// waits for it) and ended by EndStreams. A turn the runtime provably did not
+// take (agentgateway.Unsent) gives the question back to the sweep.
 func (s *Server) startChiefQuestionTurn(ctx context.Context, chief agents.Agent, sess agents.ChatSession, q attention.Ask, text string) bool {
 	if s.answerTurn == nil || !agentCanBeSent(chief.Status) || agents.KickoffOwed(chief) {
 		return false
@@ -242,6 +279,11 @@ func (s *Server) startChiefQuestionTurn(ctx context.Context, chief agents.Agent,
 		release()
 		return false
 	}
+	if marked, err := s.ext.Attention.MarkQuestionTurn(ctx, q.ID); err != nil || !marked {
+		s.turns.leave(chief.ID)
+		release()
+		return false
+	}
 	sctx, scancel := s.streamContext(context.Background())
 	tctx, cancel := context.WithTimeout(s.attentionPrincipal(sctx, q.Owner), budget)
 	s.attention.deliveries.Add(1)
@@ -255,8 +297,10 @@ func (s *Server) startChiefQuestionTurn(ctx context.Context, chief agents.Agent,
 		bctx, bcancel := context.WithTimeout(context.WithoutCancel(tctx), 15*time.Second)
 		defer bcancel()
 		if reason := agentgateway.Unsent(err); reason != "" {
-			s.logger.Printf("chief_ask: question %d: the chief's runtime took nothing (%s); left as a note", q.ID, reason)
-			s.noteQuestionToChief(bctx, chief, sess, q.ID, text)
+			s.logger.Printf("chief_ask: question %d: the chief's runtime took nothing (%s); left for the sweep", q.ID, reason)
+			if err := s.ext.Attention.UnmarkQuestionTurn(bctx, q.ID); err != nil {
+				s.logger.Printf("chief_ask: question %d: give its turn back: %v", q.ID, err)
+			}
 			return
 		}
 		if err != nil {
@@ -380,6 +424,8 @@ func (s *Server) toolEscalateSessionQuestion(ctx context.Context, chief agents.A
 		Escalates: q.ID, Timeout: left})
 	switch {
 	case err == nil:
+	case errors.Is(err, attention.ErrAlreadyEscalated):
+		return toolErr("session question %d is already put to your owner and waiting for their answer: escalate it once", q.ID)
 	case errors.Is(err, attention.ErrInvalid), errors.Is(err, attention.ErrTooMany):
 		return toolErr("%s", strings.TrimPrefix(strings.TrimPrefix(err.Error(), attention.ErrInvalid.Error()+": "), "attention: "))
 	default:
