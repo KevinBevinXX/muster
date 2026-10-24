@@ -128,7 +128,7 @@ func TestTaskDispatchRefusesAKindItCannotStart(t *testing.T) {
 	// reservation.
 	h := newTaskRouteFixture(t, true, true, withKinds("pool-acct-a", agents.KindGateway, agents.KindClaudeCode, "hermes"))
 	hn := h.task(t, "hermes kind")
-	h.mustRefuse(t, h.call(h.chief, taskDispatchTool, map[string]any{"task_id": hn.ID, "kind": "hermes"}), `agent kind "hermes" was removed from muster`, hn.ID)
+	h.mustRefuse(t, h.call(h.chief, taskDispatchTool, map[string]any{"task_id": hn.ID, "kind": "hermes"}), `hermes\" was removed from muster; dispatch a gateway or claude-code agent instead`, hn.ID)
 
 	u := newTaskRouteFixture(t, true, true, func(ext *Extensions) {
 		ext.Kinds = stubKinds{pick: "pool-acct-a", unavailable: map[string]string{agents.KindClaudeCode: "add a Claude account first"}}
