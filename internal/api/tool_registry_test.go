@@ -31,7 +31,7 @@ var (
 	mcpLedger = []string{"connectors_list", "task_create_gated", "reply_draft",
 		"fleet_list", "focus_search", "sessions_overview",
 		// The attention queue (attention_tools.go): every agent asks and works the
-		// owner's tasks; the chief alone lists, answers and reads transcripts.
+		// owner's tasks; the chief alone lists the queue.
 		"attention_ask", "attention_wait", "attention_cancel",
 		"tasks_list", "task_get", "task_comment", "task_set_status",
 		"attention_list"}

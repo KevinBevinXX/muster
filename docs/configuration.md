@@ -233,7 +233,6 @@ variables when it provisions an agent, so you normally never set them yourself.
 |---|---|---|---|
 | `MUSTER_GATEWAY_BEARER` | none | this or `HOOKS_TOKEN` | The bearer token `ccd`'s `/v1/responses` accepts. muster mints it per `claude-code` agent at random (`agents.gateway_secret`, migration 0042); it is not derived from `MUSTER_HOOK_TOKEN`. |
 | `HOOKS_TOKEN` | none | this or the bearer | A token the bearer is derived from (`sha256("gw-"+token)`). If both are set, they must agree. muster no longer ships it to `claude-code` agents. |
-| `CCD_GATEWAY_UPSTREAM_BEARER` | none | no | Retired: the credential of the gateway runtime that once ran beside a `claude-code` chief's `ccd`. muster no longer sets it; `ccd` still removes it from the CLI's environment if a pod built by an older muster carries it. |
 | `MUSTER_CONNECT_URL` | none | no | muster's connect listener. `ccd approve` and `ccd connect-git` use it. |
 | `CLAUDE_CODE_OAUTH_TOKEN` | none | this or a `/login` file | The Claude credential, taken from the agent's Secret. `ccd` treats either one as "has a credential". |
 | `CCD_LISTEN` | `:18789` | no | The gateway address. |
