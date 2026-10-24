@@ -107,6 +107,7 @@ func (s *Server) registerDeviceRoutes(mux Mux) {
 	// The session tier.
 	mux.HandleFunc("POST "+accountDevicesPairPath, s.requireOperatorWrite(s.handleDevicePairCode))
 	mux.HandleFunc("POST /account/devices/{id}/remove", s.requireOperatorWrite(s.handleDeviceRemove))
+	mux.HandleFunc("GET "+accountDevicesLivePath, s.requireSession(s.handleAccountDevicesLive))
 	// The public pairing route.
 	mux.HandleFunc("POST "+devicePairPath, s.handleDevicePair)
 	// The device tier.
@@ -455,53 +456,7 @@ func (s *Server) accountDevicesSection(r *http.Request) string {
 	if r.URL.Query().Get("devices") == "removed" {
 		b.WriteString(`<p role="status" class="text-sm font-semibold text-fg">Device removed. It is signed out.</p>`)
 	}
-	list, err := s.ext.Devices.List(r.Context())
-	if err != nil {
-		s.logger.Printf("devices: list: %v", err)
-		b.WriteString(problemNode("The device list could not be read."))
-		b.WriteString(`</section>`)
-		return b.String()
-	}
-	if len(list) == 0 {
-		b.WriteString(`<p class="text-sm text-fg2">No phone is paired. Open muster in the Android app to pair one.</p>`)
-	} else {
-		b.WriteString(`<ul class="flex flex-col gap-2">`)
-		for _, d := range list {
-			name := d.Name
-			if name == "" {
-				name = "(unnamed phone)"
-			}
-			seen := "never"
-			if d.LastSeenAt != nil {
-				seen = d.LastSeenAt.UTC().Format("2006-01-02 15:04 UTC")
-			}
-			// The type is the APP's report: until key attestation exists the
-			// server cannot verify it, and the label says so.
-			key := "step-up: none (read-only)"
-			switch d.KeyType {
-			case devices.KeyBiometric:
-				key = "step-up: biometric (reported)"
-			case devices.KeyBiometricOrCredential:
-				key = "step-up: biometric or PIN (reported)"
-			}
-			pushState := "push not registered"
-			if d.PushRegistered {
-				pushState = "push registered"
-			}
-			version := ""
-			if d.AppVersion != "" {
-				version = ` · app ` + html.EscapeString(d.AppVersion)
-			}
-			b.WriteString(`<li data-testid="paired-device" data-device-id="` + strconv.FormatInt(d.ID, 10) + `" class="flex flex-col gap-1 rounded-md bg-bg px-3 py-2 ring-1 ring-inset ring-edge">
-<span class="break-all text-sm font-semibold text-fg">` + html.EscapeString(truncate(name, 80)) + `</span>
-<span class="text-xs text-fg2">paired ` + d.CreatedAt.UTC().Format("2006-01-02 15:04 UTC") + ` · last seen ` + html.EscapeString(seen) +
-				version + ` · ` + pushState + ` · ` + key + `</span>
-<form method="POST" action="/account/devices/` + strconv.FormatInt(d.ID, 10) + `/remove">
-<button type="submit" class="press min-h-[44px] w-full rounded-md bg-bg px-3 py-2 text-sm font-semibold text-fg ring-1 ring-inset ring-edge">Remove</button></form>
-</li>`)
-		}
-		b.WriteString(`</ul>`)
-	}
+	b.WriteString(s.accountDeviceList(r))
 	b.WriteString(`<div id="app-bridge" class="hidden flex-col gap-2">
 <button type="button" id="pair-this-phone" class="press min-h-[44px] w-full rounded-md bg-accent px-3 py-2 text-base font-semibold text-on-accent">Pair this phone</button>
 <button type="button" id="app-notification-settings" class="press min-h-[44px] w-full rounded-md bg-bg px-3 py-2 text-base font-semibold text-fg ring-1 ring-inset ring-edge">Notification settings</button>
@@ -510,6 +465,136 @@ func (s *Server) accountDevicesSection(r *http.Request) string {
 <script>` + appBridgeJS + `</script>
 </section>`)
 	return b.String()
+}
+
+// --- the live device list ------------------------------------------------------------
+//
+// THE PAGE NOTICES A PHONE'S PUSH REGISTRATION BY ITSELF. A phone registers
+// its push endpoint (PUT /api/device/push) a few seconds AFTER it pairs, while
+// the person is still looking at Account → Devices, so the list is an htmx
+// fragment (GET accountDevicesLivePath) that re-fetches itself:
+//
+//   - every devicePollInterval, while the tab is visible, ONLY WHILE
+//     SOMETHING IS PENDING (devicesPending): a phone paired in the last
+//     devicePushWait with no push registration, on a server that serves push. Each response re-decides, so the polling
+//     stops by itself once nothing is pending; a page with nothing pending
+//     never polls.
+//   - on visibilitychange to visible, always — one request when the person
+//     comes back (from the app's notification settings, say).
+//
+// A NEWLY PAIRED PHONE IS NOT WAITED FOR HERE: the app reloads its WebView as
+// soon as it has paired, and that page load lists the phone and starts the
+// polling.
+//
+// Each response carries the Notifications section's device list too (an
+// out-of-band swap), since that is where "Send a test notification" appears.
+// It is read under the caller's principal, as the page is: row-level security
+// scopes both lists to the caller's own rows. Nothing here depends on the
+// Android shell — any client's registration shows up.
+
+const (
+	accountDevicesLivePath = "/account/devices/live"
+	// devicePollInterval is how often the list re-fetches while pending.
+	devicePollInterval = 3 * time.Second
+	// devicePushWait is how long after pairing a phone with no push
+	// registration counts as pending. The app registers seconds after it
+	// pairs; one that has not after this long (notifications denied, or no
+	// distributor) is not waited on, and visibilitychange still catches a
+	// later registration.
+	devicePushWait = 10 * time.Minute
+)
+
+// deviceListTrigger is the list's hx-trigger: polling only while pending.
+func deviceListTrigger(pending bool) string {
+	visible := `[document.visibilityState === 'visible']`
+	t := `visibilitychange` + visible + ` from:document`
+	if pending {
+		t = `every ` + strconv.Itoa(int(devicePollInterval/time.Second)) + `s ` + visible + `, ` + t
+	}
+	return t
+}
+
+// devicesPending is the polling condition (see the block comment above).
+func (s *Server) devicesPending(list []devices.Device) bool {
+	if !s.pushServed() {
+		return false
+	}
+	for _, d := range list {
+		if !d.PushRegistered && s.now().Sub(d.CreatedAt) < devicePushWait {
+			return true
+		}
+	}
+	return false
+}
+
+// handleAccountDevicesLive answers the list's own re-fetch: the device list,
+// and the Notifications device list out of band.
+func (s *Server) handleAccountDevicesLive(w http.ResponseWriter, r *http.Request) {
+	if s.ext.Devices == nil {
+		http.Error(w, DevicesNotServed, http.StatusServiceUnavailable)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	out := s.accountDeviceList(r)
+	if s.pushServed() {
+		out += s.accountPushDeviceList(r, true)
+	}
+	_, _ = io.WriteString(w, out)
+}
+
+// accountDeviceList is the live part of Account → Devices.
+func (s *Server) accountDeviceList(r *http.Request) string {
+	var b strings.Builder
+	list, err := s.ext.Devices.List(r.Context())
+	b.WriteString(`<div id="device-list" data-testid="device-list" hx-get="` + accountDevicesLivePath + `" hx-swap="outerHTML" hx-trigger="` +
+		html.EscapeString(deviceListTrigger(err == nil && s.devicesPending(list))) + `">`)
+	if err != nil {
+		s.logger.Printf("devices: list: %v", err)
+		b.WriteString(problemNode("The device list could not be read."))
+		return b.String() + `</div>`
+	}
+	if len(list) == 0 {
+		b.WriteString(`<p class="text-sm text-fg2">No phone is paired. Open muster in the Android app to pair one.</p>`)
+		return b.String() + `</div>`
+	}
+	b.WriteString(`<ul class="flex flex-col gap-2">`)
+	for _, d := range list {
+		name := d.Name
+		if name == "" {
+			name = "(unnamed phone)"
+		}
+		seen := "never"
+		if d.LastSeenAt != nil {
+			seen = d.LastSeenAt.UTC().Format("2006-01-02 15:04 UTC")
+		}
+		// The type is the APP's report: until key attestation exists the
+		// server cannot verify it, and the label says so.
+		key := "step-up: none (read-only)"
+		switch d.KeyType {
+		case devices.KeyBiometric:
+			key = "step-up: biometric (reported)"
+		case devices.KeyBiometricOrCredential:
+			key = "step-up: biometric or PIN (reported)"
+		}
+		pushState := "push not registered"
+		if d.PushRegistered {
+			pushState = "push registered"
+		}
+		version := ""
+		if d.AppVersion != "" {
+			version = ` · app ` + html.EscapeString(d.AppVersion)
+		}
+		b.WriteString(`<li data-testid="paired-device" data-device-id="` + strconv.FormatInt(d.ID, 10) + `" class="flex flex-col gap-1 rounded-md bg-bg px-3 py-2 ring-1 ring-inset ring-edge">
+<span class="break-all text-sm font-semibold text-fg">` + html.EscapeString(truncate(name, 80)) + `</span>
+<span class="text-xs text-fg2">paired ` + d.CreatedAt.UTC().Format("2006-01-02 15:04 UTC") + ` · last seen ` + html.EscapeString(seen) +
+			version + ` · ` + pushState + ` · ` + key + `</span>
+<form method="POST" action="/account/devices/` + strconv.FormatInt(d.ID, 10) + `/remove">
+<button type="submit" class="press min-h-[44px] w-full rounded-md bg-bg px-3 py-2 text-sm font-semibold text-fg ring-1 ring-inset ring-edge">Remove</button></form>
+</li>`)
+	}
+	b.WriteString(`</ul>`)
+	return b.String() + `</div>`
 }
 
 // appBridgeJS shows the app-only controls when the page is inside the app's

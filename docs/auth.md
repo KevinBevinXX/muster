@@ -157,6 +157,17 @@ read-only), labelled "(reported)" until key attestation exists. Each
 has a **Remove** button. Removing a phone also removes its push registration. A
 user may pair at most 20 phones.
 
+The list updates itself while the page is open. A phone registers push a few
+seconds after it pairs, so while something is pending the list re-fetches
+(`GET /account/devices/live`, the signed-in user's own devices) every 3 seconds
+while the tab is visible. Pending means a phone paired in the last 10 minutes
+with no push registration, on a server that serves push. (The app reloads the
+page as soon as it has paired, which lists the new phone.) Each response re-decides, so the polling
+stops once nothing is pending; a page with nothing pending never polls. The list
+also re-fetches once whenever the tab becomes visible again. The same response
+updates the Notifications section's device list, so **Send a test notification**
+appears as soon as the phone is registered.
+
 The device routes:
 
 | route | what it does |

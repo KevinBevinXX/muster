@@ -190,6 +190,7 @@ var isolationClasses = map[string]routeClass{
 	// device tier is the device credential's alone.
 	"POST /account/devices/pair":        classList,
 	"POST /account/devices/{id}/remove": classParam,
+	"GET /account/devices/live":         classList, // the caller's paired phones (A's is canary-named) and, out of band, push devices
 	"POST /api/device/pair":             classPublic,
 	"DELETE /api/device":                classDevice,
 	"GET /api/device/config":            classDevice,
@@ -503,8 +504,9 @@ var wantCanaryForA = []string{
 	// token list and A's runner's claim (of A's second job) each show it.
 	"GET /flows", "GET /api/flows/jobs", "POST /runner/flows/claim",
 	// Web Push: the account page lists the caller's devices, and A's carries
-	// the canary in its user agent.
-	"GET /account",
+	// the canary in its user agent. The Devices list's re-fetch shows A's
+	// canary-named paired phone.
+	"GET /account", "GET /account/devices/live",
 	// Plugins: A's second plugin is canary-labelled, so A's page shows it.
 	"GET /plugins",
 	// The attention asks: A's agent's asks block shows A's canary-carrying
