@@ -648,7 +648,8 @@ func staticCacheControl(path, v string) string {
 func (s *Server) shellFeatures(ctx context.Context) ui.Features {
 	p, _ := authz.From(ctx)
 	return ui.Features{GitHub: s.ext.GitHub != nil || s.githubApp(ctx) != nil, Connectors: s.ext.Connectors != nil,
-		Admin: p.Role == authz.RoleAdmin && s.adminPagesServed(), Push: s.pushServed(), Attention: s.ext.Attention != nil}
+		Admin: p.Role == authz.RoleAdmin && s.adminPagesServed(), Push: s.pushServed(), Attention: s.ext.Attention != nil,
+		SnapUser: p.UserID, SnapBuild: BuildVersion}
 }
 
 // handleIndex serves the document shell. The active tab is derived from the

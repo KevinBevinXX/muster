@@ -213,6 +213,52 @@ running an older `muster-mirror` sends the transcript unredacted. The
 transcript file itself is never sent, and nothing is stored on the server. Limits per host: 8 open
 terminals, 8 rendered views. Limit per server: 64 hosts.
 
+### A rendered view's snapshot, kept on this device
+
+Each rendered view keeps a copy, in this browser (IndexedDB), of what it drew
+and where its stream stood. Opening the window again paints that copy at once
+and resumes the stream from where the copy ends, instead of waiting for the
+host to send the conversation again. Until the stream answers, the status line
+says "Connecting…"; after a second without an answer an **Updating…** chip
+shows, in room the header always keeps for it. If the stream is refused or
+closes before it answers, the copy is removed from the page and from the
+browser, and the view starts again from the beginning.
+
+- **What is kept** is what the page already showed, as the server sent it
+  (redacted on the host as above), plus the stream's position. At most 2 MiB
+  per window and 12 windows; the oldest go first.
+- **Five minutes since it was written, thirty since a full read.** A copy is
+  shown only within five minutes of its last save, and only within thirty
+  minutes of the last time its conversation was read in full from the host
+  (a copy that is only ever resumed keeps the HTML it was first drawn with, so
+  after thirty minutes the window is read from the start again). Both are
+  checked whenever a copy is read: when a window opens, and when warming
+  resumes one.
+- **Per user and per build.** A copy names the signed-in user and the muster
+  version, and is checked against both before it is shown. Any other user's or
+  version's copy is deleted unread.
+- **When copies are deleted.** A copy that fails any of these checks is deleted
+  when it is read, or when the next muster page that keeps copies (the Agents
+  list, an agent's page, a rendered view) is loaded and sweeps them. Until
+  then it stays in the browser's storage, unread: a session that ends at a
+  sign-in proxy in front of muster, or a tab that is simply closed, leaves its
+  copies there until the next such page load or a visit to muster's sign-in
+  page. At most 12 copies of at most 2 MiB each are ever kept.
+- **Signing out deletes them all.** The sign-in page (and every other page
+  shown signed out) deletes them, and a sign-out ends there. Another tab still
+  open on a rendered view stops keeping copies at that moment, for as long as
+  it stays open.
+- **Warming.** While you are on the Agents list or an agent's page, muster
+  refreshes the copies of up to three windows you are likely to open next
+  (pinned, then recently viewed, then the ones this browser has copies of), one
+  at a time when the browser is idle, every two minutes at most, skipping a
+  copy saved in the last two and a half minutes. It reads each
+  through the window's stream, never its page, so a warmed window is not
+  recorded as visited and does not move in **Recent**. It stops on a hidden
+  tab, with Save-Data on, or on a 2G connection, and reads at most 3 MiB per
+  pass. Refreshing a copy resumes its stream, so only what is new is read, except
+  for a Hermes window, whose host always sends the whole conversation again.
+
 ### How a pane's transcript is found
 
 The host walks the pane's process tree to the `claude` process. Then it tries

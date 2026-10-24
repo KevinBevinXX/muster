@@ -285,6 +285,9 @@ func AgentDetailPage(v AgentDetailView, feat Features) g.Node {
 				// implementation — the old standalone comboboxScript was deleted,
 				// retiring the two-copies-of-the-combobox-JS debt.
 				appScript(feat),
+				// The mirrored views' snapshot store, which warms the likely-next
+				// windows from here (mirror_snap.go).
+				SnapScript(feat),
 				// The worker, update toast and app badge — on every document, not
 				// just the shell, so an update is offered wherever the operator is.
 				pwaChrome(),

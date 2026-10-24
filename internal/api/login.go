@@ -268,6 +268,10 @@ func problemNode(problem string) string {
 // 🔴 ONLY A PAGE A SIGNED-OUT CALLER CAN BE SHOWN BELONGS HERE. A page behind
 // requireSession goes through writeNavDocument, which draws the side nav.
 // TestEveryAPIDocumentIsNavOrNamedBare holds the two sets.
+//
+// Every such page deletes the mirrored views' snapshots in this browser
+// (ui.SnapPurgeHTML): a sign-out lands here, and so does any sign-in, so one
+// user's cached conversations never outlive their session on a shared device.
 func writeAuthDocument(w http.ResponseWriter, code int, title, inner string) {
 	doc := `<!doctype html>
 <html class="dark" lang="en">
@@ -279,6 +283,7 @@ func writeAuthDocument(w http.ResponseWriter, code int, title, inner string) {
 <meta name="robots" content="noindex">
 <title>` + html.EscapeString(title) + ` · muster</title>
 <link rel="stylesheet" href="` + html.EscapeString(web.Asset("/static/app.css")) + `">
+` + ui.SnapPurgeHTML() + `
 </head>
 <body class="flex min-h-dvh items-center justify-center bg-bg px-4 text-fg antialiased">
 <main class="w-full max-w-sm">

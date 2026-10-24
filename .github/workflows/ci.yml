@@ -214,6 +214,11 @@ jobs:
       - name: pick-legs.mjs can choose and refuse
         if: ${{ !cancelled() }}
         run: node --test e2e/pick-legs.test.mjs
+      # The mirrored view's snapshot store's own rules (web/static/mirror-snap.js):
+      # whose record may be painted, the TTL, the size bound. Node only, < 1 s.
+      - name: mirror-snap.js keys, checks and bounds its snapshots
+        if: ${{ !cancelled() }}
+        run: node --test e2e/mirror-snap.test.mjs
 
   # Local: make leakscan
   #

@@ -212,6 +212,9 @@ export const hostNamesPort = port + 180;
 // The side nav on every signed-in page (sidenav.spec.ts): its own server (the
 // e2eterm binary, mirror and plugins on) and one per-window mirrored host.
 export const sidenavPort = port + 185;
+// The rendered view's snapshot (mirror-snapshot.spec.ts): its own server (the
+// e2eterm binary, mirror plugin on) and one per-window mirrored host.
+export const mirrorSnapPort = port + 190;
 export const baseURL = `http://localhost:${port}`;
 export const versionA = 'e2e-a';
 export const versionB = 'e2e-b';
