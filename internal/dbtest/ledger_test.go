@@ -158,6 +158,9 @@ var pgBackedPackages = []string{
 	// retried" are claims about row-level security, a unique index and a
 	// conditional UPDATE.
 	"internal/sendqueue",
+	// Suggested replies' per-user toggle (migration 0048). "Another user cannot
+	// read or flip your toggle" is a claim about row-level security.
+	"internal/suggest",
 	// The attention queue (migration 0023). "Another user cannot read, answer or
 	// cancel your asks", "an answer and a cancel cannot both land" and "an
 	// agent names only its owner's agent" are claims about row-level security, a

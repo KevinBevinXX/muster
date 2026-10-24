@@ -52,6 +52,15 @@ func TestEventsClassifiesHarnessNotices(t *testing.T) {
 		{"a local command's output, escapes stripped", "<local-command-stdout>Set model to \x1b[1mExample\x1b[22m\nsaved</local-command-stdout>", "",
 			Event{Kind: KindNotice, Notice: NoticeCommandOutput, Text: "Set model to Example", Output: "Set model to Example\nsaved"}},
 
+		// Bash mode (synthetic): the command and its output, in one record or
+		// two, are never the operator's prompt.
+		{"a bash-mode command with its output", "<bash-input>ls example/</bash-input><bash-stdout>a.txt\nb.txt</bash-stdout><bash-stderr></bash-stderr>", "",
+			Event{Kind: KindNotice, Notice: NoticeCommandOutput, Text: "!ls example/", Output: "a.txt\nb.txt"}},
+		{"a bash-mode input alone", "<bash-input>make test</bash-input>", "",
+			Event{Kind: KindNotice, Notice: NoticeCommandOutput, Text: "!make test"}},
+		{"bash-mode output alone, stderr too", "<bash-stdout></bash-stdout><bash-stderr>example: not found</bash-stderr>", "",
+			Event{Kind: KindNotice, Notice: NoticeCommandOutput, Text: "example: not found", Output: "example: not found"}},
+
 		// 🔴 A HUMAN WHO MENTIONS THE TAG IS STILL THE HUMAN.
 		{"a prompt that mentions the tag mid-text", "why did the <task-notification> say failed?", "human",
 			Event{Kind: KindPrompt, Text: "why did the <task-notification> say failed?"}},
