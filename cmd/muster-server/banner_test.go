@@ -459,6 +459,8 @@ var bannerExempt = map[string]string{
 		"pointing GitHub calls at the pickers spec's fake; the shipped binary has no reader",
 	envE2EOpenRouterModels: "the same: a browser-test fixture read ONLY by a `-tags e2eterm` build (e2eupstreams.go), " +
 		"pointing the model search at the pickers spec's fake catalogue; the shipped binary has no reader",
+	envE2ESuggestURL: "the same: a browser-test fixture read ONLY by a `-tags e2eterm` build (e2eupstreams.go), " +
+		"pointing the suggested replies' model at the chip row spec's fake; the shipped binary has no reader",
 	envE2EAgentEndpoint: "the same: a browser-test fixture read ONLY by a `-tags e2eterm` build's fake driver " +
 		"(every agent endpoint at the answer-delivery spec's loopback fake runtime); the shipped binary has no reader",
 	envE2EGoTrueSkew: "the same: a browser-test fixture read ONLY by a `-tags e2eterm` build (e2egotrue.go), " +

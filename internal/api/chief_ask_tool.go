@@ -16,7 +16,7 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// chief_ask: A MIRRORED SESSION ASKS ITS OWNER'S CHIEF (migration 0049;
+// chief_ask: A MIRRORED SESSION ASKS ITS OWNER'S CHIEF (migration 0050;
 // docs/attention.md#asking-the-chief).
 //
 //	chief_ask (a mirrored session, mirror_mcp.go's door only) ──▶ an attention
@@ -32,7 +32,7 @@ import (
 //	   owner, LINKED to the question (escalates; one open at a time); the
 //	   owner's answer to it is relayed to the question as the owner's answer
 //	   (answerAskFrom), and it is cancelled when the question closes otherwise
-//	   (migration 0049's trigger)
+//	   (migration 0050's trigger)
 //	no answer by the deadline (timeout_seconds, DefaultChiefAskTimeout when
 //	   omitted) ──▶ the ask expires, as any ask does
 //

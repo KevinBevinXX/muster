@@ -69,7 +69,7 @@ const (
 const ByOperator = "operator"
 
 // ByChief is answered_by for the chief's answer to a question a mirrored
-// session put to it with chief_ask (New.ToChief, migration 0049): the only ask
+// session put to it with chief_ask (New.ToChief, migration 0050): the only ask
 // an agent answers (AnswerByChief).
 const ByChief = "chief"
 
@@ -212,7 +212,7 @@ type Ask struct {
 	// every answer recorded before 0034).
 	AnsweredVia AnswerSource `json:"-"`
 	// ToChief: a mirrored session's question to its owner's chief (chief_ask,
-	// migration 0049) — the chief may answer it (AnswerByChief), and the owner's
+	// migration 0050) — the chief may answer it (AnswerByChief), and the owner's
 	// Attention queue does not list it.
 	ToChief bool `json:"-"`
 	// Escalates is, on the chief's own ask, the session question it put to the
@@ -662,7 +662,7 @@ func (s *PGStore) settle(ctx context.Context, id int64, q string, args ...any) (
 // or a system ask has no mirror_host, so it is unaffected; an answer from
 // the view ($4 NULL) is unaffected. 0034's CHECK states the same rule again.
 //
-// 🔴 AND THROUGH AN ESCALATION (migration 0049): the chief's ask that escalates
+// 🔴 AND THROUGH AN ESCALATION (migration 0050): the chief's ask that escalates
 // a session's question relays its answer to that question, so an MCP answer
 // from the question's own host is refused on the chief's ask too — or a
 // session could answer its own question as the operator, one hop removed.

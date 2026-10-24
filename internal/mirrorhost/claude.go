@@ -237,6 +237,9 @@ type procInfo struct {
 	start string
 	// state is /proc/<pid>/stat field 3 ("S", "R", "Z" for a zombie, …).
 	state string
+	// tty is /proc/<pid>/stat field 7 (tty_nr), the controlling terminal's
+	// device number; 0 for none.
+	tty int
 	// argvUnread: /proc/<pid>/cmdline could not be read, so argv is empty for
 	// want of reading it, not because the process has none. The Claude
 	// locator does not look at it (a process it cannot read simply is not
@@ -279,7 +282,7 @@ func readProcTable(root string) (map[int]procInfo, map[int][]int, error) {
 			continue
 		}
 		ppid := st.PPID
-		info := procInfo{ppid: ppid, comm: st.Comm, state: st.State, start: st.Start}
+		info := procInfo{ppid: ppid, comm: st.Comm, state: st.State, start: st.Start, tty: st.TTY}
 		if cmd, err := os.ReadFile(filepath.Join(dir, "cmdline")); err == nil {
 			for _, a := range bytes.Split(bytes.TrimRight(cmd, "\x00"), []byte{0}) {
 				info.argv = append(info.argv, string(a))

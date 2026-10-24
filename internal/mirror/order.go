@@ -169,10 +169,10 @@ func (s SessionView) Title() string {
 }
 
 // HasRenderedView reports whether the entry has a rendered view: a connected
-// v2 host reporting Claude Code in its pane — or Hermes, with the session it
-// shows (only a host that can stream a Hermes conversation names one).
+// v2 host reporting Claude Code in its pane — or another runtime with a view,
+// with the session it shows (AgentView).
 func (s SessionView) HasRenderedView() bool {
-	return s.Online && s.Rendered && (s.Claude || s.HermesView())
+	return s.Online && s.Rendered && (s.Claude || s.AgentView())
 }
 
 // SessionKey is the key the entry's conversation is stored by (a focus):
@@ -182,18 +182,33 @@ func (s SessionView) SessionKey() string {
 	switch {
 	case s.Claude:
 		return s.ClaudeSession
-	case s.HermesView():
-		return HermesKeyPrefix + s.AgentSession
+	case s.AgentView():
+		r, _ := s.Spec()
+		return r.AgentKey(s.AgentSession)
 	}
 	return ""
 }
 
-// HermesView reports whether the entry is a Hermes window whose host names
-// its conversation: one with a rendered view (read-only: muster sends nothing
-// into Hermes before Phase 3).
-func (s SessionView) HermesView() bool {
-	return !s.Claude && s.Runtime == RuntimeHermes && s.AgentSession != ""
+// Spec is the RuntimeSpec of the entry's non-Claude runtime (Runtime), false
+// for none or a Claude Code entry.
+func (s SessionView) Spec() (RuntimeSpec, bool) {
+	if s.Claude {
+		return RuntimeSpec{}, false
+	}
+	return wireRuntime(s.Runtime)
 }
+
+// AgentView reports whether the entry is a window of a non-Claude runtime
+// whose host names its conversation, and so has a rendered view (Hermes's,
+// RuntimeSpec.HasView).
+func (s SessionView) AgentView() bool {
+	r, ok := s.Spec()
+	return ok && s.AgentSession != "" && r.HasView(s.AgentSession)
+}
+
+// HermesView reports whether the entry is a Hermes window whose host names
+// its conversation (AgentView, for Hermes).
+func (s SessionView) HermesView() bool { return s.Runtime == RuntimeHermes && s.AgentView() }
 
 // CanPaste reports whether a message can be sent into the entry's active pane
 // from the Terminal view (PasteActivePane): the host is connected and
@@ -231,14 +246,15 @@ const (
 // from the pane's command, else the command itself; "" when the host said
 // nothing (a per-session host, which reports no command).
 func (s SessionView) Kind() string {
-	switch {
-	case s.Claude:
+	if s.Claude {
 		return KindClaudeCode
-	case s.Runtime == RuntimeHermes:
-		return KindHermes
-	case s.Command == "opencode":
-		return KindOpenCode
-	case slices.Contains(shells, s.Command):
+	}
+	if r, ok := s.Spec(); ok {
+		return r.Kind
+	}
+	// A pane whose command is "opencode" is KindOpenCode by the fall-through
+	// below: the label is the command.
+	if slices.Contains(shells, s.Command) {
 		return KindShell
 	}
 	return s.Command

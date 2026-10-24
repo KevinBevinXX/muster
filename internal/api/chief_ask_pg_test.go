@@ -16,7 +16,7 @@ import (
 	"github.com/ZacxDev/muster/internal/plugins"
 )
 
-// chief_ask (chief_ask_tool.go, migration 0049) over a real Postgres: a
+// chief_ask (chief_ask_tool.go, migration 0050) over a real Postgres: a
 // mirrored session of user 1 (host ws) asks user 1's chief; the chief gets the
 // question as a turn naming the session (and the routed message it is about);
 // the chief answers it, or escalates it to the owner, whose answer comes back to

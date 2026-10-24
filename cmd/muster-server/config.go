@@ -351,6 +351,10 @@ const (
 	// by e2eupstreams.go.
 	envE2EGitHubAPI        = "MUSTER_E2E_GITHUB_API"
 	envE2EOpenRouterModels = "MUSTER_E2E_OPENROUTER_MODELS"
+	// A fake chat-completions URL the suggested replies' model is pointed at
+	// (on a fixed invented key), so the chip row's spec never calls a real
+	// model. Read only by e2eupstreams.go.
+	envE2ESuggestURL = "MUSTER_E2E_SUGGEST_URL"
 	// The GoTrue verifier's clock skew (a Go duration) instead of
 	// gotrue.DefaultSkew, so the specs that outlive an access token wait
 	// seconds rather than 35 s. Read only by e2egotrue.go.

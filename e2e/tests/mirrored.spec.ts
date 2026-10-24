@@ -5,7 +5,7 @@ import { BrowserContext, Page } from '@playwright/test';
 import { test, expect } from '../lib/fixtures';
 import { hookToken, mirrorPort, password } from '../lib/env';
 import { MirrorRig } from '../lib/mirrorhost';
-import { touchDrag } from '../lib/touch';
+import { Pt, touchDrag } from '../lib/touch';
 import { writeFileAtomic } from '../lib/atomic';
 
 // MIRRORED sessions at a phone's width (412×915), against a REAL muster-server
@@ -812,6 +812,12 @@ test('the Rendered composer stays on screen at a phone size: pinned to the viewp
   // A fresh page: the stubbed visualViewport above is that page's alone.
   await stopMirror();
   await startMirror(false, tr);
+  // 🔴 Only once the NEW host has said main is a Claude pane on a read-only
+  // host: startMirror returns when the process is spawned, not when it has
+  // connected, and a view opened before that report is not the rendered view
+  // at all — the page falls back to the Terminal (measured: 3 of 30 under
+  // load, "#mv-readonly: element(s) not found" over a Terminal snapshot).
+  await waitForClaude(page, 'read-only');
   const ro = await page.context().newPage();
   await ro.goto(origin + viewPath('main'));
   await expect(ro.locator('#mv-readonly')).toBeVisible();
@@ -1026,6 +1032,41 @@ function scrollLog(file: string) {
   return { scrolls, cancels: lines.filter((l) => l.endsWith(' cancel')) };
 }
 
+// wholeDrag drags vertically by dy pixels (positive: finger down, back in
+// history), from the middle of #term-scroll or from `from`, and requires the
+// page to ask for the whole drag: one line per cell height it covered, less one
+// for the fraction a previous drag left over. The far side's 20 rows fit the
+// phone, so the scroll area takes none of it (panArea). The cell is the far
+// side's (data-remote), so the attach must have reported its size first.
+// Polled: a passive touch listener runs after the touch's dispatch was
+// acknowledged. `held` runs with the finger down, before it moves.
+//
+// 🔴 EVERY MOVE OF THE DRAG, NOT ITS FIRST ONE. A touch's events all go to the
+// element it STARTED on — here a span of xterm's rows, which xterm replaces
+// when it redraws. A drag a re-attach repainted the screen under sent the rest
+// of its moves to a node no longer in the page, where the gesture never saw
+// them: the "after Reconnect: a later drag scrolled" flake was a drag that
+// began as the re-attach repainted, and asked for nothing. "A drag scrolled at
+// all" could not see a drag cut short.
+async function wholeDrag(page: Page, dy: number, what: string, opts: { from?: Pt; held?: () => Promise<void> } = {}) {
+  const term = page.locator('#term');
+  const box = (await page.locator('#term-scroll').boundingBox())!;
+  const from = opts.from ?? { x: box.x + box.width / 2, y: box.y + box.height / 2 - dy / 2 };
+  const asked = async () => Number((await term.getAttribute('data-scroll-asked')) ?? '0');
+  const cell = await term.evaluate((el) => {
+    const rows = Number((el.getAttribute('data-remote') ?? '').split('x')[1]);
+    return rows > 0 ? el.querySelector('.xterm-screen')!.getBoundingClientRect().height / rows : 0;
+  });
+  expect(cell, 'fixture: the far side reported its rows, so a cell has a height').toBeGreaterThan(4);
+  const least = Math.floor(Math.abs(dy) / cell) - 1;
+  expect(least, 'fixture: the drag covers several lines').toBeGreaterThan(3);
+  const a0 = await asked();
+  await touchDrag(page, from, { x: from.x, y: from.y + dy }, 12, opts.held);
+  await expect
+    .poll(async () => Math.abs((await asked()) - a0), { message: `${what}: the page asked for the whole drag (${Math.abs(dy)}px, ${cell.toFixed(1)}px a line)` })
+    .toBeGreaterThanOrEqual(least);
+}
+
 // reportScrollTiming prints (and attaches to the test) the scroll requests'
 // round trips and the most requests the page sent in any one second.
 function reportScrollTiming(rtts: number[], sentAt: number[]) {
@@ -1070,8 +1111,9 @@ test.describe('drag-to-scroll on a phone (412×915, touch)', () => {
       const mid = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
       const left0 = await page.locator('#term-scroll').evaluate((el) => el.scrollLeft);
 
-      // Finger DOWN: back into history (tmux scroll-up), in whole lines.
-      await touchDrag(page, { x: mid.x, y: mid.y - 120 }, { x: mid.x, y: mid.y + 120 });
+      // Finger DOWN: back into history (tmux scroll-up), in whole lines — as
+      // many as the drag covered.
+      await wholeDrag(page, 240, 'a drag down');
       await expect.poll(() => scrollLog(scrollFile).scrolls.reduce((a, s) => a + s.lines, 0), { message: `a drag down scrolled back (muster-mirror log:\n${rig.log})` }).toBeGreaterThan(5);
       // The page's own count agrees with the host's: nothing dropped. Compared
       // once BOTH have settled — the drag's later scrolls are still landing when
@@ -1269,10 +1311,15 @@ test.describe('drag-to-scroll when the host refuses (412×915, touch)', () => {
       const box = (await page.locator('#term-scroll').boundingBox())!;
       const mid = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
       const down = () => touchDrag(page, { x: mid.x, y: mid.y - 80 }, { x: mid.x, y: mid.y + 80 });
+      // reattached: the attach Reconnect opened has reported the far side's
+      // size (connect() clears data-remote; the report is the attach's first
+      // frame, ahead of the screen). A drag before it is measured against no
+      // size at all.
+      const reattached = () => expect(term, 'the re-attach reported its size').toHaveAttribute('data-remote', '200x20');
       // lands: a drag reaches the host, and any note goes.
       const lands = async (what: string) => {
         const before = hostLines();
-        await down();
+        await wholeDrag(page, 160, what);
         await expect.poll(hostLines, { message: `${what}: a later drag scrolled (muster-mirror log:\n${rig.log})` }).toBeGreaterThan(before);
         await expect(note, `${what}: a scroll that lands clears the note`).toBeHidden();
         await expect(term, `${what}: the gesture is wired`).toHaveAttribute('data-scroll-on', '1');
@@ -1319,6 +1366,7 @@ test.describe('drag-to-scroll when the host refuses (412×915, touch)', () => {
       await startMirror(true, undefined, env);
       await waitForCards(page, true);
       await page.locator('#term-reconnect').click();
+      await reattached();
       await expect(screen(page)).toContainText('FAKE-MIRROR session=scratch mode=ro');
       await lands('after the host came back');
 
@@ -1339,7 +1387,25 @@ test.describe('drag-to-scroll when the host refuses (412×915, touch)', () => {
       await waitForCards(page, true);
       await page.locator('#term-reconnect').click();
       await expect(term, 'Reconnect wires the gesture again').toHaveAttribute('data-scroll-on', '1');
+      await reattached();
       await lands('after Reconnect');
+
+      // 5. A drag the screen is redrawn under: the finger goes down on the
+      // screen, a re-attach repaints it before the finger moves, and the whole
+      // drag still scrolls.
+      const h0 = hostLines();
+      // The finger goes down on text — a span the repaint replaces — not on
+      // an empty row, which xterm keeps.
+      const text = (await page.locator('#term .xterm-rows span').filter({ hasText: 'FAKE-MIRROR' }).last().boundingBox())!;
+      const from = { x: text.x + Math.min(40, text.width / 2), y: text.y + text.height / 2 };
+      await wholeDrag(page, 160, 'a drag the re-attach redrew under', { from, held: async () => {
+        const touched = await page.evaluateHandle(({ x, y }) => document.elementFromPoint(x, y)!, from);
+        expect(await touched.evaluate((el) => el.nodeName), 'fixture: the finger is on a span of text').toBe('SPAN');
+        await page.evaluate(() => document.getElementById('term-reconnect')!.click());
+        await reattached();
+        await expect.poll(() => touched.evaluate((el) => el.isConnected), { message: 'fixture: the redraw replaced the element under the finger' }).toBe(false);
+      } });
+      await expect.poll(hostLines, { message: 'the redrawn drag reached the host' }).toBeGreaterThan(h0);
     } finally {
       await page.unroute('**/mirror/terminal/scroll');
       await stopMirror();

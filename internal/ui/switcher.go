@@ -213,7 +213,19 @@ func switcherBar(s *Switcher, pinned bool) g.Node {
 			// (layout shift 0.0047–0.012 at 1280×800). Reserved by the
 			// container's padding from its first byte, the bar's arrival moves
 			// nothing.
-			Class("absolute inset-x-0 bottom-0 border-t border-line bg-bg"+classIf(pinned, " px-3 pb-[env(safe-area-inset-bottom)]")),
+			//
+			// 🔴 AND ITS HEIGHT IS FIXED TOO, to exactly that room: a frame can
+			// also land with the <nav> parsed and its row not yet, a 1px bar at
+			// the bottom that then grew to 45px and moved up by 44 (measured on a
+			// 200-message agent page under a parser stall inside the bar).
+			Class("absolute inset-x-0 bottom-0 border-t border-line bg-bg "+switcherHeight(pinned)+classIf(pinned, " px-3 pb-[env(safe-area-inset-bottom)]")+" [&[data-switcher-pending]]:invisible"),
+			// 🔴 AND INVISIBLE UNTIL ITS SCRIPT (straight after it) HAS RUN: a
+			// frame can land mid-bar too, with the toggle's icon parsed and its
+			// label not, and the icon then moved aside for the label (0.00059 at
+			// 390px, with the title, under a parser stall there). The bar's room
+			// is reserved, so its appearing moves nothing; a <noscript> rule
+			// shows it without script.
+			g.Attr("data-switcher-pending", ""),
 			Div(
 				Class("flex h-11 min-w-0 items-center gap-2"),
 				Button(
@@ -234,7 +246,17 @@ func switcherBar(s *Switcher, pinned bool) g.Node {
 			),
 		),
 		switcherScript(),
+		NoScript(StyleEl(g.Raw(`#`+SwitcherID+` { visibility: visible !important; }`))),
 	}
+}
+
+// switcherHeight is the bar's own height, the same room switcherRoom
+// reserves (border-box, so the border and the safe-area padding are inside it).
+func switcherHeight(pinned bool) string {
+	if pinned {
+		return "h-[calc(2.8125rem+env(safe-area-inset-bottom))]"
+	}
+	return "h-[2.8125rem]"
 }
 
 // switcherRoom is the bottom padding a container holding the bar reserves
@@ -343,6 +365,7 @@ func switcherScript() g.Node {
 	return Script(g.Raw(`
 (function () {
   var bar = document.getElementById('` + SwitcherID + `');
+  if (bar) bar.removeAttribute('data-switcher-pending'); // whole now (see switcherBar)
   // A property, not an attribute: htmx's history snapshot carries attributes,
   // and after Back an attribute guard left the restored toggle unbound.
   if (!bar || bar.__musterSwitcherBound) return;

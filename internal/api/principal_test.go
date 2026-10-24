@@ -183,6 +183,7 @@ var routeVias = map[authz.Via][]string{
 		// Suggested replies (suggest.go): the composer's set and its counts,
 		// and the caller's own toggle — the session tier.
 		"GET /mirror/view/suggest",
+		"POST /mirror/view/suggest/event",
 		"POST /account/suggest",
 		"GET /mirror/view/subagent",
 		"POST /mirror/view/send",

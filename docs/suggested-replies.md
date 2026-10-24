@@ -11,18 +11,48 @@ draft you already started, never over it); you edit it and press Send, which
 keeps its own [step-up check](sending-and-step-up.md). Nothing in the
 suggestion path can reach a pane.
 
-🔴 **Not generated yet.** This is the server side: the input, the model call,
-the filter, the cache, the exclusions, the routes and the per-user toggle. The
-turn-end trigger is not wired into the rendered view, so no set is generated
-and nothing is spent until the composer's chip row ships with it. On by
-default from then on.
+On by default; each user can turn them off in **Account → Suggested replies**.
+Mirrored tmux sessions only (a dispatched agent's chat page has no chips yet).
 
-## When a set is generated (once wired)
+## The chip row
+
+- **Where:** a fixed-height row directly **above** the Rendered view's
+  composer (the session switcher sits below it). It starts with an **AI**
+  mark; the row is a group named "AI-suggested replies", and each chip's
+  accessible name is "AI-suggested reply: …".
+- **Up to 3 chips**, each a 44px tap target, its text cut with an ellipsis
+  (the whole text is its title).
+- **A tap fills, never sends.** An empty box takes the chip's text; a box that
+  already holds a draft gets it **on a new line below** the draft, never over
+  it. It is an edit (Ctrl+Z gives the draft back), and you press Send. A tap
+  focuses the box with the caret at the end; a chip chosen from the keyboard
+  (Enter, Space) keeps the focus, so a held Enter fills once and sends nothing.
+  A held Enter in the box sends once, not once per key repeat.
+- **×** hides the row for that turn, on this device; the next turn brings new
+  chips.
+- **Within 8 s or not at all.** The row takes its room when a set is being
+  made (`pending`) and gives it back if no chip is on screen 8 s after the
+  turn ended (`ui.SuggestCutoff`); the server does not even call the model
+  once that time has passed. A page newly opened on an idle turn that has a
+  set shows it (its open reads the whole conversation: a turn end of its own,
+  within 8 s of the open). A **reload** resumes its socket and shows **no row**
+  for the turn it reloaded into; the next turn brings chips.
+- **Gone when the turn is.** A new turn (busy, a new status), a question card
+  or an attention ask appearing, or your own Send takes the row away.
+- **No layout shift.** The row is out of flow (placed against the pinned
+  composer's top), and its 44px are added to the room the page keeps for the
+  composer only while a set is pending or shown — so nothing on screen moves
+  (measured: CLS 0 at 390×844 and 1280×800, against an in-flow positive
+  control the same measurement sees at 0.019 / 0.013).
+- Without script there is no row.
+
+## When a set is generated
 
 Only for a mirrored Claude Code session **with a rendered view open**, and only
 at the end of a turn: when the host's busy marker falls while the view is open,
-or when a view opens on a session that is already idle. A session nobody is
-looking at never generates.
+when the status's time moves to a non-busy status (a turn that started and
+ended between two of the host's looks), or when a view opens on a session that
+is already idle. A session nobody is looking at never generates.
 
 Then, every one of these must hold, or nothing is generated (and nothing is
 served — the same checks run again whenever the composer asks):
@@ -33,7 +63,8 @@ served — the same checks run again whenever the composer asks):
   composer is enabled);
 - the window's own status is **idle** — not busy, not **waiting** (a permission
   prompt or a question: text pasted there would answer the prompt), not
-  unknown;
+  unknown — and not held by the Claude prompt guard (a dialog or text on the
+  screen that the status does not show);
 - no question card (AskUserQuestion) is open for the session;
 - no attention ask raised by the session is open — including one you hid on
   this device with "Hide until next ask": hidden is not answered;
@@ -43,11 +74,30 @@ served — the same checks run again whenever the composer asks):
   decides whether a call is worth making.
 
 A set is served only for the turn it was made for: once the window's status
-changes, the old set is no longer offered. The window's status can trail the
-transcript by a few seconds, so a turn end waits up to 12 s (two of the host's
-window-list refreshes) for the turn's own idle status — not the idle from
-before the turn. A permission prompt or a question ends the wait at once, and
-a turn that moves on while the checks run generates nothing.
+changes, the old set is no longer offered (and the page takes the row away).
+
+**The turn's own status, by its token.** muster-mirror sends, with the busy
+flag on the transcript stream, the time Claude Code wrote that status
+(`statusSince`, the same number the window list carries). The marker that
+ends a turn therefore names the turn's **own** idle, and the turn end waits
+for the window list to read exactly that token — and gives up at once when the
+list already reads a later one (the window moved on; that status's own marker
+ends its own turn). So:
+
+- a socket that is backed up (the turn already over when its busy marker
+  arrives) is judged by its own token, not mistaken for the idle before it;
+- two turns back to back with no idle on the stream between them are judged by
+  the second turn's token, not by the first turn's idle still in the list.
+
+When the status time moves, the host also re-sends its window list at once
+(rather than at its next 5 s refresh), so the wait is short. The wait is
+bounded by the 8 s cutoff. A permission prompt or a question **of this turn**
+ends it at once (one older than the turn's token is the list lagging, and is
+waited out).
+
+🔴 **An older muster-mirror sends no token, and gets no chips at all**:
+without the token a turn end cannot be told from the idle before the turn.
+The hosts get the new muster-mirror in the same rollout.
 
 ## What is sent to the model
 
@@ -114,9 +164,9 @@ A set is cached **in memory only**, by the fingerprint of the exact input
 (its focus times aside, which move with the clock) and by the turn it answers:
 the same input, or the same turn, never calls the model twice, and a new turn
 calls it exactly once. Two views of the same turn share one call, even when
-one of them resumed mid-conversation and saw less (a resumed view never
-generates from the partial turn it resumed into; it does from the first whole
-turn after it). A set's text is dropped after an hour (only its fingerprint is
+one of them resumed mid-conversation and saw less (a resumed view offers
+nothing for the partial turn it resumed into, and generates from the first
+whole turn after it). A set's text is dropped after an hour (only its fingerprint is
 kept, so an unchanged session is not paid for again). **No suggestion text is
 ever written to the database.**
 
@@ -127,24 +177,59 @@ Measured on the synthetic eval set (below) with `openai/gpt-6-luna` at
 reasoning effort `low`, 64 calls: about 840 tokens in and 160 out per
 generation, **$0.00016 per generation**, latency **p50 3.1 s, p95 5.3 s**.
 
+⚠ **Known limit.** A status rewrite while Claude Code stays idle (its
+`statusUpdatedAt` moving, for example when a background shell starts or ends —
+not measured) counts as a turn end: the chips are redrawn, and if the focus
+history moved in between, the model is asked again for the same reply.
+
+## What the chip row reports, and the auto-pause
+
+The row reports, to `POST /mirror/view/suggest/event`, **numbers only**: the
+set's fingerprint and `shown` (once per set, and only once it was **seen**: the
+page visible and the row in the viewport — a hidden tab or a row off screen is
+not an impression), `filled` (a tap) and `sent` (the box was sent after a tap) with the **edit distance** between what the tap left
+in the box and what was sent, computed in the browser. A set made for the
+**open** of a view on an idle session (not a turn that ended while it was
+open) is shown but reported not at all — neither shown nor tapped — so opening
+a session to read it never counts toward the auto-pause. The route refuses any
+other field, so a page that started sending text would fail, not leak.
+
+**The counts are persisted, numbers only**: `suggest_usage` (migration `0049`)
+holds each user's shown, filled and sent counts, the edit-distance sum and the
+pause, under forced row-level security. No column can hold text, a session or
+any of the conversation; the fingerprints that make a set count once stay in
+memory. **Account → Suggested replies** shows them: sets shown, tapped, sent
+after a tap, the tap rate, the mean edit before sending, and whether you are
+paused.
+
+**Auto-pause:** once 200 sets have been shown to a user, if fewer than 5% of
+them were tapped, suggestions pause for that user — nothing is generated or
+shown, the composer says so in one line (with a link to Account), and Account
+says why. The pause is persisted, so it survives a restart or a deploy.
+Turning suggestions back on in Account resumes and starts the count over (a
+user who was not paused keeps their counts).
+
 ## Turning it off
 
 - `MUSTER_SUGGEST=off` stops everything ([configuration](configuration.md)).
-- Each user's own toggle: `POST /account/suggest` with `on=0` or `on=1`
-  (stored in `suggest_preferences`, migration `0048`; on is the default). Off
-  also drops that user's cached sets, and a call already running is not
-  kept. A toggle that cannot be read as its owner, or not within 5 s after a
-  call, reads as off.
-
-An automatic pause for users who rarely use the chips is planned with the
-composer that reports which ones were tapped.
+- Each user's own toggle, in **Account → Suggested replies** (or
+  `POST /account/suggest` with `on=0` or `on=1`; stored in
+  `suggest_preferences`, migration `0048`; on is the default). Off also drops
+  that user's cached sets, and a call already running is not kept. A toggle
+  that cannot be read as its owner, or not within 5 s after a call, reads as
+  off.
 
 ## Routes
 
 | route | what |
 |---|---|
 | `GET /mirror/view/suggest?host=&session=[&window=]` | the window's current set as JSON: `{"ai": true, "label": "AI-suggested replies", "suggestions": [{"text", "kind"}], "fingerprint", "reason"}`. It never generates. `reason` says, in fixed words, why there are none |
-| `POST /account/suggest` | `on=1\|0`: the caller's own toggle |
+| `POST /mirror/view/suggest/event` | the chip row's report: `host`, `session`, `window`, `fingerprint`, `event=shown\|filled\|sent`, `dist` — nothing else is accepted |
+| `POST /account/suggest` | `on=1\|0`: the caller's own toggle (`back=account` returns to the Account page) |
+
+The rendered view's socket also tells the page `{"type":"suggest","state":"pending"|"ready"|"none","ms"}`
+(`ms`: how long ago the turn ended); the page then reads the set from the GET
+route above.
 
 ## The eval set
 

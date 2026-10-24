@@ -1,4 +1,4 @@
--- muster 0049 — A MIRRORED SESSION'S QUESTION TO THE CHIEF (chief_ask,
+-- muster 0050 — A MIRRORED SESSION'S QUESTION TO THE CHIEF (chief_ask,
 -- internal/api/chief_ask_tool.go; docs/attention.md#asking-the-chief).
 --
 -- A mirrored Claude Code session can now put a clarifying question to its
@@ -34,13 +34,13 @@
 -- answered_by gains 'chief' (attention.AnswerByChief, which answers only a
 -- to_chief ask); every other ask is still answered by the operator.
 --
--- Must apply after 0048 (the contiguity test refuses a gap). Not re-applied by
+-- Must apply after 0049 (the contiguity test refuses a gap). Not re-applied by
 -- db.RLSOn (it changes no policy, grant or default) and idempotent: ADD COLUMN
 -- IF NOT EXISTS, DROP/ADD CONSTRAINT. 0025's body, which RLSOn may re-apply,
 -- names its answered_by CHECK only inside CREATE TABLE IF NOT EXISTS, so it
 -- never puts the narrower rule back.
 --
--- ROLLBACK. An image from before 0049 runs over this schema unchanged (it never
+-- ROLLBACK. An image from before 0050 runs over this schema unchanged (it never
 -- writes the columns; it would LIST a to_chief question on the Attention view,
 -- answerable by the operator, and read a chief's answer as an answer). To
 -- remove the schema itself, after rolling the image back:
@@ -54,7 +54,7 @@
 --   DROP INDEX IF EXISTS attention_asks_one_open_escalation;
 --   ALTER TABLE attention_asks DROP COLUMN IF EXISTS chief_turn_at, DROP COLUMN IF EXISTS route_id,
 --       DROP COLUMN IF EXISTS escalates, DROP COLUMN IF EXISTS to_chief;
---   DELETE FROM schema_migrations WHERE version = 49;
+--   DELETE FROM schema_migrations WHERE version = 50;
 
 SET LOCAL lock_timeout = '3s';
 

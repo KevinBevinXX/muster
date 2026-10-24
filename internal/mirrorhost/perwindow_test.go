@@ -228,6 +228,9 @@ type windowsBackend struct {
 	pasted  []string // "pane text"
 	closed  []string
 	noPaste bool
+	// screens is a pane's screen as ClaudeScreen reads it, by pane id;
+	// a pane not in it shows idleClaudeScreen.
+	screens map[string]string
 }
 
 func (b *windowsBackend) set(w ...WindowInfo) {
@@ -282,7 +285,10 @@ func (b *windowsBackend) Paste(_ context.Context, p ClaudePane, text string) err
 // capabilities, as the tmux backend has them: a screen at Claude Code's idle
 // prompt, and the real checked paste around PastePane (its Enter records
 // nothing: PastePane records the whole send, as a plain paste did).
-func (b *windowsBackend) ClaudeScreen(context.Context, string) (string, error) {
+func (b *windowsBackend) ClaudeScreen(_ context.Context, pane string) (string, error) {
+	if s, ok := b.screens[pane]; ok {
+		return s, nil
+	}
 	return idleClaudeScreen, nil
 }
 func (b *windowsBackend) PasteChecked(ctx context.Context, p ClaudePane, text string, before, beforeEnter func(context.Context) error) error {

@@ -370,7 +370,7 @@ owner's mirrored sessions may ask (no allowlist, by operator decision).
 
 1. **The question.** `chief_ask {question, options?, route_id?,
    timeout_seconds?}` on `POST /mirror/mcp` files an attention ask of the
-   session's **addressed to the chief** (`to_chief`, migration 0049), open for
+   session's **addressed to the chief** (`to_chief`, migration 0050), open for
    `timeout_seconds` (30 minutes when omitted). With `route_id` — one of the
    owner's routes — the question is about that routed message.
 2. **To the chief.** muster puts the question to the chief as a **turn** in
@@ -394,7 +394,7 @@ owner's mirrored sessions may ask (no allowlist, by operator decision).
    yours (`answered_by: "operator"`, with its provenance); the chief is not
    sent it. When the question closes any other way — the chief answers it,
    the session cancels it, it is answered in the session or it expires — its
-   open escalation is cancelled in the same statement (migration 0049's
+   open escalation is cancelled in the same statement (migration 0050's
    trigger) and leaves your queue.
 4. **The wait.** The session waits with `attention_wait {id}`, as for any ask:
    only the session that asked can wait on or cancel it. It ends `answered`

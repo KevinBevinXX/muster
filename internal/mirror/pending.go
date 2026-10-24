@@ -163,31 +163,22 @@ func cleanLine(s string, max int) string {
 }
 
 // boundPending applies the Pending rules to a normalised list: none on a
-// window that is not a waiting Claude or Hermes pane, each cleaned (a Claude
-// window's without the Hermes ask's fields), and at most
-// MaxPendingWindows kept — the windows that started waiting most recently,
+// window that is not a waiting pane of a runtime with Prompts, each cleaned
+// as its runtime keeps it (a Claude window's without the named ask's
+// fields), and at most MaxPendingWindows kept — the windows that started waiting most recently,
 // then list order — so which keep theirs does not depend on the host's order.
 func boundPending(out []Window) {
 	var with []int
 	for i := range out {
-		rt := out[i].AgentRuntime()
-		if (rt != RuntimeClaude && rt != RuntimeHermes) || out[i].Status != StatusWaiting {
+		r, ok := out[i].Spec()
+		if !ok || !r.Caps.Prompts || out[i].Status != StatusWaiting {
 			out[i].Pending = nil
 			continue
 		}
-		out[i].Pending = CleanPending(out[i].Pending)
-		switch p := out[i].Pending; {
-		case p == nil:
-		case rt == RuntimeClaude:
-			// The Hermes ask's fields are Hermes's: a Claude window's
-			// Pending is what it always was.
-			c := *p
-			c.Kind, c.Detail, c.PromptID, c.Choices = "", "", "", ""
-			out[i].Pending = CleanPending(&c)
-		case p.Kind == "":
-			// A Hermes window's Pending names its ask, or it is none.
-			out[i].Pending = nil
-		}
+		// A Claude window's Pending is what it always was (the named ask's
+		// fields are another runtime's); a Hermes window's names its ask, or
+		// it is none (RuntimeSpec.PendingNamesAsk).
+		out[i].Pending = r.cleanPending(out[i].Pending)
 		if out[i].Pending != nil {
 			with = append(with, i)
 		}

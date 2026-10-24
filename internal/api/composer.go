@@ -84,6 +84,7 @@ const (
 	noticeHermesWaitingNow = "hermes-waiting-now"
 	noticeHermesBusyNow    = "hermes-busy-now"
 	noticeHermesUnknownNow = "hermes-unknown-now"
+	noticeGatedUnspokenNow = "gated-unspoken-now"
 	// A Hermes window's Send (Phase 3): the hub's idle gate, and the host's
 	// gated send by how it ended.
 	noticeHermesBusy        = "hermes-busy"
@@ -102,6 +103,7 @@ const (
 	noticeHermes      = "hermes"
 	noticeMultiplexer = "multiplexer"
 	noticeUnchecked   = "unchecked"
+	noticeOpenCode    = "opencode"
 	// A queued message's Edit (send_queue_edit.go).
 	noticeEditing           = "editing"
 	noticeEdited            = "edited"
@@ -124,6 +126,7 @@ var pasteGuardNotices = map[string]string{
 	mirror.PasteRefusalHermes:      noticeHermes,
 	mirror.PasteRefusalMultiplexer: noticeMultiplexer,
 	mirror.PasteRefusalUnchecked:   noticeUnchecked,
+	mirror.PasteRefusalOpenCode:    noticeOpenCode,
 }
 
 // claudeGuardNotices is the notice for each kind of Claude prompt guard
@@ -198,6 +201,7 @@ var composerNotices = map[string]struct {
 	noticeHermesWaitingNow:  {SendQueueHermesWaitingNow, false},
 	noticeHermesBusyNow:     {SendQueueHermesBusyNow, false},
 	noticeHermesUnknownNow:  {SendQueueHermesUnknownNow, false},
+	noticeGatedUnspokenNow:  {SendQueueGatedUnspokenNow, false},
 	noticeSendNowFailed:     {"Not sent: the message could not be delivered. Its row in the queue says why.", false},
 	noticeHermesBusy:        {mirror.HermesBusyText, false},
 	noticeHermesWaiting:     {mirror.HermesWaitingText, false},
@@ -212,6 +216,7 @@ var composerNotices = map[string]struct {
 	noticeHermes:            {mirror.PasteRefusedHermesText, false},
 	noticeMultiplexer:       {mirror.PasteRefusedMultiplexerText, false},
 	noticeUnchecked:         {mirror.PasteRefusedUncheckedText, false},
+	noticeOpenCode:          {mirror.PasteRefusedOpenCodeText, false},
 	noticeEditing:           {SendQueueEditingText, true},
 	noticeEdited:            {SendQueueEditedText, true},
 	noticeEditCancelled:     {SendQueueEditCancelledText, true},

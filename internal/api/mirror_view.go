@@ -78,17 +78,24 @@ func (s *Server) handleMirrorViewPage(w http.ResponseWriter, r *http.Request) {
 	v := ui.MirrorViewView{Host: h.Host, Session: e.Session, Window: e.Window, Title: mirrorTitle(e), Label: e.Label, Qualifier: e.Qualifier, Interactive: h.Interactive,
 		StepUp: s.stepUpView(r, ""), Nonce: newSendNonce(), Dictate: s.dictatePath(), Upload: s.uploadPath(),
 		FocusHistory: s.mirrorFocusHistoryPath(e.SessionKey()), DraftUser: draftUser(r.Context())}
-	// 🔴 A HERMES WINDOW SENDS ONLY WHEN ITS HOST ADVERTISED hermesSend
-	// (Phase 3): otherwise its composer is drawn disabled, with no queue, and
-	// every send is refused again at the hub (the hermesSend switch) and on
-	// the host (its own switch, and the paste guard).
-	if e.HermesView() {
-		v.Hermes, v.HermesSend = true, h.HermesSend && h.Interactive
+	// 🔴 A WINDOW OF A RUNTIME WITH A GATED SEND (Hermes) SENDS ONLY WHEN
+	// ITS HOST ADVERTISED IT (Phase 3): otherwise its composer is drawn
+	// disabled, with no queue, and every send is refused again at the hub
+	// (the gated-send switch) and on the host (its own switch, and the paste
+	// guard). v.Hermes and v.HermesSend are that composer's (its words are
+	// Hermes's, the one such runtime).
+	if rt, ok := e.Spec(); ok && rt.GatedSend && e.AgentView() {
+		send, _ := h.GatedSendOn(rt)
+		v.Hermes, v.HermesSend = true, send && h.Interactive
 	}
 	if !v.Hermes || v.HermesSend {
 		v.Queue = s.mirrorComposerQueue(r.Context(), h, e, sendQueueEditing(r))
 	}
 	v.Notice, v.NoticeOK = composerNotice(r)
+	// The suggested replies' row (suggest.go): a Claude Code window on an
+	// interactive host, while the server has suggestions wired at all.
+	v.Suggest = s.suggestPath(r.Context(), h, e)
+	v.SuggestPaused = v.Suggest == "" && s.suggestPaused(r.Context(), h, e)
 	v.HostIcon = s.mirrorHostIcon(r.Context(), h.Host)
 	// The window's sessions' open attention asks, answerable here
 	// (attention_asker.go).
@@ -171,10 +178,17 @@ func (s *Server) handleMirrorViewWS(w http.ResponseWriter, r *http.Request) {
 			}
 		})
 	}
+	// Suggested replies (suggest.go): this socket's tracker — nil when the
+	// window cannot have any — fed every batch, and the page told what its
+	// turn ends make of them.
+	sg := s.suggestSocket(ctx, r, c, host, session, window, drawn.Resumed)
 	err = s.ext.Mirror.WatchWindow(ctx, host, session, window, gen, offset, func(m mirror.Msg) error {
 		if m.Reset {
 			drawn.Reset()
 		}
+		// After the batch is written: the page has drawn the reply its
+		// suggestions answer before it hears of them.
+		defer sg.observe(m)
 		// A host that reports subagents says so before it draws an Agent call
 		// (the Reset batch, a resume's marker): those calls are then cards.
 		if m.SubagentList {

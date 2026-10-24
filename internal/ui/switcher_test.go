@@ -231,8 +231,8 @@ func TestTheSwitcherBarIsServerRenderedAtAFixedHeight(t *testing.T) {
 		strings.Contains(all, `href="/agents/ag-four"`) {
 		t.Error("the page's own entry is not drawn as current, or is a link")
 	}
-	if !strings.Contains(all, `data-own-swipe="" class="absolute inset-x-0 bottom-0 border-t border-line bg-bg">`) {
-		t.Error("the agent page's bar is not absolutely placed, or pads for the safe area / insets itself inside its pane")
+	if !strings.Contains(all, `data-own-swipe="" class="absolute inset-x-0 bottom-0 border-t border-line bg-bg h-[2.8125rem] [&amp;[data-switcher-pending]]:invisible" data-switcher-pending="">`) {
+		t.Error("the agent page's bar is not absolutely placed at its fixed height, or pads for the safe area / insets itself inside its pane")
 	}
 	if switcherBar(nil, true) != nil {
 		t.Error("a nil switcher draws a bar")
@@ -271,7 +271,7 @@ func TestTheSwitcherIsBelowTheInputOnBothPages(t *testing.T) {
 	// composer (measured 61→106px, a 0.0047–0.012 shift at 1280×800).
 	composeTag := view[compose:]
 	composeTag = composeTag[:strings.Index(composeTag, ">")]
-	if !strings.Contains(composeTag, switcherRoom(true)) || !strings.Contains(view, `class="absolute inset-x-0 bottom-0 border-t border-line bg-bg px-3 pb-[env(safe-area-inset-bottom)]"`) {
+	if !strings.Contains(composeTag, switcherRoom(true)) || !strings.Contains(view, `class="absolute inset-x-0 bottom-0 border-t border-line bg-bg h-[calc(2.8125rem+env(safe-area-inset-bottom))] px-3 pb-[env(safe-area-inset-bottom)] [&amp;[data-switcher-pending]]:invisible"`) {
 		t.Errorf("the composer does not reserve the bar's room, or the bar is not absolute in it: %s", composeTag)
 	}
 	if !strings.Contains(view, `<body class="`+pinnedShellSwitcherClass) {
@@ -293,7 +293,7 @@ func TestTheSwitcherIsBelowTheInputOnBothPages(t *testing.T) {
 	if form := pane[strings.Index(pane, `id="chat-form"`):]; !strings.Contains(form[:strings.Index(form, ">")], " "+switcherRoom(false)) {
 		t.Error("the chat form does not reserve the bar's room")
 	}
-	if !strings.Contains(pane, `class="absolute inset-x-0 bottom-0 border-t border-line bg-bg"`) {
+	if !strings.Contains(pane, `class="absolute inset-x-0 bottom-0 border-t border-line bg-bg h-[2.8125rem] [&amp;[data-switcher-pending]]:invisible"`) {
 		t.Error("the agent page's bar is not absolute")
 	}
 	if !strings.Contains(pane, `class="flex flex-1 flex-col gap-2 min-h-0 relative"`) {

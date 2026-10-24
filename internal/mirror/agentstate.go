@@ -105,8 +105,8 @@ func (h *Hub) AgentState(owner int64, host, session, window string) AgentState {
 	}
 	// noStatus is the "host cannot read it" refusal of this runtime.
 	noStatus := ErrNoStatus
-	if runtime == RuntimeHermes {
-		noStatus = ErrNoHermesStatus
+	if r, ok := LookupRuntime(runtime); ok {
+		noStatus = r.NoStatus
 	}
 	hc.mu.Lock()
 	defer hc.mu.Unlock()

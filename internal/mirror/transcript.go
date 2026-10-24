@@ -152,7 +152,7 @@ func PasteGuardRefusal(err error) string {
 		return ""
 	}
 	switch pr.Refusal {
-	case PasteRefusalHermes, PasteRefusalMultiplexer, PasteRefusalUnchecked:
+	case PasteRefusalHermes, PasteRefusalMultiplexer, PasteRefusalUnchecked, PasteRefusalOpenCode:
 		return pr.Refusal
 	}
 	return ""
@@ -192,12 +192,13 @@ func (h *Hub) lookupAgent(owner int64, host, session, window string) (*hostConn,
 		return nil, "", fmt.Errorf("%w (host %q)", ErrHostOffline, host)
 	}
 	id, runtime, err := hc.targetRuntime(session, window)
+	r, known := LookupRuntime(runtime)
 	switch {
 	case err != nil:
 		return nil, "", err
 	case hc.version < 2:
 		return nil, "", fmt.Errorf("%w (host %q)", ErrNoRenderedView, host)
-	case runtime == RuntimeClaude, runtime == RuntimeHermes:
+	case known && r.Caps.Send:
 		return hc, id, nil
 	}
 	return nil, "", fmt.Errorf("%w (host %q, session %q)", ErrNotClaude, host, session)
@@ -215,14 +216,13 @@ func (h *Hub) lookupRendered(owner int64, host, session, window string) (*hostCo
 		return nil, "", fmt.Errorf("%w (host %q)", ErrHostOffline, host)
 	}
 	id, runtime, err := hc.targetRuntime(session, window)
+	r, known := LookupRuntime(runtime)
 	switch {
 	case err != nil:
 		return nil, "", err
 	case hc.version < 2:
 		return nil, "", fmt.Errorf("%w (host %q)", ErrNoRenderedView, host)
-	case runtime == RuntimeClaude:
-		return hc, id, nil
-	case runtime == RuntimeHermes && hc.agentSession(session, id) != "":
+	case known && r.HasView(hc.agentSession(session, id)):
 		return hc, id, nil
 	}
 	return nil, "", fmt.Errorf("%w (host %q, session %q)", ErrNotClaude, host, session)
@@ -400,7 +400,7 @@ func (h *Hub) PasteWindow(ctx context.Context, owner int64, host, session, windo
 	// as Hermes unless it advertised Msg.HermesSend — before anything reaches
 	// it. No host advertises it before Phase 3. A Hermes the host does not
 	// report (see Msg.HermesSend) is the host paste guard's alone.
-	if err := hc.hermesSendGate(session, windowID); err != nil {
+	if err := hc.gatedSendSwitch(session, windowID); err != nil {
 		return err
 	}
 	// 🔴 A HERMES WINDOW TAKES A SEND ONLY WHILE IT IS IDLE (docs/design/
@@ -409,9 +409,9 @@ func (h *Hub) PasteWindow(ctx context.Context, owner int64, host, session, windo
 	// the StatusSince it was decided on, which the host's gated send checks
 	// again at the moment of acting. Only a non-Terminal send can be Hermes:
 	// the Terminal composer's paste (AnyPane) still meets the host's guard.
-	hermes, since := false, int64(0)
+	gated, since := "", int64(0)
 	if !anyPane {
-		if st, s, ok := hc.hermesStatus(session, windowID); ok {
+		if rt, st, s, ok := hc.gatedStatus(session, windowID); ok {
 			if st != StatusIdle || s <= 0 {
 				// 🔴 A QUEUED paste (ExpectTurn) is SUPERSEDED, as on Claude Code:
 				// the window moved after the queue decided, nothing was sent, and
@@ -422,7 +422,7 @@ func (h *Hub) PasteWindow(ctx context.Context, owner int64, host, session, windo
 				}
 				return &HermesNotIdleError{Status: st}
 			}
-			hermes, since = true, s
+			gated, since = rt, s
 		}
 	}
 	// 🔴 THE CLAUDE PROMPT GUARD, SERVER HALF: a Claude Code window the host
@@ -454,7 +454,7 @@ func (h *Hub) PasteWindow(ctx context.Context, owner int64, host, session, windo
 	if err != nil {
 		return err
 	}
-	err = h.pasteTo(ctx, hc, session, windowID, text, anyPane, hermes, since)
+	err = h.pasteTo(ctx, hc, session, windowID, text, anyPane, gated, since)
 	// 🔴 A "PASTED, NOT SUBMITTED" LANDED: its text is in the input box, and the
 	// next message would be pasted after it and submitted with it as one turn,
 	// so it is recorded like a paste that may have reached the window.
@@ -562,34 +562,38 @@ type SupersededError struct {
 func (e *SupersededError) Error() string { return ErrSuperseded.Error() }
 func (e *SupersededError) Unwrap() error { return ErrSuperseded }
 
-// hermesSendGate is the hermesSend switch for (session, window id) on hc: nil
-// unless the window runs Hermes and hc did not advertise Msg.HermesSend. A
-// per-session host (window id "") lists no runtime, and never reports Hermes.
-func (hc *hostConn) hermesSendGate(session, id string) error {
+// gatedSendSwitch is the gated-send switch for (session, window id) on hc:
+// nil unless the window runs a runtime with a gated send (Hermes) and hc did
+// not advertise it (Msg.HermesSend), when it is that runtime's SendOff. A
+// per-session host (window id "") lists no runtime, and never reports one.
+func (hc *hostConn) gatedSendSwitch(session, id string) error {
 	hc.mu.Lock()
 	defer hc.mu.Unlock()
-	if hc.hermesSend {
-		return nil
-	}
 	for _, w := range hc.windows {
-		if w.Session == session && w.ID == id && w.AgentRuntime() == RuntimeHermes {
-			return &PasteRefusedError{Why: PasteRefusedHermesText, Refusal: PasteRefusalHermes, Cause: ErrHermesSendOff}
+		if w.Session != session || w.ID != id {
+			continue
+		}
+		if r, ok := w.Spec(); ok && r.GatedSend && !hc.gatedSends[r.Name] {
+			return r.SendOff()
 		}
 	}
 	return nil
 }
 
-// hermesStatus is the Status and StatusSince hc lists for (session, window
-// id), and whether that window runs Hermes.
-func (hc *hostConn) hermesStatus(session, id string) (status string, since int64, ok bool) {
+// gatedStatus is the runtime, Status and StatusSince hc lists for (session,
+// window id), and whether that window runs a runtime with a gated send.
+func (hc *hostConn) gatedStatus(session, id string) (runtime, status string, since int64, ok bool) {
 	hc.mu.Lock()
 	defer hc.mu.Unlock()
 	for _, w := range hc.windows {
-		if w.Session == session && w.ID == id && w.AgentRuntime() == RuntimeHermes {
-			return w.Status, w.StatusSince, true
+		if w.Session != session || w.ID != id {
+			continue
+		}
+		if r, ok := w.Spec(); ok && r.GatedSend {
+			return r.Name, w.Status, w.StatusSince, true
 		}
 	}
-	return "", 0, false
+	return "", "", 0, false
 }
 
 // HermesNotIdleError refuses a send to a Hermes window that is not idle
@@ -645,7 +649,7 @@ func (hc *hostConn) statusSince(session, id string) int64 {
 }
 
 // pasteTo hands text to hc for (session, window id) and waits for the answer.
-func (h *Hub) pasteTo(ctx context.Context, hc *hostConn, session, windowID, text string, anyPane, hermes bool, since int64) error {
+func (h *Hub) pasteTo(ctx context.Context, hc *hostConn, session, windowID, text string, anyPane bool, gated string, since int64) error {
 	hc.mu.Lock()
 	hc.next++
 	id := hc.next
@@ -659,8 +663,8 @@ func (h *Hub) pasteTo(ctx context.Context, hc *hostConn, session, windowID, text
 	}()
 	m := Msg{Type: TypePaste, ID: id, Session: session, Window: windowID, Text: text, AnyPane: anyPane}
 	wait := pasteTimeout
-	if hermes {
-		m.Runtime, m.Since, wait = RuntimeHermes, since, hermesPasteTimeout
+	if r, ok := LookupRuntime(gated); ok && r.GatedSend {
+		m.Runtime, m.Since, wait = r.Name, since, r.PasteTimeout
 	}
 	if err := writeJSON(ctx, hc.ws, m); err != nil {
 		return fmt.Errorf("mirror: send the message to the host: %w", err)

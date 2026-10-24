@@ -278,8 +278,18 @@ type Msg struct {
 	// over (a fresh backfill, a /clear, a rotated or truncated file).
 	Reset bool `json:"reset,omitempty"`
 	// Busy (events): Claude Code reports a turn running (its session status).
-	Busy   bool                 `json:"busy,omitempty"`
-	Events []cctranscript.Event `json:"events,omitempty"`
+	Busy bool `json:"busy,omitempty"`
+	// StatusSince (events) is the time Claude Code wrote the status Busy was
+	// read from (its statusUpdatedAt, Unix ms on the HOST's clock): the same
+	// number the host lists as Window.StatusSince. So a turn end on the stream
+	// names the exact status token of the turn's own idle, and muster can tell
+	// it from the idle BEFORE the turn without guessing (suggested replies,
+	// internal/api's suggestTracker). A status that moved with Busy unchanged
+	// (a turn the host never saw busy) is sent as a marker of its own.
+	// 🔴 NO VERSION BUMP: an older host never sends it (0), and an older muster
+	// ignores it.
+	StatusSince int64                `json:"statusSince,omitempty"`
+	Events      []cctranscript.Event `json:"events,omitempty"`
 	// PromptIndex (events) marks the message that carries the transcript's
 	// PROMPT INDEX: Prompts is every prompt in the WHOLE file up to the
 	// backfill's end (cctranscript.Prompts), the newest BoundPrompts keeps, and
@@ -588,8 +598,8 @@ func (w Window) CardActivity() int64 {
 	return w.Activity
 }
 
-// The agent runtimes a window can run (Window.AgentRuntime), sized for exactly
-// the two muster mirrors (docs/design/hermes.md, the runtime seam).
+// The agent runtimes a window can run (Window.AgentRuntime). What muster
+// knows of each is its RuntimeSpec (runtime.go); RuntimeOpenCode is there.
 const (
 	// RuntimeClaude: Claude Code. On the wire it is Window.Claude, never
 	// Window.Runtime.
@@ -599,31 +609,33 @@ const (
 	RuntimeHermes = "hermes"
 )
 
-// AgentRuntime is the agent CLI in w's active pane: RuntimeClaude,
-// RuntimeHermes, or "" for none. What the hub's waiting set, AgentState and
-// the hermesSend switch key on, instead of w.Claude.
+// AgentRuntime is the agent CLI in w's active pane: RuntimeClaude, a runtime
+// the wire carries as Window.Runtime (RuntimeSpec.OnWire: RuntimeHermes), or
+// "" for none. What the hub's waiting set, AgentState and the gated-send
+// switch key on, instead of w.Claude.
 func (w Window) AgentRuntime() string {
-	switch {
-	case w.Claude:
+	if w.Claude {
 		return RuntimeClaude
-	case w.Runtime == RuntimeHermes:
-		return RuntimeHermes
+	}
+	if r, ok := wireRuntime(w.Runtime); ok {
+		return r.Name
 	}
 	return ""
 }
+
+// Spec is the RuntimeSpec of w's AgentRuntime, false for none.
+func (w Window) Spec() (RuntimeSpec, bool) { return LookupRuntime(w.AgentRuntime()) }
 
 // SessionKey is the key w's conversation is stored by (a focus, a route, an
 // ask): a Claude session id as itself — exactly the key it always was — and a
 // Hermes one runtime-qualified, "hermes:<id>" (ValidSessionKey); "" when w
 // names no conversation.
 func (w Window) SessionKey() string {
-	switch w.AgentRuntime() {
-	case RuntimeClaude:
+	if w.Claude {
 		return w.ClaudeSession
-	case RuntimeHermes:
-		if w.AgentSession != "" {
-			return HermesKeyPrefix + w.AgentSession
-		}
+	}
+	if r, ok := w.Spec(); ok {
+		return r.AgentKey(w.AgentSession)
 	}
 	return ""
 }
@@ -639,17 +651,6 @@ var agentSessionPattern = regexp.MustCompile(`^[0-9A-Za-z][0-9A-Za-z_-]{0,127}$`
 // ValidAgentSession reports whether id is a non-Claude session id the wire
 // carries.
 func ValidAgentSession(id string) bool { return agentSessionPattern.MatchString(id) }
-
-// SessionKeyPattern is every session key muster stores (SessionKey): a Claude
-// session id as it always was (1-64 bytes), or "hermes:" and a Hermes one
-// (1-128 bytes). 🔴 IT IS SPELLED ONCE: internal/focus validates with it, and
-// migration 0036 writes the same expression into the CHECKs of
-// agent_focus.subject_key, agent_focus_history.subject_key,
-// session_routes.target_key and attention_asks.mirror_session — a test there
-// reads the migration and fails when the two differ.
-const SessionKeyPattern = `^([0-9A-Za-z][0-9A-Za-z_-]{0,63}|hermes:[0-9A-Za-z][0-9A-Za-z_-]{0,127})$`
-
-var sessionKeyPattern = regexp.MustCompile(SessionKeyPattern)
 
 // ValidSessionKey reports whether key is a session key muster stores.
 func ValidSessionKey(key string) bool { return sessionKeyPattern.MatchString(key) }
@@ -983,18 +984,18 @@ func NormalizeWindows(in []Window, now int64) []Window {
 			w.Label = ""
 		}
 		w.Command = validCommand(w.Command)
-		// 🔴 A HERMES WINDOW IS NEVER A CLAUDE ONE: a host claiming both gets
-		// the more restrictive reading, Hermes (no rendered view, no Claude
-		// paste, the hermesSend switch). Any other runtime name is dropped —
-		// muster mirrors exactly two.
-		switch {
-		case w.Runtime == RuntimeHermes:
-			// Its Pending is the Hermes ask's (boundPending).
+		// 🔴 A WINDOW OF A RUNTIME ON THE WIRE (Hermes) IS NEVER A CLAUDE ONE:
+		// a host claiming both gets the more restrictive reading, that
+		// runtime's (its own view, no Claude paste, its gated-send switch).
+		// Any runtime name the wire does not carry is dropped.
+		r, onWire := wireRuntime(w.Runtime)
+		if onWire {
+			// Its Pending is its own runtime's (boundPending).
 			w.Claude, w.ClaudeSession = false, ""
-		default:
+		} else {
 			w.Runtime = ""
 		}
-		if w.Runtime != RuntimeHermes || !ValidAgentSession(w.AgentSession) {
+		if !onWire || r.KeyPrefix == "" || !ValidAgentSession(w.AgentSession) {
 			w.AgentSession = ""
 		}
 		// A status describes an agent's pane; a window without one has none.
@@ -1242,6 +1243,11 @@ const (
 	// PasteRefusalUnchecked: the host could not read the pane's processes, so
 	// it could not rule Hermes out. Nothing was typed.
 	PasteRefusalUnchecked = "unchecked"
+	// PasteRefusalOpenCode: the pane's process tree holds opencode. muster
+	// cannot send to opencode yet (its send goes through opencode's own API,
+	// not keystrokes, in a later version), so the host types nothing into
+	// such a pane. Nothing was typed.
+	PasteRefusalOpenCode = "opencode"
 	// PasteRefusalClaudeWaiting: the Claude prompt guard — the Claude Code
 	// pane is waiting on the person (its session status is waiting, or its
 	// screen shows a permission prompt, a picker or a select menu), or the host
@@ -1290,6 +1296,9 @@ const (
 		"abduco or zellij), so muster cannot see whether Hermes runs inside it. Type it in the terminal."
 	PasteRefusedUncheckedText = "Not sent: muster-mirror could not check whether Hermes runs in this pane. " +
 		"Type it in the terminal."
+	PasteRefusedOpenCodeText = "Sending to opencode isn't supported yet: opencode runs in this pane, and muster " +
+		"does not type into it, because Enter there can answer a prompt opencode is showing, such as a permission " +
+		"request. Type it in the terminal."
 	// The Claude prompt guard's refusals (PasteRefusalClaudeWaiting): its
 	// session says it is waiting on the person; its screen shows a dialog; its
 	// screen could not be read.
