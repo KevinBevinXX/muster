@@ -547,7 +547,9 @@ func (s *PGStore) Create(ctx context.Context, n New) (Ask, error) {
 	}
 	a, err := scan(tx.QueryRow(ctx, `INSERT INTO attention_asks (agent_id, mirror_host, mirror_session, system_asker, asker_label, question, options, expires_at, task_id,
 			to_chief, escalates)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, now() + make_interval(secs => $8), $9, $10, $11)
+		VALUES ($1, $2, $3, $4, $5, $6, $7,
+			-- An escalation never outlives the question it escalates.
+			least(now() + make_interval(secs => $8), (SELECT q.expires_at FROM attention_asks q WHERE q.id = $11)), $9, $10, $11)
 		RETURNING `+cols, agent, nullable(n.Asker.MirrorHost), nullable(n.Asker.MirrorSession), n.Asker.System, n.Asker.Label, n.Question, opts, n.Timeout.Seconds(), task,
 		n.ToChief, escalates))
 	if err != nil {
@@ -681,8 +683,10 @@ func (s *PGStore) AnswerFromSession(ctx context.Context, id int64, answer, host,
 	}
 	a, err := s.settle(ctx, id, answerSQL, id, answer, ByOperator, ViaMCP, host, session)
 	// Only a STILL-OPEN ask is refused for its host: one already answered,
-	// cancelled or expired says so (ErrNotOpen), whoever asked. An escalation
-	// still open was refused for the host of the question it escalates.
+	// cancelled or expired says so (ErrNotOpen), whoever asked — an ask past
+	// its expiry reads Expired here even before the sweep (cols). So an open
+	// escalation whose answer was refused was refused by answerSQL's escalation
+	// clause: the question's host is the answering one.
 	if errors.Is(err, ErrNotOpen) && a.Status == Open && (a.Asker.MirrorHost == host || a.Escalates > 0) {
 		return a, ErrSameHost
 	}

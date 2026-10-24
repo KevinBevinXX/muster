@@ -85,16 +85,6 @@ offered only in gotrue mode, and only when GoTrue reports `passkeys_enabled`.
 | Plugin token (`mpl_…`) | its owner, on `/plugin/v1/*` only | Minted at `/plugins` and shown once. Every other route refuses it. See [plugins.md](plugins.md). |
 | Device credential (`mdv_…`) | its owner, on `/api/device/*` only | A phone paired with the [Android app](design/android.md). See [Paired devices](#paired-devices). Every other route refuses it. |
 
-🔴 **A mirror token also reaches the chief, through `chief_ask`.** A leaked one
-can put a question — fenced as the session's words — into a **turn of its
-owner's chief**, and read the chief's answer back (the chief holds the fleet
-tools, so a question can ask it to read another session); with `route_id`, only
-about a route sent to that very session. It cannot answer the question for
-you: an answer to the chief's escalation from the question's own host is
-refused. Every question, escalation and answer has an audit row. Any of the
-owner's mirrored sessions may ask, by operator decision — the accepted risk in
-[attention.md](attention.md#asking-the-chief).
-
 The two shared secrets may not start with `mst_`, `mpl_` or `mdv_`. The server
 refuses to boot if one does.
 
@@ -195,3 +185,23 @@ Two endpoints help with personal tokens:
 
 From the CLI these are `muster whoami`, `muster token ls` and
 `muster token revoke <id>` ([cli.md](cli.md)).
+
+### Mirror tokens and the chief
+
+`POST /mirror/mcp` also offers `chief_ask` ([attention.md](attention.md#asking-the-chief)).
+Through it a mirror token **puts a question — fenced as the session's words —
+into a turn of its owner's chief** and **reads the chief's answer**; with
+`route_id` (any of the owner's routes) the chief is also shown that routed
+message's sender, subject and body. Every question, escalation and answer
+writes a `chief_question.*` audit row; the question's row names the host and
+session it came from.
+
+🔴 **Accepted risk: a mirror token can start chief turns and read the chief's
+answers.** Any of the owner's mirrored sessions may ask, by operator decision —
+so may a leaked mirror token, or a session fed outside text. The chief is told
+the question is data, not instructions; that is a prompt, not a boundary. The
+chief holds the fleet tools (`session_transcript`, `sessions_overview`, …), so
+a question can ask it to read another session, and the answer goes back to
+whoever asked. It cannot answer the question for you: an answer to the chief's
+escalation from the question's own host is refused, and the chief answers no
+ask but one put to it. Revoke a token you suspect.

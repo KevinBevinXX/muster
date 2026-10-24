@@ -314,7 +314,6 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		ext.Focus = focus.NewPG(pool)
 		// The attention queue's explicit asks (migration 0023); RunAttentionSweep expires them.
 		ext.Attention = attention.NewPG(pool)
-		ext.ChiefAskTimeout = cfg.ChiefAskTimeout
 		// The machine job API (migration 0037). A job runs inside the process
 		// that accepted it; what a dead process left unfinished is failed by
 		// the reaper (startBackgroundLoops → RunJobReaper), and only once it is

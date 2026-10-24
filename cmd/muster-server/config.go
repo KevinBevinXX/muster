@@ -170,12 +170,6 @@ const (
 	// routing on — longer than MUSTER_SEND_QUEUE_IDLE; anything else refuses to
 	// boot.
 	envRouteTimeout = "MUSTER_ROUTE_TIMEOUT"
-	// How long a mirrored session's question to the chief (chief_ask) waits
-	// for the chief's — or, escalated, the owner's — answer before it times out
-	// (api.DefaultChiefAskTimeout, 30m, when unset). A Go duration between
-	// api.MinChiefAskTimeout and api.MaxChiefAskTimeout; anything else refuses
-	// to boot.
-	envChiefAskTimeout = "MUSTER_CHIEF_ASK_TIMEOUT"
 	// TASK ROUTING (internal/api/task_routing.go): "1" lets a plugin hand a task
 	// it files (POST /plugin/v1/tasks, route_to_chief) to the owner's chief,
 	// which routes it with task_route_attention / task_forward. Needs the plugin
@@ -571,9 +565,6 @@ type config struct {
 	// RouteTimeout is MUSTER_ROUTE_TIMEOUT (api.DefaultRouteTimeout when unset):
 	// a route's deadline.
 	RouteTimeout time.Duration
-	// ChiefAskTimeout is MUSTER_CHIEF_ASK_TIMEOUT (api.DefaultChiefAskTimeout
-	// when unset): a chief_ask question's deadline.
-	ChiefAskTimeout time.Duration
 	// TaskRouting is MUSTER_TASK_ROUTING=1; ChiefDispatchOwners
 	// MUSTER_CHIEF_DISPATCH_OWNERS, parsed (loadConfig refuses one that does not
 	// parse) — non-empty turns task_dispatch on.
@@ -1230,15 +1221,6 @@ func loadConfig(getenv func(string) string) (config, error) {
 				envRouteTimeout, v, api.MinRouteTimeout, api.MaxRouteTimeout)
 		}
 		c.RouteTimeout = d
-	}
-	c.ChiefAskTimeout = api.DefaultChiefAskTimeout
-	if v := strings.TrimSpace(getenv(envChiefAskTimeout)); v != "" {
-		d, err := time.ParseDuration(v)
-		if err != nil || d < api.MinChiefAskTimeout || d > api.MaxChiefAskTimeout {
-			return config{}, fmt.Errorf("invalid %s %q: want a Go duration between %s and %s (e.g. 30m)",
-				envChiefAskTimeout, v, api.MinChiefAskTimeout, api.MaxChiefAskTimeout)
-		}
-		c.ChiefAskTimeout = d
 	}
 	// 🔴 A ROUTE MUST OUTLAST ITS OWN PASTE. A routed message is pasted only
 	// once the window has been idle for MUSTER_SEND_QUEUE_IDLE, so a deadline

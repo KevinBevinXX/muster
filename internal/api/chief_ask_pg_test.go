@@ -137,9 +137,8 @@ func (f *chiefAskFixture) countAsks(t *testing.T) int {
 }
 
 // withRoute turns routing on and routes one plugin message, delivered to the
-// chief in its own thread (a session that is NOT the chief's default), to
-// focusSID. It returns the route, the message and that thread.
-func (f *chiefAskFixture) withRoute(t *testing.T) (plugins.Route, plugins.Message, agents.ChatSession) {
+// chief, to focusSID. It returns the route and the message.
+func (f *chiefAskFixture) withRoute(t *testing.T) (plugins.Route, plugins.Message) {
 	t.Helper()
 	f.srv.ext.Routes, f.srv.ext.Routing = f.plugins, &Routing{}
 	ctx := asUser(1)
@@ -165,40 +164,38 @@ func (f *chiefAskFixture) withRoute(t *testing.T) (plugins.Route, plugins.Messag
 	if ok, err := f.plugins.RecordDelivery(ctx, m.ID, f.chief.ID, plugins.StatusDelivered); err != nil || !ok {
 		t.Fatalf("record delivery: %v %v", ok, err)
 	}
-	thread, err := f.agentsStore.CreateSession(ctx, f.chief.ID, f.chief.Name)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := f.plugins.SetChiefSession(ctx, p.ID, f.chief.ID, thread.ID); err != nil {
-		t.Fatal(err)
-	}
 	r, err := f.plugins.CreateRoute(ctx, f.chief.ID, 1, m.ID, plugins.RouteTarget{Kind: string(focus.KindMirror), Key: focusSID, Label: "main @ ws"}, time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return r, m, thread
+	return r, m
 }
 
 // TestChiefAskPutsTheQuestionToTheChiefWithItsSessionAndRoute: the session asks
-// about the message the chief routed to it; the chief gets ONE turn, in the
-// thread that message was delivered in (not its default session), naming the
-// question's id, the session's host and Claude session id, and quoting the
-// question, its options and the routed message's sender, subject and body,
-// fenced. The question is NOT on the owner's Attention view and pushes nothing
-// to the owner's phone; its audit row records the session and the route.
+// about the message the chief routed to it; the chief gets ONE turn, in its
+// default session, naming the question's id, the session's host and Claude
+// session id, and quoting the question, its options and the routed message's
+// sender, subject and body, fenced. The question is NOT on the owner's
+// Attention view and pushes nothing to the owner's phone; its audit row
+// records the session and the route. A route_id the owner cannot read is
+// refused as not found, and files nothing.
 func TestChiefAskPutsTheQuestionToTheChiefWithItsSessionAndRoute(t *testing.T) {
 	f := newChiefAskFixture(t)
-	if plugins.RouteTargetMirror != string(focus.KindMirror) {
-		t.Fatalf("plugins.RouteTargetMirror %q != focus.KindMirror %q", plugins.RouteTargetMirror, focus.KindMirror)
+	r, m := f.withRoute(t)
+	if text, isErr := f.mirrorTool(t, f.ws, focusSID, chiefAskTool, map[string]any{"question": "q", "route_id": "rt_" + strings.Repeat("0", 24)}); !isErr ||
+		!strings.Contains(text, "no such route") {
+		t.Fatalf("an unknown route_id: %s", text)
 	}
-	r, m, thread := f.withRoute(t)
+	if n := f.countAsks(t); n != 0 {
+		t.Fatalf("%d questions filed by a refused call", n)
+	}
 	before := len(f.pushes())
 	id, out := f.chiefAsk(t, focusSID, map[string]any{"question": "Should I accept noon, or propose 1pm?", "options": []string{"accept noon", "propose 1pm"},
 		"route_id": r.RouteID})
-	if out["delivered_as"] != chiefQuestionTurn || !strings.Contains(out["next"].(string), "attention_wait{id: "+strconv.FormatInt(id, 10)+"}") {
+	if !strings.Contains(out["next"].(string), "attention_wait{id: "+strconv.FormatInt(id, 10)+"}") {
 		t.Fatalf("chief_ask result: %v", out)
 	}
-	turn := f.turnFor(t, thread, "session question #"+strconv.FormatInt(id, 10))
+	turn := f.turnFor(t, f.def, "session question #"+strconv.FormatInt(id, 10))
 	for _, want := range []string{"host ws", "Claude session " + focusSID, "about route " + r.RouteID, "<<<session-question untrusted nonce=",
 		"|   Should I accept noon, or propose 1pm?", "|   - propose 1pm", "@ ws",
 		"[message_id " + strconv.FormatInt(m.ID, 10) + "] from pat@example.test", "|   subject: Lunch on Friday?",
@@ -207,8 +204,8 @@ func TestChiefAskPutsTheQuestionToTheChiefWithItsSessionAndRoute(t *testing.T) {
 			t.Errorf("the chief's turn lacks %q:\n%s", want, turn)
 		}
 	}
-	if other := f.turnsInto(f.def); len(other) != 0 {
-		t.Errorf("the question also went to the chief's default session: %q", other)
+	if n := len(f.turnsInto(f.def)); n != 1 {
+		t.Errorf("%d turns for one question", n)
 	}
 	if page := f.page(t, "/attention"); strings.Contains(page, `id="`+attentionAskKey(id)+`"`) {
 		t.Errorf("the question to the chief is listed on the owner's Attention view")
@@ -363,12 +360,15 @@ func TestAQuestionTheChiefAnsweredKeepsItsAnswerWhenTheOwnerAnswersLate(t *testi
 }
 
 // TestAnUnansweredSessionQuestionTimesOut: the question's deadline is
-// MUSTER_CHIEF_ASK_TIMEOUT (ChiefAskTimeout) from asking; past it the wait says
-// timed_out, and the chief can no longer answer it.
+// timeout_seconds from asking (30 minutes when omitted); past it the wait says
+// expired, like any ask's, and the chief can no longer answer it.
 func TestAnUnansweredSessionQuestionTimesOut(t *testing.T) {
 	f := newChiefAskFixture(t)
-	f.srv.ext.ChiefAskTimeout = 7 * time.Minute
-	id, out := f.chiefAsk(t, focusSID, map[string]any{"question": "Is the staging DB safe to reset?"})
+	_, dflt := f.chiefAsk(t, focusSID, map[string]any{"question": "Default deadline?"})
+	if exp, err := time.Parse(time.RFC3339, dflt["expires_at"].(string)); err != nil || exp.Sub(time.Now()) < 29*time.Minute || exp.Sub(time.Now()) > 31*time.Minute {
+		t.Fatalf("expires_at %v (%v) with no timeout_seconds; want ~30m from now", dflt["expires_at"], err)
+	}
+	id, out := f.chiefAsk(t, focusSID, map[string]any{"question": "Is the staging DB safe to reset?", "timeout_seconds": 420})
 	exp, err := time.Parse(time.RFC3339, out["expires_at"].(string))
 	if err != nil || exp.Sub(time.Now()) < 6*time.Minute || exp.Sub(time.Now()) > 8*time.Minute {
 		t.Fatalf("expires_at %v (%v); want ~7m from now", out["expires_at"], err)
@@ -376,43 +376,13 @@ func TestAnUnansweredSessionQuestionTimesOut(t *testing.T) {
 	if _, err := f.pool.Exec(authz.System(context.Background()), `UPDATE attention_asks SET created_at = now() - interval '2 hours', expires_at = now() - interval '1 second' WHERE id = $1`, id); err != nil {
 		t.Fatal(err)
 	}
-	if w := f.wait(t, f.ws, focusSID, id); w["status"] != "timed_out" {
+	if w := f.wait(t, f.ws, focusSID, id); w["status"] != "expired" {
 		t.Fatalf("the wait past the deadline: %v", w)
 	}
 	text, isErr := f.chiefTool(t, f.chiefTok, answerSessionQuestionTool, map[string]any{"id": id, "answer": "yes"})
-	if !isErr || !strings.Contains(text, "no longer open (it is timed_out)") {
+	if !isErr || !strings.Contains(text, "no longer open (it is expired)") {
 		t.Fatalf("the chief's answer past the deadline: %s", text)
 	}
-	// An ordinary ask that expires still reads expired (the control).
-	ask := f.mirrorAsk(t, focusSID, "control")
-	if _, err := f.pool.Exec(authz.System(context.Background()), `UPDATE attention_asks SET created_at = now() - interval '2 hours', expires_at = now() - interval '1 second' WHERE id = $1`, ask); err != nil {
-		t.Fatal(err)
-	}
-	if w := f.wait(t, f.ws, focusSID, ask); w["status"] != "expired" {
-		t.Fatalf("an ordinary expired ask: %v", w)
-	}
-}
-
-// TestChiefAskRefusesARouteNotSentToTheCaller: another of the owner's sessions
-// on the same host naming focusSID's route is refused, and so is an unknown
-// route; nothing is filed. The target session itself is accepted (the control).
-func TestChiefAskRefusesARouteNotSentToTheCaller(t *testing.T) {
-	f := newChiefAskFixture(t)
-	r, _, _ := f.withRoute(t)
-	for sid, rt := range map[string]string{secondSID: r.RouteID, focusSID: "rt_" + strings.Repeat("0", 24)} {
-		text, isErr := f.mirrorTool(t, f.ws, sid, chiefAskTool, map[string]any{"question": "about that message", "route_id": rt})
-		want := "was not routed to this session"
-		if sid == focusSID {
-			want = "no such route"
-		}
-		if !isErr || !strings.Contains(text, want) {
-			t.Errorf("chief_ask as %s naming %s: %s (want %q)", sid, rt, text, want)
-		}
-	}
-	if n := f.countAsks(t); n != 0 {
-		t.Fatalf("%d questions filed by refused calls", n)
-	}
-	f.chiefAsk(t, focusSID, map[string]any{"question": "about that message", "route_id": r.RouteID})
 }
 
 // TestChiefAskIsTheMirroredSessionsAndTheAnswerToolsTheChiefs: no dispatched
@@ -510,19 +480,16 @@ func TestAnotherOwnerNeitherSeesNorAnswersTheQuestion(t *testing.T) {
 // TestABusyChiefGetsTheQuestionAsANote: while the chief is in the middle of a
 // turn (its turn gate held, as the operator's own chat turn holds it), the
 // question is not pushed over it: it is written into the chief's default
-// session as a note, and the result says so. Once the chief is idle, the next
-// question is a turn again (the control).
+// session as a note. Once the chief is idle, the next question is a turn again
+// (the control).
 func TestABusyChiefGetsTheQuestionAsANote(t *testing.T) {
 	f := newChiefAskFixture(t)
 	if !f.srv.turns.enter(f.chief.ID) {
 		t.Fatal("could not hold the chief's turn gate")
 	}
-	id, out := f.chiefAsk(t, focusSID, map[string]any{"question": "Asked while you were busy?"})
+	id, _ := f.chiefAsk(t, focusSID, map[string]any{"question": "Asked while you were busy?"})
 	f.srv.turns.leave(f.chief.ID)
 	f.srv.WaitForAttentionDeliveries()
-	if out["delivered_as"] != chiefQuestionNote {
-		t.Fatalf("delivered_as %v, want note", out["delivered_as"])
-	}
 	if n := len(f.turnsInto(f.def)); n != 0 {
 		t.Fatalf("%d turns pushed over a busy chief", n)
 	}
@@ -530,10 +497,7 @@ func TestABusyChiefGetsTheQuestionAsANote(t *testing.T) {
 	if err != nil || len(msgs) != 1 || msgs[0].Role != "user" || !strings.Contains(msgs[0].Content, "session question #"+strconv.FormatInt(id, 10)) {
 		t.Fatalf("the note in the chief's default session: %+v %v", msgs, err)
 	}
-	id2, out := f.chiefAsk(t, focusSID, map[string]any{"question": "And now?"})
-	if out["delivered_as"] != chiefQuestionTurn {
-		t.Fatalf("an idle chief: delivered_as %v, want turn", out["delivered_as"])
-	}
+	id2, _ := f.chiefAsk(t, focusSID, map[string]any{"question": "And now?"})
 	f.turnFor(t, f.def, "session question #"+strconv.FormatInt(id2, 10))
 }
 
@@ -545,12 +509,88 @@ func TestAQuestionWaitsForTheChiefsSessionClaim(t *testing.T) {
 	if won, err := f.agentsStore.ClaimKickoff(asUser(1), f.chief.ID, "test/another-delivery", time.Minute); err != nil || !won {
 		t.Fatalf("could not hold the chief's claim: %v %v", won, err)
 	}
-	_, out := f.chiefAsk(t, focusSID, map[string]any{"question": "Asked while a delivery runs?"})
+	id, _ := f.chiefAsk(t, focusSID, map[string]any{"question": "Asked while a delivery runs?"})
 	if err := f.agentsStore.ReleaseKickoffClaim(asUser(1), f.chief.ID, "test/another-delivery"); err != nil {
 		t.Fatal(err)
 	}
 	f.srv.WaitForAttentionDeliveries()
-	if out["delivered_as"] != chiefQuestionNote || len(f.turnsInto(f.def)) != 0 {
-		t.Fatalf("delivered_as %v with %d turns; want a note and no turn", out["delivered_as"], len(f.turnsInto(f.def)))
+	msgs, err := f.agentsStore.ListChatMessages(asUser(1), f.def.ID)
+	if n := len(f.turnsInto(f.def)); n != 0 || err != nil || len(msgs) != 1 || !strings.Contains(msgs[0].Content, "session question #"+strconv.FormatInt(id, 10)) {
+		t.Fatalf("%d turns and messages %+v (%v); want a note and no turn", n, msgs, err)
+	}
+}
+
+// escalate is escalate_session_question on question id as user 1's chief: the
+// escalation's id, or the refusal text.
+func (f *chiefAskFixture) escalate(t *testing.T, id int64) (int64, string) {
+	t.Helper()
+	text, isErr := f.chiefTool(t, f.chiefTok, escalateSessionQuestionTool, map[string]any{"id": id, "question": "Please decide: " + strconv.FormatInt(id, 10)})
+	if isErr {
+		return 0, text
+	}
+	var esc struct {
+		ID int64 `json:"id"`
+	}
+	if err := json.Unmarshal([]byte(text), &esc); err != nil || esc.ID == 0 {
+		t.Fatalf("escalate: %s", text)
+	}
+	return esc.ID, ""
+}
+
+// TestAnEscalationNeverOutlivesItsQuestion: an escalation of a question with 90
+// seconds left expires no later than the question; one with under a minute
+// left is refused as too late, and files nothing.
+func TestAnEscalationNeverOutlivesItsQuestion(t *testing.T) {
+	f := newChiefAskFixture(t)
+	sys := authz.System(context.Background())
+	id, _ := f.chiefAsk(t, focusSID, map[string]any{"question": "Ninety seconds left?", "timeout_seconds": 3600})
+	if _, err := f.pool.Exec(sys, `UPDATE attention_asks SET expires_at = now() + interval '90 seconds' WHERE id = $1`, id); err != nil {
+		t.Fatal(err)
+	}
+	e, bad := f.escalate(t, id)
+	if bad != "" {
+		t.Fatalf("escalating with 90s left: %s", bad)
+	}
+	if q, esc := f.askStatus(t, id), f.askStatus(t, e); esc.ExpiresAt.After(q.ExpiresAt) {
+		t.Fatalf("the escalation expires at %v, after its question (%v)", esc.ExpiresAt, q.ExpiresAt)
+	}
+	late, _ := f.chiefAsk(t, focusSID, map[string]any{"question": "Thirty seconds left?", "timeout_seconds": 3600})
+	if _, err := f.pool.Exec(sys, `UPDATE attention_asks SET expires_at = now() + interval '30 seconds' WHERE id = $1`, late); err != nil {
+		t.Fatal(err)
+	}
+	var before, after int
+	_ = f.pool.QueryRow(sys, `SELECT count(*) FROM attention_asks WHERE escalates IS NOT NULL AND owner_id = 1`).Scan(&before)
+	if _, bad := f.escalate(t, late); !strings.Contains(bad, "too late to ask your owner") {
+		t.Fatalf("escalating with 30s left: %q, want refused as too late", bad)
+	}
+	_ = f.pool.QueryRow(sys, `SELECT count(*) FROM attention_asks WHERE escalates IS NOT NULL AND owner_id = 1`).Scan(&after)
+	if after != before {
+		t.Fatalf("a refused escalation filed an ask (%d -> %d)", before, after)
+	}
+}
+
+// TestAnExpiredEscalationAnsweredFromAnotherHostSaysExpired: an escalation past
+// its deadline but not yet swept, answered over MCP from a host that is NOT the
+// question's, is refused as no longer open — not as raised on this host. The
+// control: from the question's own host, while open, it is the host refusal.
+// ⚠ AN INVARIANT GUARD, NOT A REGRESSION TEST: it is green on 4f51f467 too,
+// because an unswept expired ask already reads Expired (the store's computed
+// status), so the same-host branch never sees it.
+func TestAnExpiredEscalationAnsweredFromAnotherHostSaysExpired(t *testing.T) {
+	f := newChiefAskFixture(t)
+	id, _ := f.chiefAsk(t, focusSID, map[string]any{"question": "Expired escalation?"})
+	e, bad := f.escalate(t, id)
+	if bad != "" {
+		t.Fatal(bad)
+	}
+	if text, isErr := f.answerAs(t, f.ws, secondSID, e, "x"); !isErr || !strings.Contains(text, "raised by a mirrored session on this host") {
+		t.Fatalf("control, from the question's host: %s", text)
+	}
+	if _, err := f.pool.Exec(authz.System(context.Background()), `UPDATE attention_asks SET created_at = now() - interval '2 hours', expires_at = now() - interval '1 second' WHERE id = $1`, e); err != nil {
+		t.Fatal(err)
+	}
+	text, isErr := f.answerAs(t, f.laptop, laptopSID, e, "x")
+	if !isErr || !strings.Contains(text, "is no longer open (it is expired)") {
+		t.Fatalf("an expired escalation answered from laptop: %s", text)
 	}
 }

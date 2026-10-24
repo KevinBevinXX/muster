@@ -18,9 +18,8 @@
 --               a link to a question that is gone relays nothing (the chief is
 --               sent the answer instead).
 --
--- 🔴 THE CHIEF ANSWERS ONLY A QUESTION ADDRESSED TO IT, AND THE CHECK SAYS SO:
--- answered_by 'chief' only on a to_chief row. Every other ask is still answered
--- by the operator alone (0025's rule, widened by exactly this one case).
+-- answered_by gains 'chief' (attention.AnswerByChief, which answers only a
+-- to_chief ask); every other ask is still answered by the operator.
 --
 -- Must apply after 0048 (the contiguity test refuses a gap). Not re-applied by
 -- db.RLSOn (it changes no policy, grant or default) and idempotent: ADD COLUMN
@@ -48,4 +47,4 @@ ALTER TABLE public.attention_asks ADD COLUMN IF NOT EXISTS escalates BIGINT;
 ALTER TABLE public.attention_asks DROP CONSTRAINT IF EXISTS attention_asks_answered_by_check;
 ALTER TABLE public.attention_asks
     ADD CONSTRAINT attention_asks_answered_by_check CHECK (
-        answered_by IS NULL OR answered_by = 'operator' OR (answered_by = 'chief' AND to_chief));
+        answered_by IS NULL OR answered_by IN ('operator', 'chief'));

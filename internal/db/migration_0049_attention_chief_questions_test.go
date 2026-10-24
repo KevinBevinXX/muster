@@ -7,11 +7,11 @@ import (
 	"testing"
 )
 
-// TestMigration0049LetsTheChiefAnswerOnlyAQuestionPutToIt: at version 48 an ask
+// TestMigration0049AddsTheChiefQuestionColumns: at version 48 an ask
 // has no to_chief (the control: the column is absent); 0049 adds it, false for
 // every existing ask, and the escalates link; its CHECK accepts answered_by
-// 'chief' only on a to_chief ask, and 'operator' on either.
-func TestMigration0049LetsTheChiefAnswerOnlyAQuestionPutToIt(t *testing.T) {
+// 'chief' and 'operator', and nothing else.
+func TestMigration0049AddsTheChiefQuestionColumns(t *testing.T) {
 	ctx := ctx0006(t)
 	pool := freshAt(ctx, t, "ms_0049_chief_questions", 48)
 	const sid = "0b2c3d4e-5f60-4718-8a9b-0c1d2e3f4a5b"
@@ -31,9 +31,6 @@ func TestMigration0049LetsTheChiefAnswerOnlyAQuestionPutToIt(t *testing.T) {
 		t.Fatalf("an ask from before 0049 has to_chief %v (%v); want false", toChief, err)
 	}
 	answer := `UPDATE attention_asks SET status = 'answered', answer = 'left', answered_by = $2, resolved_at = now() WHERE id = $1`
-	if _, err := pool.Exec(ctx, answer, ask(), "chief"); err == nil || !strings.Contains(err.Error(), "attention_asks_answered_by_check") {
-		t.Errorf("the chief's answer to an ask NOT put to it was not refused by the CHECK: %v", err)
-	}
 	if _, err := pool.Exec(ctx, answer, ask(), "someone"); err == nil || !strings.Contains(err.Error(), "attention_asks_answered_by_check") {
 		t.Errorf("an unknown answerer was not refused: %v", err)
 	}

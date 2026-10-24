@@ -424,8 +424,6 @@ var bannerLedger = []string{
 // GITHUB_CLIENT_ID and MUSTER_GITHUB_TOKEN and neither of the other two, so the
 // entries say what is actually true of them.
 var bannerExempt = map[string]string{
-	envChiefAskTimeout: "a deadline with no OFF state: unset is the 30m default, an out-of-bounds value refuses to boot in " +
-		"loadConfig, and chief_ask is offered whenever the attention store is (TestTheChiefAskTimeoutDefaultsParsesAndRefusesNonsense)",
 	envChiefDispatchOwners: "counted on the `task routing: ON with DISPATCH` line (with the caps), named on the ON line " +
 		"when empty, and on a `chief dispatch: INERT` line when set with task routing off",
 	envStepUpWindow: "printed with its VALUE on the `mirrored sessions: ENABLED` line, the one plugin whose " +
