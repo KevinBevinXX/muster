@@ -28,11 +28,38 @@ type chiefAskFixture struct {
 	*answerFixture
 }
 
+// newChiefAskFixture is the answer fixture with ITS chief made user 1's chief.
+//
+// 🔴 THE FIXTURE OWNS WHICH AGENT IS THE CHIEF. User 1's chief is the
+// lowest-id agent labelled "chief" among user 1's agents (resolveChief), and
+// the package database is shared and never dropped (dbtest): any other user-1
+// agent labelled "chief" — left by an interrupted run, or by any earlier test
+// on a long-lived test database — has a lower id and would be the chief, so a
+// test run on its own failed while the same test passed in a fresh full run.
+// So every other user-1 agent labelled "chief" is relabelled for this test and
+// restored after it, and the fixture checks the result.
 func newChiefAskFixture(t *testing.T) *chiefAskFixture {
 	t.Helper()
 	f := &chiefAskFixture{answerFixture: newAnswerFixture(t)}
+	sys := authz.System(context.Background())
+	list, err := f.agentsStore.List(asUser(1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, a := range list {
+		if a.ID == f.chief.ID || !strings.EqualFold(strings.TrimSpace(a.DisplayName), ChiefDisplayName) {
+			continue
+		}
+		id, label := a.ID, a.DisplayName
+		if _, err := f.pool.Exec(sys, `UPDATE agents SET display_name = $2 WHERE id = $1`, id, label+" (set aside by a chief_ask test)"); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _, _ = f.pool.Exec(sys, `UPDATE agents SET display_name = $2 WHERE id = $1`, id, label) })
+	}
+	if c, err := f.srv.chiefAgent(asUser(1)); err != nil || c.ID != f.chief.ID {
+		t.Fatalf("the fixture's chief %d is not user 1's chief (%d, %v)", f.chief.ID, c.ID, err)
+	}
 	t.Cleanup(func() {
-		sys := authz.System(context.Background())
 		_, _ = f.pool.Exec(sys, `DELETE FROM attention_asks WHERE owner_id = 1 AND (to_chief OR agent_id = $1)`, f.chief.ID)
 	})
 	return f
