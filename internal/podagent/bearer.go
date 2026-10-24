@@ -11,7 +11,7 @@ import (
 )
 
 // ResolveBearer decides the credential a pod supervisor's /v1/responses accepts.
-// who names the supervisor in the error ("ccd", "hermesd").
+// who names the supervisor in the error ("ccd").
 //
 // 🔴 THE DERIVATION IS muster's OWN FUNCTION, IMPORTED, NOT A COPY. The
 // supervisors live in muster's module precisely so the `hooks-sha256` formula

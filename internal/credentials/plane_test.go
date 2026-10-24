@@ -192,7 +192,7 @@ func TestOpenRouterKeySelectionIsPerOwner(t *testing.T) {
 func TestUnavailableNamesWhatToAdd(t *testing.T) {
 	p, _ := testPlane(t)
 	ctx := context.Background()
-	kinds := []string{agents.KindGateway, agents.KindClaudeCode, agents.KindHermes}
+	kinds := []string{agents.KindGateway, agents.KindClaudeCode}
 	if u := p.Unavailable(ctx, admin, kinds); len(u) != 0 {
 		t.Fatalf("admin: %v; want everything available", u)
 	}
@@ -200,9 +200,7 @@ func TestUnavailableNamesWhatToAdd(t *testing.T) {
 		t.Fatalf("member A (both credentials): %v", u)
 	}
 	u := p.Unavailable(ctx, memberB, kinds)
-	// The hermes kind runs on the OpenRouter key, so it needs what the gateway
-	// kind needs.
-	if u[agents.KindGateway] != NeedOpenRouter || u[agents.KindClaudeCode] != NeedClaude || u[agents.KindHermes] != NeedOpenRouter || len(u) != 3 {
+	if u[agents.KindGateway] != NeedOpenRouter || u[agents.KindClaudeCode] != NeedClaude || len(u) != 2 {
 		t.Fatalf("member B (none): %v", u)
 	}
 }

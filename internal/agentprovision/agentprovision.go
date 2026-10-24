@@ -1131,8 +1131,6 @@ func (a *Adapter) buildSpec(ctx context.Context, ag agents.Agent) (provision.Spe
 	switch agents.ResolveKind(ag.Kind) {
 	case agents.KindClaudeCode:
 		return a.buildClaudeCodeSpec(ag, cfg, a.jobBypassVeto(ctx, ag, cfg))
-	case agents.KindHermes:
-		return buildHermesSpec(ag, cfg)
 	}
 	if !agents.IsChiefName(ag.Name) {
 		return agentspec.Build(ag, cfg, agentspec.Options{
@@ -1191,25 +1189,6 @@ func (a *Adapter) buildClaudeCodeSpec(ag agents.Agent, cfg agentspec.Config, job
 		opts.GatewaySidecar = &agentspec.GatewaySidecar{}
 	}
 	return agentspec.Build(ag, cfg, opts)
-}
-
-// buildHermesSpec is buildSpec for a hermes row.
-//
-// 🔴 A WORKER GETS NO INSTRUCTIONS, as a claude-code worker gets none:
-// WorkerInstructions teaches the in-pod `muster` CLI and the autosave daemon,
-// and the hermes image carries neither. Its task reaches it as its kickoff turn.
-//
-// 🔴 A HERMES CHIEF IS REFUSED, for now. Every chief tool is reached over
-// muster's MCP server, and Hermes's MCP client against muster's /mcp has not
-// been exercised; a chief that boots with a prompt promising tools it cannot
-// call reads as a working chief. The chief replacement refuses the kind first
-// (internal/api/chief_replace.go); this is the backstop for any other path.
-func buildHermesSpec(ag agents.Agent, cfg agentspec.Config) (provision.Spec, error) {
-	if agents.IsChiefName(ag.Name) {
-		return provision.Spec{}, fmt.Errorf("agentprovision: chief %q is kind %s, which cannot be the chief yet "+
-			"(its MCP client against muster's tools is unverified)", ag.Name, agents.KindHermes)
-	}
-	return agentspec.Build(ag, cfg, agentspec.Options{})
 }
 
 // specFor is the deployment-wide spec config with the model-provider

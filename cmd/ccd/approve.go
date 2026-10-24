@@ -164,8 +164,7 @@ func (a approver) decide(ctx context.Context, ev permissionEvent) approvalDecisi
 		req["context"] = []string{in.Description}
 	}
 
-	// The file → poll → clear-on-non-decision core is podagent's, shared with
-	// hermesd; ccd's fallback for everything undecided is the terminal prompt.
+	// The file → poll → clear-on-non-decision core is podagent's; ccd's fallback for everything undecided is the terminal prompt.
 	return fromRelay(podagent.ApprovalRelay{
 		Base: a.base, Token: a.token, Deadline: a.deadline, Poll: a.poll, Client: a.client, Logf: a.logf,
 		Fallback: "deferring", TimeoutFallback: "deferring to the terminal prompt",

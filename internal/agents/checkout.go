@@ -84,10 +84,9 @@ const (
 )
 
 // NeedsCheckout reports whether an agent's first turn depends on a repository
-// checkout: a claude-code or hermes agent dispatched with a repository (its
-// supervisor, ccd or hermesd, clones it before the agent starts and reports
-// `repo.state` the same way). A gateway agent, or one without a repository,
-// never waits.
+// checkout: a claude-code agent dispatched with a repository (its supervisor,
+// ccd, clones it before the agent starts and reports `repo.state`). A gateway
+// agent, or one without a repository, never waits.
 func NeedsCheckout(a Agent) bool {
 	return RunsPodSupervisor(a.Kind) && a.Repo != ""
 }

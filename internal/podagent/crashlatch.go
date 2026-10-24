@@ -2,7 +2,7 @@ package podagent
 
 import "time"
 
-// The crash latch and restart backoff ccd and hermesd share.
+// The crash latch and restart backoff of a pod supervisor (ccd).
 //
 // 🔴 A CRASH LOOP IS A POD PROBLEM, AND IS HANDED TO KUBERNETES. Each restart
 // waits backoffMin·2^(k-1) (capped at backoffMax), k being the number of exits

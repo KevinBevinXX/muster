@@ -328,10 +328,6 @@ func agentDetailHeader(v AgentDetailView) g.Node {
 				Div(Class("flex items-center gap-2"), chip("kind", agents.KindLabel(v.Kind)+" · "+v.CCAccount),
 					g.If(v.WorkerPool != "", workerPoolChip(v.WorkerPool)),
 					Div(Class("ml-auto"), viewToggle(true, "", AgentTerminalPath(v.Name))))),
-			// A hermes agent has no Terminal in this release (agents.TerminalCommand
-			// refuses the kind): its chip and nothing else.
-			g.If(agents.ResolveKind(v.Kind) == agents.KindHermes,
-				Div(Class("flex items-center gap-2"), chip("kind", agents.KindLabel(v.Kind)))),
 		),
 	)
 }

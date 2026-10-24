@@ -8,7 +8,7 @@ import (
 
 // resolveBearer decides the credential /v1/responses accepts: podagent's rule
 // (the hooks-sha256 derivation is muster's own agentgateway function, imported,
-// not a copy), shared with hermesd.
+// not a copy).
 func resolveBearer(hooksToken, gatewayBearer string) (string, error) {
 	return podagent.ResolveBearer("ccd", hooksToken, gatewayBearer)
 }

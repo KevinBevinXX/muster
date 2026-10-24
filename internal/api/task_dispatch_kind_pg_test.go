@@ -123,11 +123,11 @@ func TestTaskDispatchRefusesAKindItCannotStart(t *testing.T) {
 	f.mustRefuse(t, f.call(f.chief, taskDispatchTool, map[string]any{"task_id": n.ID, "kind": "claude-code"}), "is not enabled on this deployment", n.ID)
 	f.mustRefuse(t, f.call(f.chief, taskDispatchTool, map[string]any{"task_id": n.ID, "kind": "robot"}), "unknown agent kind", n.ID)
 
-	// The hermes kind is refused by task_dispatch even where it is enabled (its
-	// kickoff needs muster's MCP tools; Hermes's MCP client is unverified).
-	h := newTaskRouteFixture(t, true, true, withKinds("pool-acct-a", agents.KindGateway, agents.KindClaudeCode, agents.KindHermes))
+	// The REMOVED hermes kind is an unknown kind — even to a kinds service that
+	// still lists it — refused before the reservation.
+	h := newTaskRouteFixture(t, true, true, withKinds("pool-acct-a", agents.KindGateway, agents.KindClaudeCode, "hermes"))
 	hn := h.task(t, "hermes kind")
-	h.mustRefuse(t, h.call(h.chief, taskDispatchTool, map[string]any{"task_id": hn.ID, "kind": "hermes"}), "does not start hermes agents yet", hn.ID)
+	h.mustRefuse(t, h.call(h.chief, taskDispatchTool, map[string]any{"task_id": hn.ID, "kind": "hermes"}), `unknown agent kind \"hermes\"`, hn.ID)
 
 	u := newTaskRouteFixture(t, true, true, func(ext *Extensions) {
 		ext.Kinds = stubKinds{pick: "pool-acct-a", unavailable: map[string]string{agents.KindClaudeCode: "add a Claude account first"}}

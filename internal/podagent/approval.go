@@ -10,9 +10,9 @@ import (
 
 // The approval-queue client: a permission prompt filed with muster's approval
 // relay (internal/api/approvals.go), which puts a card on the operator's phone,
-// then polled until it is decided. ccd's PermissionRequest hook and hermesd's
-// approval relay share this core; each keeps its OWN fallback for everything
-// that is not an explicit answer (ccd: the terminal prompt; hermesd: deny).
+// then polled until it is decided. ccd's PermissionRequest hook uses this core
+// and keeps its OWN fallback for everything that is not an explicit answer (the
+// terminal prompt).
 //
 // 🔴 ONLY AN EXPLICIT "approve" (or "allow") FROM muster IS ApprovalApproved.
 // Every other exit — muster unreachable, a refused credential, nobody answering

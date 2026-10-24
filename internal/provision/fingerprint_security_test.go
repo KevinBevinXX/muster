@@ -50,19 +50,6 @@ func TestDeclaringSecurityMovesTheFingerprint(t *testing.T) {
 	}
 }
 
-// A read-only root added to an ALREADY-confined spec moves the fingerprint on
-// its own (the confined line is there either way, so only ReadOnlyRoot's own
-// line can tell the two apart): the pod template changed, so the pod rolls.
-func TestDeclaringAReadOnlyRootMovesAConfinedFingerprint(t *testing.T) {
-	confined := fingerprintFixture()
-	confined.Security = Security{RunAsUser: 1000, RunAsNonRoot: true, Restricted: true, NoServiceAccountToken: true}
-	ro := confined
-	ro.Security.ReadOnlyRoot = true
-	if Fingerprint(ro) == Fingerprint(confined) {
-		t.Fatal("declaring ReadOnlyRoot on a confined spec did not move the fingerprint; the pod template changed and nothing would roll")
-	}
-}
-
 // TestDeclaringNetworkIsolationMovesTheFingerprint: a spec that GAINS a network
 // declaration must stop comparing equal to the one without it — that inequality
 // is the only thing that makes an instance created before its kind was confined

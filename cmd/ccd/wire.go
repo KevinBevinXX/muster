@@ -7,7 +7,7 @@ import (
 )
 
 // The success wire is internal/podagent's (WriteResponse): the OpenAI-Responses
-// SSE muster's client parses, shared with hermesd. Its rules — response.completed
+// SSE muster's client parses. Its rules — response.completed
 // is the load-bearing event, and nothing streams during a turn because the
 // status is decided before the first byte — are stated there. ccd's own part is
 // turning a turn's transcript items into reply items.

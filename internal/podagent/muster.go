@@ -3,11 +3,10 @@
 // pod reaches them, git's routing through muster's connector proxy, and the
 // agent's repository checkout.
 //
-// Two supervisors use it: cmd/ccd (the claude-code kind) and cmd/hermesd (the
-// hermes kind). The code was ccd's; it moved here unchanged in behaviour when
-// hermesd needed the same rules, so that each rule has one implementation (the
-// messages a person reads name the supervisor that wrote them, through
-// [Voice]).
+// Its user is cmd/ccd (the claude-code kind). The code was ccd's; it moved here
+// unchanged in behaviour when a second supervisor (the since-removed hermes
+// kind's hermesd) needed the same rules. The messages a person reads name the
+// supervisor that wrote them, through [Voice].
 package podagent
 
 import (

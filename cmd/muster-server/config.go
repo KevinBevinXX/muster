@@ -313,13 +313,6 @@ const (
 	// name agents.ValidWorkerPool refuses.
 	envAgentCCBypassPools = "MUSTER_AGENT_CC_BYPASS_POOLS"
 
-	// The hermes kind (docs/design/hermes.md): its image (tag or digest pinned;
-	// no default, for MUSTER_AGENT_CC_IMAGE's reason) and its /data volume size.
-	// Its provider credential is the OpenRouter key the gateway kind uses
-	// (MUSTER_AGENT_OPENROUTER_KEY, or a member's own) — no variable of its own.
-	envAgentHermesImage   = "MUSTER_AGENT_HERMES_IMAGE"
-	envAgentHermesStorage = "MUSTER_AGENT_HERMES_STORAGE_SIZE"
-
 	// --- the claude-code kind's NetworkPolicy (kubernetes driver only) ---
 	//
 	// A claude-code agent's NetworkPolicy admits connections from MUSTER ITSELF
@@ -814,12 +807,6 @@ type config struct {
 	// "Pr-Review" names the pool "pr-review"). Empty is none.
 	AgentCCBypassPools []string
 
-	// AgentHermesImage is the hermes kind's FULL image reference (tag or digest
-	// required; no default), and AgentHermesStorage its /data volume size
-	// ("" = 10Gi).
-	AgentHermesImage   string
-	AgentHermesStorage string
-
 	// AgentNetpolFromNS and AgentNetpolFromLabels say which pods a claude-code
 	// agent's NetworkPolicy admits: muster's own. AgentNetpolFromLabels is the
 	// variable AS WRITTEN; parsePodLabels is its one parser, and validateKinds
@@ -848,26 +835,16 @@ func (c config) claudeCodeEnabled() bool {
 	return false
 }
 
-// hermesEnabled reports whether the hermes kind is in the list.
-func (c config) hermesEnabled() bool {
-	for _, k := range c.agentKinds() {
-		if k == agents.KindHermes {
-			return true
-		}
-	}
-	return false
-}
-
 // confinedKindsEnabled reports whether a kind whose pod is confined and keeps a
-// persistent /data volume is enabled: claude-code or hermes. Both declare
-// network isolation unconditionally (agentspec.ClaudeCodeNetwork, which the
-// hermes profile shares) and a persistent workspace.
+// persistent /data volume is enabled: claude-code, which declares network
+// isolation unconditionally (agentspec.ClaudeCodeNetwork) and a persistent
+// workspace.
 func (c config) confinedKindsEnabled() bool {
-	return c.claudeCodeEnabled() || c.hermesEnabled()
+	return c.claudeCodeEnabled()
 }
 
 // agentNetworkPolicy reports whether this deployment renders a NetworkPolicy
-// for its confined agents (claude-code, hermes): such a kind is enabled AND the
+// for its confined agents (claude-code): such a kind is enabled AND the
 // driver is the one that has NetworkPolicies.
 //
 // 🔴 ONE PREDICATE, THREE READERS, AND THEY MUST NOT DISAGREE: validateKinds
@@ -1070,8 +1047,6 @@ func loadConfig(getenv func(string) string) (config, error) {
 		AgentCCAccountNames:   splitList(getenv(envAgentCCAccounts)),
 		AgentCCStorage:        strings.TrimSpace(getenv(envAgentCCStorage)),
 		AgentCCBypassPools:    splitList(getenv(envAgentCCBypassPools)),
-		AgentHermesImage:      strings.TrimSpace(getenv(envAgentHermesImage)),
-		AgentHermesStorage:    strings.TrimSpace(getenv(envAgentHermesStorage)),
 		AgentNetpolFromNS:     strings.TrimSpace(getenv(envAgentNetpolFromNS)),
 		AgentNetpolFromLabels: strings.TrimSpace(getenv(envAgentNetpolFromLabels)),
 	}
@@ -1911,20 +1886,17 @@ func (c config) validateKinds() error {
 	}
 	// 🔴 THE NETWORK-POLICY SELECTOR IS REFUSED WHEREVER NOTHING WOULD RENDER IT,
 	// AND THIS RUNS BEFORE THE KIND CHECKS BELOW ON PURPOSE. It has two ways to be
-	// an armed switch — no confined kind (claude-code, hermes) is enabled, or one
+	// an armed switch — no confined kind (claude-code) is enabled, or one
 	// is enabled on a driver that has no NetworkPolicies — and an operator who set
 	// it believes their agents are confined to callers they named.
 	if !c.agentNetworkPolicy() && (c.AgentNetpolFromNS != "" || c.AgentNetpolFromLabels != "") {
 		return fmt.Errorf("%s or %s is set but nothing would render a NetworkPolicy from it: that needs %s to "+
-			"include %s or %s AND %s=%s (it is %s). Left set it would be an armed switch that does nothing — "+
+			"include %s AND %s=%s (it is %s). Left set it would be an armed switch that does nothing — "+
 			"agents you believe are confined, with no policy. Unset both, or enable the kind on that driver",
-			envAgentNetpolFromNS, envAgentNetpolFromLabels, envAgentKinds, agents.KindClaudeCode, agents.KindHermes,
+			envAgentNetpolFromNS, envAgentNetpolFromLabels, envAgentKinds, agents.KindClaudeCode,
 			envAgentProvisioner, provisionerK8s, c.agentProvisioner())
 	}
 	if err := c.validateClaudeCodeKind(); err != nil {
-		return err
-	}
-	if err := c.validateHermesKind(); err != nil {
 		return err
 	}
 	// 🔴 THE KUBERNETES DRIVER WRITES A CONFINED AGENT'S NetworkPolicy BEFORE ITS
@@ -1936,12 +1908,12 @@ func (c config) validateKinds() error {
 	// name nothing an operator can set. Refused here first, naming both variables.
 	if c.agentNetworkPolicy() {
 		if c.AgentNetpolFromNS == "" || c.AgentNetpolFromLabels == "" {
-			return fmt.Errorf("%s enables a confined kind (%s, %s) on %s=%s but %s and %s are not both set (%s is %s, %s is %s): a "+
+			return fmt.Errorf("%s enables a confined kind (%s) on %s=%s but %s and %s are not both set (%s is %s, %s is %s): a "+
 				"confined agent is created with a NetworkPolicy that admits connections from this server's own pods "+
 				"and nothing else, and those two say which pods that is — the namespace this server runs in "+
 				"and its pods' labels as key=value,key=value. There is no default: both are read off this "+
 				"deployment's own pod template",
-				envAgentKinds, agents.KindClaudeCode, agents.KindHermes, envAgentProvisioner, provisionerK8s,
+				envAgentKinds, agents.KindClaudeCode, envAgentProvisioner, provisionerK8s,
 				envAgentNetpolFromNS, envAgentNetpolFromLabels,
 				envAgentNetpolFromNS, presence(c.AgentNetpolFromNS),
 				envAgentNetpolFromLabels, presence(c.AgentNetpolFromLabels))
@@ -2038,40 +2010,6 @@ func (c config) validateClaudeCodeKind() error {
 		if c.AgentCCTokens[name] == "" {
 			return fmt.Errorf("%s names account %q but %s%s is not set: an account with no token is a pod "+
 				"that cannot answer one turn", envAgentCCAccounts, name, envAgentCCTokenPrefix, ccpool.EnvSuffix(name))
-		}
-	}
-	return nil
-}
-
-// validateHermesKind checks the hermes kind's own settings, as
-// validateClaudeCodeKind does the claude-code kind's. Its provider credential is
-// the OpenRouter key, which may be a member's own, so it is not required here;
-// a dispatch without one is refused per owner (credentials.Plane.Unavailable).
-func (c config) validateHermesKind() error {
-	if !c.hermesEnabled() {
-		if c.AgentHermesImage != "" || c.AgentHermesStorage != "" {
-			return fmt.Errorf("%s or %s is set but %s does not include %s: those settings would be an armed "+
-				"switch that does nothing. Add %s to %s, or unset them",
-				envAgentHermesImage, envAgentHermesStorage, envAgentKinds, agents.KindHermes, agents.KindHermes, envAgentKinds)
-		}
-		return nil
-	}
-	if c.agentProvisioner() == provisionerNone {
-		return fmt.Errorf("%s includes %s but %s=%s: a kind is something a DRIVER provisions, so there is "+
-			"nothing to build it with", envAgentKinds, agents.KindHermes, envAgentProvisioner, provisionerNone)
-	}
-	if c.AgentHermesImage == "" {
-		return fmt.Errorf("%s includes %s but %s is not set: there is no default image (a reference names "+
-			"a registry, which is installation state)", envAgentKinds, agents.KindHermes, envAgentHermesImage)
-	}
-	if !imagePinned(c.AgentHermesImage) {
-		return fmt.Errorf("invalid %s %q: it must pin a tag or a digest — the image carries Hermes at one pinned "+
-			"commit and hermesd's wire contract, and an unpinned reference lets two agents run different ones",
-			envAgentHermesImage, c.AgentHermesImage)
-	}
-	if c.AgentHermesStorage != "" {
-		if _, err := resource.ParseQuantity(c.AgentHermesStorage); err != nil {
-			return fmt.Errorf("invalid %s %q: %v (want a Kubernetes quantity, e.g. 10Gi)", envAgentHermesStorage, c.AgentHermesStorage, err)
 		}
 	}
 	return nil
