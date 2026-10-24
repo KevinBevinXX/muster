@@ -116,10 +116,11 @@ test('inside the Android app shell the page offers no Enable', async ({ page }) 
 // the Android emulator the app registers its push endpoint a few seconds after
 // pairing, while the page is open, and the page used to show "push not
 // registered" with no test button until a manual reload. Here: pair from the
-// app shell (the bridge stub), redeem the code as the app, register the
-// phone's push, and the SAME page — no reload, no navigation — lists the phone,
-// then shows it registered with "Send a test notification"; and once nothing
-// is pending the list stops re-fetching.
+// app shell (the bridge stub), redeem the code as the app, reload as the app
+// does once it has paired (webView.reload() on Pairing.Outcome.Paired), then
+// register the phone's push: the SAME page — no further reload or navigation —
+// shows it registered with "Send a test notification"; and once nothing is
+// pending the list stops re-fetching.
 //
 // ⚠ THE REGISTRATION IS e2e/devicefix, NOT PUT /api/device/push: that route
 // keeps an endpoint only after a VAPID test push to an https push service on
@@ -134,6 +135,18 @@ test('Account → Devices shows a paired phone and its push registration without
   });
   await signIn(page);
   await page.goto(origin + '/account');
+  const section = page.getByTestId('paired-devices');
+  await section.getByRole('button', { name: 'Pair this phone' }).click();
+  await expect(page.locator('#pair-status')).toHaveText('The app is finishing the pairing.');
+  const msgs = await page.evaluate(() => (window as unknown as { __appMsgs: string[] }).__appMsgs);
+  const code = JSON.parse(msgs[0]).code as string;
+
+  // The app's side: redeem the code, then reload the WebView as the app does.
+  const name = `e2e live phone ${Date.now()}`;
+  const paired = await request.post(origin + '/api/device/pair', { data: { code, name, app_version: '0.0.2' } });
+  expect(paired.status(), await paired.text()).toBe(201);
+  const body = (await paired.json()) as { token: string; device: { id: number } };
+  await page.reload();
   let navigations = 0;
   page.on('framenavigated', (f) => {
     if (f === page.mainFrame()) navigations++;
@@ -142,17 +155,6 @@ test('Account → Devices shows a paired phone and its push registration without
   page.on('request', (r) => {
     if (new URL(r.url()).pathname === '/account/devices/live') refetches.push(r.url());
   });
-  const section = page.getByTestId('paired-devices');
-  await section.getByRole('button', { name: 'Pair this phone' }).click();
-  await expect(page.locator('#pair-status')).toHaveText('The app is finishing the pairing.');
-  const msgs = await page.evaluate(() => (window as unknown as { __appMsgs: string[] }).__appMsgs);
-  const code = JSON.parse(msgs[0]).code as string;
-
-  // The app's side: redeem the code. The page lists the phone on its own.
-  const name = `e2e live phone ${Date.now()}`;
-  const paired = await request.post(origin + '/api/device/pair', { data: { code, name, app_version: '0.0.2' } });
-  expect(paired.status(), await paired.text()).toBe(201);
-  const body = (await paired.json()) as { token: string; device: { id: number } };
   const row = section.getByTestId('paired-device').filter({ hasText: name });
   await expect(row).toContainText('push not registered');
   // The Notifications section lists the phone by the label the claim gives it.
@@ -162,7 +164,8 @@ test('Account → Devices shows a paired phone and its push registration without
   const pushEntry = notifications.getByTestId('push-device').filter({ hasText: 'muster app: ' + name });
   await expect(pushEntry).toHaveCount(0);
 
-  // The app registers its push endpoint. The page shows it without a reload.
+  // The app registers its push endpoint. The page shows it with no further
+  // reload.
   execFileSync('go', ['run', './e2e/devicefix', 'push', String(body.device.id), 'https://fcm.googleapis.com/fcm/send/e2e-live-' + Date.now()], {
     cwd: repoRoot, env: { ...process.env, DATABASE_URL: dsn }, stdio: ['ignore', 'inherit', 'inherit'],
   });

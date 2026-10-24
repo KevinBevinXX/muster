@@ -22,8 +22,8 @@ var pushListOOBRe = regexp.MustCompile(`(?s)<div id="push-device-list"[^>]*hx-sw
 // TestTheDeviceListNoticesAPhonesPushRegistration: a phone registers its push
 // endpoint seconds AFTER it pairs, while the person is looking at Account →
 // Devices. The list re-fetches itself (GET /account/devices/live) every 3s
-// while something is pending — an unused pairing code, or a freshly paired
-// phone with no push — and its response shows the registration and, out of
+// while something is pending — a freshly paired phone with no push — and its
+// response shows the registration and, out of
 // band, the Notifications section's "Send a test notification". With nothing
 // pending it does not poll (only a visibilitychange refetch remains).
 //
@@ -63,20 +63,6 @@ func TestTheDeviceListNoticesAPhonesPushRegistration(t *testing.T) {
 	// Nothing pending: no polling, but a refetch when the tab comes back.
 	if tr := trigger(account()); strings.Contains(tr, "every") || !strings.Contains(tr, "visibilitychange") {
 		t.Fatalf("with nothing pending the trigger is %q; want visibilitychange and no polling", tr)
-	}
-
-	// A pairing code handed to the app and not yet redeemed: polling.
-	if w := do(r.edge, "POST", "/account/devices/pair", nil, withCookies(at, rt)); w.Code != http.StatusOK {
-		t.Fatalf("pairing code: %d %s", w.Code, w.Body.String())
-	}
-	if tr := trigger(live()); !strings.Contains(tr, poll) {
-		t.Fatalf("with a pairing code pending the trigger is %q; want %q", tr, poll)
-	}
-	if _, err := r.pool.Exec(sys, `UPDATE device_pairing_codes SET expires_at = now() - interval '1 second' WHERE owner_id = $1`, r.uid); err != nil {
-		t.Fatal(err)
-	}
-	if tr := trigger(live()); strings.Contains(tr, "every") {
-		t.Fatalf("CONTROL: with the code expired the trigger is %q; want no polling", tr)
 	}
 
 	// Paired, push not registered yet: the page polls and shows no test button.

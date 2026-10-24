@@ -475,16 +475,16 @@ func (s *Server) accountDevicesSection(r *http.Request) string {
 // fragment (GET accountDevicesLivePath) that re-fetches itself:
 //
 //   - every devicePollInterval, while the tab is visible, ONLY WHILE
-//     SOMETHING IS PENDING (devicesPending): an unused, unexpired pairing code,
-//     or a phone paired in the last devicePushWait with no push registration
-//     on a server that serves push. Each response re-decides, so the polling
+//     SOMETHING IS PENDING (devicesPending): a phone paired in the last
+//     devicePushWait with no push registration, on a server that serves push. Each response re-decides, so the polling
 //     stops by itself once nothing is pending; a page with nothing pending
 //     never polls.
 //   - on visibilitychange to visible, always — one request when the person
 //     comes back (from the app's notification settings, say).
-//   - on deviceListRefreshEvent, which "Pair this phone" fires once it has
-//     handed the code to the app, so the polling starts while the code is
-//     pending.
+//
+// A NEWLY PAIRED PHONE IS NOT WAITED FOR HERE: the app reloads its WebView as
+// soon as it has paired, and that page load lists the phone and starts the
+// polling.
 //
 // Each response carries the Notifications section's device list too (an
 // out-of-band swap), since that is where "Send a test notification" appears.
@@ -502,14 +502,12 @@ const (
 	// distributor) is not waited on, and visibilitychange still catches a
 	// later registration.
 	devicePushWait = 10 * time.Minute
-	// deviceListRefreshEvent is the event the bridge script fires on the list.
-	deviceListRefreshEvent = "muster:devices-changed"
 )
 
 // deviceListTrigger is the list's hx-trigger: polling only while pending.
 func deviceListTrigger(pending bool) string {
 	visible := `[document.visibilityState === 'visible']`
-	t := `visibilitychange` + visible + ` from:document, ` + deviceListRefreshEvent
+	t := `visibilitychange` + visible + ` from:document`
 	if pending {
 		t = `every ` + strconv.Itoa(int(devicePollInterval/time.Second)) + `s ` + visible + `, ` + t
 	}
@@ -517,20 +515,16 @@ func deviceListTrigger(pending bool) string {
 }
 
 // devicesPending is the polling condition (see the block comment above).
-func (s *Server) devicesPending(r *http.Request, list []devices.Device) bool {
-	if s.pushServed() {
-		for _, d := range list {
-			if !d.PushRegistered && s.now().Sub(d.CreatedAt) < devicePushWait {
-				return true
-			}
-		}
-	}
-	pending, err := s.ext.Devices.PairingPending(r.Context())
-	if err != nil {
-		s.logger.Printf("devices: pairing pending: %v", err)
+func (s *Server) devicesPending(list []devices.Device) bool {
+	if !s.pushServed() {
 		return false
 	}
-	return pending
+	for _, d := range list {
+		if !d.PushRegistered && s.now().Sub(d.CreatedAt) < devicePushWait {
+			return true
+		}
+	}
+	return false
 }
 
 // handleAccountDevicesLive answers the list's own re-fetch: the device list,
@@ -554,7 +548,7 @@ func (s *Server) accountDeviceList(r *http.Request) string {
 	var b strings.Builder
 	list, err := s.ext.Devices.List(r.Context())
 	b.WriteString(`<div id="device-list" data-testid="device-list" hx-get="` + accountDevicesLivePath + `" hx-swap="outerHTML" hx-trigger="` +
-		html.EscapeString(deviceListTrigger(err == nil && s.devicesPending(r, list))) + `">`)
+		html.EscapeString(deviceListTrigger(err == nil && s.devicesPending(list))) + `">`)
 	if err != nil {
 		s.logger.Printf("devices: list: %v", err)
 		b.WriteString(problemNode("The device list could not be read."))
@@ -627,10 +621,6 @@ const appBridgeJS = `(function () {
       if (!res.ok || !data.code) { status.textContent = data.error || ('Pairing failed (' + res.status + ').'); return; }
       bridge.postMessage(JSON.stringify({ type: 'pair', code: data.code, expires_at: data.expires_at }));
       status.textContent = 'The app is finishing the pairing.';
-      // The code is pending now: the list re-fetches, and polls until the
-      // phone is listed with its push registration.
-      var list = document.getElementById('device-list');
-      if (list) list.dispatchEvent(new Event('` + deviceListRefreshEvent + `'));
     } catch (e) { status.textContent = 'Pairing failed: ' + e.message; }
   });
 })();`
