@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"html"
 	"strconv"
 
 	g "maragu.dev/gomponents"
@@ -139,17 +140,141 @@ const askerAsksEvent = "attention_queue.changed"
 //
 // Bounded and scrolling on its own (max-h, overflow-y-auto, flex-none), so on
 // a phone it never pushes the conversation or the pinned composer off screen.
+//
+// It carries "Hide until next ask" (AskerAsksHeading) and, after it, the chip
+// that reopens it (askerAsksChip) — see HIDE UNTIL NEXT ASK below.
 func AskerAsksBlock(inner, src string, viaHTMX bool) g.Node {
-	return Section(
-		ID(AskerAsksID),
-		g.Attr("aria-label", "Questions waiting on your answer"),
-		g.Attr("aria-live", "polite"),
-		g.Attr("data-src", src),
-		g.If(viaHTMX, g.Group([]g.Node{hx("hx-get", src), hx("hx-trigger", askerAsksTrigger), hx("hx-swap", "innerHTML"),
-			hx("hx-target", "this"), g.Attr("hx-on::before-request", askerAsksBusy)})),
-		Class("flex max-h-[45vh] min-h-0 flex-none flex-col gap-2 overflow-y-auto border-t border-line px-3 py-2 empty:hidden"),
-		g.Raw(inner),
+	return g.Group{
+		Section(
+			ID(AskerAsksID),
+			g.Attr("aria-label", "Questions waiting on your answer"),
+			g.Attr("aria-live", "polite"),
+			g.Attr("data-src", src),
+			g.If(viaHTMX, g.Group([]g.Node{hx("hx-get", src), hx("hx-trigger", askerAsksTrigger), hx("hx-swap", "innerHTML"),
+				hx("hx-target", "this"), g.Attr("hx-on::before-request", askerAsksBusy)})),
+			Class("flex max-h-[45vh] min-h-0 flex-none flex-col gap-2 overflow-y-auto border-t border-line px-3 py-2 empty:hidden"),
+			g.Raw(inner),
+		),
+		askerAsksChip(),
+		askerAsksHideScript(),
+	}
+}
+
+// HIDE UNTIL NEXT ASK (operator decision): the block's heading carries a
+// button that hides the block IN THIS VIEW and nothing else. The asks stay
+// open in the Asks queue (/attention); nothing is posted — not to the queue's
+// answer or dismiss route, not to the session — and no attention item is
+// cancelled. A small "N waiting" chip takes the block's place and reopens it.
+//
+// 🔴 IT IS PER ASK ID, AND A NEW ASK BRINGS THE BLOCK BACK. The hide records the
+// ids of the asks it hid (their items' element ids, "ask-<id>") in this
+// device's localStorage; the block stays hidden only while EVERY ask it holds
+// is one of those. A refresh that adds an ask with an id not hidden shows the
+// block again on its own; one that only drops answered asks keeps it hidden.
+// Reopening by the chip forgets the ids it shows, so the next load shows it too.
+// Storage that throws keeps the hide for this page only. Every write re-reads
+// the stored list first (another tab's hides are merged, never overwritten),
+// and a write in another tab applies here at once (the storage event).
+//
+// 🔴 APPLIED BEFORE THE BLOCK IS PAINTED. The script runs as the block is
+// parsed (it follows it) and again on every refresh of its content (a
+// MutationObserver, whose callback runs before the next paint), so a page
+// that loads with its asks hidden never shows them first.
+
+// askerAsksHideLabel is the hide button's text.
+const askerAsksHideLabel = "Hide until next ask"
+
+// askerAsksHiddenKey is where the hidden ask ids are kept (localStorage).
+const askerAsksHiddenKey = "muster.asks.hidden.v1"
+
+// AskerAsksHeading is the block's heading row: the count (n, "1 question") and
+// the hide button. internal/api's askerAsksHTML draws it above the items.
+func AskerAsksHeading(n string) string {
+	return `<div class="flex min-w-0 items-center gap-2"><h2 class="min-w-0 flex-1 break-words text-xs font-semibold uppercase tracking-wide text-fg2" data-asker-asks-heading>Waiting on your answer: ` +
+		html.EscapeString(n) + `</h2><button type="button" data-asker-asks-hide class="press inline-flex min-h-[44px] shrink-0 items-center rounded-lg px-3 text-xs font-medium text-fg2 ring-1 ring-inset ring-line transition hover:bg-s2 hover:text-fg">` +
+		askerAsksHideLabel + `</button></div>`
+}
+
+// askerAsksChip reopens a hidden block: drawn hidden, shown by
+// askerAsksHideScript while the block is hidden, saying how many wait.
+func askerAsksChip() g.Node {
+	return Button(
+		ID(AskerAsksID+"-chip"),
+		Type("button"),
+		g.Attr("hidden", ""),
+		g.Attr("aria-controls", AskerAsksID),
+		g.Attr("aria-label", "Show the questions waiting on your answer"),
+		// A 44px tap target (layout.spec.ts), drawn as the small pill inside it.
+		Class("press group mx-3 inline-flex h-11 flex-none items-center self-start"),
+		Span(
+			Class("inline-flex h-7 items-center gap-1.5 rounded-full bg-accent/15 px-3 text-xs font-semibold text-accent ring-1 ring-inset ring-accent/40 transition group-hover:bg-accent/25"),
+			Span(Class("h-2 w-2 shrink-0 rounded-full bg-accent"), g.Attr("aria-hidden", "true")),
+			Span(g.Attr("data-asker-asks-count", "")),
+		),
 	)
+}
+
+// askerAsksHideScript is the hide and the chip (see HIDE UNTIL NEXT ASK).
+func askerAsksHideScript() g.Node {
+	return Script(g.Raw(`
+(function () {
+  var block = document.getElementById('` + AskerAsksID + `');
+  var chip = document.getElementById('` + AskerAsksID + `-chip');
+  // 🔴 THE GUARD IS A PROPERTY, NOT AN ATTRIBUTE: htmx's history snapshot
+  // carries attributes, so after Back an attribute guard made this script
+  // bail on a block it had never bound — the Hide, the chip and the refresh
+  // all dead. A restored block is a new element, without the property.
+  if (!block || !chip || block.__musterHideBound) return;
+  block.__musterHideBound = true;
+  var KEY = '` + askerAsksHiddenKey + `';
+  // mem is only the fallback for storage that throws (this page's own hides).
+  var mem = [];
+  // 🔴 READ AT EVERY USE, NEVER CACHED: another tab may have written since,
+  // and a write built on a stale copy dropped its hides.
+  function load() {
+    try {
+      var a = JSON.parse(localStorage.getItem(KEY) || '[]');
+      if (Array.isArray(a)) { mem = a; return a.slice(); }
+    } catch (e) {}
+    return mem.slice();
+  }
+  // The newest 200 are kept: an id is never reused, so older ones only weigh.
+  function save(a) { mem = a.slice(-200); try { localStorage.setItem(KEY, JSON.stringify(mem)); } catch (e) {} }
+  function keys() {
+    var out = [], items = block.querySelectorAll('[data-attention-item][id]');
+    for (var i = 0; i < items.length; i++) out.push(items[i].id);
+    return out;
+  }
+  function apply() {
+    var k = keys(), d = load(), hide = k.length > 0;
+    for (var i = 0; i < k.length && hide; i++) if (d.indexOf(k[i]) < 0) hide = false;
+    block.hidden = hide;
+    chip.hidden = !hide;
+    if (hide) chip.querySelector('[data-asker-asks-count]').textContent = k.length + ' waiting';
+  }
+  block.addEventListener('click', function (e) {
+    var b = e.target && e.target.closest ? e.target.closest('[data-asker-asks-hide]') : null;
+    if (!b) return;
+    e.preventDefault();
+    var d = load(), k = keys();
+    for (var i = 0; i < k.length; i++) if (d.indexOf(k[i]) < 0) d.push(k[i]);
+    save(d);
+    apply();
+    try { chip.focus(); } catch (err) {}
+  });
+  chip.addEventListener('click', function () {
+    var k = keys();
+    save(load().filter(function (x) { return k.indexOf(x) < 0; }));
+    apply();
+    var b = block.querySelector('[data-asker-asks-hide]');
+    if (b) try { b.focus(); } catch (err) {}
+  });
+  if (typeof MutationObserver !== 'undefined') new MutationObserver(apply).observe(block, { childList: true });
+  // A hide (or a reopen) in another tab applies here at once.
+  window.addEventListener('storage', function (e) { if (e.key === KEY && block.isConnected) apply(); });
+  apply();
+})();
+`))
 }
 
 // AskerAsksLive is what keeps a block drawn with viaHTMX false live: the

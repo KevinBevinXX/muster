@@ -76,6 +76,10 @@ const (
 	noticeSendingAnother = "sending-another"
 	noticeSendNowFailed  = "send-now-failed"
 	noticeWaitingNow     = "waiting-now"
+	// The Claude prompt guard (mirror.PasteRefusalClaude*).
+	noticeClaudeWaiting = "claude-waiting"
+	noticeClaudePasted  = "claude-pasted"
+	noticeClaudeBox     = "claude-box"
 	// A Hermes window's Send now refusals.
 	noticeHermesWaitingNow = "hermes-waiting-now"
 	noticeHermesBusyNow    = "hermes-busy-now"
@@ -120,6 +124,14 @@ var pasteGuardNotices = map[string]string{
 	mirror.PasteRefusalHermes:      noticeHermes,
 	mirror.PasteRefusalMultiplexer: noticeMultiplexer,
 	mirror.PasteRefusalUnchecked:   noticeUnchecked,
+}
+
+// claudeGuardNotices is the notice for each kind of Claude prompt guard
+// refusal (the hub's, or a host's).
+var claudeGuardNotices = map[string]string{
+	mirror.PasteRefusalClaudeWaiting: noticeClaudeWaiting,
+	mirror.PasteRefusalClaudePasted:  noticeClaudePasted,
+	mirror.PasteRefusalClaudeBox:     noticeClaudeBox,
 }
 
 // hermesNotIdleNotices is the notice for each status the hub's idle gate
@@ -180,6 +192,9 @@ var composerNotices = map[string]struct {
 	noticeNotQueuedNow:      {SendQueueNotQueuedNow, false},
 	noticeSendingAnother:    {SendQueueSendingAnother, false},
 	noticeWaitingNow:        {SendQueueWaitingNow, false},
+	noticeClaudeWaiting:     {mirror.ClaudeWaitingText, false},
+	noticeClaudeBox:         {mirror.ClaudeBoxText, false},
+	noticeClaudePasted:      {"Pasted, not submitted: the text is in Claude Code's input box, and Enter was not pressed, because a dialog opened. Check the terminal.", false},
 	noticeHermesWaitingNow:  {SendQueueHermesWaitingNow, false},
 	noticeHermesBusyNow:     {SendQueueHermesBusyNow, false},
 	noticeHermesUnknownNow:  {SendQueueHermesUnknownNow, false},
@@ -193,7 +208,7 @@ var composerNotices = map[string]struct {
 	noticeUnconfirmed:        {MirrorSendUnconfirmed, false},
 	noticeUnconfirmedRepeat:  {MirrorSendUnconfirmedRepeat, false},
 	noticeSendNowUnconfirmed: {"May have been sent: check the conversation before sending again. Its row in the queue says more.", false},
-	noticeSendNowPasted:      {"Pasted, not submitted: the text is in Hermes's input box. Check the terminal. Its row in the queue says more.", false},
+	noticeSendNowPasted:      {"Pasted, not submitted: the text is in the agent's input box, and Enter was not pressed. Check the terminal. Its row in the queue says more.", false},
 	noticeHermes:            {mirror.PasteRefusedHermesText, false},
 	noticeMultiplexer:       {mirror.PasteRefusedMultiplexerText, false},
 	noticeUnchecked:         {mirror.PasteRefusedUncheckedText, false},

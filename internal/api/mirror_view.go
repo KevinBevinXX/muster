@@ -94,6 +94,8 @@ func (s *Server) handleMirrorViewPage(w http.ResponseWriter, r *http.Request) {
 	// (attention_asker.go).
 	v.Asks, v.AsksSrc = s.askerAsksBlock(r.Context(), askerRef{mirror: ui.MirrorRef{Host: h.Host, Session: e.Session, Window: e.Window}})
 	v.Nav = ui.NavChrome{Feat: s.shellFeatures(r.Context())}
+	// The session switcher below the composer (ui/switcher.go).
+	v.Switcher = s.switcher(r.Context(), ui.SwitcherCurrent{Mirror: ui.MirrorRef{Host: h.Host, Session: e.Session, Window: e.Window}})
 	allowSameOriginFrame(w)
 	formDocument(w)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -501,6 +503,11 @@ func (s *Server) mirrorDeliver(ctx context.Context, w http.ResponseWriter, r *ht
 			status, notice, msg = http.StatusConflict, hermesSendNotices[pr.Refusal], pr.Why
 		case errors.Is(err, mirror.ErrPasteUnconfirmed):
 			status, notice, msg = http.StatusBadGateway, noticeUnconfirmed, MirrorSendUnconfirmed
+		case errors.As(err, &pr) && claudeGuardNotices[pr.Refusal] != "":
+			// The Claude prompt guard (the hub's or the host's): its own words.
+			// Waiting is "nothing was typed"; pasted-not-submitted is said as
+			// such, never as "not sent".
+			status, notice, msg = http.StatusConflict, claudeGuardNotices[pr.Refusal], pr.Why
 		case mirror.PasteGuardRefusal(err) != "":
 			// The host's Hermes paste guard: its own words, without this
 			// side's "the host refused the message:" in front, and a notice
@@ -557,7 +564,7 @@ func (s *Server) mirrorPaste(ctx context.Context, host, session, window, text, n
 	resolved := window
 	opts = append(opts, mirror.ReportWindow(&resolved))
 	repeat, err = s.mirrorPasteOnce(ctx, host, session, window, text, nonce, target, opts...)
-	if !repeat && (err == nil || errors.Is(err, mirror.ErrPasteUnconfirmed)) {
+	if !repeat && (err == nil || errors.Is(err, mirror.ErrPasteUnconfirmed) || mirror.ClaudePastedRefusal(err)) {
 		s.sendQueueNotePaste(ctx, host, session, resolved)
 	}
 	return repeat, err

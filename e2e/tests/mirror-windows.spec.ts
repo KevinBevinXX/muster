@@ -367,7 +367,11 @@ for (const vp of [
       // A hundred cards must not mean a hundred connections: the list page
       // opened no socket at all for its mirrored cards. (Read here, before a
       // card is opened: its page has a socket of its own.)
-      expect(sockets.filter((u) => u.includes('/mirror/')), 'no per-card socket').toEqual([]);
+      // The one exception is WARMING (web/static/mirror-snap.js): short-lived
+      // sockets, one at a time, marked warm=1, for at most three likely-next
+      // windows — bounded whatever the number of cards.
+      expect(sockets.filter((u) => u.includes('/mirror/') && !u.includes('warm=1')), 'no per-card socket').toEqual([]);
+      expect(new Set(sockets.filter((u) => u.includes('warm=1')).map((u) => new URL(u).searchParams.get('window'))).size, 'at most three warmed').toBeLessThanOrEqual(3);
 
       // It is remembered across a visit to a card and back.
       await visible().first().locator('a').first().click();

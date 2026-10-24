@@ -243,6 +243,11 @@ type Server struct {
 	// reapInstancesWithin bounds the stopped-agent reaper's read of the
 	// provisioner's instances (agent_reap.go).
 	reapInstancesWithin time.Duration
+	// agentReapDone, when set, runs after each teardown the stopped-agent
+	// reaper started has finished — Destroy and the shared after-steps — on
+	// success or failure (agent_reap.go). A test seam: the event a test waits
+	// on instead of polling for the row. nil in production.
+	agentReapDone func(id int64, err error)
 
 	// taskLeader is the cross-process singleton gate for the background loops.
 	taskLeader LeaderGate
@@ -643,7 +648,8 @@ func staticCacheControl(path, v string) string {
 func (s *Server) shellFeatures(ctx context.Context) ui.Features {
 	p, _ := authz.From(ctx)
 	return ui.Features{GitHub: s.ext.GitHub != nil || s.githubApp(ctx) != nil, Connectors: s.ext.Connectors != nil,
-		Admin: p.Role == authz.RoleAdmin && s.adminPagesServed(), Push: s.pushServed(), Attention: s.ext.Attention != nil}
+		Admin: p.Role == authz.RoleAdmin && s.adminPagesServed(), Push: s.pushServed(), Attention: s.ext.Attention != nil,
+		SnapUser: p.UserID, SnapBuild: BuildVersion}
 }
 
 // handleIndex serves the document shell. The active tab is derived from the

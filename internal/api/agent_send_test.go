@@ -50,6 +50,21 @@ func (s *sendAgents) GetByName(_ context.Context, name string) (agents.Agent, er
 	return agents.Agent{}, pgx.ErrNoRows
 }
 
+// List and LastMessageByAgentIDs are what the session switcher reads to draw
+// the pages' bar (switcher.go): the two agents above, no transcript times.
+func (s *sendAgents) List(ctx context.Context) ([]agents.Agent, error) {
+	var out []agents.Agent
+	for _, n := range []string{"keen-wren", "plain-otter"} {
+		a, _ := s.GetByName(ctx, n)
+		out = append(out, a)
+	}
+	return out, nil
+}
+
+func (s *sendAgents) LastMessageByAgentIDs(context.Context, []int64) (map[int64]time.Time, error) {
+	return map[int64]time.Time{}, nil
+}
+
 // Each agent has one session: 41 is keen-wren's, 52 plain-otter's.
 func (s *sendAgents) LatestOrCreateSession(_ context.Context, agentID int64, _ string) (agents.ChatSession, error) {
 	if agentID == 7 {

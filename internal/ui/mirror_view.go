@@ -97,6 +97,9 @@ type MirrorViewView struct {
 	// overlay — this page is sized to the window) and its hamburger, framed
 	// by the view swap or not (nav_layout.go says why).
 	Nav NavChrome
+	// Switcher is the session switcher below the composer (switcher.go); nil
+	// for none.
+	Switcher *Switcher
 }
 
 // MirrorReadOnlyNote is what a read-only host's composer says instead of
@@ -120,7 +123,11 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 		// Pinned to the visible viewport, not in flow at the bottom of the body:
 		// on a phone the body's bottom can be under the browser's chrome, and
 		// this page cannot be scrolled to bring it back (composerPinScript).
-		Pinned: true}
+		Pinned: true, Switcher: v.Switcher}
+	shell := pinnedShellClass
+	if v.Switcher != nil {
+		shell = pinnedShellSwitcherClass
+	}
 	working := "Claude is working…"
 	switch {
 	case v.Hermes && !v.HermesSend:
@@ -152,7 +159,7 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 			Body(
 				// The app shell (only #mv-log scrolls), sized to the visible
 				// viewport and ending above the pinned composer.
-				Class(pinnedShellClass+" bg-bg text-fg antialiased"),
+				Class(shell+" bg-bg text-fg antialiased"),
 				// The navigation: position:fixed, so it takes no room in the
 				// column (nothing below moves), and an overlay at every width.
 				overlayNav(v.Nav, "agents"),
@@ -171,12 +178,15 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 						H1(Class("truncate text-sm font-semibold"), mirrorEntryTitle(v.Label, v.Title, v.Session, v.Qualifier, ""),
 							Span(g.Attr("data-term-badge", ""), Class("ml-2"), mirrorBadge("Mirrored · "+v.Host, v.Host, v.HostIcon))),
 						Div(
-							Class("flex min-w-0 items-center gap-2"),
+							// relative: the Updating… chip is positioned in this row
+							// (mirrorUpdatingChip), taking none of its width.
+							Class("relative flex min-w-0 items-center gap-2"),
 							P(ID("mv-status"), Class("truncate text-xs text-muted"), g.Attr("aria-live", "polite"), g.Text("Connecting…")),
 							// The context readout (TakeContext): hidden until a turn
 							// has reported usage, and again after a reset.
 							Span(ID("mv-context"), g.Attr("hidden", ""), g.Attr("title", "Context used"),
 								Class("shrink-0 rounded-full bg-s2 px-2 py-0.5 text-[11px] tabular-nums text-fg2 ring-1 ring-inset ring-line")),
+							mirrorUpdatingChip(),
 						),
 					),
 					chatIndexButton("mv-log"),
@@ -212,6 +222,9 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 				mirrorComposer(composer),
 				g.If(v.Interactive && (!v.Hermes || v.HermesSend), confirmDialog(v.StepUp)),
 				g.If(v.Interactive && (!v.Hermes || v.HermesSend), stepUpScript()),
+				// The snapshot store (deferred: it runs before DOMContentLoaded,
+				// which is when mirrorViewScript reads it).
+				SnapScript(v.Nav.Feat),
 				mirrorViewScript(),
 				// The question cards' poll and submit (mirror_ask.go).
 				askScript(),
@@ -730,6 +743,72 @@ func mirrorViewScript() g.Node {
   var working = document.getElementById('mv-working');
   var ctxEl = document.getElementById('mv-context');
   var gen = '', offset = 0, retry = 0, closed = false, sock = null;
+  // The snapshot (web/static/mirror-snap.js): what this window's view drew,
+  // replayed at open, then resumed from its offset. snapRef stays null — no
+  // snapshot is read or written — when the store is unavailable. Both are set
+  // in begin(): the store's script is deferred, so it has not run yet here.
+  var snap = null, snapRef = null;
+  var chip = document.getElementById('mv-updating');
+  // opLog is the batches drawn since the last reset (what a snapshot stores);
+  // provisional: the page shows a snapshot no socket has confirmed yet.
+  // opBytes is opLog's size (JSON characters), held to twice the store's
+  // bound in memory; firstAt is when this conversation was last read in full
+  // from the host (a reset), which ages the snapshot (mirror-snap.js).
+  var opLog = [], opBytes = 0, firstAt = 0, provisional = false, dirty = false, saveTimer = 0, chipTimer = 0;
+
+  function showChip(on) {
+    if (!chip) return;
+    chip.classList.toggle('invisible', !on);
+    chip.setAttribute('aria-hidden', on ? 'false' : 'true');
+  }
+  function remember(m, size) {
+    if (!snapRef) return;
+    if (m.reset) { opLog = []; opBytes = 0; firstAt = Date.now(); }
+    if (!firstAt) firstAt = Date.now();
+    if (snap.worth(m)) { opLog.push(m); opBytes += size; }
+    if (opBytes > 2 * snap.maxBytes) { var b = snap.bound(opLog, snap.maxBytes); opLog = b.batches; opBytes = b.bytes; }
+    dirty = true;
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(save, 800);
+  }
+  function save() {
+    clearTimeout(saveTimer);
+    if (!snapRef || !dirty || provisional || !gen) return;
+    dirty = false;
+    snap.put(snapRef, { gen: gen, offset: offset, batches: opLog, firstAt: firstAt });
+  }
+  // settled: the socket answered, so what is on the page is current.
+  function settled() {
+    provisional = false;
+    clearTimeout(chipTimer);
+    showChip(false);
+    log.removeAttribute('data-snapshot');
+  }
+  // discard: a resume that failed or was refused before its first batch. What
+  // the snapshot painted is taken off the page and out of storage, and the
+  // next socket starts from the beginning.
+  function discard() {
+    settled();
+    log.innerHTML = '';
+    window.muMirrorIndex = null;
+    ctxEl.hidden = true; ctxEl.textContent = '';
+    document.dispatchEvent(new CustomEvent('muster:chat-index'));
+    gen = ''; offset = 0; opLog = []; opBytes = 0; firstAt = 0; dirty = false;
+    if (snap && snapRef) snap.drop(snapRef);
+  }
+  // paint draws a snapshot through apply() — the path a live batch takes —
+  // and leaves the page provisional until the socket speaks.
+  function paint(rec) {
+    rec.batches.forEach(function (b) { apply(b); });
+    gen = rec.gen; offset = rec.offset;
+    opLog = rec.batches.slice(); opBytes = rec.bytes || 0; firstAt = rec.firstAt;
+    // A snapshot's last "busy" is not a claim about now.
+    working.hidden = true;
+    provisional = true;
+    log.setAttribute('data-snapshot', '');
+    // Catching up past a second shows "Updating…" in its reserved slot.
+    chipTimer = setTimeout(function () { if (provisional) showChip(true); }, 1000);
+  }
 
   function showError(msg) { errText.textContent = msg; errEl.hidden = false; }
   function clearError() { errEl.hidden = true; errText.textContent = ''; }
@@ -826,8 +905,8 @@ func mirrorViewScript() g.Node {
     sock.onopen = function () { retry = 0; };
     sock.onmessage = function (ev) {
       var m; try { m = JSON.parse(ev.data); } catch (e) { return; }
-      if (m.type === 'batch') { clearError(); statusEl.textContent = 'Live'; apply(m); }
-      else if (m.type === 'error') { showError(m.message || 'The view ended.'); }
+      if (m.type === 'batch') { if (provisional) settled(); clearError(); statusEl.textContent = 'Live'; apply(m); remember(m, ev.data.length); }
+      else if (m.type === 'error') { if (provisional) discard(); showError(m.message || 'The view ended.'); }
       // The window's questions changed (mirror_ask.go): read them now.
       else if (m.type === 'asks') { if (window.musterAskPoll) window.musterAskPoll(); }
     };
@@ -835,6 +914,9 @@ func mirrorViewScript() g.Node {
       statusEl.textContent = 'Disconnected — reconnecting…';
       working.hidden = true;
       if (closed) return;
+      // Closed before its first batch (refused, signed out, gone): the
+      // snapshot is not shown as current.
+      if (provisional) discard();
       retry = Math.min(retry + 1, 6);
       setTimeout(connect, 500 * Math.pow(2, retry - 1));
     };
@@ -847,8 +929,28 @@ func mirrorViewScript() g.Node {
   if (typeof ResizeObserver !== 'undefined') {
     new ResizeObserver(function () { if (atEnd) log.scrollTop = log.scrollHeight; }).observe(log);
   }
-  window.addEventListener('pagehide', function () { closed = true; if (sock) sock.close(); });
-  connect();
+  window.addEventListener('pagehide', function () { closed = true; save(); if (sock) sock.close(); });
+  document.addEventListener('visibilitychange', function () { if (document.hidden) save(); });
+  // Open: paint this window's snapshot, if there is one this user may see,
+  // then connect — resuming from its offset. Storage that is slow or absent
+  // costs at most readWaitMs, then the socket opens without it. Run once the
+  // document is parsed, so every script that decorates the conversation is
+  // listening before the snapshot is drawn.
+  function begin() {
+    snap = window.musterSnap && window.musterSnap.enabled ? window.musterSnap : null;
+    snapRef = snap ? snap.refOf(log.getAttribute('data-ws')) : null;
+    if (!snapRef) { connect(); return; }
+    var started = false;
+    function go(rec) {
+      if (started) return;
+      started = true;
+      if (rec) { try { paint(rec); } catch (e) { discard(); } }
+      connect();
+    }
+    var wait = setTimeout(function () { go(null); }, snap.readWaitMs);
+    snap.get(snapRef).then(function (rec) { clearTimeout(wait); go(rec); }, function () { clearTimeout(wait); go(null); });
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', begin); else begin();
 
 })();
 `))

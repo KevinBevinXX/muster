@@ -10,6 +10,7 @@
 //		DATABASE_URL=…_e2e go run ./e2e/pluginfix rmagent <owner-id> <name>
 //		DATABASE_URL=…_e2e go run ./e2e/pluginfix cleanup <owner-id> <name>
 //		DATABASE_URL=…_e2e go run ./e2e/pluginfix ask <owner-id> <agent-name> <question>   → prints the ask id
+//		DATABASE_URL=…_e2e go run ./e2e/pluginfix rmask <owner-id> <ask-id>
 //		DATABASE_URL=…_e2e go run ./e2e/pluginfix draft <owner-id> <agent-name> <plugin-name> → prints the draft id
 //		DATABASE_URL=…_e2e go run ./e2e/pluginfix rmplugin <owner-id> <plugin-name>
 //
@@ -38,6 +39,9 @@
 //	    attention_ask call stores (internal/attention) — for a spec about what
 //	    the Agents list does with it, not about the door (agent-cards.spec.ts
 //	    asks through the real /mcp door).
+//	  - rmask: deletes ONE ask of the owner's by id — what a spec that made one
+//	    with `ask` removes afterwards (or mid-test: an ask that left the queue
+//	    elsewhere), so later specs on the shared database never see it.
 //	  - draft: a PENDING reply draft by the named agent, to a delivered message
 //	    of a plugin of that name made for it — the attention queue's "plugin"
 //	    item on that agent's card.
@@ -74,7 +78,7 @@ func run(args []string) error {
 		return err
 	}
 	if len(args) == 0 {
-		return fmt.Errorf("usage: pluginfix chief|agent|delivering|unconfirmed|lapse|label|linknote|rmagent|cleanup|ask|draft|rmplugin …")
+		return fmt.Errorf("usage: pluginfix chief|agent|delivering|unconfirmed|lapse|label|linknote|rmagent|cleanup|ask|rmask|draft|rmplugin …")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
@@ -233,6 +237,18 @@ func run(args []string) error {
 			return fmt.Errorf("ask from %s: %w", args[2], err)
 		}
 		fmt.Println(id)
+	case "rmask":
+		owner, err := num(1)
+		if err != nil || len(args) != 3 {
+			return fmt.Errorf("usage: rmask <owner-id> <ask-id>")
+		}
+		id, err := num(2)
+		if err != nil {
+			return err
+		}
+		if _, err := conn.Exec(ctx, `DELETE FROM attention_asks WHERE owner_id = $1 AND id = $2`, owner, id); err != nil {
+			return err
+		}
 	case "draft":
 		owner, err := num(1)
 		if err != nil || len(args) != 4 {

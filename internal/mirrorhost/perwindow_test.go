@@ -277,6 +277,27 @@ func (b *windowsBackend) ClaudePanes(context.Context, []string) map[string]Claud
 func (b *windowsBackend) Paste(_ context.Context, p ClaudePane, text string) error {
 	return b.PastePane(context.Background(), p.Pane, text)
 }
+
+// ClaudeScreen and PasteChecked give the fake the Claude prompt guard's two
+// capabilities, as the tmux backend has them: a screen at Claude Code's idle
+// prompt, and the real checked paste around PastePane (its Enter records
+// nothing: PastePane records the whole send, as a plain paste did).
+func (b *windowsBackend) ClaudeScreen(context.Context, string) (string, error) {
+	return idleClaudeScreen, nil
+}
+func (b *windowsBackend) PasteChecked(ctx context.Context, p ClaudePane, text string, before, beforeEnter func(context.Context) error) error {
+	return runCheckedPaste(ctx, checkedPasteSteps{
+		paste: func(ctx context.Context) error { return b.PastePane(ctx, p.Pane, text) },
+		enter: func(context.Context) error { return nil },
+		sleep: func(context.Context, time.Duration) error { return nil },
+	}, before, beforeEnter)
+}
+
+// idleClaudeScreen is Claude Code at its idle prompt, as ccdialog reads one:
+// the input box between two rules, the status line under it.
+const idleClaudeScreen = "● done\n\n" + "────────────────────────────────────────" + "\n❯ \n" +
+	"────────────────────────────────────────" + "\n  ? for shortcuts\n"
+
 func (b *windowsBackend) ActivePane(context.Context, string) (string, bool) {
 	b.note("ActivePane")
 	return "%legacy", true

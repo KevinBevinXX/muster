@@ -540,7 +540,24 @@ func (h *hostSide) paste(m mirror.Msg) {
 		reply(errNotClaudeNow)
 		return
 	}
-	reply(h.typeInto(ctx, p.Pane, func() error { return cb.Paste(ctx, p, text) }))
+	// 🔴 THE CLAUDE PROMPT GUARD (claude_guard.go): never into a pane waiting
+	// on the person. Checked once here, so a refusal touches nothing (not even
+	// this connection's copy-mode), and again immediately before the paste and
+	// before its Enter, inside the keys.
+	before := func(ctx context.Context) error { return h.claudeReady(ctx, cb, m, p.Pane, true) }
+	beforeEnter := func(ctx context.Context) error { return h.claudeReady(ctx, cb, m, p.Pane, false) }
+	if err := before(ctx); err != nil {
+		reply(err)
+		return
+	}
+	// 🔴 ONLY A CHECKED PASTE: a backend without one is refused — a plain
+	// Paste presses an Enter nothing checked.
+	cp, ok := capabilityOf[ClaudeCheckedPaster](h.c.cfg.Backend)
+	if !ok {
+		reply(ErrClaudeUncheckable)
+		return
+	}
+	reply(h.typeInto(ctx, p.Pane, func() error { return cp.PasteChecked(ctx, p, text, before, beforeEnter) }))
 }
 
 // leaveCopyModeFor cancels the copy-mode a drag-to-scroll on THIS connection

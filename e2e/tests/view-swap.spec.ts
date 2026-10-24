@@ -202,7 +202,10 @@ test.describe('a mirrored window', () => {
     await settled();
     expect(unwatched('@1'), `leaving closed the transcript stream (log:\n${rig.log})`).toBe(2);
     expect(detached('@1'), 'and the attach').toBe(2);
-    expect(watchedFromStart('@1') - unwatched('@1'), 'no stream left open').toBe(0);
+    // Every stream opened, from the start or RESUMED (the framed rendered view
+    // after the reload resumes from the snapshot the first one stored —
+    // web/static/mirror-snap.js), was closed.
+    expect(watchedFromStart('@1') + watchedResuming('@1') - unwatched('@1'), 'no stream left open').toBe(0);
     expect(attached('@1') - detached('@1'), 'no attach left open').toBe(0);
   });
 

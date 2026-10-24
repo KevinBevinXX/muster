@@ -17,7 +17,8 @@ import (
 // TestEveryHostPasteIntoAHermesPaneIsRefusedAndTypesNothing, and this is what
 // keeps it complete. The Hermes paste guard lives in hostSide.typeInto, so:
 //
-//  1. every call that types into a pane — PastePane, Paste, AnswerAsk — is
+//  1. every call that types into a pane — PastePane, Paste, PasteChecked (the
+//     Claude prompt guard's checked paste), AnswerAsk — is
 //     either the tmux backend's own implementation (a Tmux method delegating
 //     to another), or sits in the function literal handed to typeInto;
 //  2. the typeInto call sites are EXACTLY the three host entry points that
@@ -30,7 +31,9 @@ import (
 //     Phase 3): the gated send into a Hermes pane does not go through
 //     typeInto — the guard refuses every Hermes pane — but through its own
 //     checks (hermes_send.go). So its typing primitives (pasteBracketed,
-//     pasteEnter) are called only by PastePane and SendHermes, SendHermes
+//     pasteEnter) are called only by PastePane, SendHermes and PasteChecked
+//     (the Claude prompt guard's paste, itself reached only through
+//     typeInto), SendHermes
 //     only by hostSide.hermesPaste, and hermesPaste only by hostSide.paste.
 func TestEveryWayThisHostTypesIntoAPaneGoesThroughTheHermesGuard(t *testing.T) {
 	fset := token.NewFileSet()
@@ -100,7 +103,7 @@ func TestEveryWayThisHostTypesIntoAPaneGoesThroughTheHermesGuard(t *testing.T) {
 						callers[sel.Sel.Name] = append(callers[sel.Sel.Name], where)
 					}
 					switch sel.Sel.Name {
-					case "PastePane", "Paste", "AnswerAsk", "CancelAsk":
+					case "PastePane", "Paste", "PasteChecked", "AnswerAsk", "CancelAsk":
 						switch {
 						case inTypeInto[x]:
 							// counted below, by its typeInto call
@@ -135,8 +138,8 @@ func TestEveryWayThisHostTypesIntoAPaneGoesThroughTheHermesGuard(t *testing.T) {
 		t.Fatalf("typeInto is called from %q; want exactly %q — update this ledger only for a NEW way of typing that goes through it", guarded, want)
 	}
 	for name, want := range map[string][]string{
-		"pasteBracketed": {"Tmux.PastePane", "Tmux.SendHermes"},
-		"pasteEnter":     {"Tmux.PastePane", "Tmux.SendHermes"},
+		"pasteBracketed": {"Tmux.PasteChecked", "Tmux.PastePane", "Tmux.SendHermes"},
+		"pasteEnter":     {"Tmux.PasteChecked", "Tmux.PastePane", "Tmux.SendHermes"},
 		"SendHermes":     {"hostSide.hermesPaste"},
 		"hermesPaste":    {"hostSide.paste"},
 	} {

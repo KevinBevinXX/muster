@@ -280,6 +280,16 @@ for (const size of [
 // conversation keeps its 722px and the terminal its 37 rows. Measured on main
 // (60e21bd1) with the same selectors. A number BELOW one of these is fine (the
 // bound is a ceiling or a floor); one past it is the header wrapping.
+//
+// ⚠ THE CONVERSATION'S FLOOR IS 681, NOT 722, SINCE THE SESSION SWITCHER
+// (ui/switcher.go) — a deliberate 41px: the bar's 44px row and its 1px top
+// border, less the 4px the input row gives back (its bottom padding is pb-2
+// rather than max(0.75rem, safe area) once the bar below carries the inset).
+// Measured 681 at 390×844. The header (still one row) and the terminal (which
+// draws no switcher: still 105px, 37 rows) are unchanged. ⚠ ON A PHONE WITH A
+// SAFE-AREA INSET THE COST IS LARGER: the inset moves to the bar, so the input
+// row drops to pb-2 and keeps none of it — with a 34px inset the conversation
+// loses 53px, not 41 (here, in emulation, the inset is 0).
 test.describe('phone header', () => {
   test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
   test('adding the hamburger wraps no header and takes no height from the log or the terminal', async ({ page }) => {
@@ -287,7 +297,7 @@ test.describe('phone header', () => {
     await page.goto(origin + viewOf('@1'));
     await expect(page.locator('#mv-status')).toHaveText('Live');
     expect((await box(page, 'body > header')).height, 'the Rendered view header is one row').toBeLessThanOrEqual(57);
-    expect((await box(page, '#mv-log')).height, 'the conversation keeps its height').toBeGreaterThanOrEqual(722);
+    expect((await box(page, '#mv-log')).height, 'the conversation keeps its height').toBeGreaterThanOrEqual(681);
     await page.goto(origin + termOf('@1'));
     await expect(page.locator('#term-status')).toHaveText('Connected');
     expect((await box(page, 'body > header')).height, 'the terminal header wraps no further').toBeLessThanOrEqual(105);

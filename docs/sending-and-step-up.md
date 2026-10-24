@@ -29,6 +29,37 @@ box also keeps what you type as a draft on this device; see
   is pasted — except the rendered view's send to a Hermes window on a host
   started with `-hermes-send`, which goes through Hermes's gated send
   ([mirroring.md](mirroring.md#muster-pastes-into-hermes-only-through-its-gated-send)).
+- 🔴 **Never into a Claude Code prompt.** The Rendered view's Send, Send now and
+  a queued or routed message are refused while the window's Claude Code is
+  waiting on you (a permission prompt, a question, a menu): the paste's Enter
+  would answer it, for example approve a tool call. muster refuses a window its
+  host reports `waiting`, and the host checks again at the moment it types —
+  Claude Code's own session status and the pane's screen (ccd's dialog reading,
+  [`internal/ccdialog`](../internal/ccdialog/ccdialog.go)), before the paste and
+  again before its Enter — so a prompt that opened after the host's last report
+  is caught too. The refusal says "Claude is waiting on a permission prompt —
+  answer it first", and nothing is typed. The host also refuses while Claude's
+  input box already holds text ("Claude's input box already has text — clear
+  or send it first"): a message pasted after it would be submitted with it as
+  one turn. If a prompt opens between the paste and its Enter, the Enter is
+  withheld and the reply says "Pasted, not submitted"; the text stays in the
+  box, so it counts as possibly delivered — the queue waits for the turn after
+  it, and its Retry asks first.
+  - **A queued message is held, not failed**, and sent once the prompt is
+    answered (or the box is cleared). When the host refused it on what it read
+    at the moment of typing, the queue shows the host's reason and tries again
+    after 4 s, 8 s, 16 s, then every 30 s, until the window's status changes.
+  - **A Send or Send now that is refused is not held.** A Send says why and
+    keeps its text in the box. A Send now that the host refuses at the moment
+    of typing ends its row failed, saying why; Retry queues it again.
+
+  The Terminal view's box is not gated: it is you typing into the pane you are
+  looking at. It is a check before each key, not a lock: a prompt that opens in
+  the milliseconds between the last check and a key is not caught. A host
+  whose muster-mirror cannot read the screen and check the paste refuses every
+  Rendered-view message into Claude Code. Deploy muster before upgrading the
+  hosts' muster-mirror: an older muster shows the new host's refusals as plain
+  failures and fails a queued message instead of holding it.
 - Only newline and tab are accepted as control characters. Several lines arrive
   as one bracketed paste, and the single Enter runs them in order. A program that
   did not ask for bracketed paste gets the text as typed, so each newline is an
