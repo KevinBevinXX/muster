@@ -92,6 +92,10 @@ func (s *Server) handleMirrorViewPage(w http.ResponseWriter, r *http.Request) {
 		v.Queue = s.mirrorComposerQueue(r.Context(), h, e, sendQueueEditing(r))
 	}
 	v.Notice, v.NoticeOK = composerNotice(r)
+	// The suggested replies' row (suggest.go): a Claude Code window on an
+	// interactive host, while the server has suggestions wired at all.
+	v.Suggest = s.suggestPath(r.Context(), h, e)
+	v.SuggestPaused = v.Suggest == "" && s.suggestPaused(r.Context(), h, e)
 	v.HostIcon = s.mirrorHostIcon(r.Context(), h.Host)
 	// The window's sessions' open attention asks, answerable here
 	// (attention_asker.go).
@@ -174,10 +178,17 @@ func (s *Server) handleMirrorViewWS(w http.ResponseWriter, r *http.Request) {
 			}
 		})
 	}
+	// Suggested replies (suggest.go): this socket's tracker — nil when the
+	// window cannot have any — fed every batch, and the page told what its
+	// turn ends make of them.
+	sg := s.suggestSocket(ctx, r, c, host, session, window, drawn.Resumed)
 	err = s.ext.Mirror.WatchWindow(ctx, host, session, window, gen, offset, func(m mirror.Msg) error {
 		if m.Reset {
 			drawn.Reset()
 		}
+		// After the batch is written: the page has drawn the reply its
+		// suggestions answer before it hears of them.
+		defer sg.observe(m)
 		// A host that reports subagents says so before it draws an Agent call
 		// (the Reset batch, a resume's marker): those calls are then cards.
 		if m.SubagentList {

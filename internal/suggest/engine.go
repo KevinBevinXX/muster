@@ -14,9 +14,8 @@ import (
 //
 // One Suggest call, in order:
 //  1. the KILL SWITCH (Off, MUSTER_SUGGEST=off) refuses before anything;
-//  2. the owner's TOGGLE (Prefs) refuses an owner who turned it off (the
-//     auto-pause on a low fill rate comes with the composer that reports
-//     fills, P2/P3);
+//  2. the owner's TOGGLE (Prefs) refuses an owner who turned it off, and the
+//     AUTO-PAUSE (autopause.go) one who rarely taps a chip;
 //  3. 🔴 THE FINGERPRINT SKIP: a subject whose cached set was built from the
 //     SAME input — or for the SAME turn — gets that set back and NO call is made — and that holds after
 //     the set's text expired (only the fingerprint is kept), so an unchanged
@@ -113,6 +112,9 @@ type Engine struct {
 	// served.
 	Off   bool
 	Prefs Prefs
+	// Usage keeps each user's counts and pause (autopause.go); nil keeps them
+	// in memory.
+	Usage UsageStore
 	Now   func() time.Time
 	// RecheckTimeout bounds the toggle re-check after a paid call (0 =
 	// DefaultRecheckTimeout).
@@ -127,8 +129,11 @@ type Engine struct {
 	calls    map[int64][]time.Time
 	global   []time.Time
 	epochs   map[int64]int // bumped by Forget
-	sem      chan struct{}
-	semOnce  sync.Once
+	tallies  map[int64]*tally
+	// usageEpochs is bumped per owner by Resume (autopause.go).
+	usageEpochs map[int64]int
+	sem         chan struct{}
+	semOnce     sync.Once
 	// Calls counts model calls made (a test reads it).
 	Calls int
 }
@@ -162,11 +167,13 @@ func (e *Engine) init() {
 		e.inflight = map[cacheKey]map[string]*flight{}
 		e.calls = map[int64][]time.Time{}
 		e.epochs = map[int64]int{}
+		e.tallies = map[int64]*tally{}
+		e.usageEpochs = map[int64]int{}
 	}
 }
 
-// Enabled is nil when owner may get suggestions now, or the Outcome that says
-// why not (Off, UserOff). A Prefs read error fails CLOSED (UserOff).
+// Enabled is "" when owner may get suggestions now, or the Outcome that says
+// why not (Off, UserOff, Paused). A Prefs read error fails CLOSED (UserOff).
 func (e *Engine) Enabled(ctx context.Context, owner int64) Outcome {
 	if e == nil || e.Off {
 		return OutcomeOff
@@ -180,6 +187,9 @@ func (e *Engine) Enabled(ctx context.Context, owner int64) Outcome {
 		if off {
 			return OutcomeUserOff
 		}
+	}
+	if e.paused(ctx, owner) {
+		return OutcomePaused
 	}
 	return ""
 }
