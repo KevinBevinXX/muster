@@ -41,6 +41,7 @@ DELETE /tasks/{id}/comments/{cid}
 DELETE /tasks/{id}/tags/{tag}
 GET /account
 GET /account/credentials
+GET /account/devices/live
 GET /account/passkeys
 GET /account/tokens
 GET /admin/invites

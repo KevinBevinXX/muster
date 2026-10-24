@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { test, expect } from '../lib/fixtures';
 import type { Page } from '@playwright/test';
-import { password, pushPort, versionA } from '../lib/env';
+import { dsn, password, pushPort, repoRoot, versionA } from '../lib/env';
 import { serverBinary, startServer, Running } from '../lib/server';
 
 // muster-native Web Push, the browser half: the Enable flow subscribes with the
@@ -110,6 +110,77 @@ test('inside the Android app shell the page offers no Enable', async ({ page }) 
   await expect(page.locator('#push-status')).toBeHidden();
   await expect(page.locator('#enable-push')).toBeHidden();
   await expect(page.locator('#push-on')).toBeHidden();
+});
+
+// Account → Devices notices a paired phone's push registration BY ITSELF. On
+// the Android emulator the app registers its push endpoint a few seconds after
+// pairing, while the page is open, and the page used to show "push not
+// registered" with no test button until a manual reload. Here: pair from the
+// app shell (the bridge stub), redeem the code as the app, register the
+// phone's push, and the SAME page — no reload, no navigation — lists the phone,
+// then shows it registered with "Send a test notification"; and once nothing
+// is pending the list stops re-fetching.
+//
+// ⚠ THE REGISTRATION IS e2e/devicefix, NOT PUT /api/device/push: that route
+// keeps an endpoint only after a VAPID test push to an https push service on
+// port 443 succeeds, which this harness has none of. devicefix makes the same
+// store write (push.PGStore.ClaimNative); the route itself is internal/api's
+// TestTheDeviceListNoticesAPhonesPushRegistration.
+test('Account → Devices shows a paired phone and its push registration without a reload', async ({ page, request }) => {
+  await page.addInitScript(() => {
+    const w = window as unknown as { __appMsgs: string[]; musterApp: { postMessage(m: string): void } };
+    w.__appMsgs = [];
+    w.musterApp = { postMessage: (m: string) => w.__appMsgs.push(m) };
+  });
+  await signIn(page);
+  await page.goto(origin + '/account');
+  let navigations = 0;
+  page.on('framenavigated', (f) => {
+    if (f === page.mainFrame()) navigations++;
+  });
+  const refetches: string[] = [];
+  page.on('request', (r) => {
+    if (new URL(r.url()).pathname === '/account/devices/live') refetches.push(r.url());
+  });
+  const section = page.getByTestId('paired-devices');
+  await section.getByRole('button', { name: 'Pair this phone' }).click();
+  await expect(page.locator('#pair-status')).toHaveText('The app is finishing the pairing.');
+  const msgs = await page.evaluate(() => (window as unknown as { __appMsgs: string[] }).__appMsgs);
+  const code = JSON.parse(msgs[0]).code as string;
+
+  // The app's side: redeem the code. The page lists the phone on its own.
+  const name = `e2e live phone ${Date.now()}`;
+  const paired = await request.post(origin + '/api/device/pair', { data: { code, name, app_version: '0.0.2' } });
+  expect(paired.status(), await paired.text()).toBe(201);
+  const body = (await paired.json()) as { token: string; device: { id: number } };
+  const row = section.getByTestId('paired-device').filter({ hasText: name });
+  await expect(row).toContainText('push not registered');
+  // The Notifications section lists the phone by the label the claim gives it.
+  // (Its test button may already be there for another device of the
+  // operator's, so the phone's own entry is what is asserted.)
+  const notifications = page.getByTestId('push-devices');
+  const pushEntry = notifications.getByTestId('push-device').filter({ hasText: 'muster app: ' + name });
+  await expect(pushEntry).toHaveCount(0);
+
+  // The app registers its push endpoint. The page shows it without a reload.
+  execFileSync('go', ['run', './e2e/devicefix', 'push', String(body.device.id), 'https://fcm.googleapis.com/fcm/send/e2e-live-' + Date.now()], {
+    cwd: repoRoot, env: { ...process.env, DATABASE_URL: dsn }, stdio: ['ignore', 'inherit', 'inherit'],
+  });
+  await expect(row).toContainText('push registered');
+  await expect(row).not.toContainText('push not registered');
+  await expect(pushEntry).toBeVisible();
+  await expect(notifications.getByRole('button', { name: 'Send a test notification' })).toBeVisible();
+  expect(navigations, 'the page was not reloaded or navigated').toBe(0);
+  expect(refetches.length, 'the list re-fetched itself').toBeGreaterThan(0);
+
+  // Nothing is pending now: the list stops polling. Its interval is 3s, so
+  // 4.5s without a re-fetch is a missed tick, not a slow one.
+  const settled = refetches.length;
+  await page.waitForTimeout(4500);
+  expect(refetches.length, 'no re-fetch once nothing is pending').toBe(settled);
+
+  // The app unpairs; the shared database keeps no phone of this spec's.
+  expect((await request.delete(origin + '/api/device', { headers: { Authorization: 'Bearer ' + body.token } })).status()).toBe(204);
 });
 
 test('Enable subscribes with the server key and the device appears on the account page', async ({ page }) => {

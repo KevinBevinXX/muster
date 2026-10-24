@@ -348,6 +348,9 @@ type Store interface {
 	Authenticate(ctx context.Context, token string) (Device, error)
 	// List is ctx's user's devices, newest first.
 	List(ctx context.Context) ([]Device, error)
+	// PairingPending reports whether ctx's user has a pairing code that is
+	// neither used nor expired: an app may be about to redeem it.
+	PairingPending(ctx context.Context) (bool, error)
 	// Remove deletes ctx's user's device id (its push subscription goes with
 	// it). found is false when the user has no such device.
 	Remove(ctx context.Context, id int64) (found bool, err error)
@@ -588,6 +591,19 @@ func (s *PGStore) List(ctx context.Context) ([]Device, error) {
 		out = append(out, d)
 	}
 	return out, rows.Err()
+}
+
+// PairingPending implements Store, under the caller's principal (row-level
+// security) like List.
+func (s *PGStore) PairingPending(ctx context.Context) (bool, error) {
+	p, err := user(ctx)
+	if err != nil {
+		return false, err
+	}
+	var pending bool
+	err = s.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM device_pairing_codes
+		WHERE owner_id = $1 AND used_at IS NULL AND expires_at > now())`, p.UserID).Scan(&pending)
+	return pending, err
 }
 
 // Remove implements Store. The row is DELETED, so the credential stops working
