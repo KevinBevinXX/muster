@@ -297,3 +297,80 @@ func TestAStatusIsKeptOnlyForAClaudeWindowAndOnlyAsOneOfThree(t *testing.T) {
 		}
 	}
 }
+
+// TestTheAgentStateCarriesHowTheLatestTurnFailed is the seam between the host's
+// window list and the send queue's probe: a TurnError a host reports on an idle
+// Claude window reaches AgentState as it was sent (cleaned), and a window the
+// host reports without one carries none.
+func TestTheAgentStateCarriesHowTheLatestTurnFailed(t *testing.T) {
+	r := newRig(t)
+	tok, _ := r.store.mint(t, 1, "ws")
+	ws := statusWindows(mirror.StatusIdle, t1)
+	e := mirror.TurnError{Kind: mirror.TurnErrorLimit, At: t1 - 1, ResetsAt: t3, Rejected: true, Prompt: mirror.PromptDigest("q"), PrevAt: t1 - 2, Quick: 2}
+	ws[0].TurnError = &e
+	ws[0].ClaudeSession = "sess-1"
+	m := winHello("ws", true, ws...)
+	m.StatusReport = true
+	if _, err := r.rawConnect(t, tok, m); err != nil {
+		t.Fatal(err)
+	}
+	r.online(t, 1, "ws", "work")
+	st := r.svc.AgentState(asUser(1), "ws", "work", "@1")
+	if st.TurnError == nil || *st.TurnError != e {
+		t.Fatalf("AgentState.TurnError = %+v; want what the host reported, %+v", st.TurnError, e)
+	}
+	if st.Session != "sess-1" {
+		t.Fatalf("AgentState.Session = %q; want the window's Claude session", st.Session)
+	}
+	tok2, _ := r.store.mint(t, 1, "ws2")
+	m2 := winHello("ws2", true, statusWindows(mirror.StatusIdle, t1)...)
+	m2.StatusReport = true
+	if _, err := r.rawConnect(t, tok2, m2); err != nil {
+		t.Fatal(err)
+	}
+	r.online(t, 1, "ws2", "work")
+	if st := r.svc.AgentState(asUser(1), "ws2", "work", "@1"); st.TurnError != nil || st.Unknown != nil || st.HostLimit != nil {
+		t.Fatalf("a window reported without one: %+v; want idle, no turn error, no host limit", st)
+	}
+	// A host that reports the account's limit: every Claude window of it carries
+	// it — this one has no TurnError of its own (cut by the list's bound, or
+	// another window hit it) — and its shell window does not.
+	tok3, _ := r.store.mint(t, 1, "ws3")
+	m3 := winHello("ws3", true, statusWindows(mirror.StatusIdle, t1)...)
+	m3.StatusReport = true
+	m3.HostLimit = &mirror.HostLimit{At: t2, ResetsAt: t3}
+	if _, err := r.rawConnect(t, tok3, m3); err != nil {
+		t.Fatal(err)
+	}
+	r.online(t, 1, "ws3", "work")
+	st3 := r.svc.AgentState(asUser(1), "ws3", "work", "@1")
+	if st3.TurnError != nil || st3.HostLimit == nil || *st3.HostLimit != (mirror.HostLimit{At: t2, ResetsAt: t3}) {
+		t.Fatalf("a Claude window on a limited host: %+v; want its host's limit", st3)
+	}
+	if st := r.svc.AgentState(asUser(1), "ws3", "work", "@2"); st.HostLimit != nil {
+		t.Fatalf("the shell window: %+v; want no host limit", st)
+	}
+}
+
+// TestAHostLimitFollowsTheHostsSessionsMessages: the limit rides every sessions
+// message, so a host that reports one later (a window hit it) holds its
+// windows from then, and one that stops reporting it (a real answer) lifts it.
+func TestAHostLimitFollowsTheHostsSessionsMessages(t *testing.T) {
+	r := newRig(t)
+	tok, _ := r.store.mint(t, 1, "ws")
+	m := winHello("ws", true, statusWindows(mirror.StatusIdle, t1)...)
+	m.StatusReport = true
+	raw, err := r.rawConnect(t, tok, m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.online(t, 1, "ws", "work")
+	limit := func() *mirror.HostLimit { return r.svc.AgentState(asUser(1), "ws", "work", "@1").HostLimit }
+	if l := limit(); l != nil {
+		t.Fatalf("hello without one: %+v", l)
+	}
+	raw.write(t, mirror.Msg{Type: mirror.TypeSessions, Windows: statusWindows(mirror.StatusIdle, t2), HostLimit: &mirror.HostLimit{At: t2, ResetsAt: t3}})
+	eventually(t, "the host limit arrives", func() bool { l := limit(); return l != nil && *l == (mirror.HostLimit{At: t2, ResetsAt: t3}) })
+	raw.write(t, mirror.Msg{Type: mirror.TypeSessions, Windows: statusWindows(mirror.StatusIdle, t3)})
+	eventually(t, "the host limit lifts", func() bool { return limit() == nil })
+}

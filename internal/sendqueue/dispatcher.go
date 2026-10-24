@@ -10,6 +10,8 @@ import (
 	"os"
 	"sync"
 	"time"
+
+	"github.com/ZacxDev/muster/internal/mirror"
 )
 
 // THE DISPATCHER: once a target has been continuously idle for IdleFor, it
@@ -27,6 +29,15 @@ import (
 // moves when the turn a paste started ends, however short that turn and
 // whether or not anybody saw it busy. There is no time-based fallback: a
 // target that never reports a newer status holds its queue.
+//
+// 🔴 A TURN THAT FAILED AT ONCE DID NOT END THE WAY A TURN ENDS (limit.go). A
+// usage limit, "Not logged in" or an API error ends the turn in a second with
+// a record Claude Code wrote itself, and the status moves exactly as after an
+// answer. The host reports how the latest turn ended (AgentState.TurnError),
+// and Decide HOLDS on it: a usage limit until its reset plus LimitMargin (or a
+// real answer), BreakerAfter immediate failures in a row for a back-off that
+// grows with each further one (BreakerBackoff), or until a real answer. The one
+// message a limit bounced is marked failed, for a Retry by hand.
 //
 // 🔴 TWO CLOCKS, NEVER MIXED. Status times are the HOST's clock and are
 // compared only with each other. IdleFor is measured on MUSTER's clock, from
@@ -72,6 +83,19 @@ type AgentState struct {
 	// Why says, when not Idle, why the target is not sendable now — busy, or
 	// unknown and why. Shown to the owner.
 	Why string
+	// TurnError is how the target's latest turn ended when it ended in an
+	// error Claude Code wrote itself — a usage limit, "Not logged in", an API
+	// error (mirror.TurnError, read on the host from the transcript); nil when
+	// it ended in a real answer, or the host does not say. Set when Idle.
+	TurnError *mirror.TurnError
+	// HostLimit is a usage limit the target's host reports for all its Claude
+	// windows (mirror.HostLimit): the account's limit, which holds this window
+	// too. nil for none. Set when Idle.
+	HostLimit *mirror.HostLimit
+	// Session is the Claude Code session id of the conversation in the target
+	// (mirror.Window.ClaudeSession) — the one its TurnError was read from — ""
+	// when the host does not say.
+	Session string
 }
 
 // Decision is what Decide made of one head.
@@ -79,6 +103,12 @@ type Decision struct {
 	Send bool
 	// Why says, when not Send, what the head is waiting for.
 	Why string
+	// Held: the queue is HELD on how the latest turn failed (holdFor): a
+	// usage limit, or the circuit breaker. Only Send now sends while it is.
+	Held bool
+	// ResumeAt is, for a usage limit that names its reset, the reset time:
+	// the queue sends again LimitMargin after it. Zero otherwise.
+	ResumeAt time.Time
 }
 
 // Decide is the dispatcher's whole rule for one head, given the target's state
@@ -106,6 +136,9 @@ func Decide(h Head, st AgentState, now time.Time, idleFor time.Duration) Decisio
 		// turn that paste started has not ended yet.
 		return Decision{Why: "waiting for the previous message's turn to start and finish"}
 	}
+	if d, held := holdFor(st, now); held {
+		return d
+	}
 	if idle := now.Sub(st.Observed); idle < idleFor {
 		return Decision{Why: fmt.Sprintf("idle for %s; sends after %s idle", roundSecond(idle), roundSecond(idleFor))}
 	}
@@ -129,6 +162,8 @@ type DispatchStore interface {
 	Renew(ctx context.Context, id int64, by string, lease time.Duration) (bool, error)
 	Finish(ctx context.Context, id int64, by string, o Outcome, now time.Time) error
 	Prune(ctx context.Context, before time.Time) (int, error)
+	RecentSent(ctx context.Context, after time.Time) ([]Item, error)
+	Reject(ctx context.Context, id int64, detail string) (bool, error)
 }
 
 // Probe reads one head's target's state now. ctx acts as the head's owner.
@@ -176,7 +211,14 @@ type Dispatcher struct {
 	Lease      time.Duration
 	RenewEvery time.Duration
 
-	kick     chan struct{}
+	kick chan struct{}
+	// pastedIn is, per message this dispatcher sent, the Claude session the
+	// window held when it was pasted (rememberPaste): what Bounced matches the
+	// refused turn's session against. In memory only — no migration — so a
+	// message whose record is gone (a restart, another pod's send) is never
+	// found Bounced: it stays sent.
+	pasteMu  sync.Mutex
+	pastedIn map[int64]pasteRecord
 	instOnce sync.Once
 }
 
@@ -286,6 +328,9 @@ func (d *Dispatcher) Tick(ctx context.Context) (int, error) {
 	} else if n > 0 {
 		d.logf("sendqueue: %d edit hold(s) ran out unsaved; the message(s) keep their original text", n)
 	}
+	// A message a usage limit bounced is marked failed, for a Retry by hand
+	// (rejectBounced); the heads behind it are held below (Decide).
+	d.rejectBounced(ctx)
 	heads, err := d.Store.Heads(ctx)
 	if err != nil {
 		return 0, err
@@ -309,6 +354,7 @@ func (d *Dispatcher) Tick(ctx context.Context) (int, error) {
 			continue
 		}
 		o := d.sendRenewing(ctx, octx, it, st, d.Send)
+		d.rememberPaste(it.ID, st.Session, o)
 		if o.Sent {
 			o.MayHaveDelivered = true
 		}
@@ -396,7 +442,14 @@ func (d *Dispatcher) SendNow(ctx, octx context.Context, id int64, since int64, s
 	// that would spend its one Retry on a message that was on its way.
 	// WithoutCancel keeps ctx's values (the principal, the sign-in time).
 	ctx, octx = context.WithoutCancel(ctx), context.WithoutCancel(octx)
-	o := d.sendRenewing(ctx, octx, it, AgentState{Since: since}, send)
+	// The window's session as it is pasted into, for Bounced: Send now is
+	// handed no state of its own, so it reads it.
+	var session string
+	if d.Probe != nil {
+		session = d.Probe(octx, Head{Item: it}).Session
+	}
+	o := d.sendRenewing(ctx, octx, it, AgentState{Since: since, Session: session}, send)
+	d.rememberPaste(it.ID, session, o)
 	if o.Sent {
 		o.MayHaveDelivered = true
 	}

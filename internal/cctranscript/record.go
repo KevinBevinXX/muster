@@ -22,7 +22,8 @@
 //     [{"type":"tool_result","tool_use_id":T,"content":<string|blocks>,"is_error":B}]}}
 //   - assistant output, ONE block per record: {"type":"assistant","message":
 //     {"content":[<thinking | text | tool_use{id,name,input}>]}}
-//   - an API failure: an assistant record with "isApiErrorMessage":true
+//   - an API failure: an assistant record with "isApiErrorMessage":true (a
+//     usage limit, "Not logged in", an API error: limit.go)
 //   - the end of a turn: {"type":"system","subtype":"turn_duration"}
 //   - injected context (skill bodies, caveats): a user record with "isMeta":true
 //   - a harness notice (a background task finishing, a local command's
@@ -61,7 +62,12 @@ type Record struct {
 	// (a user record carrying a tool_result). Read only for AskUserQuestion,
 	// whose result holds the questions and the answers given (askq.Result).
 	ToolUseResult json.RawMessage `json:"toolUseResult"`
-	Message       struct {
+	// QuotaLimits is on a usage-limit record the CLI wrote itself (limit.go):
+	// when the limit resets, in Unix seconds. Absent on most.
+	QuotaLimits *struct {
+		ResetsAt int64 `json:"resetsAt"`
+	} `json:"quotaLimits"`
+	Message struct {
 		Content json.RawMessage `json:"content"`
 		// Model and Usage are an assistant record's (usage.go): its model id
 		// only marks the CLI's own "<synthetic>" records.

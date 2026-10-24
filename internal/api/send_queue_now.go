@@ -21,7 +21,12 @@ import (
 // pasted, by the dispatcher's own Claim (sendqueue.Dispatcher.SendNow), so the
 // dispatcher can never also send it — whichever claims first sends, and the
 // other finds it no longer queued. It ends sent, or failed with the reason; it
-// is never put back to queued.
+// is never put back to queued. (A send a usage limit bounced is marked failed
+// afterwards by the dispatcher, like any of its sends: sendqueue.Bounced.)
+//
+// 🔴 IT IS THE OVERRIDE OF A HELD QUEUE: a usage limit or the circuit breaker
+// holds the dispatcher (sendqueue.Decide), never this. It sends the ONE
+// message it was tapped on; the rest stay held.
 //
 // 🔴 THE NEXT MESSAGE STILL WAITS FOR THIS ONE'S TURN: the paste is recorded
 // like a Send's (mirrorPaste notes it, in the hub and on the open rows), and the

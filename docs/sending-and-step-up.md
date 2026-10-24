@@ -125,6 +125,8 @@ dispatched agents and the chief panel have no Queue.
   a queue post is refused saying why. A message already queued for such a
   window is held with the reason shown. So is one for a host that reports the
   status without its time.
+- 🔴 **A usage limit holds the queue.** See
+  [A usage limit holds the queue](#a-usage-limit-holds-the-queue) below.
 - **At most 20** messages can wait per window. Finished ones are shown for a
   while and deleted after 7 days, or sooner with their **Delete** (below).
 - **Never twice.** A message is claimed (`queued` → `sending`) before it is sent
@@ -154,6 +156,62 @@ message is being edited. **Copy message** copies the whole message, and is not
 offered without JavaScript. The menu works without JavaScript (Send now, Edit
 and Cancel are forms). The list is not redrawn while a menu is open, or while a
 message is open for editing.
+
+### A usage limit holds the queue
+
+When Claude Code hits a usage limit it ends the turn at once with a message of
+its own ("You've hit your session limit · resets 10:30pm (…)") and goes back to
+its prompt. Its status then reads idle, with a newer time, exactly as after an
+answer. Before this, the queue sent the next message into the same limit, and
+the next, until the queue was empty: every message used up by the limit.
+
+`muster-mirror` now reads, from the transcript of each idle Claude Code
+window, how the latest turn ended. When it ended in a message Claude Code wrote
+itself (model `<synthetic>` with an error flag), muster is told the kind, the
+reset time when the message names one, and whether the prompt it answered got
+any real reply at all. With that:
+
+- **The queue holds.** It shows **Held — usage limit, resumes 10:30 PM**, the
+  time in your own local time, until the reset time plus one minute; then it
+  sends again. If the limit names no reset time muster can place, it holds
+  until Claude Code gives a real answer (for example to a message you send by
+  hand) or you tap **Send now**. A real answer lifts the hold at once. The reset
+  time is the record's `quotaLimits.resetsAt` when it has one (newer Claude
+  Code), else the time its text names, read in the zone it names.
+- **A message Claude Code refused is failed, for a Retry by hand.** If a
+  queued message was sent and Claude Code refused it before working on it — a
+  usage limit, "Not logged in", an API error, as its only reply — that message
+  is marked failed, *Rejected: …*, with its ordinary **Retry**. Nothing
+  re-sends it on its own. muster marks it only when the transcript shows it
+  was THAT message (the refused prompt's text matches, in the same Claude
+  Code session it was pasted into — muster remembers that in memory, so after
+  a restart it marks nothing) and nothing came
+  between its paste and the refusal (the newest record before the refused
+  prompt is no later than the status it was pasted on). A message Claude
+  answered, followed by another prompt typed in the terminal that hit the
+  limit, stays sent; so does one whose text a fresh `claude` in the same
+  pane happens to start with; so does any message the transcript cannot show
+  was refused. A Retry of a message that was in fact answered would run it twice.
+- **The limit is the account's — and muster assumes ONE account per host.**
+  When any Claude Code window on a host hits it, `muster-mirror` also reports
+  it for the whole host, and every Claude Code window there holds — until the
+  reset, or until any of its windows gets a real answer (which lifts it for
+  all of them). A window on that host signed in to another account, or using
+  another provider, is held too, until the reset, unless you tap **Send now**.
+  If the newer of a window's own limit and its host's is the host's, that one
+  holds.
+- **Other immediate failures trip a breaker that backs off.** When the last 2
+  turns each ended within 10 seconds of their prompt in another error Claude
+  Code wrote itself ("Not logged in", an API error), the queue holds, saying
+  so and when it retries: 1 minute after muster saw the failure, then 2, then
+  5, then every 15 minutes, one message each time. A real answer resets it.
+- **When.** The time a held queue resumes is shown in your local time, with
+  its date when it is not today (a weekly limit). The line takes at most two
+  lines; tap it (or press Enter on it) for the whole text.
+- **Send now** still works while the queue is held, and sends only the one
+  message you tapped.
+- A `muster-mirror` that predates this reports nothing about how a turn ended,
+  and its windows' queues behave as before.
 
 ### Editing a queued message
 

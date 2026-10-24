@@ -339,6 +339,9 @@ type hostConn struct {
 	// statusReport: the host advertised Msg.StatusReport, speaks v2 and
 	// registers per window — the only shape whose Window.Status is believed.
 	statusReport bool
+	// hostLimit is the usage limit the host last reported for all its Claude
+	// windows (Msg.HostLimit); nil for none. Read only with statusReport.
+	hostLimit *HostLimit
 	// catalogReport: the host advertised Msg.CatalogReport and speaks v2.
 	catalogReport bool
 	// subagentReport: the host advertised Msg.SubagentReport and speaks v2.
@@ -659,6 +662,7 @@ func (h *Hub) ServeConn(ctx context.Context, owner int64, host string, ws *webso
 		streams: map[uint32]*stream{}, watches: map[uint32]*watch{}, pastes: map[uint32]chan error{}, scrolls: map[uint32]chan error{},
 		catalogs: map[uint32]chan catalogAnswer{}, answers: map[uint32]chan error{}, tails: map[uint32]chan tailAnswer{}}
 	hc.sessions, hc.windows, hc.claude, hc.labels, hc.activity = hc.list(hello, h.now().Unix())
+	hc.hostLimit = CleanHostLimit(hello.HostLimit)
 	h.observe(owner, host, hc.windows, h.now())
 	if hc.version >= 2 {
 		// A read-only host cannot be pasted into whatever it claims.
@@ -804,6 +808,7 @@ func (h *Hub) ServeConn(ctx context.Context, owner int64, host string, ws *webso
 				same := slices.Equal(hc.sessions, list) && slices.Equal(hc.claude, claude) && maps.Equal(hc.labels, labels) && sameWindows(hc.windows, windows)
 				waitingMoved := !slices.Equal(waitingWindows(hc.windows), waitingWindows(windows))
 				hc.sessions, hc.windows, hc.labels, hc.activity, hc.claude = list, windows, labels, activity, claude
+				hc.hostLimit = CleanHostLimit(m.HostLimit)
 				hc.mu.Unlock()
 				// 🔴 A STATUS-ONLY CHANGE NUDGES NO CARD (sameWindows ignores
 				// Status), so it gets its own hook: the attention queue must hear

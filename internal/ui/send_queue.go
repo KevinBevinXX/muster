@@ -2,6 +2,7 @@ package ui
 
 import (
 	"strconv"
+	"time"
 
 	g "maragu.dev/gomponents"
 	. "maragu.dev/gomponents/html"
@@ -180,6 +181,18 @@ type SendQueueListView struct {
 	// Waiting is what the next message is waiting for (sendqueue.Decide's
 	// reason), "" when nothing is queued or it is about to send.
 	Waiting string
+	// Held: the queue is held on how the window's latest turn failed — a usage
+	// limit, or the circuit breaker (sendqueue.Decision.Held). Waiting says
+	// why; Send now still sends one.
+	Held bool
+	// ResumeAt is when a held queue resumes — a usage limit's reset, the
+	// breaker's next retry — zero when it names none. Drawn after Waiting in
+	// the READER's zone (a <time data-clock> the list's script formats); the
+	// server, which does not know that zone, draws it in UTC, saying so.
+	ResumeAt time.Time
+	// Now is the server's clock when the view was drawn: whether ResumeAt is
+	// today decides whether its date is drawn (utcClock).
+	Now time.Time
 	// Error is why the list could not be read.
 	Error string
 }
@@ -281,10 +294,73 @@ func SendQueueList(v SendQueueListView) g.Node {
 		Class("px-3 pt-2"),
 		g.If(open > 0, P(ID("mv-queue-head"), Class("text-[11px] font-semibold text-fg2"),
 			g.Text("Queued: "+strconv.Itoa(open)+" — sends one at a time, each when Claude Code has been idle a while"))),
-		g.If(v.Waiting != "", P(ID("mv-queue-waiting"), Class("text-[11px] text-muted [overflow-wrap:anywhere]"),
-			g.Text("Next: "+v.Waiting))),
+		g.If(v.Waiting != "", sendQueueWaiting(v)),
+		g.If(v.Waiting != "", sendQueueWaitingFull()),
 		Ul(Class("max-h-40 overflow-y-auto"), g.Group(rows)),
 	)
+}
+
+// sendQueueWaiting is the line saying what the next message waits for. It
+// RESERVES two lines whatever it says, so the queue going from "working" (one
+// line) to held on a usage limit (two, at a phone's width) does not grow the
+// composer — which is anchored to the bottom, so a line more moved its top: a
+// layout shift of 0.005–0.006 measured without the reservation (two runs), 0 with it. The turn
+// that hit the limit is not the reader's input, so any shift counts against
+// the page (e2e send-queue: "going from working to held … moves nothing").
+//
+// Held, it says so in the queue's own words (Waiting: "Held — usage limit,
+// resumes") and then the time it resumes, if any, in the READER's zone — "10:30
+// PM" — through a <time data-clock> the list's script formats. Without script
+// the server, which cannot know that zone, draws the time in UTC and says so.
+//
+// The line is drawn only while something is queued (Waiting is set only for a
+// head), so an idle composer with an empty queue reserves nothing.
+func sendQueueWaiting(v SendQueueListView) g.Node {
+	// At most two lines, whatever the width (a 320px phone included): the
+	// line is clamped, and its whole text is its title.
+	cls := "min-h-[2lh] line-clamp-2 text-[11px] [overflow-wrap:anywhere]"
+	// A tap (or Enter) shows the whole line in a popover (sendQueueWaitingFull):
+	// it opens in the top layer, so nothing on the page moves.
+	tap := g.Group([]g.Node{g.Attr("tabindex", "0"), g.Attr("role", "button"), g.Attr("aria-controls", SendQueueWaitingFullID),
+		g.Attr("aria-label", "Show the whole line")})
+	if !v.Held {
+		text := "Next: " + v.Waiting
+		return P(ID("mv-queue-waiting"), g.Attr("title", text), tap, Class(cls+" cursor-pointer text-muted"), g.Text(text))
+	}
+	text := v.Waiting
+	if !v.ResumeAt.IsZero() {
+		text += " " + utcClock(v.ResumeAt, v.Now)
+	}
+	return P(ID("mv-queue-waiting"), g.Attr("data-queue-hold", ""), g.Attr("title", text), tap, Class(cls+" cursor-pointer font-semibold text-st-warning-fg"),
+		g.Text(v.Waiting),
+		g.If(!v.ResumeAt.IsZero(), g.Group([]g.Node{g.Text(" "),
+			g.El("time", g.Attr("data-clock", strconv.FormatInt(v.ResumeAt.UnixMilli(), 10)),
+				g.Attr("datetime", v.ResumeAt.UTC().Format(time.RFC3339)), g.Text(utcClock(v.ResumeAt, v.Now)))})))
+}
+
+// SendQueueWaitingFullID is the popover that shows the waiting line whole.
+const SendQueueWaitingFullID = "mv-queue-waiting-full"
+
+// sendQueueWaitingFull is the waiting line's popover: empty until the list's
+// script fills it with the line's whole text, as drawn (its time in the
+// reader's zone), and opens it. A popover is in the top layer: opening it
+// moves nothing on the page — the line itself stays clamped to two lines.
+func sendQueueWaitingFull() g.Node {
+	return Div(ID(SendQueueWaitingFullID), g.Attr("popover", ""), g.Attr("role", "status"),
+		Class("m-auto max-w-[min(90vw,28rem)] rounded-xl border-0 bg-s1 p-3 text-xs text-fg shadow-lg ring-1 ring-line [overflow-wrap:anywhere]"))
+}
+
+// utcClock is t as the server draws it for a reader whose zone it does not
+// know: in UTC, saying so — "22:30 UTC" when it falls on now's UTC date,
+// "Oct 27 22:30 UTC" when not (a weekly limit's reset is days away), and
+// with the date whenever now is unknown. The list's script redraws it in the
+// reader's own zone, the same way.
+func utcClock(t, now time.Time) string {
+	t = t.UTC()
+	if !now.IsZero() && t.Format("2006-01-02") == now.UTC().Format("2006-01-02") {
+		return t.Format("15:04") + " UTC"
+	}
+	return t.Format("Jan 2 15:04") + " UTC"
 }
 
 // The labels of a queued message's ⋯ menu.
@@ -557,7 +633,7 @@ func sendQueueScript() g.Node {
   // redraw would close it, and drop the focus inside it); the next load after
   // it closes catches up.
   function menuOpen() {
-    var ms = box.querySelectorAll('[data-queue-menu] [popover]');
+    var ms = box.querySelectorAll('[data-queue-menu] [popover], #mv-queue-waiting-full');
     for (var i = 0; i < ms.length; i++) {
       try { if (ms[i].matches(':popover-open')) return true; } catch (e) { return false; }
     }
@@ -569,6 +645,27 @@ func sendQueueScript() g.Node {
     var cs = box.querySelectorAll('[data-queue-copy]');
     for (var i = 0; i < cs.length; i++) cs[i].hidden = false;
   }
+  // clocks draws each <time data-clock> (a held queue's "resumes 10:30 PM")
+  // in the reader's own local time; the server's text stays if it cannot.
+  // A time that is not today carries its date ("Oct 27, 10:00 PM": a weekly
+  // limit's reset is days away). The line's title follows what it now says.
+  function clocks() {
+    var ts = box.querySelectorAll('time[data-clock]');
+    for (var i = 0; i < ts.length; i++) {
+      var ms = parseInt(ts[i].getAttribute('data-clock'), 10);
+      try {
+        if (!ms) continue;
+        var d = new Date(ms);
+        ts[i].textContent = d.toDateString() === new Date().toDateString()
+          ? d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
+          : d.toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+        var p = ts[i].closest('[title]');
+        if (p) p.setAttribute('title', p.textContent);
+      } catch (e) {}
+    }
+  }
+  // drawn is what follows every draw of the list.
+  function drawn() { copyable(); clocks(); }
   // editing: a row is open for editing (sendQueueEditRow). The list is not
   // redrawn under it either — that would throw away what is being typed; the
   // edit's own Save, Cancel or running out redraws it (show).
@@ -584,7 +681,7 @@ func sendQueueScript() g.Node {
       .then(function (t) {
         loading = false;
         if (g !== gen) { load(); return; }
-        if (t !== null && !menuOpen() && !editing()) { box.innerHTML = t; copyable(); }
+        if (t !== null && !menuOpen() && !editing()) { box.innerHTML = t; drawn(); }
         schedule();
       }, function () { loading = false; schedule(); });
   }
@@ -602,7 +699,7 @@ func sendQueueScript() g.Node {
       .then(function (t) {
         if (t === null) return;
         box.innerHTML = t;
-        copyable();
+        drawn();
         armHold();
         var ta = id ? box.querySelector('[data-queue-edit-form] textarea') : null;
         if (ta) { ta.focus(); try { ta.setSelectionRange(ta.value.length, ta.value.length); } catch (e) {} }
@@ -690,6 +787,21 @@ func sendQueueScript() g.Node {
   box.addEventListener('click', function (e) {
     var b = e.target && e.target.closest ? e.target.closest('[aria-haspopup=menu]') : null;
     if (b) focusFirst = true;
+    var w = e.target && e.target.closest ? e.target.closest('#mv-queue-waiting') : null;
+    if (w) showWaiting(w);
+  });
+  // showWaiting opens the waiting line, whole, in its popover.
+  function showWaiting(w) {
+    var full = document.getElementById('mv-queue-waiting-full');
+    if (!full || typeof full.showPopover !== 'function') return;
+    full.textContent = w.textContent;
+    try { full.showPopover(); } catch (e) {}
+  }
+  box.addEventListener('keydown', function (e) {
+    if ((e.key === 'Enter' || e.key === ' ') && e.target && e.target.id === 'mv-queue-waiting') {
+      e.preventDefault();
+      showWaiting(e.target);
+    }
   });
   box.addEventListener('keydown', function (e) {
     var t = e.target;
@@ -928,7 +1040,7 @@ func sendQueueScript() g.Node {
   });
   document.addEventListener('mv-queued', load);
   document.addEventListener('visibilitychange', function () { if (!document.hidden) load(); });
-  copyable();
+  drawn();
   // A page drawn with a row open for editing (a no-script Edit came back here,
   // and script runs after all): count its hold down too.
   armHold();
