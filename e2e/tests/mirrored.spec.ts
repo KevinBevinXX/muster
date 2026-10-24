@@ -388,8 +388,14 @@ test('an -interactive host offers the switch and types into the session', async 
   await page.locator('#term-mode').click();
   await expect(screen(page)).toContainText('FAKE-MIRROR session=main mode=rw');
   await expect(page.locator('#term-status')).toHaveText('Connected · live keys');
-  await page.locator('#term-keys [data-key="esc"]').click();
-  await expect(screen(page)).toContainText('in=1B');
+  // A mirrored window's raw view has the same bar: ↑ ↓ ⏎ large, the rest
+  // behind the ⋯.
+  await page.locator('#term-keys > [data-key="up"]').click();
+  await expect(screen(page)).toContainText('in=1B5B41');
+  await page.locator('#term-keys-more').click();
+  await page.locator('#term-keys-menu').getByRole('menuitem', { name: 'Escape', exact: true }).click();
+  await expect(screen(page)).toContainText(/in=1B(?!5B)/);
+  await expect(page.locator('#term-keys-menu')).toBeHidden();
   await page.locator('#term').click();
   await page.keyboard.type('ok');
   await expect(screen(page)).toContainText(/in=6F6B|in=6F/);

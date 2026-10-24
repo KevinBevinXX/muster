@@ -3,6 +3,7 @@ package ui
 import (
 	"regexp"
 	"strconv"
+	"strings"
 
 	g "maragu.dev/gomponents"
 	. "maragu.dev/gomponents/html"
@@ -14,9 +15,10 @@ import (
 //
 // A pinned entry — a mirrored window or a dispatched agent (internal/pins) — is
 // drawn at the top of the Agents list as a compact chip whose ONLY content is
-// its name (pinnedChipLabels): the window's codename ("mango", from the host's
-// "mango:1") or the agent's name. No focus title, no host chip, no kind or repo
-// chip, no footer. Tapping it opens what the card's nav anchor opens
+// its host's icon and its name (pinnedChipLabels): the window's codename
+// ("mango", from the host's "mango:1") or the agent's name, after the icon its
+// card draws (hostMark; the cluster's for an agent). No focus title, no host
+// chip, no kind or repo chip, no footer. Tapping it opens what the card's nav anchor opens
 // (MirrorCardHref, "/agents/<name>"). The pinned entry is NOT also drawn as a
 // card: the chip replaces it.
 //
@@ -102,6 +104,11 @@ func pinnedChipName(e listEntry) (short, full string) {
 // full name ("mango:2"), and when even that is shared (one label on two hosts)
 // the full name with the window's qualifier ("mango:2 · laptop"), the minimal
 // difference the list already decided (mirror.SessionView.Qualifier).
+//
+// The chip also draws its host's icon (pinnedChip), but the label does NOT
+// lean on it: the text is disambiguated exactly as it would be without the
+// icon, so a surface that reuses these labels without drawing icons (the
+// session switcher) reads the same.
 func pinnedChipLabels(es []listEntry) []string {
 	out := make([]string, len(es))
 	fulls := make([]string, len(es))
@@ -149,7 +156,13 @@ func pinnedChip(e listEntry, label string) g.Node {
 		m := e.mirror
 		id, href, kind = mirrorCardID(*m), MirrorCardHref(*m), "mirror"
 		attrs = mirrorListAttrs(*m)
-		icon = hostMark(m.Host, m.HostIcon)
+		if pinnedChipLabelNamesHost(*m, label) {
+			// The label already says the host ("mango:1 · hosta"): a screen
+			// reader would hear it twice, so the icon is decorative here.
+			icon = hostMarkDecorative(m.Host, m.HostIcon)
+		} else {
+			icon = hostMark(m.Host, m.HostIcon)
+		}
 		wait = waitTokens(m.Attention, false)
 		unpin = pinForm(true, [][2]string{{"kind", "mirror"}, {"host", m.Host}, {"session", m.Session}, {"window", m.Window}}, chipUnpinButton(label))
 	}
@@ -159,10 +172,6 @@ func pinnedChip(e listEntry, label string) g.Node {
 		g.Attr("data-pinned-chip", kind),
 		attrs,
 		Class("flex min-w-0 max-w-full items-center rounded-full border border-line bg-s1/70 ring-1 ring-line"),
-		// The entry's host icon, NOT drawn: the host tabs take a host's icon
-		// from its first drawn entry (agentsFilterScript syncHosts), and a host
-		// whose every entry is pinned would otherwise get a tab without one.
-		Span(Class("hidden"), g.Attr("aria-hidden", "true"), icon),
 		A(
 			Href(href),
 			// A real navigation, as the card's nav anchor (agentCard): htmx attrs
@@ -172,6 +181,13 @@ func pinnedChip(e listEntry, label string) g.Node {
 			g.Attr("data-pinned-chip-link", ""),
 			g.Attr("title", label),
 			Class("press inline-flex min-h-[44px] min-w-[44px] max-w-full items-center justify-center gap-1.5 rounded-full px-4 text-sm font-semibold text-fg transition hover:bg-s2"),
+			// The host's icon, drawn before the label (operator ask: "Pinned
+			// agents should also show the host icon since the same pretty name
+			// is reused across multiple hosts"): hostMark's fixed 16px box, in
+			// the server's markup, so it moves nothing on arrival. It is also
+			// what the host tabs take a host's icon from (agentsFilterScript
+			// syncHosts) when every entry of that host is pinned.
+			icon,
 			g.If(wait != "", pinnedChipWaitDot()),
 			status,
 			Span(g.Attr("data-pinned-chip-label", ""), Class("truncate"), g.Text(label)),
@@ -179,6 +195,19 @@ func pinnedChip(e listEntry, label string) g.Node {
 		// Shown only while the viewer edits pins (web/css/input.css).
 		Span(g.Attr("data-pinned-chip-edit", ""), Class("-ml-2 flex shrink-0 items-center"), edit, unpin),
 	)
+}
+
+// pinnedChipLabelNamesHost is whether a window chip's label already spells its
+// host: the label carries the window's qualifier (pinnedChipLabels appended it)
+// and the qualifier leads with the host — the cross-host form, mirror.qualify's
+// first part ("mango:1 · hosta", "Gold:1 · hosta · scratch3:1"). A one-host
+// qualifier ("Gold:1 · scratch3:1") names no host.
+func pinnedChipLabelNamesHost(m MirrorCardView, label string) bool {
+	if m.Qualifier == "" || !strings.HasSuffix(label, mirrorQualifierSep+m.Qualifier) {
+		return false
+	}
+	first, _, _ := strings.Cut(m.Qualifier, mirrorQualifierSep)
+	return first == m.Host
 }
 
 // pinnedChips1 is ONE pinned entry's chip, labelled as the list labels it

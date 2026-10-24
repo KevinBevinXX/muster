@@ -3,6 +3,7 @@ import { test, expect } from '../lib/fixtures';
 import { hookToken, password, termPort, versionTerm } from '../lib/env';
 import { startServer, Running } from '../lib/server';
 import { touchDrag } from '../lib/touch';
+import { clsInit, readCls, settle } from '../lib/cls';
 
 // A claude-code agent's live terminal, at a phone's width (412×915), against a
 // REAL muster-server built with `-tags e2eterm`: the page, the socket, the
@@ -140,15 +141,16 @@ test('a claude-code agent opens its live terminal read-only at phone width', asy
     expect(b.x, `${sel} left edge`).toBeGreaterThanOrEqual(0);
     expect(b.x + b.width, `${sel} right edge`).toBeLessThanOrEqual(412);
   }
-  for (const k of ['esc', 'up', '3']) {
-    const b = (await page.locator(`#term-keys [data-key="${k}"]`).boundingBox())!;
-    expect(b.height, `${k} key height`).toBeGreaterThanOrEqual(44);
+  for (const sel of ['[data-key="up"]', '[data-key="down"]', '[data-key="enter"]', '#term-keys-more']) {
+    const b = (await page.locator(`#term-keys ${sel}`).boundingBox())!;
+    expect(b.height, `${sel} key height`).toBeGreaterThanOrEqual(44);
   }
-  // The bar is two rows of six, and the terminal gets the rest of the screen —
-  // measured failing when the stylesheet lacked the grid: the bar stacked and
+  await expect(page.locator('#term-keys-more'), 'the ⋯ is disabled while read-only too').toBeDisabled();
+  // The bar is one row (↑ ↓ ⏎ ⋯), and the terminal gets the rest of the screen —
+  // measured failing when the stylesheet lacked the layout: the bar stacked and
   // squeezed the terminal to 18 rows.
   const bar = (await page.locator('#term-keys').boundingBox())!;
-  expect(bar.height, 'quick-key bar height (two rows)').toBeLessThanOrEqual(130);
+  expect(bar.height, 'quick-key bar height').toBeLessThanOrEqual(130);
   const termBox = (await page.locator('#term').boundingBox())!;
   expect(termBox.height, 'terminal height at 915px').toBeGreaterThanOrEqual(915 * 0.6);
   const size = await screen(page).innerText();
@@ -201,9 +203,17 @@ test('the switch makes it interactive and the quick-key bar types the right byte
     ['2', '32'],
     ['3', '33'],
   ];
+  const menu = page.locator('#term-keys-menu');
   for (const [key, hex] of want) {
     const before = sent.length;
+    // ↑ ↓ ⏎ are on the bar; every other key is in the ⋯ menu.
+    const large = ['up', 'down', 'enter'].includes(key);
+    if (!large) {
+      await page.locator('#term-keys-more').click();
+      await expect(menu).toBeVisible();
+    }
     await page.locator(`#term-keys [data-key="${key}"]`).click();
+    if (!large) await expect(menu, `the menu closes after ${key}`).toBeHidden();
     // The page sent exactly these bytes, and the far side received them.
     await expect.poll(() => sent.slice(before), { message: `${key} frame` }).toEqual([hex]);
     await expect(screen(page)).toContainText('in=' + hex);
@@ -280,4 +290,184 @@ test('a standard agent has no terminal', async ({ page }) => {
   await expect(page.locator('#view-terminal')).toHaveCount(0);
   const r = await page.request.get(origin + '/agents/' + name + '/terminal');
   expect(r.status()).toBe(404);
+});
+
+// THE LARGE KEYS AND THE ⋯ MENU (operator ask: "In the agent raw view show the
+// up and down arrow keys and the return button. As large key buttons, and then
+// collapse the rest into a three dots button context menu"), at a phone's
+// width and a desktop's. Literal expected bytes, NOT read from the page.
+const largeWant: [string, string][] = [['up', '1B5B41'], ['down', '1B5B42'], ['enter', '0D']];
+const menuWant: [string, string, string][] = [
+  ['esc', 'Escape', '1B'],
+  ['tab', 'Tab', '09'],
+  ['stab', 'Shift Tab', '1B5B5A'],
+  ['ctrlc', 'Control C', '03'],
+  ['1', '1', '31'],
+  ['left', 'Left arrow', '1B5B44'],
+  ['right', 'Right arrow', '1B5B43'],
+  ['2', '2', '32'],
+  ['3', '3', '33'],
+];
+for (const vp of [
+  { name: 'phone 390×844 touch', use: { viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true } },
+  { name: 'desktop 1280×800', use: { viewport: { width: 1280, height: 800 }, hasTouch: false, isMobile: false } },
+]) {
+  test.describe(vp.name, () => {
+    test.use(vp.use);
+    test('↑ ↓ ⏎ are large keys and every other key is in the ⋯ menu, each sending its bytes', async ({ page }) => {
+      await login(page);
+      const name = await saveAgent(page, 'claude-code', 'e2e terminal: large keys ' + vp.name);
+      const sent = recordSent(page);
+      await page.addInitScript(clsInit);
+      await page.goto(origin + '/agents/' + name + '/terminal');
+      await expect(screen(page)).toContainText('FAKE-TUI mode=ro');
+      await page.locator('#term-mode').click();
+      await expect(page.locator('#term-status')).toHaveText('Connected · live keys');
+      await expect(screen(page)).toContainText('FAKE-TUI mode=rw');
+
+      // The bar: exactly ↑ ↓ ⏎ as its own keys, then the ⋯ — in that order.
+      const barKeys = await page.locator('#term-keys > [data-key]').evaluateAll((els) => els.map((e) => e.getAttribute('data-key')));
+      expect(barKeys, 'the bar\'s own keys').toEqual(['up', 'down', 'enter']);
+      const menuBtn = page.locator('#term-keys-more');
+      const mb = (await menuBtn.boundingBox())!;
+      expect(Math.min(mb.width, mb.height), 'the ⋯ is a 44px target').toBeGreaterThanOrEqual(44);
+      for (const [key] of largeWant) {
+        const b = (await page.locator(`#term-keys [data-key="${key}"]`).boundingBox())!;
+        expect(Math.min(b.width, b.height), `${key} is at least 44px both ways`).toBeGreaterThanOrEqual(44);
+        expect(b.height, `${key} is a LARGE key (taller than the 44px minimum)`).toBeGreaterThanOrEqual(52);
+        expect(b.x + b.width, `${key} inside the viewport`).toBeLessThanOrEqual(vp.use.viewport.width);
+      }
+      expect(mb.x + mb.width, 'the ⋯ inside the viewport').toBeLessThanOrEqual(vp.use.viewport.width);
+      await noHorizontalScroll(page);
+
+      // Each large key sends exactly its bytes.
+      for (const [key, hex] of largeWant) {
+        const before = sent.length;
+        await page.locator(`#term-keys [data-key="${key}"]`).click();
+        await expect.poll(() => sent.slice(before), { message: `${key} frame` }).toEqual([hex]);
+        await expect(screen(page)).toContainText('in=' + hex);
+      }
+
+      // The ⋯ menu lists every other key, in order, by name, and fits the screen.
+      const menu = page.locator('#term-keys-menu');
+      await expect(menu).toBeHidden();
+      await menuBtn.click();
+      await expect(menu).toBeVisible();
+      await expect(menuBtn).toHaveAttribute('aria-expanded', 'true');
+      const items = menu.getByRole('menuitem');
+      await expect(items).toHaveCount(menuWant.length);
+      expect(await items.evaluateAll((els) => els.map((e) => e.getAttribute('data-key'))), 'the menu\'s keys, in order').toEqual(menuWant.map((w) => w[0]));
+      const box = (await menu.boundingBox())!;
+      expect(box.x, 'menu left edge').toBeGreaterThanOrEqual(0);
+      expect(box.x + box.width, 'menu right edge').toBeLessThanOrEqual(vp.use.viewport.width);
+      expect(box.y, 'menu top edge').toBeGreaterThanOrEqual(0);
+      expect(box.y + box.height, 'the menu does not cover its ⋯').toBeLessThanOrEqual(mb.y + 0.5);
+      for (const it of await items.all()) expect((await it.boundingBox())!.height, 'a menu key is a 44px target').toBeGreaterThanOrEqual(44);
+      await noHorizontalScroll(page);
+      await page.keyboard.press('Escape');
+      await expect(menu).toBeHidden();
+
+      // Each menu key, picked from a freshly opened menu, sends exactly its
+      // bytes and closes the menu.
+      for (const [key, label, hex] of menuWant) {
+        const before = sent.length;
+        await menuBtn.click();
+        await expect(menu).toBeVisible();
+        await menu.getByRole('menuitem', { name: label, exact: true }).click();
+        await expect.poll(() => sent.slice(before), { message: `${key} frame` }).toEqual([hex]);
+        await expect(screen(page)).toContainText('in=' + hex);
+        await expect(menu, `the menu closes after ${key}`).toBeHidden();
+      }
+      await noHorizontalScroll(page);
+
+      // Live keys off: the ⋯ and every key are disabled again.
+      await page.locator('#term-mode').click();
+      await expect(page.locator('#term-mode')).toHaveAttribute('aria-checked', 'false');
+      await expect(menuBtn).toBeDisabled();
+      await expect(page.locator('#term-keys [data-key="up"]')).toBeDisabled();
+
+      await settle(page);
+      const r = await readCls(page);
+      expect(r.unsupported, 'layout-shift is observable here').toBeUndefined();
+      expect(r.total, `shifts: ${JSON.stringify(r.shifts)}`).toBeLessThan(0.01);
+      // The positive control: a shift the page did not ask for IS counted.
+      await page.waitForTimeout(600);
+      await page.evaluate(() => {
+        const d = document.createElement('div');
+        d.style.cssText = 'height:150px;flex:none';
+        document.body.prepend(d);
+      });
+      await page.waitForTimeout(300);
+      expect((await readCls(page)).total, 'the instrument sees a shift').toBeGreaterThan(0.01);
+    });
+  });
+}
+
+// 🔴 NO POPOVER API (iOS Safari < 17): the ⋯ must still open its menu, or the
+// nine menu keys — ^C among them — are unreachable. The API is stubbed away
+// before the page's scripts run; the ⋯ then toggles the menu itself, placed by
+// the floating-menu rule, closed by a pick, a tap outside, or Escape. Red
+// before the fallback: the ⋯ was a bare popovertarget, which (once the page
+// stops relying on the native attribute) opens nothing.
+test.describe('without the Popover API (390×844 touch)', () => {
+  test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
+  test('the ⋯ still opens the menu and a menu key sends its bytes', async ({ page }) => {
+    await login(page);
+    const name = await saveAgent(page, 'claude-code', 'e2e terminal: no popover');
+    const sent = recordSent(page);
+    await page.addInitScript(() => {
+      const p = HTMLElement.prototype as any;
+      delete p.togglePopover;
+      delete p.showPopover;
+      delete p.hidePopover;
+    });
+    await page.goto(origin + '/agents/' + name + '/terminal');
+    expect(await page.evaluate(() => typeof (HTMLElement.prototype as any).togglePopover), 'the API is stubbed away').toBe('undefined');
+    await expect(screen(page)).toContainText('FAKE-TUI mode=ro');
+    await page.locator('#term-mode').click();
+    await expect(page.locator('#term-status')).toHaveText('Connected · live keys');
+
+    const more = page.locator('#term-keys-more');
+    const menu = page.locator('#term-keys-menu');
+    // The fallback is engaged: no native popover wiring left to do the work.
+    await expect(more).not.toHaveAttribute('popovertarget', /.*/);
+    await expect(menu).toBeHidden();
+    await more.click();
+    await expect(menu).toBeVisible();
+    await expect(more).toHaveAttribute('aria-expanded', 'true');
+    await expect(menu.getByRole('menuitem')).toHaveCount(9);
+    const mb = (await more.boundingBox())!;
+    const box = (await menu.boundingBox())!;
+    expect(box.x, 'menu left edge').toBeGreaterThanOrEqual(0);
+    expect(box.x + box.width, 'menu right edge').toBeLessThanOrEqual(390);
+    expect(box.y + box.height, 'placed above its ⋯, not over it').toBeLessThanOrEqual(mb.y + 0.5);
+    await noHorizontalScroll(page);
+
+    // ^C, picked from the menu: exactly 0x03, and the menu closes.
+    let before = sent.length;
+    await menu.getByRole('menuitem', { name: 'Control C', exact: true }).click();
+    await expect.poll(() => sent.slice(before), { message: '^C frame' }).toEqual(['03']);
+    await expect(screen(page)).toContainText('in=03');
+    await expect(menu).toBeHidden();
+    await expect(more).toHaveAttribute('aria-expanded', 'false');
+
+    // A tap outside closes it; so does Escape; so does the ⋯ again.
+    await more.click();
+    await expect(menu).toBeVisible();
+    await page.locator('#term-status').click();
+    await expect(menu, 'a tap outside closes it').toBeHidden();
+    await more.click();
+    await expect(menu).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(menu, 'Escape closes it').toBeHidden();
+    await more.click();
+    await expect(menu).toBeVisible();
+    await more.click();
+    await expect(menu, 'the ⋯ again closes it').toBeHidden();
+
+    // A large key still sends its bytes in this mode.
+    before = sent.length;
+    await page.locator('#term-keys [data-key="up"]').click();
+    await expect.poll(() => sent.slice(before), { message: 'up frame' }).toEqual(['1B5B41']);
+  });
 });

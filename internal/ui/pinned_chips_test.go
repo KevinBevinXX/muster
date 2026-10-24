@@ -135,11 +135,10 @@ func TestAPinnedWindowIsALabelOnlyChip(t *testing.T) {
 			t.Errorf("the chip draws %s, which only a card draws", k)
 		}
 	}
-	// Its host icon is carried for the host tabs, but NOT drawn.
+	// Its host icon IS drawn (TestAPinnedChipDrawsItsHostIconBeforeItsLabel
+	// pins where and which).
 	if icons := pinFind(chip, pinHas("data-host-icon")); len(icons) != 1 {
-		t.Errorf("the chip carries %d host icons, want 1 (undrawn, for its host's tab)", len(icons))
-	} else if c, _ := pinAttr(icons[0].Parent, "class"); c != "hidden" {
-		t.Errorf("the chip's host icon is drawn (its wrapper's class %q, want hidden)", c)
+		t.Errorf("the chip carries %d host icons, want 1", len(icons))
 	}
 	if strings.Contains(pinText(chip), "Refactoring") {
 		t.Errorf("the chip shows the focus title")
@@ -455,5 +454,180 @@ func TestNoCardDrawsPinnedStateAndAPinnedAgentRendersAsItsChip(t *testing.T) {
 	}
 	if !strings.Contains(cards, ">Pin to top<") || !strings.Contains(cards, `aria-label="Pin to top"`) {
 		t.Errorf("instrument check: the unpinned cards should offer Pin to top")
+	}
+}
+
+// TestTheSameCodenameOnTwoHostsKeepsItsTextAndShowsItsIcon: the icon is
+// ADDED, the text is not shortened (operator decision "Icon + keep text"). The
+// same codename on two hosts that draw DIFFERENT icons, plus a second window of
+// it on one host, still reads with its suffix and qualifier exactly as without
+// the icon — the labels a surface reusing pinnedChipLabels (the session
+// switcher) shows — and each chip draws its own host's icon. The labels part is
+// an invariant guard (main read the same); the icon part is red at main (no
+// chip drew its icon inside its link).
+func TestTheSameCodenameOnTwoHostsKeepsItsTextAndShowsItsIcon(t *testing.T) {
+	a1, a2 := pinWin(0, "hosta", "s1", "@1", "mango:1"), pinWin(1, "hosta", "s1", "@2", "mango:2")
+	b := pinWin(2, "hostb", "s1", "@1", "mango:1")
+	a1.HostIcon, a2.HostIcon, b.HostIcon = "laptop", "laptop", "server"
+	a1.Qualifier, b.Qualifier = "hosta", "hostb"
+	wins := []MirrorCardView{a1, a2, b}
+	s := renderString(t, AgentsCardsWithMirrors(nil, wins))
+	if got, want := strings.Join(pinnedLabels(t, s), "|"), "mango:1 · hosta|mango:2|mango:1 · hostb"; got != want {
+		t.Errorf("chip labels = %q, want %q", got, want)
+	}
+	arts := pinArticles(t, s)
+	for _, w := range wins {
+		chip := arts[mirrorCardID(w)]
+		if chip == nil {
+			t.Fatalf("no chip for %s/%s", w.Host, w.Window)
+		}
+		links := pinFind(chip, pinHas("data-pinned-chip-link"))
+		if len(links) != 1 {
+			t.Fatalf("%s/%s: %d chip links", w.Host, w.Window, len(links))
+		}
+		icons := pinFind(links[0], pinHas("data-host-icon"))
+		if len(icons) != 1 {
+			t.Fatalf("%s/%s: %d host icons in the chip link, want 1", w.Host, w.Window, len(icons))
+		}
+		if k, _ := pinAttr(icons[0], "data-host-icon"); k != w.HostIcon {
+			t.Errorf("%s/%s: icon %q, want %q", w.Host, w.Window, k, w.HostIcon)
+		}
+	}
+}
+
+// TestAPinnedChipDrawsItsHostIconBeforeItsLabel: every pinned chip draws ONE
+// host icon, inside its tap target (the chip link) and before its label, not
+// under any hidden wrapper: a window its host's icon (two hosts, two different
+// icons, so a hardcoded key cannot pass), an agent the cluster's. Red at main:
+// the icon sat outside the link in a class="hidden" span.
+func TestAPinnedChipDrawsItsHostIconBeforeItsLabel(t *testing.T) {
+	a := pinWin(0, "hosta", "s1", "@1", "mango:1")
+	b := pinWin(1, "hostb", "s2", "@1", "vapor:1")
+	a.HostIcon, b.HostIcon = "laptop", "globe"
+	agents := []AgentCardView{{ID: 9, Name: "pinned-agent", Status: "running", Pinned: true, LastActiveAt: time.Now().Add(-10 * time.Minute)}}
+	s := renderString(t, AgentsCardsWithMirrors(agents, []MirrorCardView{a, b}))
+	arts := pinArticles(t, s)
+	for id, want := range map[string]string{mirrorCardID(a): "laptop", mirrorCardID(b): "globe", "agent-9": "cluster"} {
+		chip := arts[id]
+		if chip == nil {
+			t.Fatalf("no chip %s:\n%s", id, s)
+		}
+		links := pinFind(chip, pinHas("data-pinned-chip-link"))
+		if len(links) != 1 {
+			t.Fatalf("%s: %d chip links", id, len(links))
+		}
+		icons := pinFind(chip, pinHas("data-host-icon"))
+		if len(icons) != 1 {
+			t.Fatalf("%s: %d host icons, want 1", id, len(icons))
+		}
+		if k, _ := pinAttr(icons[0], "data-host-icon"); k != want {
+			t.Errorf("%s: icon %q, want %q", id, k, want)
+		}
+		inLink := false
+		for p := icons[0].Parent; p != nil && p != chip; p = p.Parent {
+			if c, _ := pinAttr(p, "class"); strings.Contains(" "+c+" ", " hidden ") {
+				t.Errorf("%s: the icon is under a hidden wrapper (%q)", id, c)
+			}
+			if p == links[0] {
+				inLink = true
+			}
+		}
+		if !inLink {
+			t.Errorf("%s: the icon is not inside the chip's link", id)
+		}
+		// Before the label: the icon's position among the link's descendants.
+		var order []string
+		for _, n := range pinFind(links[0], func(n *html.Node) bool {
+			_, i := pinAttr(n, "data-host-icon")
+			_, l := pinAttr(n, "data-pinned-chip-label")
+			return i || l
+		}) {
+			if _, ok := pinAttr(n, "data-host-icon"); ok {
+				order = append(order, "icon")
+			} else {
+				order = append(order, "label")
+			}
+		}
+		if strings.Join(order, ",") != "icon,label" {
+			t.Errorf("%s: link order %v, want [icon label]", id, order)
+		}
+		// The 44px tap target is kept.
+		if c, _ := pinAttr(links[0], "class"); !strings.Contains(c, "min-h-[44px]") || !strings.Contains(c, "min-w-[44px]") {
+			t.Errorf("%s: the chip link lost its 44px target: %q", id, c)
+		}
+	}
+}
+
+// pinAccName approximates a link's accessible name as a screen reader builds
+// it: text, an element's aria-label in place of its content, and nothing from
+// an aria-hidden subtree.
+func pinAccName(n *html.Node) string {
+	var b strings.Builder
+	var walk func(*html.Node)
+	walk = func(x *html.Node) {
+		if x.Type == html.TextNode {
+			b.WriteString(x.Data)
+			return
+		}
+		if x.Type == html.ElementNode {
+			if v, _ := pinAttr(x, "aria-hidden"); v == "true" {
+				return
+			}
+			if x != n {
+				if l, ok := pinAttr(x, "aria-label"); ok {
+					b.WriteString(" " + l + " ")
+					return
+				}
+			}
+		}
+		for c := x.FirstChild; c != nil; c = c.NextSibling {
+			walk(c)
+		}
+	}
+	walk(n)
+	return strings.Join(strings.Fields(b.String()), " ")
+}
+
+// TestAChipLinkNamesItsHostOnce: a screen reader hears a chip's host exactly
+// once. A chip whose label is unique names it through the icon ("Host: hosta");
+// a chip whose label already carries the host ("mango:1 · hosta") gets an
+// aria-hidden icon (its tooltip kept), so the host is not read twice. Red at
+// main: the icon was outside the link, so the unique chip named no host.
+func TestAChipLinkNamesItsHostOnce(t *testing.T) {
+	a, b := pinWin(0, "hosta", "s1", "@1", "mango:1"), pinWin(1, "hostb", "s1", "@1", "mango:1")
+	a.HostIcon, b.HostIcon = "laptop", "server"
+	a.Qualifier, b.Qualifier = "hosta", "hostb"
+	solo := pinWin(2, "hostc", "s9", "@1", "vapor:1")
+	solo.HostIcon = "globe"
+	s := renderString(t, AgentsCardsWithMirrors(nil, []MirrorCardView{a, b, solo}))
+	arts := pinArticles(t, s)
+	for _, c := range []struct {
+		w     MirrorCardView
+		label string
+		named bool // the label itself spells the host
+	}{{a, "mango:1 · hosta", true}, {b, "mango:1 · hostb", true}, {solo, "vapor", false}} {
+		chip := arts[mirrorCardID(c.w)]
+		links := pinFind(chip, pinHas("data-pinned-chip-link"))
+		if len(links) != 1 {
+			t.Fatalf("%s: %d chip links", c.w.Host, len(links))
+		}
+		name := pinAccName(links[0])
+		if got := strings.Count(name, c.w.Host); got != 1 {
+			t.Errorf("%s: accessible name %q names the host %d times, want 1", c.w.Host, name, got)
+		}
+		if !strings.Contains(name, c.label) {
+			t.Errorf("%s: accessible name %q lacks the label %q", c.w.Host, name, c.label)
+		}
+		icons := pinFind(links[0], pinHas("data-host-icon"))
+		if len(icons) != 1 {
+			t.Fatalf("%s: %d icons", c.w.Host, len(icons))
+		}
+		hidden, _ := pinAttr(icons[0], "aria-hidden")
+		if (hidden == "true") != c.named {
+			t.Errorf("%s: icon aria-hidden=%q, want hidden=%v", c.w.Host, hidden, c.named)
+		}
+		if title, _ := pinAttr(icons[0], "title"); title != "Host: "+c.w.Host {
+			t.Errorf("%s: icon title %q, want the host kept as a tooltip", c.w.Host, title)
+		}
 	}
 }

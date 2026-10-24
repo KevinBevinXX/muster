@@ -83,6 +83,10 @@ import (
 // request that fails (and morphs nothing) does not leave it open. Closing — by
 // any route — also closes the nested Delete step, so reopening starts at step 1.
 //
+// A page without the Popover API can still use the placement: it marks its
+// open menu data-menu-open, its trigger data-menu-trigger="<menu id>", and
+// calls window.__musterPlaceMenu(menu) (quickKeyBar's fallback does).
+//
 // Bound once per document (__musterFloatingMenu), like every other script here:
 // htmx re-executes in-body <script> tags on each boosted swap.
 func floatingMenuScript() g.Node {
@@ -91,10 +95,15 @@ func floatingMenuScript() g.Node {
   if (window.__musterFloatingMenu) return;
   window.__musterFloatingMenu = true;
   var GAP = 4, EDGE = 8, MIN_SIDE = 120;
-  function isOpen(m) { try { return m.matches(':popover-open'); } catch (e) { return false; } }
+  // data-menu-open: a menu a page opened WITHOUT the Popover API (its own
+  // fallback, quickKeyBar's on iOS < 17), placed by the same rule.
+  function isOpen(m) {
+    if (m.hasAttribute('data-menu-open')) return true;
+    try { return m.matches(':popover-open'); } catch (e) { return false; }
+  }
   function place(m) {
     if (!m || !m.id || !isOpen(m)) return;
-    var t = document.querySelector('[popovertarget="' + m.id + '"]');
+    var t = document.querySelector('[popovertarget="' + m.id + '"], [data-menu-trigger="' + m.id + '"]');
     if (!t) return;
     var r = t.getBoundingClientRect();
     var vw = document.documentElement.clientWidth, vh = window.innerHeight;
@@ -127,6 +136,7 @@ func floatingMenuScript() g.Node {
     // draws nothing rather than a menu in the wrong place.
     m.style.visibility = 'visible';
   }
+  window.__musterPlaceMenu = place;
   function placeAll() {
     var ms = document.querySelectorAll('[data-floating-menu]');
     for (var i = 0; i < ms.length; i++) place(ms[i]);

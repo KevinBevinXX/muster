@@ -749,7 +749,7 @@ func agentsFilterScript() g.Node {
       if (!v || seen[v]) return;
       seen[v] = true;
       // The host's icon (host_icons.go), as its first drawn card draws it: the
-      // tab leads with the same one. (A pinned chip carries it undrawn.)
+      // tab leads with the same one. (A pinned chip draws it too.)
       var ic = a.querySelector('[data-host-icon]');
       icons[v] = ic;
       hosts.push({ v: v, l: a.getAttribute('data-l-host') || v, i: ic ? ic.getAttribute('data-host-icon') : '' });

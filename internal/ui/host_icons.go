@@ -146,6 +146,20 @@ func hostMark(host, key string) g.Node {
 	)
 }
 
+// hostMarkDecorative is hostMark for a place whose text already names the host
+// (a pinned chip whose label carries it): the same icon and tooltip, but
+// aria-hidden, so a screen reader does not read the host twice.
+func hostMarkDecorative(host, key string) g.Node {
+	d := hostIconDefOf(key, host)
+	return Span(
+		g.Attr("data-host-icon", d.Key),
+		g.Attr("aria-hidden", "true"),
+		g.Attr("title", "Host: "+host),
+		Class("inline-flex h-4 w-4 shrink-0 items-center justify-center text-fg2"),
+		g.Raw(hostIconSVG(d, "h-4 w-4")),
+	)
+}
+
 // hostChip is a MIRRORED card's host, SPELLED, in the card's body (header row,
 // beside its name), as a chip like the card's kind and repo: "host laptop". A
 // phone has no hover for hostMark's tooltip, and the host is what tells two

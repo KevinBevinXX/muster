@@ -371,6 +371,7 @@ func AgentTerminalPage(v AgentTerminalView) g.Node {
 					)),
 				),
 				quickKeyBar(v.Composer == nil),
+				floatingMenuScript(),
 				terminalComposer(v.Composer),
 				confirmDialog(v.StepUp),
 				g.If(v.StepUp != nil, stepUpScript()),
@@ -391,9 +392,53 @@ func terminalComposer(c *MirrorComposerView) g.Node {
 	return mirrorComposer(*c)
 }
 
-// quickKeyBar renders QuickKeys as a two-row grid that fits a phone's width
-// without scrolling. The buttons start DISABLED: the page opens with live keys
-// off.
+// quickKeysPrimaryOrder is THE ONE LIST of the bar's large keys, by QuickKey
+// ID, left to right (operator ask: "show the up and down arrow keys and the
+// return button. As large key buttons, and then collapse the rest into a three
+// dots button context menu"): what moving through and answering a TUI's
+// choices takes. Every other QuickKey is in the ⋯ menu (quickKeysSplit).
+var quickKeysPrimaryOrder = []string{"up", "down", "enter"}
+
+// quickKeysSplit is QuickKeys split into the bar's large keys (in
+// quickKeysPrimaryOrder) and the ⋯ menu's (every OTHER key, in QuickKeys'
+// order). 🔴 THE MENU IS THE COMPLEMENT, NOT A SECOND LIST: a key is in the menu
+// unless it is drawn large, so no key can vanish from both. An ID in
+// quickKeysPrimaryOrder that QuickKeys lacks names no key, and so draws
+// nothing and hides nothing.
+func quickKeysSplit() (large, menu []QuickKey) {
+	byID := map[string]QuickKey{}
+	for _, k := range QuickKeys {
+		byID[k.ID] = k
+	}
+	drawn := map[string]bool{}
+	for _, id := range quickKeysPrimaryOrder {
+		if k, ok := byID[id]; ok && !drawn[id] {
+			large = append(large, k)
+			drawn[id] = true
+		}
+	}
+	for _, k := range QuickKeys {
+		if !drawn[k.ID] {
+			menu = append(menu, k)
+		}
+	}
+	return large, menu
+}
+
+// quickKeysMenuID is the "⋯" menu's id (its trigger's popovertarget).
+const quickKeysMenuID = "term-keys-menu"
+
+// quickKeyBar renders the quick keys: quickKeysPrimaryOrder (↑ ↓ ⏎) as large
+// buttons, and a "⋯" button whose floating menu (floatingMenuScript, placed on
+// the roomier side of it) holds every other key, in QuickKeys' order. Every
+// key — large or in the menu — is a [data-key] button carrying its bytes
+// (data-seq) inside #term-keys, so the page's script wires, enables and
+// disables all of them alike. The buttons start DISABLED, and so does the ⋯:
+// the page opens with live keys off.
+//
+// FOCUS IS LEFT AS THE OLD BAR LEFT IT: a key is a plain button that takes
+// the tap (no pointerdown preventDefault), exactly as before; nothing here
+// changes what a tap does to the terminal's focus or a soft keyboard.
 //
 // last says the bar is the bottom of the page, and so carries the safe-area
 // inset; when a composer follows, the composer carries it instead.
@@ -402,23 +447,60 @@ func quickKeyBar(last bool) g.Node {
 	if last {
 		pad = "pb-[max(0.5rem,env(safe-area-inset-bottom))]"
 	}
-	keys := make([]g.Node, 0, len(QuickKeys))
-	for _, k := range QuickKeys {
-		keys = append(keys, Button(
-			Type("button"),
-			g.Attr("data-key", k.ID),
-			g.Attr("data-seq", hex.EncodeToString([]byte(k.Seq))),
-			g.Attr("aria-label", k.Aria),
-			g.Attr("disabled", ""),
-			Class("press inline-flex min-h-[44px] min-w-0 items-center justify-center rounded-md bg-s2 font-mono text-sm font-semibold text-fg ring-1 ring-inset ring-line transition hover:bg-s3 disabled:opacity-40"),
-			g.Text(k.Label),
-		))
+	largeKeys, menuKeys := quickKeysSplit()
+	var big, rest []g.Node
+	for _, k := range largeKeys {
+		big = append(big, quickKeyButton(k, true))
+	}
+	for _, k := range menuKeys {
+		rest = append(rest, quickKeyButton(k, false))
 	}
 	return Nav(
 		ID("term-keys"),
 		g.Attr("aria-label", "Terminal keys"),
-		Class("grid grid-cols-6 gap-1 border-t border-line bg-bg px-2 pt-2 "+pad),
-		g.Group(keys),
+		Class("flex items-stretch gap-2 border-t border-line bg-bg px-2 pt-2 "+pad),
+		g.Group(big),
+		Button(
+			Type("button"),
+			ID("term-keys-more"),
+			g.Attr("aria-label", "More keys"),
+			g.Attr("title", "More keys"),
+			g.Attr("aria-haspopup", "menu"),
+			g.Attr("aria-expanded", "false"),
+			g.Attr("popovertarget", quickKeysMenuID),
+			g.Attr("disabled", ""),
+			Class("press inline-flex h-14 w-14 shrink-0 items-center justify-center rounded-lg bg-s2 text-fg ring-1 ring-inset ring-line transition hover:bg-s3 aria-expanded:bg-s3 disabled:opacity-40"),
+			g.Raw(`<svg class="h-6 w-6" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><circle cx="4" cy="10" r="1.6"/><circle cx="10" cy="10" r="1.6"/><circle cx="16" cy="10" r="1.6"/></svg>`),
+		),
+		Div(
+			ID(quickKeysMenuID),
+			g.Attr("popover", "auto"),
+			g.Attr("role", "menu"),
+			g.Attr("aria-label", "More keys"),
+			g.Attr("data-floating-menu", ""),
+			Class("invisible hidden [&:popover-open]:grid m-0 w-64 grid-cols-3 gap-1 rounded-xl border border-line bg-s1 p-1.5 text-fg shadow-2xl ring-1 ring-black/20"),
+			g.Group(rest),
+		),
+	)
+}
+
+// quickKeyButton is one key: large (one of quickKeysPrimaryOrder) or a cell of the
+// ⋯ menu. Both send data-seq, through the same click handler.
+func quickKeyButton(k QuickKey, large bool) g.Node {
+	cls := "press inline-flex min-h-[44px] min-w-0 items-center justify-center rounded-md bg-s2 font-mono text-sm font-semibold text-fg ring-1 ring-inset ring-line transition hover:bg-s3 disabled:opacity-40"
+	if large {
+		cls = "press inline-flex h-14 min-w-[44px] flex-1 items-center justify-center rounded-lg bg-accent/15 font-mono text-2xl font-bold text-fg ring-1 ring-inset ring-accent/50 transition hover:bg-accent/25 disabled:opacity-40"
+	}
+	return Button(
+		Type("button"),
+		g.Attr("data-key", k.ID),
+		g.Attr("data-seq", hex.EncodeToString([]byte(k.Seq))),
+		g.Attr("aria-label", k.Aria),
+		g.Attr("title", k.Aria),
+		g.If(!large, g.Attr("role", "menuitem")),
+		g.Attr("disabled", ""),
+		Class(cls),
+		g.Text(k.Label),
 	)
 }
 
@@ -462,6 +544,54 @@ func agentTerminalScript() g.Node {
   var modeLabel = document.getElementById('term-mode-label');
   var fitwBtn = document.getElementById('term-fitw');
   var keys = document.querySelectorAll('#term-keys [data-key]');
+  var moreBtn = document.getElementById('term-keys-more');
+  var keysMenu = document.getElementById('` + quickKeysMenuID + `');
+  // 🔴 NO POPOVER API (iOS Safari < 17): the ⋯'s popovertarget does nothing
+  // there, and the nine menu keys — ^C among them — would be unreachable. So
+  // without HTMLElement.prototype.togglePopover the ⋯ toggles the menu itself:
+  // shown by class, marked data-menu-open so floatingMenuScript places it by
+  // the same rule (its trigger is data-menu-trigger), above the page by
+  // z-index (there is no top layer), closed by a tap outside it or Escape.
+  var noPopover = !!keysMenu && typeof HTMLElement.prototype.togglePopover !== 'function';
+  function fallbackOpen() { return !!keysMenu && keysMenu.hasAttribute('data-menu-open'); }
+  function setFallback(open) {
+    if (open) {
+      // Out of the flow BEFORE it is shown: in the bar's flex row it would
+      // push the ⋯ aside, and place() measures the ⋯ where it is then.
+      keysMenu.style.position = 'fixed';
+      keysMenu.style.top = '0';
+      keysMenu.style.left = '0';
+      keysMenu.setAttribute('data-menu-open', '');
+      keysMenu.classList.remove('hidden');
+      keysMenu.classList.add('grid');
+      if (window.__musterPlaceMenu) window.__musterPlaceMenu(keysMenu);
+      else keysMenu.style.visibility = 'visible';
+      keysMenu.style.zIndex = '60';
+    } else {
+      keysMenu.removeAttribute('data-menu-open');
+      keysMenu.classList.add('hidden');
+      keysMenu.classList.remove('grid');
+      keysMenu.removeAttribute('style');
+    }
+    moreBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
+  }
+  if (noPopover) {
+    moreBtn.removeAttribute('popovertarget');
+    keysMenu.removeAttribute('popover');
+    moreBtn.setAttribute('data-menu-trigger', keysMenu.id);
+    moreBtn.addEventListener('click', function () { setFallback(!fallbackOpen()); });
+    document.addEventListener('pointerdown', function (ev) {
+      if (fallbackOpen() && !keysMenu.contains(ev.target) && !moreBtn.contains(ev.target)) setFallback(false);
+    }, true);
+    document.addEventListener('keydown', function (ev) {
+      if (ev.key === 'Escape' && fallbackOpen()) setFallback(false);
+    });
+  }
+  function closeKeysMenu() {
+    if (!keysMenu) return;
+    if (noPopover) { if (fallbackOpen()) setFallback(false); return; }
+    try { if (keysMenu.matches(':popover-open')) keysMenu.hidePopover(); } catch (e) {}
+  }
 
   var term = new Terminal({
     fontSize: 13,
@@ -605,6 +735,8 @@ func agentTerminalScript() g.Node {
     modeLabel.textContent = rw ? '` + LiveKeysOn + `' : '` + LiveKeysOff + `';
     term.options.disableStdin = !rw;
     for (var i = 0; i < keys.length; i++) { keys[i].disabled = !rw; }
+    if (moreBtn) moreBtn.disabled = !rw;
+    if (!rw) closeKeysMenu();
   }
   function send(data) {
     // The page's half of read-only; the server drops input to a read-only
@@ -696,7 +828,10 @@ func agentTerminalScript() g.Node {
   });
   for (var i = 0; i < keys.length; i++) {
     keys[i].addEventListener('click', function (ev) {
-      send(hexBytes(ev.currentTarget.getAttribute('data-seq')));
+      var b = ev.currentTarget;
+      send(hexBytes(b.getAttribute('data-seq')));
+      // A key picked from the ⋯ menu closes it, as a context menu does.
+      if (keysMenu && keysMenu.contains(b)) closeKeysMenu();
     });
   }
   modeBtn.addEventListener('click', function () {

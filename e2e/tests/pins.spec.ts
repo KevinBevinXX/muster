@@ -5,6 +5,7 @@ import { test, expect } from '../lib/fixtures';
 import { password, pinsPort } from '../lib/env';
 import { MirrorRig, mkchat } from '../lib/mirrorhost';
 import { writeFileAtomic } from '../lib/atomic';
+import { clsInit, readCls, settle } from '../lib/cls';
 import { agentLink } from '../lib/agent-link';
 
 // PINNED ENTRIES COME FIRST — AS LABEL-ONLY CHIPS — in a real browser, against
@@ -178,7 +179,27 @@ for (const vp of [
       expect(await page.locator(`#${last}`).innerText(), 'the agent chip shows its name alone').toBe(agentName);
       for (const h of [quinceHref, sableHref]) await expect(card(page, h), 'no card beside the chip').toHaveCount(0);
       await expect(page.locator('#agents-list > article[data-pinned-chip] :is([data-card-slot], [data-card-host], [data-card-focus])')).toHaveCount(0);
-      for (const ic of await page.locator('#agents-list > article[data-pinned-chip] [data-host-icon]').all()) await expect(ic, 'a chip draws no host icon').toBeHidden();
+      // THE HOST ICON (operator ask: "Pinned agents should also show the host
+      // icon"): every chip draws one, visible, before its label — a window its
+      // host's (the SAME icon this host's unpinned card draws, read off that
+      // card rather than spelled here), the agent the cluster's.
+      const hostIcon = await card(page, unpinnedHref).locator('[data-host-icon]').first().getAttribute('data-host-icon');
+      expect(hostIcon, 'the unpinned card draws a host icon').toBeTruthy();
+      for (const [h, want] of [[quinceHref, hostIcon], [sableHref, hostIcon]] as const) {
+        const ic = chip(page, h).locator('[data-pinned-chip-link] [data-host-icon]');
+        await expect(ic, 'the chip draws its host icon').toBeVisible();
+        await expect(ic).toHaveAttribute('data-host-icon', want!);
+        const [ib, lb] = [(await ic.boundingBox())!, (await chip(page, h).locator('[data-pinned-chip-label]').boundingBox())!];
+        expect(ib.x + ib.width, 'the icon is before the label').toBeLessThanOrEqual(lb.x + 0.5);
+        expect(ib.width, 'the icon is its fixed 16px box').toBeCloseTo(16, 0);
+        // A screen reader hears the host once (through the icon: the label is
+        // unique, so it does not spell the host).
+        const esc = host.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        await expect(chip(page, h).locator('[data-pinned-chip-link]')).toHaveAccessibleName(new RegExp(`^(?!.*${esc}.*${esc}).*${esc}`));
+      }
+      const agentIcon = page.locator(`#${last} [data-pinned-chip-link] [data-host-icon]`);
+      await expect(agentIcon).toBeVisible();
+      await expect(agentIcon).toHaveAttribute('data-host-icon', 'cluster');
 
       // First, by activity among themselves (the agent, seeded this run, is
       // newer than both windows), then the rest in the ONE flat order they had.
@@ -385,6 +406,38 @@ for (const vp of [
       } finally {
         await pinVia(page, false, winForm('solo', 1, other));
         await stop();
+      }
+    });
+
+    // The chips' host icons arrive in the server's markup (a fixed 16px box),
+    // so a list with pinned chips loads without a layout shift.
+    test('pinned chips with their host icons load with CLS < 0.01', async ({ page }) => {
+      await login(page);
+      await pinVia(page, true, winForm('pins', 2));
+      try {
+        await pinVia(page, true, winForm('pinq', 3));
+        await page.addInitScript(clsInit);
+        await page.goto(origin + '/agents');
+        for (const h of [sableHref, quinceHref]) {
+          await expect(chip(page, h).locator('[data-pinned-chip-link] [data-host-icon]')).toBeVisible({ timeout: 20_000 });
+        }
+        await settle(page);
+        await noOverflow(page, 'chips with icons');
+        const r = await readCls(page);
+        expect(r.unsupported, 'layout-shift is observable here').toBeUndefined();
+        expect(r.total, `shifts: ${JSON.stringify(r.shifts)}`).toBeLessThan(0.01);
+        // The positive control: a shift the page did not ask for IS counted.
+        await page.waitForTimeout(600);
+        await page.evaluate(() => {
+          const d = document.createElement('div');
+          d.style.cssText = 'height:150px;flex:none';
+          document.body.prepend(d);
+        });
+        await page.waitForTimeout(300);
+        expect((await readCls(page)).total, 'the instrument sees a shift').toBeGreaterThan(0.01);
+      } finally {
+        await pinVia(page, false, winForm('pins', 2));
+        await pinVia(page, false, winForm('pinq', 3));
       }
     });
 

@@ -133,7 +133,7 @@ var uiExempt = map[string]exemption{
 	"notes.go TaskTitle n.Title":                       {1, whyAccessor},
 	"tabs.go TabsSelected t.Label":                     {1, whyStatic},
 	"tags.go tasksFilteredEmpty taskstatus.Label":      {1, whyStatic},
-	"terminal.go quickKeyBar k.Label":                  {1, whyStatic},
+	"terminal.go quickKeyButton k.Label":               {1, whyStatic},
 	"focus.go focusHaystack f.Title":                   {1, whyFilter},
 }
 
