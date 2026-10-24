@@ -30,6 +30,9 @@ import (
 //
 // It refuses a pane whose tree holds:
 //   - a Hermes-shaped process (hermesShape);
+//   - an opencode process (openCodeShape): sending to opencode is not
+//     supported yet, and a blind paste+Enter there can answer its permission
+//     dialog;
 //   - a terminal multiplexer CLIENT (tmux, screen, dtach, abduco, zellij):
 //     `TMUX= tmux -L other attach` in a pane shows a session of ANOTHER server,
 //     whose processes are not in this pane's tree, so a Hermes there would be
@@ -56,6 +59,9 @@ var (
 	ErrMultiplexerPane = errors.New(mirror.PasteRefusedMultiplexerText)
 	// ErrPaneUnchecked: the guard could not read the pane's processes.
 	ErrPaneUnchecked = errors.New(mirror.PasteRefusedUncheckedText)
+	// ErrOpenCodePane: the pane's process tree holds opencode, which muster
+	// does not type into (openCodeShape).
+	ErrOpenCodePane = errors.New(mirror.PasteRefusedOpenCodeText)
 )
 
 // pasteRefusalOf is the Msg.Refusal kind of a guard refusal, "" for any other
@@ -68,6 +74,8 @@ func pasteRefusalOf(err error) string {
 		return mirror.PasteRefusalMultiplexer
 	case errors.Is(err, ErrPaneUnchecked):
 		return mirror.PasteRefusalUnchecked
+	case errors.Is(err, ErrOpenCodePane):
+		return mirror.PasteRefusalOpenCode
 	}
 	return ""
 }
@@ -104,6 +112,12 @@ const (
 	// Hermes's input area (hermeshost.LooksLikeHermes) — a Hermes run over
 	// ssh or docker exec, say. Best effort; see Tmux.PaneHermes.
 	hermesRuleChrome = "screen shows Hermes"
+	// hermesRuleOpenCode: an opencode process (openCodeShape). Not Hermes,
+	// but refused by the same walk: a paste into opencode is blind (nothing
+	// checks what its screen shows), and Enter there can answer its
+	// permission dialog. muster's send to opencode goes through opencode's
+	// own API, never keystrokes, once that exists.
+	hermesRuleOpenCode = "opencode"
 )
 
 // multiplexers are the terminal multiplexers whose client, in a pane, shows
@@ -283,6 +297,9 @@ func hermesShape(p procInfo, cwd func() string) (string, bool) {
 	if multiplexers[multiplexerName(p.comm)] || (len(p.argv) > 0 && multiplexers[multiplexerName(p.argv[0])]) {
 		return hermesRuleMultiplexer, true
 	}
+	if openCodeShape(p) {
+		return hermesRuleOpenCode, true
+	}
 	if p.comm == "hermes" && len(p.argv) > 1 && filepath.Base(p.argv[1]) == "hermes" {
 		return hermesRuleLauncher, true
 	}
@@ -303,6 +320,37 @@ func hermesShape(p procInfo, cwd func() string) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// openCodeNames are the names an opencode process goes by: the program's
+// own, and the Nix wrapper's target (makeWrapper execs `.opencode-wrapped`,
+// whose comm the kernel truncates to 15 bytes, `.opencode-wrapp`, keeping
+// argv[0] "opencode").
+var openCodeNames = map[string]bool{"opencode": true, ".opencode-wrapped": true, ".opencode-wrapp": true}
+
+// openCodeShape reports whether p is opencode by its PROCESS identity — the
+// same identity the mirror's "opencode" label reads from tmux
+// (#{pane_current_command} is argv[0]'s basename), taken here from /proc and
+// widened, as this guard's bias is: its comm, its argv[0]'s basename, or a
+// JavaScript runtime (node, bun, deno) whose argument is an opencode script
+// (an npm install's shim). Any opencode counts — the TUI, `opencode run`,
+// a private `serve` — because none of them is safe to type blind into.
+func openCodeShape(p procInfo) bool {
+	if openCodeNames[p.comm] || (len(p.argv) > 0 && openCodeNames[filepath.Base(p.argv[0])]) {
+		return true
+	}
+	if len(p.argv) < 2 {
+		return false
+	}
+	switch strings.TrimSuffix(filepath.Base(p.argv[0]), ".exe") {
+	case "node", "bun", "deno":
+		for _, a := range p.argv[1:] {
+			if openCodeNames[filepath.Base(a)] {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // hermesCheckout reports whether the directory of a cli.py path holds
@@ -511,6 +559,9 @@ func (h *hostSide) guardPane(ctx context.Context, pane string) error {
 	case hp.Rule == hermesRuleMultiplexer:
 		h.c.log.Printf("muster-mirror: pane %s runs a terminal multiplexer client (pid %d), which can hide Hermes; nothing is typed into it", pane, hp.PID)
 		return ErrMultiplexerPane
+	case hp.Rule == hermesRuleOpenCode:
+		h.c.log.Printf("muster-mirror: pane %s runs opencode (pid %d); nothing is typed into it", pane, hp.PID)
+		return ErrOpenCodePane
 	default:
 		h.c.log.Printf("muster-mirror: pane %s runs Hermes (pid %d, %s); nothing is typed into it", pane, hp.PID, hp.Rule)
 		return ErrHermesPane

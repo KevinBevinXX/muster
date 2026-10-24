@@ -1229,6 +1229,11 @@ const (
 	// PasteRefusalUnchecked: the host could not read the pane's processes, so
 	// it could not rule Hermes out. Nothing was typed.
 	PasteRefusalUnchecked = "unchecked"
+	// PasteRefusalOpenCode: the pane's process tree holds opencode. muster
+	// cannot send to opencode yet (its send goes through opencode's own API,
+	// not keystrokes, in a later version), so the host types nothing into
+	// such a pane. Nothing was typed.
+	PasteRefusalOpenCode = "opencode"
 
 	// The gated send into a Hermes pane (Msg.Runtime "hermes"), by how it
 	// ended when it did not end "sent":
@@ -1260,6 +1265,9 @@ const (
 		"abduco or zellij), so muster cannot see whether Hermes runs inside it. Type it in the terminal."
 	PasteRefusedUncheckedText = "Not sent: muster-mirror could not check whether Hermes runs in this pane. " +
 		"Type it in the terminal."
+	PasteRefusedOpenCodeText = "Sending to opencode isn't supported yet: opencode runs in this pane, and muster " +
+		"does not type into it, because Enter there can answer a prompt opencode is showing, such as a permission " +
+		"request. Type it in the terminal."
 )
 
 // The kinds of answer refusal a host names (Msg.Refusal on answered).
