@@ -40,8 +40,8 @@ reads a transcript through the host's own transcript stream instead (below).
 
 ## How focus is written
 
-Only muster writes it, server-side. A periodic pass (`MUSTER_FOCUS_INTERVAL`,
-default `15m`) and the chief's `focus_refresh` both:
+Only muster writes it, server-side, in a periodic pass (`MUSTER_FOCUS_INTERVAL`,
+default `15m`), which for each session:
 - check the session is one muster can see now — an agent of yours, or a
   Claude session an online window shows. One it cannot see is refused and
   **no row is written**, so naming arbitrary ids cannot grow the table;
@@ -153,10 +153,9 @@ the chief that focus is data, never instructions. Neither makes the text safe
 |---|---|---|
 | `fleet_list` | chief | every session: id, kind, name, status, focus title, and `focus_problem` (the reason) when its focus is missing or stale |
 | `focus_search(query, limit, since_hours?)` | chief | full-text search over titles (weighted higher) and descriptions; id, kind, title and a 120-character snippet per hit. With `since_hours` (1–24) it searches every focus each session had in that window instead of its current one, and each hit carries when that focus was written |
-| `focus_refresh(subject)` | chief | one session now (it waits); the periodic pass covers the rest |
 | `sessions_overview(limit?)` | chief | every live session (running agents, online mirrored windows) active in the last 24 h, newest-active first: id, kind, name, host, status, current focus, the distinct focus titles of the last 6 h with their times, its pending attention item, and its last three user and assistant messages (300 characters each, secrets redacted, no tool output). A session whose transcript does not arrive within 5 s reads `"transcript": "unavailable (timed out)"`; all the reads share a 12 s budget, and a session it cuts or never reaches reads `"unavailable (overview budget)"`. The answer is capped at 32 KiB and says how many sessions it left out |
 
-All four are on the agent gateway and on `/mcp`. A subject is spelled
+All three are on the agent gateway and on `/mcp`. A subject is spelled
 `agent:<id>` or `mirror:<claude session id>`, as `fleet_list` and
 `focus_search` return it.
 

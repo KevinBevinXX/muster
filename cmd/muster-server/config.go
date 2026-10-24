@@ -126,7 +126,7 @@ const (
 	envSendQueueIdle = "MUSTER_SEND_QUEUE_IDLE"
 	// Session focus (internal/focus): how often the server recomputes each
 	// session's focus. A Go duration, 15m when unset, "0" turns the periodic
-	// pass off (focus_refresh still works), refused outside 1m–24h otherwise.
+	// pass off (and so every refresh), refused outside 1m–24h otherwise.
 	envFocusInterval = "MUSTER_FOCUS_INTERVAL"
 	// How long a mirrored session's focus is kept after a pass last saw the
 	// session on any host. A Go duration, 168h when unset, refused outside

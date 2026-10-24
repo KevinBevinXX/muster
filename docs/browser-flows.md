@@ -77,8 +77,8 @@ owner and is confined to that host. The runner sends it as
 
 ## Agents ask, owners approve
 
-An agent cannot enqueue a job. Through its tools (also exposed over MCP), it can
-call:
+An agent cannot enqueue a job. Through its tools (also exposed over MCP), any
+agent but the chief can call:
 
 - `browser_flow_request`, which files a **request**, never a job;
 - `browser_flow_status`.

@@ -17,7 +17,9 @@ import (
 
 // mcpLedger and gatewayOnlyLedger are the two halves of the registry with the
 // connector, flow and plugin stores configured, as the CHIEF sees it;
-// chiefOnlyLedger is the part of it no other agent is offered.
+// chiefOnlyLedger is the part of it no other agent is offered, and
+// workerMCPLedger is the MCP half as a worker sees it: without the chief-only
+// tools, and with the ones the chief is not offered (notChiefToolList).
 //
 // 🔴 BOTH ARE PINNED AS LITERALS AND THE TEST FAILS WHEN EITHER SET GROWS OR
 // SHRINKS. A new tool is a decision about which pods may call it: setting the
@@ -26,21 +28,24 @@ import (
 // is where that decision gets reviewed (agentTool's comment says why the
 // existing tools are gateway-only).
 var (
-	mcpLedger = []string{"connectors_list", "connector_request", "connector_status",
-		"browser_flow_request", "browser_flow_status", "task_create_gated", "reply_draft",
-		"fleet_list", "focus_search", "focus_refresh", "sessions_overview",
+	mcpLedger = []string{"connectors_list", "task_create_gated", "reply_draft",
+		"fleet_list", "focus_search", "sessions_overview",
 		// The attention queue (attention_tools.go): every agent asks and works the
 		// owner's tasks; the chief alone lists, answers and reads transcripts.
 		"attention_ask", "attention_wait", "attention_cancel",
 		"tasks_list", "task_get", "task_comment", "task_set_status",
-		"attention_list", "session_transcript"}
+		"attention_list"}
+	workerMCPLedger = []string{"connectors_list", "connector_request", "connector_status",
+		"browser_flow_request", "browser_flow_status",
+		"attention_ask", "attention_wait", "attention_cancel",
+		"tasks_list", "task_get", "task_comment", "task_set_status"}
 	gatewayOnlyLedger = []string{"agent_get_task", "agent_comment_task", "agent_set_task_status",
 		"agent_list_pull_requests"}
 	// 🔴 chiefOnlyLedger IS PINNED THE SAME WAY: a tool joining it is offered to
 	// one agent per owner and refused to every other, and a tool LEAVING it is
 	// offered to every worker in the fleet. Either is a decision to review here.
-	chiefOnlyLedger = []string{"task_create_gated", "reply_draft", "fleet_list", "focus_search", "focus_refresh",
-		"sessions_overview", "attention_list", "session_transcript"}
+	chiefOnlyLedger = []string{"task_create_gated", "reply_draft", "fleet_list", "focus_search",
+		"sessions_overview", "attention_list"}
 )
 
 // without returns list minus the names in drop, in order.
@@ -108,7 +113,7 @@ func TestTheMCPToolsAreTheRegistrysMCPSubset(t *testing.T) {
 		wantMCP []string
 	}{
 		{"chief", g.chief, g.chiefTok, mcpLedger},
-		{"worker", g.worker, g.workerTok, without(mcpLedger, chiefOnlyLedger)},
+		{"worker", g.worker, g.workerTok, workerMCPLedger},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			mcpNames, tools := mcpListNames(t, g.connFixture, c.token)
@@ -170,6 +175,15 @@ func TestTheChiefOnlyToolsAreLedgered(t *testing.T) {
 	if got := chiefOnly(g.srv); !reflect.DeepEqual(got, chiefOnlyLedger) {
 		t.Errorf("chief-only tools = %v, want exactly %v", got, chiefOnlyLedger)
 	}
+	var notChief []string
+	for _, tl := range g.srv.agentTools() {
+		if tl.notChief {
+			notChief = append(notChief, tl.def.Name)
+		}
+	}
+	if !reflect.DeepEqual(notChief, notChiefToolList) {
+		t.Errorf("not-chief tools = %v, want exactly %v", notChief, notChiefToolList)
+	}
 	if got := chiefOnly(newConnFixture(t).srv); len(got) != 0 {
 		t.Errorf("with no plugin store the registry still declares chief-only tools %v", got)
 	}
@@ -203,6 +217,12 @@ func TestEveryRegisteredToolIsDispatched(t *testing.T) {
 	for _, d := range defs {
 		if out := g.srv.dispatchAgentTool(g.asOwner, g.chief, d.Name, "{}"); out == toolErr("unknown tool %q", d.Name) {
 			t.Errorf("%s is registered but not dispatched", d.Name)
+		}
+	}
+	// The tools the chief is not offered, as the worker they are offered to.
+	for _, n := range notChiefToolList {
+		if out := g.srv.dispatchAgentTool(g.asOwner, g.worker, n, "{}"); out == toolErr("unknown tool %q", n) {
+			t.Errorf("%s is registered but not dispatched", n)
 		}
 	}
 	// Control: the comparison above can see an unknown tool.

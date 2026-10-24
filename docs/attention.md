@@ -151,7 +151,6 @@ called by name):
 | tool | does |
 |---|---|
 | `attention_list` | The whole queue, as the view shows it, newest first: each item's `text` (the question; what a session waits on; a draft's inbound message), `detail` (a session's last words; the draft) and `focus`. Read-only: the chief cannot answer an ask (no dispatched agent can); only the operator does — on `/attention`, or through one of their own mirrored sessions' `attention_answer` (below). |
-| `session_transcript {subject, max_entries?}` | The recent conversation of one of the owner's sessions (`agent:<id>` or `mirror:<claude session id>`, as `fleet_list` returns them): oldest first, at most 200 entries, each at most 2000 characters, 48 KiB in all; tool calls by name, tool output left out. |
 | `fleet_list` | (Existing.) Now also carries a mirrored session's `host`. |
 
 **Mirrored Claude Code sessions only** (the operator's own sessions, through

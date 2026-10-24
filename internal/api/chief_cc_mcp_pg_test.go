@@ -94,8 +94,8 @@ func (f *ccChiefFixture) listed(t *testing.T, token string) map[string]bool {
 // chiefToolNames are the chief-only tools, spelled here rather than read from
 // the registry (a list derived from the implementation would agree with any bug
 // in it).
-var chiefToolNames = []string{"task_create_gated", "reply_draft", "fleet_list", "focus_search", "focus_refresh",
-	"sessions_overview", "route_to_session", "attention_list", "session_transcript"}
+var chiefToolNames = []string{"task_create_gated", "reply_draft", "fleet_list", "focus_search",
+	"sessions_overview", "route_to_session", "attention_list"}
 
 // TestAClaudeCodeChiefIsOfferedEveryChiefToolOverMCPAndAWorkerNone.
 func TestAClaudeCodeChiefIsOfferedEveryChiefToolOverMCPAndAWorkerNone(t *testing.T) {
@@ -151,8 +151,8 @@ func TestAClaudeCodeChiefCallsEveryChiefToolOverMCP(t *testing.T) {
 	}
 	ok("focus_search", map[string]any{"query": "anything"})
 
-	// The attention queue: the WORKER asks; the chief lists it (whole board) and
-	// reads the worker's transcript. The worker can do neither.
+	// The attention queue: the WORKER asks; the chief lists it (whole board).
+	// The worker cannot.
 	askText, isErr, rpc := f.call(t, f.workerTok, "attention_ask", map[string]any{"question": "Which region, cc?", "options": []string{"us", "eu"}})
 	if rpc != nil || isErr {
 		t.Fatalf("worker ask: %v %s", rpc, askText)
@@ -162,16 +162,6 @@ func TestAClaudeCodeChiefCallsEveryChiefToolOverMCP(t *testing.T) {
 	}
 	if _, _, rpc := f.call(t, f.workerTok, "attention_list", map[string]any{}); rpc == nil {
 		t.Fatal("a claude-code worker called attention_list")
-	}
-	sess, err := agents.NewPG(f.pool).CreateSession(f.asOwner, f.worker.ID, f.worker.Name)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := agents.NewPG(f.pool).AddChatMessage(f.asOwner, agents.ChatMessage{AgentID: f.worker.ID, SessionID: sess.ID, Role: "user", Content: "port the importer, cc"}); err != nil {
-		t.Fatal(err)
-	}
-	if text := ok("session_transcript", map[string]any{"subject": "agent:" + strconv.FormatInt(f.worker.ID, 10)}); !strings.Contains(text, "port the importer, cc") {
-		t.Fatalf("session_transcript: %s", text)
 	}
 
 	// The board: a task of the owner's that neither agent is bound to is on the

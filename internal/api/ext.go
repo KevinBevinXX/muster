@@ -228,7 +228,7 @@ type Extensions struct {
 	Focus focus.Store
 	// FocusSummarizer computes a focus from a transcript tail (the ScaleDown
 	// summarizer through OpenRouter) — focus's only writer. nil: no focus is
-	// ever written; RunFocusRefresh does nothing and focus_refresh says why.
+	// ever written, and RunFocusRefresh does nothing.
 	FocusSummarizer focus.Summarizer
 	// FocusRetention is how long a mirrored session's focus outlives the last
 	// time a pass saw it (MUSTER_FOCUS_RETENTION); 0 keeps it forever.

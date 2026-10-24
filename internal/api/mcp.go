@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -56,14 +57,27 @@ func mcpInstructions() string {
 		ProxyRecipe("<connector>", "<host>") + " You never see the credential. " + mcpGitNote
 }
 
-// mcpInstructionsFor is the initialize instructions this server gives: the
-// connector store's, and the attention queue's paragraph when its tools are
-// offered (attention_tools.go's attentionInstruction).
-func (s *Server) mcpInstructionsFor() string {
-	if s.attentionToolsOn() {
-		return mcpInstructions() + " " + attentionInstruction
+// mcpChiefInstructions is mcpInstructions for the chief, which is not offered
+// connector_request / connector_status (agentTool's notChief): its connectors
+// are the ones its owner granted it.
+func mcpChiefInstructions() string {
+	return "muster's connector store. connectors_list shows the platform connectors your owner has granted you; " +
+		"call one through muster's proxy: " + ProxyRecipe("<connector>", "<host>") + " You never see the credential. " + mcpGitNote
+}
+
+// mcpInstructionsFor is the initialize instructions this server gives agent a:
+// the connector store's (the chief's own when a is the chief), and the
+// attention queue's paragraph when its tools are offered (attention_tools.go's
+// attentionInstruction).
+func (s *Server) mcpInstructionsFor(ctx context.Context, a agents.Agent) string {
+	in := mcpInstructions()
+	if s.isChiefAgent(ctx, a) {
+		in = mcpChiefInstructions()
 	}
-	return mcpInstructions()
+	if s.attentionToolsOn() {
+		return in + " " + attentionInstruction
+	}
+	return in
 }
 
 // mcpGitNote tells a claude-code agent how git follows a grant.
@@ -114,7 +128,7 @@ func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
 	s.serveMCP(w, r, mcpSurface{
 		tools:        func() []agents.ToolDef { return s.MCPToolDefsFor(r.Context(), a) },
 		call:         func(name, args string) string { return s.dispatchAgentTool(r.Context(), a, name, args) },
-		instructions: s.mcpInstructionsFor(),
+		instructions: s.mcpInstructionsFor(r.Context(), a),
 	})
 }
 

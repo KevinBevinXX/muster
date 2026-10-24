@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -98,10 +99,10 @@ func TestAgentsListAndFocusSearchOnBothSurfaces(t *testing.T) {
 	}
 }
 
-// TestFocusRefreshOnBothSurfaces: a refresh of one subject reads the agent's
+// TestFocusRefreshOfOneSubject: a refresh of one subject reads the agent's
 // tail, calls the summarizer, stores the result; a second refresh over the
 // SAME tail is the fingerprint skip — no further summarizer call.
-func TestFocusRefreshOnBothSurfaces(t *testing.T) {
+func TestFocusRefreshOfOneSubject(t *testing.T) {
 	g := newGatedFixture(t)
 	sess, err := g.srv.ext.Agents.CreateSession(g.asOwner, g.worker.ID, g.worker.Name)
 	if err != nil {
@@ -114,30 +115,27 @@ func TestFocusRefreshOnBothSurfaces(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	args := `{"subject":"agent:` + strconv.FormatInt(g.worker.ID, 10) + `"}`
-	got := g.surfaces(t, g.chief, g.chiefTok, "focus_refresh", args)
-	if !strings.Contains(got["gateway"], `"outcome":"updated"`) || !strings.Contains(got["gateway"], "Reconciling the Stripe invoices") {
-		t.Fatalf("gateway: %s", got["gateway"])
+	sub := focus.AgentSubject(g.worker.ID)
+	if o, err := g.srv.refresher().Refresh(g.asOwner, g.owner, sub); err != nil || o != focus.OutcomeUpdated {
+		t.Fatalf("first refresh: %v %v", o, err)
 	}
-	if !strings.Contains(got["mcp"], `"outcome":"unchanged"`) {
-		t.Fatalf("mcp (same tail): %s", got["mcp"])
+	if f, ok, _ := g.focus.Get(g.asOwner, sub); !ok || !strings.Contains(f.Title+f.Description, "Reconciling the Stripe invoices") {
+		t.Fatalf("stored focus: %+v", f)
+	}
+	if o, err := g.srv.refresher().Refresh(g.asOwner, g.owner, sub); err != nil || o != focus.OutcomeUnchanged {
+		t.Fatalf("second refresh over the same tail: %v %v", o, err)
 	}
 	if g.summ.calls != 1 || !strings.Contains(g.summ.tails[0], "user: reconcile the March invoices") {
 		t.Fatalf("summarizer: %d call(s), tails %q", g.summ.calls, g.summ.tails)
 	}
-	for surface, text := range g.surfaces(t, g.chief, g.chiefTok, "focus_refresh", `{"subject":"pod:1"}`) {
-		if !isToolErr(text) {
-			t.Fatalf("%s: a bad subject was accepted: %s", surface, text)
-		}
-	}
 }
 
 // TestTheFocusChiefToolsRefuseAWorker: a worker is neither offered nor able to
-// call fleet_list, focus_search or focus_refresh — on the gateway the dispatch
+// call fleet_list or focus_search — on the gateway the dispatch
 // refuses with the chief-only error, on /mcp the name is unknown.
 func TestTheFocusChiefToolsRefuseAWorker(t *testing.T) {
 	g := newGatedFixture(t)
-	for _, tool := range []string{"fleet_list", "focus_search", "focus_refresh"} {
+	for _, tool := range []string{"fleet_list", "focus_search"} {
 		got := g.surfaces(t, g.worker, g.workerTok, tool, `{"query":"x"}`)
 		if got["gateway"] != toolErr("%s is available to your owner's chief agent only", tool) {
 			t.Errorf("gateway %s as a worker: %s", tool, got["gateway"])
@@ -149,29 +147,6 @@ func TestTheFocusChiefToolsRefuseAWorker(t *testing.T) {
 		if c := g.surfaces(t, g.chief, g.chiefTok, tool, `{"query":"x"}`); strings.Contains(c["gateway"], "chief agent only") ||
 			strings.HasPrefix(c["mcp"], "rpc-error") {
 			t.Errorf("the chief was refused %s: %v", tool, c)
-		}
-	}
-}
-
-// TestFocusRefreshRequiresASubject: there is no whole-owner form (the periodic
-// pass covers it); with no subject both surfaces refuse, and nothing runs.
-func TestFocusRefreshRequiresASubject(t *testing.T) {
-	g := newGatedFixture(t)
-	for _, args := range []string{`{}`, `{"subject":"  "}`} {
-		for surface, text := range g.surfaces(t, g.chief, g.chiefTok, "focus_refresh", args) {
-			if text != toolErr("subject is required: the session to refresh (agent:<id> or mirror:<claude session id>)") {
-				t.Errorf("%s %s: %s", surface, args, text)
-			}
-		}
-	}
-	if g.summ.calls != 0 {
-		t.Fatalf("a refresh with no subject called the summarizer %d time(s)", g.summ.calls)
-	}
-	for _, d := range g.srv.AgentToolDefsFor(g.asOwner, g.chief) {
-		if d.Name == "focus_refresh" {
-			if req, _ := d.Parameters["required"].([]string); len(req) != 1 || req[0] != "subject" {
-				t.Fatalf("focus_refresh's schema does not require subject: %v", d.Parameters)
-			}
 		}
 	}
 }
@@ -229,15 +204,17 @@ func TestAgentsListSaysWhyAFocusIsMissingOrStale(t *testing.T) {
 
 // TestFocusRefreshOnAnInvisibleSessionSaysSoAndStoresNothing: a closed or
 // foreign mirror sid, and another owner's agent, are "not a session muster can
-// see" on both surfaces — and leave no agent_focus row behind.
+// see" (focus.ErrNoSession) — and leave no agent_focus row behind.
 func TestFocusRefreshOnAnInvisibleSessionSaysSoAndStoresNothing(t *testing.T) {
 	g := newGatedFixture(t)
 	other := g.newAgent(t, g.newMember(t), "rtforeign-"+strconv.FormatInt(time.Now().UnixNano(), 36), "", "foreign-tok-"+strconv.FormatInt(time.Now().UnixNano(), 36))
 	for _, sub := range []string{"mirror:0b2c3d4e-closed-window", "agent:" + strconv.FormatInt(other.ID, 10)} {
-		for surface, text := range g.surfaces(t, g.chief, g.chiefTok, "focus_refresh", `{"subject":"`+sub+`"}`) {
-			if text != toolErr("%s is not a session of your owner's that muster can see now", sub) {
-				t.Errorf("%s %s: %s", surface, sub, text)
-			}
+		parsed, err := focus.ParseSubject(sub)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := g.srv.refresher().Refresh(g.asOwner, g.owner, parsed); !errors.Is(err, focus.ErrNoSession) {
+			t.Errorf("%s: %v, want focus.ErrNoSession", sub, err)
 		}
 	}
 	list, err := g.focus.List(g.asOwner)
@@ -255,8 +232,7 @@ func TestEveryFocusToolMarksItsTextUntrusted(t *testing.T) {
 	g := newGatedFixture(t)
 	sess, _ := g.srv.ext.Agents.CreateSession(g.asOwner, g.worker.ID, g.worker.Name)
 	_, _ = g.srv.ext.Agents.AddChatMessage(g.asOwner, agents.ChatMessage{AgentID: g.worker.ID, SessionID: sess.ID, Role: "user", Content: "hi"})
-	for tool, args := range map[string]string{"fleet_list": `{}`, "focus_search": `{"query":"x"}`,
-		"focus_refresh": `{"subject":"agent:` + strconv.FormatInt(g.worker.ID, 10) + `"}`} {
+	for tool, args := range map[string]string{"fleet_list": `{}`, "focus_search": `{"query":"x"}`} {
 		for surface, text := range g.surfaces(t, g.chief, g.chiefTok, tool, args) {
 			var env struct{ Untrusted string }
 			if err := json.Unmarshal([]byte(text), &env); err != nil || env.Untrusted != focus.UntrustedNote {
@@ -396,7 +372,9 @@ func TestAnAgentsTailCarriesNoToolArguments(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	g.srv.AgentToolDispatch(g.asOwner, g.chief)("focus_refresh", `{"subject":"agent:`+strconv.FormatInt(g.worker.ID, 10)+`"}`)
+	if _, err := g.srv.refresher().Refresh(g.asOwner, g.owner, focus.AgentSubject(g.worker.ID)); err != nil {
+		t.Fatal(err)
+	}
 	if len(g.summ.tails) != 1 {
 		t.Fatalf("summarizer calls: %d", len(g.summ.tails))
 	}

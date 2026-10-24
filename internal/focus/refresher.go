@@ -11,8 +11,8 @@ import (
 )
 
 // THE SERVER-SIDE REFRESH (operator decision: muster computes focus, the chief
-// only reads it). A periodic pass (Run) and an on-demand trigger (Refresh, the
-// focus_refresh tool) both come here.
+// only reads it). A periodic pass (Run) comes here, and Refresh does one
+// subject.
 //
 // One refresh of one subject:
 //  1. an owner the summarizer cannot serve (no key) is refused before anything

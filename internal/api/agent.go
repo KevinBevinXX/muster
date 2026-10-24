@@ -256,10 +256,9 @@ const agentSystemPrompt = `You are a muster worker agent. You have native tools 
 // BROWSER-FLOW TOOLS HAVE IT (the flow tools only FILE a request the owner
 // must approve; flow_tools.go), AND SO DO task_create_gated (it only files a
 // task gated on the owner's approval; gated_task_tool.go), reply_draft (it
-// only files a draft the owner must approve; reply_draft_tool.go) AND THE THREE
+// only files a draft the owner must approve; reply_draft_tool.go) AND THE TWO
 // FOCUS TOOLS (focus_tools.go: they read the owner's own focus rows and spend
-// no credential the pod was not granted — a refresh runs the summarizer
-// server-side, on the owner's model credential).
+// no credential the pod was not granted).
 // /mcp is served on the connect listener — the ONE muster port a claude-code
 // pod's network policy lets it reach — and that listener's contract is "the
 // connector surface and nothing else" (OnlyConnectSurface). The other tools stay
@@ -276,7 +275,7 @@ const agentSystemPrompt = `You are a muster worker agent. You have native tools 
 // and work their OWN tasks — the dispatched one and the ones they created
 // (tasks_list, task_get, task_comment, task_set_status; never into or out of
 // `complete`) — and the chief alone lists the queue (read-only: only the
-// operator answers) and reads any session's transcript, and works the whole
+// operator answers) and works the whole
 // board. That deliberately widens what a claude-code pod reaches on the connect
 // listener from its connectors to its own task and its questions; the bound
 // task's agent_* tools above stay gateway-only as they were.
@@ -289,6 +288,13 @@ const agentSystemPrompt = `You are a muster worker agent. You have native tools 
 // refuses it for anyone else, because a gateway runtime can name a tool it was
 // never offered and the dispatch closure is the trust boundary.
 // TestTheChiefOnlyToolsAreLedgered pins the set.
+//
+// notChief is the same axis turned round: a tool offered to every agent BUT the
+// chief, enforced the same two ways. The chief's tool list is what its model
+// carries on every turn, so a tool it has no use for is left off it:
+// connector_request / connector_status (the chief's connectors are the owner's
+// standing grants; connectors_list still shows them) and the browser-flow
+// pair. TestTheChiefsToolListIsPinned pins the chief's whole list.
 type agentTool struct {
 	def agents.ToolDef
 	// mcp: also served over POST /mcp to claude-code agents. See above before
@@ -296,6 +302,9 @@ type agentTool struct {
 	mcp bool
 	// chiefOnly: offered to, and callable by, the chief agent alone. See above.
 	chiefOnly bool
+	// notChief: offered to, and callable by, every agent but the chief. See
+	// above.
+	notChief bool
 }
 
 // agentTools is the registry. The connector tools are present only when the
@@ -319,14 +328,14 @@ func (s *Server) agentTools() []agentTool {
 	}
 	if s.ext.Connectors != nil {
 		for _, d := range connectorToolDefs() {
-			tools = append(tools, agentTool{def: d, mcp: true})
+			tools = append(tools, agentTool{def: d, mcp: true, notChief: d.Name != "connectors_list"})
 		}
 	}
 	// Browser flows (flow_tools.go): MCP too — any agent may ASK; only its
 	// owner's approval on /flows makes anything run.
 	if s.ext.Flows != nil {
 		for _, d := range flowToolDefs() {
-			tools = append(tools, agentTool{def: d, mcp: true})
+			tools = append(tools, agentTool{def: d, mcp: true, notChief: true})
 		}
 	}
 	// The plugin interface (gated_task_tool.go): the chief may FILE a task its
@@ -339,9 +348,9 @@ func (s *Server) agentTools() []agentTool {
 		// task_create_gated's reasons.
 		tools = append(tools, agentTool{def: replyDraftToolDef(), mcp: true, chiefOnly: true})
 	}
-	// Session focus (focus_tools.go): the chief lists, searches and refreshes
-	// its owner's sessions' focus. MCP too, so a claude-code chief reaches them.
-	// All three are chief-only: they reach the owner's whole fleet.
+	// Session focus (focus_tools.go): the chief lists and searches its owner's
+	// sessions' focus. MCP too, so a claude-code chief reaches them. Both are
+	// chief-only: they reach the owner's whole fleet.
 	if s.ext.Focus != nil {
 		for _, d := range focusToolDefs() {
 			tools = append(tools, agentTool{def: d, mcp: true, chiefOnly: true})
@@ -368,7 +377,7 @@ func (s *Server) agentTools() []agentTool {
 	}
 	// The attention queue (attention_tools.go), present with its store: every
 	// agent may ask its owner and work the owner's tasks; the chief alone lists
-	// the queue (read-only) and reads a session's transcript. All on MCP too.
+	// the queue (read-only). All on MCP too.
 	// attention_answer is NOT here: it is the mirrored sessions' alone
 	// (mirror_mcp.go's mirrorTools), and its handler refuses any agent. Nor are
 	// connector_requests_list / connector_request_decide, for the same reason
@@ -388,9 +397,9 @@ func (s *Server) agentTools() []agentTool {
 }
 
 // toolsFor is the registry as agent a may see it: every tool, minus the
-// chief-only ones unless a is its owner's chief. It reads the agent list only
-// when the registry HAS a chief-only tool, so a deployment without one pays
-// nothing per turn.
+// chief-only ones unless a is its owner's chief, and minus the not-chief ones if
+// it is. It reads the agent list only when the registry HAS a tool on either
+// axis, so a deployment without one pays nothing per turn.
 //
 // 🔴 IT FAILS CLOSED: an agent list that cannot be read offers no chief-only
 // tool, the same direction agentIsChief's other callers take for the reverse
@@ -400,11 +409,11 @@ func (s *Server) toolsFor(ctx context.Context, a agents.Agent) []agentTool {
 	chief, decided := false, false
 	out := make([]agentTool, 0, len(all))
 	for _, t := range all {
-		if t.chiefOnly {
+		if t.chiefOnly || t.notChief {
 			if !decided {
 				chief, decided = s.isChiefAgent(ctx, a), true
 			}
-			if !chief {
+			if (t.chiefOnly && !chief) || (t.notChief && chief) {
 				continue
 			}
 		}
@@ -413,16 +422,16 @@ func (s *Server) toolsFor(ctx context.Context, a agents.Agent) []agentTool {
 	return out
 }
 
-// chiefOnlyTool reports whether the registry declares name chief-only. It reads
-// the registry rather than a second list, so the flag is the one place the
-// decision is written.
-func (s *Server) chiefOnlyTool(name string) bool {
+// toolAxis is name's two who-axis flags in the registry (both false for a name
+// it does not declare). It reads the registry rather than a second list, so the
+// flags are the one place the decision is written.
+func (s *Server) toolAxis(name string) (chiefOnly, notChief bool) {
 	for _, t := range s.agentTools() {
 		if t.def.Name == name {
-			return t.chiefOnly
+			return t.chiefOnly, t.notChief
 		}
 	}
-	return false
+	return false, false
 }
 
 // isChiefAgent answers chiefPredicate for a's CURRENT row (a caller's copy of the
@@ -554,8 +563,11 @@ func (s *Server) dispatchAgentTool(ctx context.Context, a agents.Agent, name, ar
 	// for any other agent, but a gateway runtime can call a name it was not
 	// offered, and this closure runs whatever it is handed — so the decision is
 	// made again here, against the agent's current row.
-	if s.chiefOnlyTool(name) && !s.isChiefAgent(ctx, a) {
+	switch chiefOnly, notChief := s.toolAxis(name); {
+	case chiefOnly && !s.isChiefAgent(ctx, a):
 		return toolErr("%s is available to your owner's chief agent only", name)
+	case notChief && s.isChiefAgent(ctx, a):
+		return toolErr("%s is not one of your owner's chief agent's tools", name)
 	}
 	switch name {
 	case "agent_get_task":
@@ -626,8 +638,6 @@ func (s *Server) dispatchAgentTool(ctx context.Context, a agents.Agent, name, ar
 		return s.toolFleetList(ctx)
 	case focusSearchToolName:
 		return s.toolFocusSearch(ctx, arguments)
-	case focusRefreshToolName:
-		return s.toolFocusRefresh(ctx, a, arguments)
 	case sessionsOverviewToolName:
 		return s.toolSessionsOverview(ctx, a, arguments)
 	case routeToSessionToolName:

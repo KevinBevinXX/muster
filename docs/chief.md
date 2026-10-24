@@ -45,11 +45,16 @@ The chief is offered these tools, and no other agent is:
 | tool | needs |
 |---|---|
 | `task_create_gated`, `reply_draft` | plugins on |
-| `fleet_list`, `focus_search`, `focus_refresh`, `sessions_overview` | session focus |
+| `fleet_list`, `focus_search`, `sessions_overview` | session focus |
 | `route_to_session` | session routing |
-| `attention_list`, `session_transcript` | the attention queue |
+| `attention_list` | the attention queue |
 | `task_route_attention`, `task_forward` | task routing (`MUSTER_TASK_ROUTING`) |
 | `task_dispatch` | task routing, and you opted in (`MUSTER_CHIEF_DISPATCH_OWNERS`) |
+
+The other way round, the chief is the one agent **not** offered
+`connector_request`, `connector_status`, `browser_flow_request` or
+`browser_flow_status`: its connectors are the standing grants you give it
+(`connectors_list` shows them), and it does not ask for browser flows.
 
 `task_dispatch` starts a **claude-code** agent unless the chief passes
 `kind: "gateway"` or the deployment does not enable claude-code: what you
