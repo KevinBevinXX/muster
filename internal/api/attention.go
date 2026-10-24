@@ -322,12 +322,14 @@ func (s *Server) waitingSessions(ctx context.Context) []attentionItem {
 		}
 		for _, w := range h.Windows {
 			k := sessionKey(h.Host, w.Session, w.ID)
-			if w.AgentRuntime() == mirror.RuntimeHermes {
-				// A waiting Hermes window: what its hook says it waits on
-				// (Hermes Phase 4). Its Pending names the ask; a host that
-				// names none (older) still lists it as waiting.
+			if rt, ok := w.Spec(); ok && rt.PendingNamesAsk {
+				// A waiting window of a runtime that names its asks (Hermes):
+				// what its hook says it waits on (Hermes Phase 4). Its Pending
+				// names the ask; a host that names none (older) still lists it
+				// as waiting.
 				if w.Status == mirror.StatusWaiting {
-					waiting[k] = wait{since: w.StatusSince, pending: w.Pending, offline: !h.Online, hermes: true, answers: h.Online && h.HermesAnswer}
+					_, answers := h.GatedSendOn(rt)
+					waiting[k] = wait{since: w.StatusSince, pending: w.Pending, offline: !h.Online, hermes: true, answers: h.Online && answers}
 				}
 				continue
 			}

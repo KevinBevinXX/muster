@@ -33,8 +33,9 @@ import (
 //     checks (hermes_send.go). So its typing primitives (pasteBracketed,
 //     pasteEnter) are called only by PastePane, SendHermes and PasteChecked
 //     (the Claude prompt guard's paste, itself reached only through
-//     typeInto), SendHermes
-//     only by hostSide.hermesPaste, and hermesPaste only by hostSide.paste.
+//     typeInto), SendHermes only by hostSide.hermesPaste, hermesPaste only
+//     by Hermes's runtime (hermesRuntime.gatedSend), and a runtime's
+//     gatedSend only by hostSide.paste.
 func TestEveryWayThisHostTypesIntoAPaneGoesThroughTheHermesGuard(t *testing.T) {
 	fset := token.NewFileSet()
 	paths, err := filepath.Glob("*.go")
@@ -99,7 +100,7 @@ func TestEveryWayThisHostTypesIntoAPaneGoesThroughTheHermesGuard(t *testing.T) {
 						return true
 					}
 					switch sel.Sel.Name {
-					case "pasteBracketed", "pasteEnter", "SendHermes", "hermesPaste":
+					case "pasteBracketed", "pasteEnter", "SendHermes", "hermesPaste", "gatedSend":
 						callers[sel.Sel.Name] = append(callers[sel.Sel.Name], where)
 					}
 					switch sel.Sel.Name {
@@ -141,7 +142,8 @@ func TestEveryWayThisHostTypesIntoAPaneGoesThroughTheHermesGuard(t *testing.T) {
 		"pasteBracketed": {"Tmux.PasteChecked", "Tmux.PastePane", "Tmux.SendHermes"},
 		"pasteEnter":     {"Tmux.PasteChecked", "Tmux.PastePane", "Tmux.SendHermes"},
 		"SendHermes":     {"hostSide.hermesPaste"},
-		"hermesPaste":    {"hostSide.paste"},
+		"hermesPaste":    {"hermesRuntime.gatedSend"},
+		"gatedSend":      {"hostSide.paste"},
 	} {
 		got := slices.Clone(callers[name])
 		slices.Sort(got)

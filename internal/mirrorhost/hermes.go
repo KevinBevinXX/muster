@@ -65,17 +65,18 @@ var (
 )
 
 // pasteRefusalOf is the Msg.Refusal kind of a guard refusal, "" for any other
-// error.
+// error: a runtime's own refusal (pasteGuard) is its kind.
 func pasteRefusalOf(err error) string {
 	switch {
-	case errors.Is(err, ErrHermesPane):
-		return mirror.PasteRefusalHermes
 	case errors.Is(err, ErrMultiplexerPane):
 		return mirror.PasteRefusalMultiplexer
 	case errors.Is(err, ErrPaneUnchecked):
 		return mirror.PasteRefusalUnchecked
-	case errors.Is(err, ErrOpenCodePane):
-		return mirror.PasteRefusalOpenCode
+	}
+	for _, r := range knownRuntimes {
+		if g, ok := r.(pasteGuard); ok && errors.Is(err, g.refusal()) {
+			return g.refusalKind()
+		}
 	}
 	return claudeRefusalOf(err)
 }
@@ -187,7 +188,7 @@ func (h HermesIdentity) MultiplexerInTree(root int) (HermesProc, bool, error) {
 }
 
 // walk visits, breadth-first from root, every process in the tree that
-// matches the broad rule (hermesShape), until visit returns true. A matching
+// matches the broad rule (guardShape), until visit returns true. A matching
 // process's own children are walked only with through. Its error is the
 // fail-closed case InTree documents.
 func (h HermesIdentity) walk(root int, through bool, visit func(HermesProc) bool) error {
@@ -227,7 +228,7 @@ func (h HermesIdentity) walk(root int, through bool, visit func(HermesProc) bool
 		if p.argvUnread || len(strings.Join(p.argv, "")) == 0 {
 			return fmt.Errorf("the command line of process %d in the tree of %d could not be read", pid, root)
 		}
-		if rule, ok := hermesShape(p, h.cwdOf(pid)); ok && (rule != hermesRuleOpenCode || h.onPaneTerminal(pid, p, root, procs)) {
+		if rule, ok := guardShape(p, h.cwdOf(pid)); ok && (rule != hermesRuleOpenCode || h.onPaneTerminal(pid, p, root, procs)) {
 			if visit(HermesProc{PID: pid, Rule: rule}) {
 				return nil
 			}
@@ -325,16 +326,28 @@ func multiplexerName(s string) string {
 	return strings.ToLower(strings.TrimSpace(s))
 }
 
-// hermesShape reports whether p makes the guard refuse, and which rule
-// matched. cwd reads the process's working directory, and is called only for
-// a relative cli.py.
-func hermesShape(p procInfo, cwd func() string) (string, bool) {
+// guardShape reports whether p makes the guard refuse, and which rule
+// matched: a multiplexer client, else the first runtime whose pasteGuard
+// shape matches (knownRuntimes' order). cwd reads the process's working
+// directory, and is called only for a relative cli.py.
+func guardShape(p procInfo, cwd func() string) (string, bool) {
 	if multiplexers[multiplexerName(p.comm)] || (len(p.argv) > 0 && multiplexers[multiplexerName(p.argv[0])]) {
 		return hermesRuleMultiplexer, true
 	}
-	if openCodeShape(p) {
-		return hermesRuleOpenCode, true
+	for _, r := range knownRuntimes {
+		if g, ok := r.(pasteGuard); ok {
+			if rule, ok := g.shape(p, cwd); ok {
+				return rule, true
+			}
+		}
 	}
+	return "", false
+}
+
+// hermesShape reports whether p is Hermes-shaped by the broad rule, and which
+// rule matched (Hermes's pasteGuard shape). cwd reads the process's working
+// directory, and is called only for a relative cli.py.
+func hermesShape(p procInfo, cwd func() string) (string, bool) {
 	if p.comm == "hermes" && len(p.argv) > 1 && filepath.Base(p.argv[1]) == "hermes" {
 		return hermesRuleLauncher, true
 	}
@@ -585,11 +598,17 @@ func (h *hostSide) guardPane(ctx context.Context, pane string) error {
 	case hp.Rule == hermesRuleMultiplexer:
 		h.c.log.Printf("muster-mirror: pane %s runs a terminal multiplexer client (pid %d), which can hide Hermes; nothing is typed into it", pane, hp.PID)
 		return ErrMultiplexerPane
-	case hp.Rule == hermesRuleOpenCode:
-		h.c.log.Printf("muster-mirror: pane %s runs opencode (pid %d); nothing is typed into it", pane, hp.PID)
-		return ErrOpenCodePane
-	default:
-		h.c.log.Printf("muster-mirror: pane %s runs Hermes (pid %d, %s); nothing is typed into it", pane, hp.PID, hp.Rule)
-		return ErrHermesPane
 	}
+	// The runtime whose rule matched refuses in its own words. A rule no
+	// runtime owns is refused as Hermes, as every refusal was before there
+	// was more than one: the guard fails closed.
+	var guard pasteGuard = hermesRuntime{}
+	for _, r := range knownRuntimes {
+		if rg, ok := r.(pasteGuard); ok && rg.owns(hp.Rule) {
+			guard = rg
+			break
+		}
+	}
+	h.c.log.Printf("muster-mirror: pane %s runs %s (pid %d, %s); nothing is typed into it", pane, guard.label(), hp.PID, hp.Rule)
+	return guard.refusal()
 }

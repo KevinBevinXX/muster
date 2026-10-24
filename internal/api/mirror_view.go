@@ -78,12 +78,15 @@ func (s *Server) handleMirrorViewPage(w http.ResponseWriter, r *http.Request) {
 	v := ui.MirrorViewView{Host: h.Host, Session: e.Session, Window: e.Window, Title: mirrorTitle(e), Label: e.Label, Qualifier: e.Qualifier, Interactive: h.Interactive,
 		StepUp: s.stepUpView(r, ""), Nonce: newSendNonce(), Dictate: s.dictatePath(), Upload: s.uploadPath(),
 		FocusHistory: s.mirrorFocusHistoryPath(e.SessionKey()), DraftUser: draftUser(r.Context())}
-	// 🔴 A HERMES WINDOW SENDS ONLY WHEN ITS HOST ADVERTISED hermesSend
-	// (Phase 3): otherwise its composer is drawn disabled, with no queue, and
-	// every send is refused again at the hub (the hermesSend switch) and on
-	// the host (its own switch, and the paste guard).
-	if e.HermesView() {
-		v.Hermes, v.HermesSend = true, h.HermesSend && h.Interactive
+	// 🔴 A WINDOW OF A RUNTIME WITH A GATED SEND (Hermes) SENDS ONLY WHEN
+	// ITS HOST ADVERTISED IT (Phase 3): otherwise its composer is drawn
+	// disabled, with no queue, and every send is refused again at the hub
+	// (the gated-send switch) and on the host (its own switch, and the paste
+	// guard). v.Hermes and v.HermesSend are that composer's (its words are
+	// Hermes's, the one such runtime).
+	if rt, ok := e.Spec(); ok && rt.GatedSend && e.AgentView() {
+		send, _ := h.GatedSendOn(rt)
+		v.Hermes, v.HermesSend = true, send && h.Interactive
 	}
 	if !v.Hermes || v.HermesSend {
 		v.Queue = s.mirrorComposerQueue(r.Context(), h, e, sendQueueEditing(r))

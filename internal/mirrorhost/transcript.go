@@ -130,9 +130,32 @@ func (h *hostSide) watch(m mirror.Msg) {
 		fail(err)
 		return
 	}
-	cb, claudeOK := h.claudeBackend()
-	src, hermesOK := h.hermesSource()
-	if !claudeOK && !hermesOK {
+	// Each runtime's view source on this connection (viewSource): the other
+	// runtimes', asked first, then Claude Code's transcript tail, which
+	// serves every window none of them claims.
+	type source struct {
+		claims func(context.Context, mirror.Msg) bool
+		serve  func(context.Context, mirror.Msg) error
+		gone   error
+	}
+	var claude *source
+	var others []source
+	for _, r := range knownRuntimes {
+		vs, ok := r.(viewSource)
+		if !ok {
+			continue
+		}
+		claims, serve, gone, ok := vs.viewer(h)
+		if !ok {
+			continue
+		}
+		if r.Name() == mirror.RuntimeClaude {
+			claude = &source{claims, serve, gone}
+			continue
+		}
+		others = append(others, source{claims, serve, gone})
+	}
+	if claude == nil && len(others) == 0 {
 		fail(errors.New("this host cannot read Claude Code transcripts"))
 		return
 	}
@@ -140,15 +163,17 @@ func (h *hostSide) watch(m mirror.Msg) {
 	// here: this runs on the connection's read loop, and reading the window
 	// (a whole listing) here held every later message behind it.
 	serve := func(ctx context.Context) error {
-		if hermesOK {
-			if _, isHermes := h.hermesWindow(ctx, m); isHermes {
-				return h.hermesTail(ctx, src, m)
+		var gone error
+		for _, o := range others {
+			if o.claims(ctx, m) {
+				return o.serve(ctx, m)
 			}
+			gone = o.gone
 		}
-		if !claudeOK {
-			return errNoHermesViewNow
+		if claude == nil {
+			return gone
 		}
-		return h.tail(ctx, h.claudePaneOf(cb, m), m)
+		return claude.serve(ctx, m)
 	}
 	ctx, cancel := context.WithCancel(h.ctx)
 	h.mu.Lock()
@@ -481,11 +506,14 @@ func (h *hostSide) paste(m mirror.Msg) {
 		}
 		_ = h.send(mirror.Msg{Type: mirror.TypePasted, ID: m.ID, Error: msg, Refusal: pasteRefusalOf(err)})
 	}
-	if m.Runtime == mirror.RuntimeHermes {
-		// The gated send (hermes_send.go): its own checks, replies and
-		// refusal kinds, and the one deliberate exception to the guard.
-		h.hermesPaste(m)
-		return
+	if r, ok := runtimeNamed(m.Runtime); ok {
+		if gs, ok := r.(gatedSender); ok {
+			// The runtime's gated send (Hermes's, hermes_send.go): its own
+			// checks, replies and refusal kinds, and the one deliberate
+			// exception to the guard.
+			gs.gatedSend(h, m)
+			return
+		}
 	}
 	if !h.c.cfg.Interactive {
 		reply(errors.New("this host is read-only (muster-mirror was not started with -interactive)"))
