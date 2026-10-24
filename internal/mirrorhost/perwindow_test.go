@@ -657,12 +657,27 @@ func TestTheLargestWindowListFitsOneFrame(t *testing.T) {
 				// JSON writes six-fold; the list-wide bound (MaxPendingWindows)
 				// keeps the first windows' alone.
 				Claude: &ClaudePane{Status: mirror.StatusWaiting, StatusSince: math.MaxInt64, Gen: strings.Repeat("f", 64),
+					// And the last message at its largest: muster keeps it at most
+					// at now (a WAITING window's is the host's now anyway).
+					LastMessage: math.MaxInt64,
 					Pending: &mirror.Pending{Summary: strings.Repeat("<", mirror.MaxPendingSummary), Tool: strings.Repeat("&", mirror.MaxPendingTool),
 						Last: strings.Repeat(">", mirror.MaxPendingLast)}},
 				// Every window with its other panes' Claude sessions at their
 				// per-window bound; the list-wide bound (MaxOtherClaude) keeps
 				// the first windows' alone.
 				Others: otherClaudeAtBound(i)})
+			// The last MaxTurnErrorWindows windows are IDLE instead, each
+			// carrying how its last turn failed with every field at its bound
+			// (a TurnError rides only an idle window, never beside a Pending).
+			// A usage limit is the largest kind: its 11 bytes and a reset time
+			// outweigh a 32-byte code with none.
+			if i >= n-mirror.MaxTurnErrorWindows {
+				c := *out[i].Claude
+				c.Status, c.Pending = mirror.StatusIdle, nil
+				c.TurnError = &mirror.TurnError{Kind: mirror.TurnErrorLimit, At: math.MaxInt64, ResetsAt: math.MaxInt64,
+					Rejected: true, Prompt: strings.Repeat("f", 16), PrevAt: math.MaxInt64, Quick: mirror.MaxTurnErrorQuick}
+				out[i].Claude = &c
+			}
 		}
 		return out
 	}
@@ -702,12 +717,27 @@ func TestTheLargestWindowListFitsOneFrame(t *testing.T) {
 		if pending != mirror.MaxPendingWindows {
 			t.Fatalf("instrument check: %d windows carry what they wait on, want the bound %d", pending, mirror.MaxPendingWindows)
 		}
+		turnErrors := 0
 		for _, w := range l.windows {
-			if w.Label == "" || w.Command == "" || !w.Claude || w.Status != mirror.StatusWaiting || w.StatusSince != math.MaxInt64 || len(w.ClaudeSession) != 64 {
+			if e := w.TurnError; e != nil {
+				if e.Kind != mirror.TurnErrorLimit || e.At != math.MaxInt64 || e.ResetsAt != math.MaxInt64 || !e.Rejected || len(e.Prompt) != 16 || e.PrevAt != math.MaxInt64 || e.Quick != mirror.MaxTurnErrorQuick {
+					t.Fatalf("instrument check: a turn error field was cut, so this is not the worst case: %+v", e)
+				}
+				turnErrors++
+			}
+		}
+		if turnErrors != mirror.MaxTurnErrorWindows {
+			t.Fatalf("instrument check: %d windows carry a turn error, want the bound %d", turnErrors, mirror.MaxTurnErrorWindows)
+		}
+		for _, w := range l.windows {
+			if w.Label == "" || w.Command == "" || !w.Claude || (w.Status != mirror.StatusWaiting && w.TurnError == nil) || w.StatusSince != math.MaxInt64 || len(w.ClaudeSession) != 64 ||
+				w.LastMessage < time.Now().Unix()-2*mirror.ActivityBucket {
 				t.Fatalf("instrument check: a worst-case field was dropped by normalisation, so this is not the worst case: %+v", w)
 			}
 		}
 		m := l.msg(mirror.TypeHello)
+		// And the host's limit at its largest.
+		m.HostLimit = &mirror.HostLimit{At: math.MaxInt64, ResetsAt: math.MaxInt64}
 		m.Version, m.Host, m.Interactive, m.PanePaste, m.StatusReport = mirror.ProtocolVersion, strings.Repeat("h", 63), true, true, true
 		b, err := json.Marshal(m)
 		if err != nil {

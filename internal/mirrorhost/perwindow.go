@@ -368,6 +368,7 @@ func WireWindows(windows []WindowInfo, codenames map[string]string, claude bool,
 		if m.Claude {
 			m.Status, m.StatusSince, m.ClaudeSession, m.Pending = w.Claude.Status, w.Claude.StatusSince, w.Claude.Gen, w.Claude.Pending
 			m.LastMessage = w.Claude.LastMessage
+			m.TurnError = w.Claude.TurnError
 			// 🔴 BUSY COUNTS AS ACTIVE (operator decision). Claude Code writes no
 			// transcript row while a tool runs, while it waits on the person (a
 			// permission prompt, an AskUserQuestion picker) or while a background

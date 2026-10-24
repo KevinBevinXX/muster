@@ -1127,6 +1127,252 @@ for (const vp of [
   });
 }
 
+// 🔴 A USAGE LIMIT HOLDS THE QUEUE (internal/sendqueue limit.go). The bug: a
+// session hit its usage limit and the queue sent every message it held into
+// that limit. Claude Code under a limit rejects each message at once with a
+// record it writes itself ("You've hit your session limit · resets …", model
+// "<synthetic>") and goes back to its prompt — idle, with a newer time, which is
+// all the queue waited for. The fake CLI below plays exactly that against the
+// real host's transcript reader: every message pasted gets the limit as its
+// only reply and the status goes idle. On origin/main the queue then drains —
+// all three pasted, one per idle stretch — so the first test fails at its
+// "nothing more is sent into it" assertion.
+test.describe('a usage limit, phone 390×844 touch', () => {
+  test.use({ ...phone, storageState: { cookies: [], origins: [] } });
+
+  const iso = () => new Date().toISOString();
+  // The reset, two hours ahead, as the CLI names it: "resets 9:30pm (UTC)",
+  // and its own quotaLimits.resetsAt (Unix seconds), the one that wins.
+  const resetAt = () => {
+    const d = new Date(Date.now() + 2 * 3600_000);
+    d.setUTCSeconds(0, 0);
+    return d;
+  };
+  const resetText = (d: Date) => {
+    const h = d.getUTCHours();
+    const hh = h % 12 === 0 ? 12 : h % 12;
+    return `${hh}:${String(d.getUTCMinutes()).padStart(2, '0')}${h < 12 ? 'am' : 'pm'} (UTC)`;
+  };
+  const promptRow = (text: string) => JSON.stringify({ type: 'user', timestamp: iso(), message: { role: 'user', content: text } }) + '\n';
+  // limitRow is the CLI's limit record; null names no reset at all.
+  const limitRow = (d: Date | null) =>
+    JSON.stringify({
+      type: 'assistant',
+      timestamp: iso(),
+      error: 'rate_limit',
+      isApiErrorMessage: true,
+      apiErrorStatus: 429,
+      ...(d ? { quotaLimits: { status: 'rejected', resetsAt: Math.floor(d.getTime() / 1000), rateLimitType: 'five_hour' } } : {}),
+      message: {
+        model: '<synthetic>',
+        role: 'assistant',
+        content: [{ type: 'text', text: "You've hit your session limit" + (d ? ' · resets ' + resetText(d) : '') }],
+      },
+    }) + '\n';
+  const replyRow = (text: string) =>
+    JSON.stringify({ type: 'assistant', timestamp: iso(), message: { model: 'claude-e2e', role: 'assistant', content: [{ type: 'text', text }] } }) + '\n';
+
+  // limitedCLI is Claude Code under the limit: each new paste is written to the
+  // transcript as its prompt, answered only by the limit, and the status goes
+  // idle with a newer time. It runs until stopped.
+  function limitedCLI(reset: Date) {
+    let seen = pasted().length;
+    const timer = setInterval(() => {
+      const ps = pasted();
+      for (; seen < ps.length; seen++) {
+        fs.appendFileSync(tr, promptRow(ps[seen].slice(pane.length + 1)) + limitRow(reset));
+        setStatus('idle');
+      }
+    }, 100);
+    return () => clearInterval(timer);
+  }
+  // answered is a real answer to the latest prompt: the limit has lifted.
+  function answered(text: string) {
+    fs.appendFileSync(tr, replyRow(text));
+    setStatus('idle');
+  }
+
+  test('a usage limit holds the queue instead of draining it, fails the bounced message for a Retry by hand, and a real answer resumes the rest', async ({ page }) => {
+    await busyAndSeen();
+    fs.rmSync(tr + '.pasted', { force: true });
+    await openView(page, newHost);
+    const [a, b, c] = ['limit one ' + stamp, 'limit two ' + stamp, 'limit three ' + stamp];
+    for (const t of [a, b, c]) await queue(page, t, true);
+    await expect(page.locator('#mv-queue-waiting'), `busy is seen (log:\n${mirrorLog})`).toContainText('working', { timeout: 20_000 });
+    const reset = resetAt();
+    const stop = limitedCLI(reset);
+    try {
+      busy(false);
+      await expect.poll(pasted, { message: `the first message is sent once idle (log:\n${mirrorLog})`, timeout: 30_000 }).toEqual([`${pane} ${a}`]);
+      // The limit rejected it: the queue says it is held, until the reset in
+      // the reader's own time — and then holds for as long as a wrong send
+      // would take to land.
+      const waiting = page.locator('#mv-queue-waiting');
+      // Whichever comes first: the server says it holds, or a second message
+      // goes into the limit (origin/main: the drain, then the third).
+      await expect
+        .poll(async () => pasted().length > 1 || ((await waiting.textContent()) ?? '').includes('Held'), { timeout: 30_000 })
+        .toBe(true);
+      expect(pasted(), 'the limit rejected the first: nothing more is sent into it').toEqual([`${pane} ${a}`]);
+      await expect(waiting, `held on the limit (log:\n${mirrorLog})`).toContainText('Held — usage limit, resumes', { timeout: 20_000 });
+      await expect(waiting.locator('time[data-clock]')).toHaveAttribute('data-clock', String(reset.getTime()));
+      const local = await page.evaluate((ms) => {
+        const d = new Date(ms);
+        return d.toDateString() === new Date().toDateString()
+          ? d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
+          : d.toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+      }, reset.getTime());
+      await expect(waiting.locator('time[data-clock]'), 'the reset in the reader\'s local time').toHaveText(local);
+      await holdWindow();
+      await holdWindow();
+      expect(pasted(), 'nothing else is sent into the limit').toEqual([`${pane} ${a}`]);
+      // The bounced message is failed, saying why, with a plain Retry (no
+      // "may already have been sent" question: the limit refused it).
+      const bounced = rowIn(page, a, 'failed');
+      await expect(bounced, 'the bounced message is failed').toHaveCount(1, { timeout: 20_000 });
+      await expect(bounced).toContainText('Rejected: usage limit');
+      await expect(bounced.getByRole('button', { name: 'Queue this failed message again' })).toBeVisible();
+      await expect(rowIn(page, b, 'queued')).toHaveCount(1);
+      await expect(rowIn(page, c, 'queued')).toHaveCount(1);
+    } finally {
+      stop();
+    }
+    // A real answer (to a message typed by hand) shows the limit has lifted:
+    // the queue resumes at once, one per turn — and the bounced message is
+    // not among them: only its Retry sends it again.
+    answered('the limit has lifted');
+    await expect.poll(pasted, { message: `the next message is sent (log:\n${mirrorLog})`, timeout: 30_000 }).toEqual([`${pane} ${a}`, `${pane} ${b}`]);
+    answered('answered ' + b);
+    await expect.poll(pasted, { timeout: 30_000 }).toEqual([`${pane} ${a}`, `${pane} ${b}`, `${pane} ${c}`]);
+    answered('answered ' + c);
+    await holdWindow();
+    expect(pasted(), 'the bounced message is not re-sent on its own').toEqual([`${pane} ${a}`, `${pane} ${b}`, `${pane} ${c}`]);
+    await expect(rowIn(page, a, 'failed')).toHaveCount(1);
+    await busyAndSeen();
+  });
+
+  // A WEEKLY LIMIT resets days away: the held line says the date, not only a
+  // time (which would read as today's).
+  test('a limit that resets on another day shows its date', async ({ page }) => {
+    await busyAndSeen();
+    fs.rmSync(tr + '.pasted', { force: true });
+    await openView(page, newHost);
+    const text = 'weekly ' + stamp;
+    await queue(page, text, true);
+    await expect(page.locator('#mv-queue-waiting')).toContainText('working', { timeout: 20_000 });
+    const reset = new Date(Date.now() + 3 * 24 * 3600_000);
+    reset.setUTCSeconds(0, 0);
+    fs.appendFileSync(tr, promptRow('typed by hand ' + stamp) + limitRow(reset));
+    setStatus('idle');
+    const clock = page.locator('#mv-queue-waiting time[data-clock]');
+    await expect(clock, `held (log:\n${mirrorLog})`).toHaveAttribute('data-clock', String(reset.getTime()), { timeout: 20_000 });
+    const want = await page.evaluate((ms) => new Date(ms).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }), reset.getTime());
+    const month = await page.evaluate((ms) => new Date(ms).toLocaleString([], { month: 'short' }), reset.getTime());
+    await expect(clock).toHaveText(want);
+    await expect(clock).toContainText(month);
+    expect(pasted(), 'held: nothing is sent').toEqual([]);
+    await cancelRow(rowIn(page, text, 'queued'), true);
+    await expect(rowIn(page, text, 'cancelled')).toHaveCount(1);
+    answered('the limit has lifted');
+    await busyAndSeen();
+  });
+
+  // 🔴 THE HELD LINE TAKES RESERVED SPACE. The queue going from "working" to
+  // held is not the reader's input, so anything it moved would count against
+  // the page. Here the hold comes with no send at all (the latest turn — a
+  // message typed by hand — already hit the limit), so the only thing that
+  // changes is that line; and the limit names no reset time, so it says the
+  // LONGEST thing the held line says (two lines at this width, where
+  // "working" is one) — the case the reservation is for. The positive control
+  // is the same observer seeing a shift a block inserted above the queue
+  // makes.
+  test('going from working to held on a usage limit moves nothing (no layout shift)', async ({ page }) => {
+    await busyAndSeen();
+    fs.rmSync(tr + '.pasted', { force: true });
+    await openView(page, newHost);
+    const text = 'held line ' + stamp;
+    await queue(page, text, true);
+    const waiting = page.locator('#mv-queue-waiting');
+    await expect(waiting).toContainText('working', { timeout: 20_000 });
+    await page.evaluate(() => new Promise<void>((res) => requestAnimationFrame(() => requestAnimationFrame(() => res()))));
+    await page.evaluate(() => {
+      const w = window as unknown as { __shift: number; __shifts: string[] };
+      w.__shift = 0;
+      w.__shifts = [];
+      new PerformanceObserver((l) => {
+        for (const e of l.getEntries() as unknown as { value: number; hadRecentInput: boolean; sources: { node?: Node | null }[] }[]) {
+          const nodes = (e.sources || []).map((x) => x.node).filter((n): n is Node => !!n);
+          const ours = nodes.some((n) => {
+            const el = n instanceof Element ? n : n.parentElement;
+            return !!el && !!el.closest('#mv-compose');
+          });
+          if (ours) w.__shift += e.value;
+          w.__shifts.push(`${e.value.toFixed(4)} ours=${ours} ` + nodes.map((n) => (n instanceof Element ? n.id || n.tagName : n.nodeName)).join(','));
+        }
+      }).observe({ type: 'layout-shift', buffered: false });
+    });
+    const before = await rowIn(page, text, 'queued').boundingBox();
+    // A prompt typed by hand, rejected by a limit that names no reset; the
+    // turn ends.
+    fs.appendFileSync(tr, promptRow('typed by hand ' + stamp) + limitRow(null));
+    setStatus('idle');
+    await expect(waiting, `held (log:\n${mirrorLog})`).toContainText('Held — usage limit; no reset time given', { timeout: 20_000 });
+    const lines = await waiting.evaluate((el) => Math.round(el.scrollHeight / parseFloat(getComputedStyle(el).lineHeight)));
+    expect(lines, 'instrument check: the held line wraps, so the reservation is what keeps it still').toBe(2);
+    await page.evaluate(() => new Promise<void>((res) => requestAnimationFrame(() => requestAnimationFrame(() => res()))));
+    await page.waitForTimeout(300);
+    const shift = await page.evaluate(() => (window as unknown as { __shift: number }).__shift);
+    const log = await page.evaluate(() => (window as unknown as { __shifts: string[] }).__shifts);
+    test.info().annotations.push({ type: 'layout-shift', description: `held line: ${shift} ${JSON.stringify(log)}` });
+    // Under 0.001, not the page budget's 0.01: one line of growth with no
+    // reservation measured 0.005–0.006 here (the composer's top moving), which the
+    // budget would let through.
+    expect(shift, 'no layout shift going to held: ' + JSON.stringify(log)).toBeLessThan(0.001);
+    expect(await rowIn(page, text, 'queued').boundingBox(), 'the queued row did not move').toEqual(before);
+    expect(pasted(), 'held: nothing is sent').toEqual([]);
+    // CONTROL: the observer sees a shift when something above the queue grows.
+    await page.evaluate(() => {
+      const q = document.getElementById('mv-queue');
+      const d = document.createElement('div');
+      d.style.height = '120px';
+      q?.parentElement?.insertBefore(d, q);
+    });
+    await page.evaluate(() => new Promise<void>((res) => requestAnimationFrame(() => requestAnimationFrame(() => res()))));
+    await page.waitForTimeout(300);
+    const control = await page.evaluate(() => (window as unknown as { __shift: number }).__shift);
+    test.info().annotations.push({ type: 'layout-shift', description: `control: ${control}` });
+    expect(control, 'CONTROL: the same observer sees an inserted block shift the queue').toBeGreaterThan(shift);
+    // At 320px the held line still takes at most its two reserved lines —
+    // clamped, the whole text in its title.
+    await page.setViewportSize({ width: 320, height: 640 });
+    const at320 = await waiting.evaluate((el) => ({
+      lines: Math.round(el.getBoundingClientRect().height / parseFloat(getComputedStyle(el).lineHeight)),
+      title: el.getAttribute('title') ?? '',
+    }));
+    expect(at320.lines, 'two lines at 320px').toBeLessThanOrEqual(2);
+    expect(at320.title).toContain('Held — usage limit; no reset time given');
+    // A tap shows the whole line in a popover — the clamped end ("…or tap
+    // Send now.") included — and moves nothing on the page.
+    const before320 = await page.evaluate(() => (window as unknown as { __shift: number }).__shift);
+    const rowBefore = await rowIn(page, text, 'queued').boundingBox();
+    await waiting.tap();
+    const full = page.locator('#mv-queue-waiting-full');
+    await expect(full).toBeVisible();
+    await expect(full).toContainText('Send now');
+    await page.evaluate(() => new Promise<void>((res) => requestAnimationFrame(() => requestAnimationFrame(() => res()))));
+    expect(await page.evaluate(() => (window as unknown as { __shift: number }).__shift), 'opening the whole line shifts nothing').toBe(before320);
+    expect(await rowIn(page, text, 'queued').boundingBox(), 'the queued row did not move').toEqual(rowBefore);
+    await page.keyboard.press('Escape');
+    await expect(full).toBeHidden();
+    await page.setViewportSize({ width: 390, height: 844 });
+    // Tidy: cancel it, and leave the session answered for the specs after.
+    await cancelRow(rowIn(page, text, 'queued'), true);
+    await expect(rowIn(page, text, 'cancelled')).toHaveCount(1);
+    answered('the limit has lifted');
+    await busyAndSeen();
+  });
+});
+
 // 🔴 THE CLAUDE PROMPT GUARD: a message from muster must never be the keystroke
 // that answers a permission prompt. Each test runs its OWN host and transcript,
 // so it neither reads nor moves the shared one's status.

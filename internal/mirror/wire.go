@@ -417,6 +417,12 @@ type Msg struct {
 	// per-session view of a per-window host from Windows — never from the
 	// host's Sessions, so the two cannot disagree.
 	Windows []Window `json:"windows,omitempty"`
+	// HostLimit (hello, sessions) is a usage limit the host's Claude Code
+	// sessions are under right now, across ALL its Claude windows — the limit
+	// is the account's, not a window's, and Windows carries a TurnError on at
+	// most MaxTurnErrorWindows of them. nil when none (turnerror.go).
+	// Backward-compatible both ways, like Windows' TurnError.
+	HostLimit *HostLimit `json:"hostLimit,omitempty"`
 	// Window (open, watch, paste) is the tmux window id (Window.ID) the request
 	// is for, within Session. Empty — every request before this field existed,
 	// and every request to a per-session host — is the session's ACTIVE window.
@@ -564,6 +570,12 @@ type Window struct {
 	// it (and keeps ordering by Activity); an older host sends none, and muster
 	// falls back to Activity.
 	LastMessage int64 `json:"lastMessage,omitempty"`
+	// TurnError is how the latest turn of an IDLE Claude window ended when it
+	// ended in an error Claude Code wrote itself — a usage limit, "Not logged
+	// in", an API error (turnerror.go); nil otherwise, and on at most
+	// MaxTurnErrorWindows windows of a list. What the send queue holds on.
+	// Backward-compatible both ways, like Pending.
+	TurnError *TurnError `json:"turnError,omitempty"`
 }
 
 // CardActivity is the window's activity as the Agents list uses it — the
@@ -1042,6 +1054,7 @@ func NormalizeWindows(in []Window, now int64) []Window {
 		others += len(out[i].OtherClaude)
 	}
 	boundPending(out)
+	boundTurnError(out)
 	active := map[string]bool{}
 	for i := range out {
 		if out[i].Active {
@@ -1199,7 +1212,7 @@ func (w Window) Equal(o Window) bool {
 		w.Activity == o.Activity && w.Claude == o.Claude && w.Command == o.Command && w.Status == o.Status &&
 		w.StatusSince == o.StatusSince && w.ClaudeSession == o.ClaudeSession && slices.Equal(w.OtherClaude, o.OtherClaude) &&
 		pendingEqual(w.Pending, o.Pending) && w.Runtime == o.Runtime && w.AgentSession == o.AgentSession &&
-		w.LastMessage == o.LastMessage
+		w.LastMessage == o.LastMessage && turnErrorEqual(w.TurnError, o.TurnError)
 }
 
 // AskTyping is an answer to type into an AskUserQuestion picker (Msg.Ask):

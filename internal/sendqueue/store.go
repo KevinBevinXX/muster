@@ -15,15 +15,18 @@
 // delivery, which acts as that row's owner.
 //
 // 🔴 A MESSAGE IS CLAIMED ONCE AND NEVER RETRIED AFTER ANYTHING REACHED THE
-// HOST. Claim moves a row from queued to sending in one conditional UPDATE: a
-// send that fails is failed, and a process that dies mid-send leaves a row that
-// Recover marks failed (may have been delivered) once its claim's lease has
-// expired. The ONE way back to queued is a send the hub refused as superseded
+// HOST — BUT ONE IT REACHED THAT CLAUDE CODE PROVABLY REJECTED. Claim moves a
+// row from queued to sending in one conditional UPDATE: a send that fails is
+// failed, and a process that dies mid-send leaves a row that Recover marks
+// failed (may have been delivered) once its claim's lease has expired. The ONE
+// way back to queued is a send the hub refused as superseded
 // (Outcome.Superseded: another paste got into the window between the decision
 // and the paste), which by construction wrote nothing to the host. A message is
-// never pasted twice by the queue on its own: a failed row stays failed, and a
-// person's Retry (PGStore.Retry) queues its text again as a NEW row — its own
-// id, so its own delivery nonce — once per failed row.
+// never pasted twice by the queue on its own: a failed row stays failed — a
+// SENT row a usage limit bounced is failed too (Reject; limit.go), never
+// re-sent automatically — and a person's Retry (PGStore.Retry) queues its text
+// again as a NEW row — its own id, so its own delivery nonce — once per failed
+// row.
 //
 // 🔴 A CLAIM IS A LEASE, HELD BY ONE INSTANCE. Claim records the claiming
 // dispatcher (claimed_by) and lease_until, Renew extends it while the send
@@ -778,6 +781,51 @@ func (s *PGStore) Finish(ctx context.Context, id int64, by string, o Outcome, no
 		return fmt.Errorf("sendqueue: finish: %w", err)
 	}
 	return nil
+}
+
+// RecentSent is, for every target of every owner whose most recently CLAIMED
+// message was claimed after `after`, that message — when it is sent. What
+// the dispatcher checks for a usage limit's bounce (rejectBounced): only a
+// target's latest send can be the one its latest turn answered, and it has to
+// be found whether or not anything else is still queued for the target (a
+// Heads pass sees only targets with an open row).
+func (s *PGStore) RecentSent(ctx context.Context, after time.Time) ([]Item, error) {
+	rows, err := s.pool.Query(sys(ctx), `SELECT `+cols+` FROM (
+			SELECT DISTINCT ON (owner_id, mirror_host, mirror_session, mirror_window) *
+			FROM send_queue WHERE claimed_at > $1
+			ORDER BY owner_id, mirror_host, mirror_session, mirror_window, claimed_at DESC, id DESC
+		) latest WHERE state = 'sent' ORDER BY id`, after)
+	if err != nil {
+		return nil, fmt.Errorf("sendqueue: recent sent: %w", err)
+	}
+	defer rows.Close()
+	var out []Item
+	for rows.Next() {
+		var it Item
+		var state string
+		if err := rows.Scan(itemDests(&it, &state)...); err != nil {
+			return nil, fmt.Errorf("sendqueue: recent sent: %w", err)
+		}
+		settle(&it, state)
+		out = append(out, it)
+	}
+	return out, rows.Err()
+}
+
+// Reject marks SENT message id failed because a usage limit bounced it before
+// Claude Code worked on it (limit.go): not delivered, detail saying why. It is
+// then an ordinary failed row — its Retry (PGStore.Retry) queues the text again
+// as a new row, by hand; nothing re-sends it on its own. Its after_since (the
+// status time it was pasted on) is kept, so the next message still waits for a
+// newer one. false when the row is no longer sent: one Reject per send,
+// whoever else tries.
+func (s *PGStore) Reject(ctx context.Context, id int64, detail string) (bool, error) {
+	tag, err := s.pool.Exec(sys(ctx), `UPDATE send_queue SET state = 'failed', detail = $2, may_have_delivered = false
+		WHERE id = $1 AND state = 'sent'`, id, clampDetail(detail))
+	if err != nil {
+		return false, fmt.Errorf("sendqueue: reject: %w", err)
+	}
+	return tag.RowsAffected() == 1, nil
 }
 
 // Retention is how long a finished message is kept (its outcome is shown
