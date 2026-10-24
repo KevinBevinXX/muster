@@ -1,6 +1,10 @@
 package agents
 
-import "time"
+import (
+	"errors"
+	"slices"
+	"time"
+)
 
 // The agent KINDS: which runtime an agent row is provisioned as.
 //
@@ -16,34 +20,47 @@ import "time"
 // the pinned CLI) authenticated by one `claude setup-token` drawn from muster's
 // per-account pool (internal/ccpool). Its spec profile is in
 // internal/agentspec/claudecode.go.
-//
-// KindHermes is the Hermes pod: the hermes-agent image (cmd/hermesd + Hermes at
-// one pinned upstream sha, images/hermes-agent) on the OpenRouter credential
-// the gateway kind uses (docs/design/hermes.md, "The hermes agent kind"). Its
-// spec profile is in internal/agentspec/hermes.go.
 const (
 	KindGateway    = "gateway"
 	KindClaudeCode = "claude-code"
-	KindHermes     = "hermes"
 )
 
-// Kinds is every kind this build knows, in the order a picker shows them. It is
-// the same set the latest agents_kind_check admits (migration 0038); a test
-// pins the two.
-var Kinds = []string{KindGateway, KindClaudeCode, KindHermes}
+// Kinds is every kind this build knows, in the order a picker shows them.
+// Together with [RetiredKinds] it is the set the latest agents_kind_check
+// admits (migration 0038); a test pins the relationship.
+var Kinds = []string{KindGateway, KindClaudeCode}
 
-// RunsPodSupervisor reports whether kind's image runs one of muster's OWN
-// in-pod supervisors — ccd (claude-code) or hermesd (hermes) — rather than the
-// operator's gateway runtime. Those kinds share a pod profile: a persistent
-// /data volume, the repository checked out by the supervisor before the agent
-// starts (and, so, the first turn held for it), a connected repository only,
-// and the spec re-applied on every Start.
+// RetiredKindHermes is the REMOVED `hermes` kind (a Hermes pod behind
+// hermesd). This build cannot provision one: it is not in [Kinds], so no
+// dispatch, picker or MUSTER_AGENT_KINDS entry enables it.
+//
+// 🔴 IT IS STILL NAMED BECAUSE ROWS OF IT MAY STILL EXIST. Migration 0038's
+// agents_kind_check admits it and the schema is left alone, so a hermes agent
+// created by an older build stays listable, stoppable and destroyable (none of
+// those build a spec); anything that would build its pod — Start, a reapply,
+// a model change — is refused with [ErrRetiredKind].
+const RetiredKindHermes = "hermes"
+
+// RetiredKinds is every kind a stored row may carry that this build no longer
+// provisions.
+var RetiredKinds = []string{RetiredKindHermes}
+
+// ErrRetiredKind is the refusal for an agent whose kind was removed: it can
+// only be stopped or destroyed.
+var ErrRetiredKind = errors.New("this agent's kind was removed from muster; it can only be stopped or destroyed")
+
+// IsRetiredKind reports whether kind is one of [RetiredKinds].
+func IsRetiredKind(kind string) bool {
+	return slices.Contains(RetiredKinds, kind)
+}
+
+// RunsPodSupervisor reports whether kind's image runs muster's OWN in-pod
+// supervisor, ccd (claude-code), rather than the operator's gateway runtime.
+// Such a kind gets a persistent /data volume, the repository checked out by
+// the supervisor before the agent starts (and, so, the first turn held for
+// it), a connected repository only, and the spec re-applied on every Start.
 func RunsPodSupervisor(kind string) bool {
-	switch ResolveKind(kind) {
-	case KindClaudeCode, KindHermes:
-		return true
-	}
-	return false
+	return ResolveKind(kind) == KindClaudeCode
 }
 
 // ResolveKind maps the unset kind to [KindGateway] — the one place that default
@@ -72,8 +89,8 @@ func KindLabel(kind string) string {
 	switch ResolveKind(kind) {
 	case KindClaudeCode:
 		return "Claude Code"
-	case KindHermes:
-		return "Hermes"
+	case RetiredKindHermes:
+		return "Hermes (removed)"
 	case KindGateway:
 		return "Standard"
 	}
@@ -96,13 +113,6 @@ func KindLabel(kind string) string {
 // THE CALLER; the work keeps going in the TUI and is visible in the transcript.
 const ClaudeCodeTurnTimeout = 35 * time.Minute
 
-// HermesTurnTimeout bounds ONE request to a hermes agent's hermesd, for
-// ClaudeCodeTurnTimeout's reason: it outlasts hermesd's own turn budget
-// (turnTimeout, a fixed 30m, cmd/hermesd/turn.go), so hermesd's typed
-// `504 turn_timeout` — which says the run is still going and that its outcome
-// comes with the session's next reply — always arrives before muster gives up.
-const HermesTurnTimeout = 35 * time.Minute
-
 // KindTurnTimeout is the per-request budget a kind's turns need, or ZERO for "use
 // the gateway's configured client unchanged" — which is what the gateway kind
 // gets, so its behaviour is byte-identical to before kinds existed.
@@ -110,8 +120,6 @@ func KindTurnTimeout(kind string) time.Duration {
 	switch ResolveKind(kind) {
 	case KindClaudeCode:
 		return ClaudeCodeTurnTimeout
-	case KindHermes:
-		return HermesTurnTimeout
 	}
 	return 0
 }

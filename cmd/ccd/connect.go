@@ -124,7 +124,7 @@ func runConnectGit(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-// The pieces below are internal/podagent's (hermesd shares them); these names
+// The pieces below are internal/podagent's; these names
 // keep ccd's call sites and tests reading as before.
 var noRedirects = podagent.NoRedirects
 

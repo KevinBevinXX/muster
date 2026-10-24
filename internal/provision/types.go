@@ -310,9 +310,10 @@ type Security struct {
 	NoServiceAccountToken bool
 	// ReadOnlyRoot makes the instance's root filesystem read-only, with a
 	// writable, empty /tmp of its own (Kubernetes: readOnlyRootFilesystem and an
-	// emptyDir at /tmp); the workspace stays writable. The hermes kind declares
-	// it. ⚠ It enters the fingerprint on a line of its own, only when set, so no
-	// spec that does not declare it moves.
+	// emptyDir at /tmp); the workspace stays writable. No kind declares it
+	// since the hermes kind was removed; it stays a driver capability. ⚠ It
+	// enters the fingerprint on a line of its own, only when set, so no spec
+	// that does not declare it moves.
 	ReadOnlyRoot bool `json:",omitempty"`
 }
 
@@ -464,10 +465,9 @@ type Spec struct {
 	// it is asked to (on Kubernetes the pod's terminationGracePeriodSeconds,
 	// SIGTERM to SIGKILL). Zero is the driver's default (Kubernetes: 30 s).
 	//
-	// It exists for the hermes kind: Hermes drains for 30 s on SIGTERM before it
-	// interrupts what is still running, so at the default the kubelet's SIGKILL
-	// lands mid-drain and turns every in-flight run into an `unknown` one
-	// (docs/design/hermes.md, "Restart and resume").
+	// It was added for the since-removed hermes kind (whose runtime drained for
+	// 30 s on SIGTERM); no kind declares it now, and it stays a driver
+	// capability.
 	//
 	// ⚠ omitempty, like Sidecar, so every spec that declares none serialises as
 	// before.

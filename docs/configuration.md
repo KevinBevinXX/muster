@@ -153,7 +153,7 @@ each setting does and which combinations are valid.
 | `MUSTER_AGENT_ENDPOINT_TEMPLATE` | the driver's (`{{.Name}}.{{.Group}}.svc` on Kubernetes) | no | How muster builds an agent's address from its name and group. |
 | `MUSTER_AGENT_CAIRN_URL` | none | no | Cairn coordinates given to the chief only. Set it together with the token, or set neither. |
 | `MUSTER_AGENT_CAIRN_TOKEN` | none | no | The credential for that cairn. |
-| `MUSTER_AGENT_KINDS` | `gateway` | no | A comma list of the agent kinds a dispatch may ask for: `gateway`, `claude-code`, `hermes`. |
+| `MUSTER_AGENT_KINDS` | `gateway` | no | A comma list of the agent kinds a dispatch may ask for: `gateway`, `claude-code`. A leftover `hermes` entry (the kind was removed) is dropped with a boot `WARNING`, not refused. |
 | `MUSTER_AGENT_CC_IMAGE` | none | with `claude-code` | The pinned image for `claude-code` agents, built from `images/claude-code-agent`. |
 | `MUSTER_AGENT_CC_ACCOUNTS` | none | with `claude-code` | A comma list of Claude account names (`[a-z0-9-]`, 1–32 characters each). |
 | `MUSTER_AGENT_CC_TOKEN_<NAME>` | none | for each account | That account's `claude setup-token`. `<NAME>` is the account name upper-cased, with `-` written as `_`. |
@@ -161,10 +161,10 @@ each setting does and which combinations are valid.
 | `MUSTER_AGENT_CC_RATE_LIMIT_COOLDOWN` | `1h` | no | How long a Claude account rests after a `rate_limited` turn whose message states no reset time muster can read (a Go duration, 1m–168h). When the message states one (`resets 9:45pm (UTC)`, `resets Oct 9, 9am (UTC)`), the account rests until then instead. While it rests, the job API places no worker-pool job on it; a new agent may still be given it, ranked last. |
 | `MUSTER_AGENT_CC_MAX_CONCURRENT_JOBS` | none (no cap) | no | Opt-in: how many jobs one Claude account runs at once, counted as its workers with a job queued or running, in any pool (1–64). A worker-pool job that would exceed it is skipped; when every worker is skipped for this or a cooldown, the job API answers 429. Unset, there is no per-account cap. |
 | `MUSTER_AGENT_CC_BYPASS_POOLS` | none | no | A comma list of worker-pool names whose `claude-code` agents run their **job lanes** with permissions **bypassed**: such an agent's pod gets `CCD_JOB_PERMISSION_MODE=bypassPermissions`, `ccd seed` lifts `disableBypassPermissionsMode` and records the bypass disclaimer's consent, and ccd starts each job lane with `--permission-mode bypassPermissions`. "Job lanes" means **sha jobs only** (a job with a `sha` runs in its own worktree); a pool job without a `sha` runs in the agent's working directory, in an ordinary lane, and still prompts. The agent's main CLI and its chat lanes keep default permissions; an unpooled agent and the chief never get it, and neither does an agent holding an **approved grant on a connector that reaches GitHub** (the `github` connector or a `github.com` host): it is started without bypass and a log line names it (the approval doors already refuse such a grant to every pool worker). Names are lower-cased as read (pool names are lower-case only, so `Pr-Review` names the pool `pr-review`) and must then meet the pool-name rules (1–63 of `[a-z0-9-]`, not starting with `-`). Refused at boot without `claude-code` in `MUSTER_AGENT_KINDS`, and for a name that fails those rules; a repeated name is harmless. This is configuration, applied whenever an agent's spec is applied — dispatch, Start, or a profile reapply (`ReapplyProfiles`) — so a running agent keeps the mode it was started with until then. 🔴 **Leaving bypass is DESTROY AND RECREATE**, not Stop → Start: whatever a bypassed lane wrote to the agent's volume survives (hooks or `statusLine` in user settings, MCP servers in `.claude.json`, the project's local settings file, shell rc files), and de-listing plus Stop → Start does not remove it. 🔴 A listed pool's job lanes run any command on the code they are handed, without approval, and can read anything in the pod — that worker's own Claude setup-token and its `MUSTER_HOOK_TOKEN` (so it can call muster's API as that agent) included; every process in the pod runs as the same user, so treat the whole pod as unapproved. Only for pools that review trusted members' PRs. |
-| `MUSTER_AGENT_HERMES_IMAGE` | none | with `hermes` | The pinned image for `hermes` agents, built from `images/hermes-agent` (`make hermes-image`). Its provider credential is the OpenRouter key (`MUSTER_AGENT_OPENROUTER_KEY`, or a member's own); it has none of its own. |
-| `MUSTER_AGENT_HERMES_STORAGE_SIZE` | `10Gi` | no | The size of each `hermes` agent's `/data` volume. 🔴 Its storage class must give a **local filesystem**, not NFS or virtiofs: Hermes's `state.db` is SQLite in WAL mode. The pod's root filesystem is read-only (a writable `/tmp` emptyDir is mounted). |
-| `MUSTER_AGENT_NETPOL_FROM_NAMESPACE` | none | `claude-code` or `hermes` on Kubernetes | The namespace muster runs in. The agent's NetworkPolicy only admits muster. |
-| `MUSTER_AGENT_NETPOL_FROM_POD_LABELS` | none | `claude-code` or `hermes` on Kubernetes | Comma-separated `key=value` labels on muster's pods. |
+| `MUSTER_AGENT_HERMES_IMAGE` | none | no | **Retired** with the `hermes` agent kind: nothing reads its value. Set, it is named in a boot `WARNING` so you delete it. |
+| `MUSTER_AGENT_HERMES_STORAGE_SIZE` | none | no | **Retired**, as `MUSTER_AGENT_HERMES_IMAGE`. |
+| `MUSTER_AGENT_NETPOL_FROM_NAMESPACE` | none | `claude-code` on Kubernetes | The namespace muster runs in. The agent's NetworkPolicy only admits muster. |
+| `MUSTER_AGENT_NETPOL_FROM_POD_LABELS` | none | `claude-code` on Kubernetes | Comma-separated `key=value` labels on muster's pods. |
 
 The install script receives each `gateway`-kind agent's settings as JSON in
 `MUSTER_CONFIG`. It is the script's job to copy them into the runtime's own
@@ -317,32 +317,6 @@ cannot close.
 - `CCD_HOOK_SECRET` stays in the CLI's environment, because `ccd hook` needs it.
   It authenticates the hook channel only; `/v1/responses` refuses it.
 - `MUSTER_HOOK_TOKEN` stays, because it is the agent's muster identity.
-
-## hermesd (inside the hermes agent image)
-
-`hermesd` runs inside the `hermes` agent container, in front of one `hermes
-gateway run` ([design](design/hermes.md#the-hermes-agent-kind)). muster sets these
-variables when it provisions a `hermes` agent, so you normally never set them
-yourself. `MUSTER_GATEWAY_BEARER` and `HOOKS_TOKEN` are read as `ccd` reads
-them (above), and are not passed on to Hermes.
-
-| variable | default | required | what it does |
-|---|---|---|---|
-| `HERMES_HOME` | `/data/hermes` | no | Hermes's home on the volume. `hermesd` creates it, the agent shell's HOME (`$HERMES_HOME/home`) and `TMPDIR` (`$HERMES_HOME/cache/tmp`), renders `config.yaml` there on every start, and refuses to start Hermes while a `.env` exists there. |
-| `HERMESD_WORKSPACE` | `/data/workspace` | no | The agent's working directory: the rendered `terminal.cwd`. muster sets it to the checkout (`/data/workspace/<name>`) for an agent dispatched with a repository. |
-| `HERMESD_REPO` | none | no | `owner/name`. `hermesd` clones `https://github.com/<it>` into `HERMESD_WORKSPACE` before it starts Hermes, as `ccd` does with `CCD_REPO`. |
-| `HERMESD_REPO_BRANCH` | the remote's default | no | The branch `hermesd` clones. |
-| `HERMESD_INSTRUCTIONS` | `/etc/hermesd/instructions.md` | no | muster's instructions, sent as `instructions` on every Hermes run. muster places the file outside every volume. An absent file is no instructions. |
-| `HERMESD_MODEL` | none | no | The OpenRouter model slug Hermes runs. muster sets it from the agent's model or `MUSTER_AGENT_MODEL`. |
-| `HERMESD_MODEL_BASE_URL` | none | no | **Test-only.** An OpenAI-compatible base URL used instead of OpenRouter, so the image smoke test runs the production image against a stub model. Its key is still `${OPENROUTER_API_KEY}`, expanded by Hermes. muster never sets it, and `hermesd` logs it at boot whenever it is set. |
-| `HERMESD_LISTEN` | `:18789` | no | muster's agent wire. |
-| `HERMESD_API_PORT` | `8642` | no | Hermes's API server, bound to `127.0.0.1` only. |
-| `HERMESD_RELAY_TIMEOUT` | `240s` | no | How long an approval waits for muster's relay before `hermesd` answers `deny` itself. It must be shorter than the rendered `approvals.timeout` (300 s); `hermesd` refuses to start otherwise. |
-
-Fixed, not configurable: `hermesd`'s own state is `/data/hermesd` (the API server
-key, generated once, mode 0600, and the session map with its intents); the
-gateway is the image's `hermes`; a turn's budget is 30 minutes, after which
-`hermesd` stops the run (`POST /v1/runs/{id}/stop`) and answers `turn_timeout`.
 
 ## Test and e2e harness
 

@@ -35,6 +35,6 @@ Start with the [project README](../README.md) for the pitch and a quickstart.
 - [limits.md](limits.md) — what it does not do, or has not proven
 - [decisions.md](decisions.md) — why things are the way they are
 - [design/android.md](design/android.md) — proposed: a native Android app (actionable notifications, bubbles, widgets, live status)
-- [design/hermes.md](design/hermes.md) — proposed: Hermes mirroring and the `hermes` agent kind
+- [design/hermes.md](design/hermes.md) — Hermes mirroring (the `hermes` agent kind it also designed was removed)
 - [design/agent-cards.md](design/agent-cards.md) — proposed: live subagent and shell counts, and tmux identity colours, on agent cards
 - [../CONTRIBUTING.md](../CONTRIBUTING.md)

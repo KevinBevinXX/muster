@@ -70,9 +70,10 @@ var byteIdentityPins = map[string][2]string{
 	"claude-code": {"c83a3cca4802f5dc70363e4d1d7e3f7294346787b1ad0ae4fd2cb414297fb856", "56cc6be7393232495e5cd989049743941af72dde2b506421dcdb4fd52be1af4d"},
 }
 
-// 🔴 THE READ-ONLY ROOT IS RENDERED FOR HERMES ONLY: a gateway and a
-// claude-code pod render byte for byte, and fingerprint, as they did before the
-// field existed — so adding it rolls no existing pod.
+// 🔴 THE READ-ONLY ROOT IS RENDERED ONLY FOR A SPEC THAT DECLARES IT (no kind
+// does since the hermes kind was removed): a gateway and a claude-code pod
+// render byte for byte, and fingerprint, as they did before the field existed —
+// so adding it rolled no existing pod.
 func TestTheReadOnlyRootLeavesOtherKindsByteIdentical(t *testing.T) {
 	if os.Getenv("MUSTER_PRINT_BYTE_IDENTITY") != "" {
 		for name, spec := range byteIdentitySpecs(t) {
@@ -89,16 +90,13 @@ func TestTheReadOnlyRootLeavesOtherKindsByteIdentical(t *testing.T) {
 	}
 }
 
-// The hermes pod renders the read-only root: readOnlyRootFilesystem on its
-// container, and a writable emptyDir mounted at /tmp.
-func TestTheHermesPodHasAReadOnlyRootAndAWritableTmp(t *testing.T) {
-	cfg := byteIdentityConfig()
-	cfg.Hermes = &agentspec.HermesConfig{Image: "ghcr.io/example-org/hermes-agent:hermes-5fc490e2"}
-	spec, err := agentspec.Build(agents.Agent{ID: 43, Name: "byte-hermes", Kind: agents.KindHermes, HooksToken: "fixture-hooks-h-3",
-		Model: "openrouter/vendor-a/model-one"}, cfg, agentspec.Options{})
-	if err != nil {
-		t.Fatal(err)
-	}
+// A confined spec that DECLARES the read-only root renders it:
+// readOnlyRootFilesystem on its container, and a writable emptyDir mounted at
+// /tmp. (The driver capability outlives the removed hermes kind that first
+// declared it; the claude-code spec here declares it by hand.)
+func TestADeclaredReadOnlyRootRendersWithAWritableTmp(t *testing.T) {
+	spec := byteIdentitySpecs(t)["claude-code"]
+	spec.Security.ReadOnlyRoot = true
 	d, _ := internalDriver(t)
 	dep, err := d.renderDeployment(spec, internalNS)
 	if err != nil {
@@ -107,7 +105,7 @@ func TestTheHermesPodHasAReadOnlyRootAndAWritableTmp(t *testing.T) {
 	pod := dep.Spec.Template.Spec
 	sc := pod.Containers[0].SecurityContext
 	if sc == nil || sc.ReadOnlyRootFilesystem == nil || !*sc.ReadOnlyRootFilesystem || sc.AllowPrivilegeEscalation == nil || *sc.AllowPrivilegeEscalation {
-		t.Fatalf("hermes container security %+v", sc)
+		t.Fatalf("read-only-root container security %+v", sc)
 	}
 	mounted := false
 	for _, m := range pod.Containers[0].VolumeMounts {

@@ -41,7 +41,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -1007,6 +1006,18 @@ func displayOrDefault(v string) string {
 func (a *app) logBanner(ext api.Extensions, port router.Port) {
 	l := a.logger
 
+	// 🔴 A REMOVED KIND'S LEFTOVER SETTINGS BOOT, LOUDLY (dropRetiredKinds):
+	// refusing them would crash-loop the first rollout of this build on a
+	// deployment that still lists them. Printed whatever else is configured.
+	// Names only, never values.
+	if len(a.cfg.RetiredKindSettings) > 0 {
+		l.Printf("WARNING — agent kinds: IGNORING %s: the %s agent kind was REMOVED from muster, so nothing "+
+			"reads them. Delete them from this deployment. An existing %s agent is listed as \"%s\" and can "+
+			"only be stopped or destroyed",
+			strings.Join(a.cfg.RetiredKindSettings, ", "), agents.RetiredKindHermes, agents.RetiredKindHermes,
+			agents.KindLabel(agents.RetiredKindHermes))
+	}
+
 	// The Agents list's Idle section (internal/ui/idle_section.go), in both
 	// directions: the threshold in force, or OFF.
 	if a.cfg.AgentsIdleAfter > 0 {
@@ -1446,21 +1457,9 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 						"bypass means destroying and recreating the agent.", envAgentCCBypassPools)
 				}
 			}
-			if a.cfg.hermesEnabled() {
-				line += fmt.Sprintf(" %s: image %s (%s), on the OpenRouter key (%s, or each member's own), "+
-					"per-agent PVC at /data, no ServiceAccount token, termination grace %ds, turn budget %s.",
-					agents.KindHermes, a.cfg.AgentHermesImage, envAgentHermesImage, envAgentOpenRouterKey,
-					agentspec.HermesTerminationGraceSeconds, agents.HermesTurnTimeout)
-			}
 			l.Print(line)
-			// The confined kinds' network line, labelled with the ones enabled.
-			var confined []string
-			for _, k := range []string{agents.KindClaudeCode, agents.KindHermes} {
-				if slices.Contains(a.cfg.agentKinds(), k) {
-					confined = append(confined, k)
-				}
-			}
-			label := strings.Join(confined, "/")
+			// The confined kind's network line (claude-code is the one confined kind).
+			label := agents.KindClaudeCode
 			// ⚠ "WRITTEN", NOT "ENFORCED". This process writes a NetworkPolicy object;
 			// the cluster's network plugin is what enforces one, and nothing here can
 			// observe that. The line says what a NEW or RE-APPLIED agent gets — an
@@ -1478,7 +1477,7 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 					"%s on networkpolicies.networking.k8s.io — to create a %s agent, and to DESTROY ANY agent",
 					label, a.cfg.AgentNetpolFromLabels, envAgentNetpolFromLabels,
 					a.cfg.AgentNetpolFromNS, envAgentNetpolFromNS, agentspec.ClaudeCodePublicEgressPort,
-					strings.Join(networkPolicyVerbs(), "/"), strings.Join(confined, " or "))
+					strings.Join(networkPolicyVerbs(), "/"), label)
 			} else {
 				l.Printf("%s network: NOT CONFINED — %s=%s writes no NetworkPolicy (%s and %s apply to the %s "+
 					"driver only)",

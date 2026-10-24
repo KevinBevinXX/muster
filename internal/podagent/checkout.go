@@ -83,7 +83,7 @@ const (
 // Voice is how a supervisor names itself and the agent it starts in the
 // sentences a person reads.
 type Voice struct {
-	// Who is the supervisor ("ccd", "hermesd"): log prefixes, "<who> retries".
+	// Who is the supervisor ("ccd"): log prefixes, "<who> retries".
 	Who string
 	// Agent is the thing that starts once the checkout exists, with its article
 	// ("the Claude Code session").

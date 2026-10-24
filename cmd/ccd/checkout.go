@@ -21,8 +21,7 @@ import (
 // session's, and the workspace trust `ccd seed` wrote is for that directory.
 //
 // The checkout itself — the not_ready rule, the github connector request ccd
-// files for itself, the scratch-then-move clone — is internal/podagent's, which
-// hermesd shares; this file reads ccd's variables and names ccd in its
+// files for itself, the scratch-then-move clone — is internal/podagent's; this file reads ccd's variables and names ccd in its
 // sentences.
 
 const (

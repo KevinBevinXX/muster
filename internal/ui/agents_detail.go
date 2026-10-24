@@ -318,7 +318,10 @@ func agentDetailHeader(v AgentDetailView) g.Node {
 				chatHistoryButton(sessionDrawerID),
 				g.If(v.FocusHistory != "", focusHistoryButton()),
 			),
-			g.If(agents.ResolveKind(v.Kind) != agents.KindClaudeCode, agentModelControl(v)),
+			// Only a gateway agent has a per-agent model: a claude-code agent's CLI
+			// chooses its own, and a legacy agent of a REMOVED kind cannot be
+			// re-provisioned with one (agents.RetiredKinds).
+			g.If(agents.ResolveKind(v.Kind) == agents.KindGateway, agentModelControl(v)),
 			// 🔴 THE CHAT IS THE RENDERED VIEW, AND IT IS THE DEFAULT: an agent's
 			// card opens this page. A claude-code agent also has a Terminal — the
 			// same Rendered | Terminal switch a mirrored Claude Code window has
@@ -328,9 +331,10 @@ func agentDetailHeader(v AgentDetailView) g.Node {
 				Div(Class("flex items-center gap-2"), chip("kind", agents.KindLabel(v.Kind)+" · "+v.CCAccount),
 					g.If(v.WorkerPool != "", workerPoolChip(v.WorkerPool)),
 					Div(Class("ml-auto"), viewToggle(true, "", AgentTerminalPath(v.Name))))),
-			// A hermes agent has no Terminal in this release (agents.TerminalCommand
-			// refuses the kind): its chip and nothing else.
-			g.If(agents.ResolveKind(v.Kind) == agents.KindHermes,
+			// A legacy agent of a REMOVED kind (a hermes row from an older build):
+			// its "(removed)" chip and nothing else — it can only be stopped or
+			// destroyed.
+			g.If(agents.IsRetiredKind(v.Kind),
 				Div(Class("flex items-center gap-2"), chip("kind", agents.KindLabel(v.Kind)))),
 		),
 	)

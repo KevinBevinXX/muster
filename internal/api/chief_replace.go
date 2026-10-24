@@ -137,12 +137,6 @@ func (s *Server) replaceChief(ctx context.Context, owner int64, req chiefReplace
 	if err := agents.ValidateModelCredential(req.Model); err != nil {
 		return refuse(http.StatusBadRequest, "%v", err)
 	}
-	// A hermes chief is not offered yet: every chief tool is an MCP tool, and
-	// Hermes's MCP client against muster's /mcp is unverified. Refused before
-	// the old chief is touched (agentprovision refuses it again at build).
-	if kind == agents.KindHermes {
-		return refuse(http.StatusConflict, "a %s agent cannot be the chief yet; nothing was changed", agents.KindHermes)
-	}
 	// 🔴 A PINNED ACCOUNT IS NOT CHECKED BY SELECTION (a pin is an override at
 	// dispatch, ccpool.Select), so a dead one is refused HERE, before the old
 	// chief is touched: deleting it to create a chief that cannot authenticate

@@ -16,7 +16,6 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/ZacxDev/muster/internal/agents"
-	"github.com/ZacxDev/muster/internal/agentspec"
 	"github.com/ZacxDev/muster/internal/attention"
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/cctranscript"
@@ -951,19 +950,15 @@ type dispatchParams struct {
 // claudeCodeNoModel is the one sentence both model writes refuse with.
 const claudeCodeNoModel = "a claude-code agent has no per-agent model (the CLI's own settings choose it); leave the model unset"
 
-// hermesModelRefusal applies agentspec.HermesModelID — the rule a hermes pod's
-// spec is built by — to a model a dispatch or a model change names for a
-// hermes agent, so a model the pod cannot run is refused before anything is
-// created or stored. An empty model (the deployment's default) is left to the
-// build. Any other kind: nil.
-func hermesModelRefusal(kind, model string) error {
-	if agents.ResolveKind(kind) != agents.KindHermes || model == "" {
+// retiredKindRefusal is the one sentence a stored agent of a REMOVED kind
+// (agents.RetiredKinds — a hermes row created by an older build) is refused
+// with by every write that would build its pod: a start or a model change.
+// Stop and destroy build nothing and stay allowed. nil for any live kind.
+func retiredKindRefusal(a agents.Agent) error {
+	if !agents.IsRetiredKind(a.Kind) {
 		return nil
 	}
-	if _, err := agentspec.HermesModelID(model); err != nil {
-		return fmt.Errorf("%w: a %s agent: %v", ErrDispatchRefused, agents.KindHermes, err)
-	}
-	return nil
+	return fmt.Errorf("%w: agent %q is kind %s: %v", ErrDispatchRefused, a.Name, a.Kind, agents.ErrRetiredKind)
 }
 
 // ErrDispatchRefused marks a dispatch refused before anything was created: a
@@ -978,6 +973,10 @@ var ErrDispatchRefused = errors.New("dispatch refused")
 // it again, through resolveKindAccount.
 func (s *Server) resolveKind(ctx context.Context, want string) (string, error) {
 	kind := agents.ResolveKind(strings.ToLower(want))
+	if agents.IsRetiredKind(kind) {
+		return "", fmt.Errorf("%w: agent kind %q was removed from muster; dispatch a %s or %s agent instead",
+			ErrDispatchRefused, kind, agents.KindGateway, agents.KindClaudeCode)
+	}
 	if !agents.ValidKind(kind) {
 		return "", fmt.Errorf("%w: unknown agent kind %q", ErrDispatchRefused, want)
 	}
@@ -1010,9 +1009,6 @@ func (s *Server) resolveKindAccount(ctx context.Context, p dispatchParams) (kind
 	if kind != agents.KindClaudeCode {
 		if p.CCAccount != "" {
 			return "", "", fmt.Errorf("%w: a Claude account can only be pinned for a %s agent", ErrDispatchRefused, agents.KindClaudeCode)
-		}
-		if err := hermesModelRefusal(kind, p.Model); err != nil {
-			return "", "", err
 		}
 		return kind, "", nil
 	}
@@ -1098,8 +1094,6 @@ func (s *Server) createAndDispatchAgent(ctx context.Context, p dispatchParams) (
 	// (hooks, env) runs beside the subscription token. One predicate,
 	// connectedRepo, the same task_dispatch applies to every kind before it
 	// reserves. Before the row, so a refusal creates nothing.
-	// The same holds for a hermes agent: hermesd checks the repository out and
-	// Hermes runs in it, loading its AGENTS.md (agents.RunsPodSupervisor).
 	if agents.RunsPodSupervisor(kind) && p.Repo != "" {
 		if why := s.connectedRepo(ctx, p.Repo); why != "" {
 			return agents.Agent{}, fmt.Errorf("%w: %s", ErrDispatchRefused, why)
@@ -1180,9 +1174,17 @@ func (s *Server) handleAgentStart(w http.ResponseWriter, r *http.Request) {
 	// says why at the door. The row is read as the caller (row-level security),
 	// so another user's agent is not found here and falls through to the
 	// lifecycle path exactly as before.
+	//
+	// A stored agent of a REMOVED kind (a legacy hermes row) is refused here
+	// too, with what it can still do: this build cannot build its pod
+	// (agentprovision.Adapter.Start refuses it again, for any other caller).
 	if s.ext.Kinds != nil && s.ext.Agents != nil {
 		if id, err := strconv.ParseInt(r.PathValue("id"), 10, 64); err == nil {
 			if a, err := s.ext.Agents.Get(r.Context(), id); err == nil {
+				if err := retiredKindRefusal(a); err != nil {
+					http.Error(w, err.Error(), http.StatusConflict)
+					return
+				}
 				if why := s.ext.Kinds.Unavailable(r.Context(), callerID(r.Context()))[agents.ResolveKind(a.Kind)]; why != "" {
 					http.Error(w, fmt.Sprintf("%v: %s", ErrDispatchRefused, why), http.StatusConflict)
 					return
@@ -1258,7 +1260,7 @@ func (s *Server) handleAgentModel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if gerr == nil {
-		if err := hermesModelRefusal(cur.Kind, model); err != nil {
+		if err := retiredKindRefusal(cur); err != nil {
 			http.Error(w, err.Error(), http.StatusConflict)
 			return
 		}

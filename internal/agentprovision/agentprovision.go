@@ -670,6 +670,13 @@ func (a *Adapter) Start(ctx context.Context, agentID int64) error {
 	if err != nil {
 		return fmt.Errorf("agentprovision: start agent %d: load row: %w", agentID, err)
 	}
+	// A legacy row of a REMOVED kind (a hermes agent from an older build) is
+	// refused BEFORE anything is applied or scaled: this build cannot build its
+	// pod, and a bare Scale would revive the old image behind muster's back.
+	// The row is left as it is — it can still be stopped or destroyed.
+	if agents.IsRetiredKind(ag.Kind) {
+		return fmt.Errorf("agentprovision: start agent %d (%s) is kind %s: %w", ag.ID, ag.Name, ag.Kind, agents.ErrRetiredKind)
+	}
 	// 🔴 A START RE-APPLIES THE SPEC instead of only scaling WHENEVER THE SPEC
 	// CARRIES A CREDENTIAL THAT CAN HAVE CHANGED SINCE CREATE: always for
 	// claude-code (the account's setup-token), and for every kind once credentials
@@ -1131,8 +1138,9 @@ func (a *Adapter) buildSpec(ctx context.Context, ag agents.Agent) (provision.Spe
 	switch agents.ResolveKind(ag.Kind) {
 	case agents.KindClaudeCode:
 		return a.buildClaudeCodeSpec(ag, cfg, a.jobBypassVeto(ctx, ag, cfg))
-	case agents.KindHermes:
-		return buildHermesSpec(ag, cfg)
+	}
+	if agents.IsRetiredKind(ag.Kind) {
+		return provision.Spec{}, fmt.Errorf("agentprovision: agent %q is kind %s: %w", ag.Name, ag.Kind, agents.ErrRetiredKind)
 	}
 	if !agents.IsChiefName(ag.Name) {
 		return agentspec.Build(ag, cfg, agentspec.Options{
@@ -1191,25 +1199,6 @@ func (a *Adapter) buildClaudeCodeSpec(ag agents.Agent, cfg agentspec.Config, job
 		opts.GatewaySidecar = &agentspec.GatewaySidecar{}
 	}
 	return agentspec.Build(ag, cfg, opts)
-}
-
-// buildHermesSpec is buildSpec for a hermes row.
-//
-// 🔴 A WORKER GETS NO INSTRUCTIONS, as a claude-code worker gets none:
-// WorkerInstructions teaches the in-pod `muster` CLI and the autosave daemon,
-// and the hermes image carries neither. Its task reaches it as its kickoff turn.
-//
-// 🔴 A HERMES CHIEF IS REFUSED, for now. Every chief tool is reached over
-// muster's MCP server, and Hermes's MCP client against muster's /mcp has not
-// been exercised; a chief that boots with a prompt promising tools it cannot
-// call reads as a working chief. The chief replacement refuses the kind first
-// (internal/api/chief_replace.go); this is the backstop for any other path.
-func buildHermesSpec(ag agents.Agent, cfg agentspec.Config) (provision.Spec, error) {
-	if agents.IsChiefName(ag.Name) {
-		return provision.Spec{}, fmt.Errorf("agentprovision: chief %q is kind %s, which cannot be the chief yet "+
-			"(its MCP client against muster's tools is unverified)", ag.Name, agents.KindHermes)
-	}
-	return agentspec.Build(ag, cfg, agentspec.Options{})
 }
 
 // specFor is the deployment-wide spec config with the model-provider

@@ -1,5 +1,17 @@
 # Design: Hermes mirroring and the `hermes` agent kind
 
+> 🔴 **The `hermes` agent kind (Phase 5) was REMOVED** — it was unused.
+> `cmd/hermesd`, `images/hermes-agent`, `agentspec`'s hermes profile and
+> `make hermes-image` / `hermes-smoke` are gone; the last tree carrying them is
+> `d46b22e1`. What remains: migration `0038` (left in place, so a `hermes` row
+> an older build created stays valid — listed as "Hermes (removed)", stoppable
+> and destroyable, never started; `agents.RetiredKinds`), and a boot `WARNING`
+> that ignores a leftover `hermes` entry in `MUSTER_AGENT_KINDS` and
+> `MUSTER_AGENT_HERMES_IMAGE`. **Hermes mirroring (Phases 1–4) is unaffected**:
+> it lives in `internal/hermeshost`, `internal/mirrorhost`, `cmd/muster-mirror`
+> and the server's mirror code, none of which reaches the kind. The kind's
+> sections below are kept as the historical design record.
+
 **Status: Phases 0–5 done** (Phase 4 in three stacked parts, 4a–4c). Phase 5, the `hermes`
 agent kind, is implemented (`cmd/hermesd`, `images/hermes-agent`, the kind in
 `internal/agents` and `internal/agentspec`, migration `0038`); what it built
@@ -1950,6 +1962,9 @@ view's redaction and caps. Nothing is stored on the server.
 
 ## The hermes agent kind
 
+> **REMOVED** — this section and [Phase 5 as built](#phase-5-as-built) are the
+> historical record of a kind muster no longer has; see the note at the top.
+
 ### Mode: API server, driven by a supervisor
 
 | mode | verdict |
@@ -2418,7 +2433,7 @@ Efforts are rough engineer-days, including tests and docs. Phase 0 is done.
 | ~~2~~ | (**done**, see [as built](#phase-2-as-built)) Read-only Hermes mirroring: the strict mirroring identity rule (moved from Phase 1; then pulled forward into 1b by coordinator decision, and landed there — Phase 2 builds on it), breadcrumb locator with the end-reason staleness rule (no view, unknown status), SQLite reader (compaction, compression-only lineage), renderer, the `hermes-hook` command and its status files with lease and newest-row checks, the Home Manager declaration and the locking allowlist writer, mismatch diagnostics, listing and kind chip, secret-path ledger, `-list -hermes` | 6–8 | 1 |
 | ~~3~~ | (**done**, see [as built](#phase-3-as-built)) Gated pane send **and its live harness**. `make test-livehermes`: the pinned Hermes in a scratch tmux server and home; fixtures for every blocking state, and from them the paste guard's chrome check (moved from Phase 1), including the palette, model picker and stash; the overlay-state ledger; measuring the Escape sequence (with the abort rule and waits above `timeoutlen`) against every overlay at its non-default stages (filtered picker, reasoning stage, palette and stash together, the picker opened over a draft, vi mode); re-measuring under load the false-idle slack, the 150 ms Enter margin and the queue gap. Then the send: per-runtime server gates, host `CheckSend` with the image-region and input-line rules and the bounded Escape sequence, the `hermesSend` switch on both sides, the `/`, `!` and trailing-`\` refusals, collapse-aware post-paste check, database-confirmed submit with "may have been submitted", Queue and Send now for Hermes, host docs. Send stays off until these measurements are done and the harness is green; then the operator enables it per host, with the residual cases named in the host docs. | done | 2 |
 | ~~4~~ | (**done**, see [as built](#phase-4-as-built)) Questions and approvals: clarify cards from the DB, approval and sudo attention items from the hooks, viewer discovery through `gateway.sock.path`, attach-to-answer, `approval.respond` with the stale-modal card, measuring the viewer's clarify answer (and wiring it if it passes), the hygiene filters; harness cases for each | 5–7 | 2, 3 |
-| ~~5~~ | `hermes` kind: `hermesd` (runs, events, exact approval body, relay timeout, a stable API key on the volume, intent-before-POST with the exact body and `Idempotency-Key`, 409 and retention handling, `resolve-unknown` recovery on every gateway start, SIGTERM handling), the Nix image without ffmpeg, `agentspec`, migration, config, smoke test like `cc-smoke` (**done**; see [as built](#phase-5-as-built)). A first run in a real pod is the release's (muster-ops), not this phase's code. | done | 1 |
+| ~~5~~ | (**removed** since; see the note at the top) `hermes` kind: `hermesd` (runs, events, exact approval body, relay timeout, a stable API key on the volume, intent-before-POST with the exact body and `Idempotency-Key`, 409 and retention handling, `resolve-unknown` recovery on every gateway start, SIGTERM handling), the Nix image without ffmpeg, `agentspec`, migration, config, smoke test like `cc-smoke` (**done**; see [as built](#phase-5-as-built)). A first run in a real pod is the release's (muster-ops), not this phase's code. | done | 1 |
 
 Every phase is implemented. Each phase is released and shipped to the hosts as
 it merges. Phases 2–4 and 5 are independent after Phase 1. The shortest useful

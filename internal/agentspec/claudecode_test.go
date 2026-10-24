@@ -26,8 +26,6 @@ func ccConfig() Config {
 		Image:    "ghcr.io/example-org/claude-code-agent:0a1b2c3",
 		Accounts: map[string]string{"alpha": ccTokenAlpha, "beta": ccTokenBeta},
 	}
-	// The hermes kind too, so the token ledger below builds EVERY kind.
-	cfg.Hermes = &HermesConfig{Image: "ghcr.io/example-org/hermes-agent:hermes-5fc490e2"}
 	return cfg
 }
 

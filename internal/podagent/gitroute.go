@@ -29,8 +29,7 @@ import (
 // way out.
 //
 // 🔴 IT WRITES git's GLOBAL CONFIG, WHICH IS $HOME/.gitconfig OF THE PROCESS
-// THAT RUNS IT. ccd's HOME is the agent's; hermesd sets its own HOME to the
-// agent shell's HOME ($HERMES_HOME/home) before it starts the loop, so the
+// THAT RUNS IT. ccd's HOME is the agent's, so the
 // lines land where the agent's git reads them.
 
 // AgentConnector is the subset of muster's /agent/connectors answers read here.
@@ -90,7 +89,7 @@ func SyncGitRouting(ctx context.Context, base, token string) ([]string, error) {
 // RunGitRoutingLoop runs SyncGitRouting now and every interval until ctx ends.
 // A failed round (muster unreachable) leaves the routing as it is: with muster
 // down the proxy is down too, and tearing the routing out would only make the
-// next round's restore a change. who prefixes the log lines ("ccd", "hermesd").
+// next round's restore a change. who prefixes the log lines ("ccd").
 func RunGitRoutingLoop(ctx context.Context, who, base, token string, interval time.Duration, logf func(string, ...any)) {
 	tick := time.NewTicker(interval)
 	defer tick.Stop()

@@ -47,7 +47,7 @@ const (
 // dialog (server.go awaitingApproval).
 const codeAwaitingApproval = "awaiting_approval"
 
-// failure is internal/podagent's typed failure (one wire, shared with hermesd).
+// failure is internal/podagent's typed failure (one wire).
 type failure = podagent.Failure
 
 func writeFailure(w http.ResponseWriter, f *failure) { podagent.WriteFailure(w, f) }

@@ -417,10 +417,6 @@ type Config struct {
 	// identical whether or not this is set. See claudecode.go.
 	ClaudeCode *ClaudeCodeConfig
 
-	// Hermes enables the hermes agent kind and carries its image (hermes.go).
-	// Nil means the kind is not enabled. Read ONLY by a hermes row's build.
-	Hermes *HermesConfig
-
 	// ChiefGatewaySidecar: a claude-code CHIEF runs the gateway runtime beside
 	// ccd (chief_sidecar.go), for its chat sessions on that runtime
 	// (MUSTER_CHIEF_SESSION_RUNTIMES names gateway). Read by agentprovision,
@@ -529,9 +525,12 @@ func Build(a agents.Agent, cfg Config, opts Options) (provision.Spec, error) {
 		}
 	case agents.KindClaudeCode:
 		return buildClaudeCode(a, cfg, opts)
-	case agents.KindHermes:
-		return buildHermes(a, cfg, opts)
 	default:
+		// A legacy row of a REMOVED kind (a hermes agent from an older build)
+		// lands here too, with the refusal that says what it can still do.
+		if agents.IsRetiredKind(a.Kind) {
+			return provision.Spec{}, fmt.Errorf("agentspec: agent %q is kind %s: %w", a.Name, a.Kind, agents.ErrRetiredKind)
+		}
 		return provision.Spec{}, fmt.Errorf("agentspec: agent %q has unknown kind %q", a.Name, a.Kind)
 	}
 	if strings.TrimSpace(cfg.ImageRepo) == "" {

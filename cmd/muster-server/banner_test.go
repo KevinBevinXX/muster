@@ -445,9 +445,10 @@ var bannerExempt = map[string]string{
 		"\"no worker pool bypasses\"), which bannerBothDirections' fixture cannot render; refused at boot without the " +
 		"kind (validateClaudeCodeKind), so outside that arm there is no state to announce. " +
 		"TestTheKindsBannerLineAnnouncesTheJobLaneBypassBothWays pins both",
-	envAgentHermesImage: "printed on the hermes arm of the `agent kinds:` line; refused at boot when the kind is not " +
-		"enabled (validateKinds), so there is no OFF state to announce. TestTheKindsBannerLineNamesTheHermesImage pins it",
-	envAgentHermesStorage: "an optional size for the hermes volume; refused at boot without the kind, defaulted with it (agentspec.DefaultHermesStorage)",
+	envAgentHermesImage: "RETIRED with the hermes kind: read only to be NAMED on the boot `WARNING — agent kinds: " +
+		"IGNORING` line when set (dropRetiredKinds); unset, nothing reads it, so there is no OFF state to announce. " +
+		"TestTheLiveEnvWithALeftoverHermesKindBootsAndWarns pins both",
+	envAgentHermesStorage: "RETIRED with the hermes kind; same line and same reason as " + envAgentHermesImage,
 	envAgentNetpolFromNS: "named on the `claude-code network:` line in both arms (a policy is written / NOT CONFINED), " +
 		"which bannerBothDirections' fixture cannot render for the reason given for " + envAgentKinds + "; " +
 		"TestTheNetworkBannerLineSaysWhetherAgentsAreConfined renders both and pins them. There is no silent " +
