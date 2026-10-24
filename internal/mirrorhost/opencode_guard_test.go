@@ -1,6 +1,9 @@
 package mirrorhost
 
 import (
+	"fmt"
+	"os"
+	"path/filepath"
 	"slices"
 	"sync"
 	"testing"
@@ -10,6 +13,89 @@ import (
 )
 
 // Every fixture here is synthetic: invented store paths, pids and directories.
+
+// ptsOf is pseudo-terminal n's path, and ttyNrOf its device number as
+// /proc/<pid>/stat field 7 spells it (major 136, minor n).
+func ptsOf(n int) string { return fmt.Sprintf("/dev/pts/%d", n) }
+func ttyNrOf(n int) int  { return 136<<8 | n }
+
+// term adds a process with its terminal state: stdin ("" for none, an
+// unreadable fd 0) and controlling terminal pts ctty (-1 for none: setsid).
+func (f *fakeProc) term(pid, ppid int, comm string, ctty int, stdin string, argv ...string) {
+	f.t.Helper()
+	f.add(pid, ppid, comm, "/work", argv...)
+	tty := 0
+	if ctty >= 0 {
+		tty = ttyNrOf(ctty)
+	}
+	stat := fmt.Sprintf("%d (%s) S %d %d %d %d -1 4194560 0 0 0 0 0 0 0 0 20 0 1 0 100 0 0", pid, comm, ppid, pid, pid, tty)
+	must(f.t, os.WriteFile(filepath.Join(f.root, fmt.Sprint(pid), "stat"), []byte(stat), 0o644))
+	if stdin != "" {
+		f.stdin(pid, stdin)
+	}
+}
+
+// TestAnOpenCodeOnlyRefusesAPaneWhoseTerminalItIsOn: the guard refuses an
+// opencode the pane's typing could reach — its stdin is the pane's terminal,
+// or its controlling terminal is — and admits one PROVEN off it (stdin
+// /dev/null, no controlling terminal: what Claude Code's Bash tool starts
+// for `opencode run`). Each refusing case isolates ONE reason, and every
+// doubt refuses: an unreadable stdin, a pane whose terminal cannot be read.
+func TestAnOpenCodeOnlyRefusesAPaneWhoseTerminalItIsOn(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		procs func(f *fakeProc)
+		want  int // 0: admitted
+	}{
+		{"admitted: setsid, stdin /dev/null, under Claude Code", func(f *fakeProc) {
+			f.term(11, 10, "claude", 7, ptsOf(7), "claude")
+			f.term(12, 11, ".opencode-wrapp", -1, "/dev/null", "opencode", "run", "x")
+		}, 0},
+		{"admitted: stdin a pipe, on another terminal", func(f *fakeProc) {
+			f.term(21, 10, "opencode", 9, "pipe:[4242]", "/opt/oc/bin/opencode", "run")
+		}, 0},
+		{"refused: stdin is the pane's terminal (no controlling tty)", func(f *fakeProc) {
+			f.term(31, 10, ".opencode-wrapp", -1, ptsOf(7), "opencode")
+		}, 31},
+		{"refused: controlling terminal is the pane's (stdin /dev/null)", func(f *fakeProc) {
+			f.term(41, 10, "claude", 7, ptsOf(7), "claude")
+			f.term(42, 41, ".opencode-wrapp", 7, "/dev/null", "opencode", "run", "x")
+		}, 42},
+		{"refused: its stdin cannot be read", func(f *fakeProc) {
+			f.term(51, 10, ".opencode-wrapp", -1, "", "opencode")
+		}, 51},
+		{"refused: a controlling terminal and a pane with none to compare", func(f *fakeProc) {
+			f.term(61, 10, ".opencode-wrapp", 9, "/dev/null", "opencode")
+		}, 61},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			proc := newFakeProc(t)
+			rootTTY := 7
+			if c.want == 61 {
+				rootTTY = -1
+			}
+			proc.term(10, 1, "zsh", rootTTY, ptsOf(7), "-zsh")
+			c.procs(proc)
+			hp, found, err := HermesIdentity{Proc: proc.root}.InTree(10)
+			if err != nil {
+				t.Fatalf("InTree: %v", err)
+			}
+			switch {
+			case c.want == 0 && found:
+				t.Fatalf("refused pid %d (%s); want it admitted", hp.PID, hp.Rule)
+			case c.want != 0 && (!found || hp.PID != c.want || hp.Rule != hermesRuleOpenCode):
+				t.Fatalf("found %v pid %d rule %q; want pid %d refused as opencode", found, hp.PID, hp.Rule, c.want)
+			}
+		})
+	}
+	// A pane whose own terminal cannot be read refuses an opencode on any.
+	proc := newFakeProc(t)
+	proc.term(10, 1, "zsh", -1, "", "-zsh")
+	proc.term(12, 10, ".opencode-wrapp", -1, "/dev/null", "opencode", "run")
+	if hp, found, err := (HermesIdentity{Proc: proc.root}).InTree(10); err != nil || !found || hp.PID != 12 {
+		t.Fatalf("a pane with an unreadable terminal: found %v pid %d err %v; want 12 refused", found, hp.PID, err)
+	}
+}
 
 // TestTheGuardRefusesEveryOpenCodeShapeAndNothingElse is the opencode half of
 // the host paste guard's broad match, over a fixture /proc. Each pane is a
@@ -115,23 +201,29 @@ func TestTheGuardRefusesEveryOpenCodeShapeAndNothingElse(t *testing.T) {
 // shell and a Claude Code window by every path (the controls, which also
 // prove the instrument sees what is typed).
 func TestEveryHostPasteIntoAnOpenCodePaneIsRefusedAndTypesNothing(t *testing.T) {
+	// Every process has its real terminal state: a pane's processes read
+	// the pane's pts (stdin and controlling terminal) unless said otherwise.
 	proc := newFakeProc(t)
-	proc.add(1400, 1, "zsh", "/work", "-zsh") // %14: a plain shell
-	proc.add(2100, 1, "zsh", "/work", "-zsh") // %21: Claude Code
-	proc.add(2110, 2100, "claude", "/work", "claude")
-	proc.add(2200, 1, "zsh", "/work", "-zsh") // %22: Claude Code backgrounded, opencode in the foreground
-	proc.add(2210, 2200, "claude", "/work", "claude")
-	proc.add(2220, 2200, ".opencode-wrapp", "/work", "opencode")
-	proc.add(3000, 1, "zsh", "/work", "-zsh") // %30: the opencode TUI, the session's active pane
-	proc.add(3010, 3000, ".opencode-wrapp", "/work", "opencode")
-	proc.add(3100, 1, "zsh", "/work", "-zsh") // %31: opencode from an upstream install
-	proc.add(3110, 3100, "opencode", "/work", "/opt/oc/bin/opencode")
-	proc.add(5000, 1, "zsh", "/work", "-zsh") // %legacy: the session's active pane, as the fake reports it
-	proc.add(5010, 5000, ".opencode-wrapp", "/work", "opencode")
+	proc.term(1400, 1, "zsh", 14, ptsOf(14), "-zsh") // %14: a plain shell
+	proc.term(2100, 1, "zsh", 21, ptsOf(21), "-zsh") // %21: Claude Code
+	proc.term(2110, 2100, "claude", 21, ptsOf(21), "claude")
+	proc.term(2200, 1, "zsh", 22, ptsOf(22), "-zsh") // %22: Claude Code backgrounded, opencode in the foreground
+	proc.term(2210, 2200, "claude", 22, ptsOf(22), "claude")
+	proc.term(2220, 2200, ".opencode-wrapp", 22, ptsOf(22), "opencode")
+	proc.term(2300, 1, "zsh", 23, ptsOf(23), "-zsh") // %23: Claude Code whose Bash tool runs `opencode run` off the terminal
+	proc.term(2310, 2300, "claude", 23, ptsOf(23), "claude")
+	proc.term(2320, 2310, ".opencode-wrapp", -1, "/dev/null", "opencode", "run", "summarise the diff") // setsid: no controlling tty
+	proc.term(3000, 1, "zsh", 30, ptsOf(30), "-zsh")                                                   // %30: the opencode TUI, the session's active pane
+	proc.term(3010, 3000, ".opencode-wrapp", 30, ptsOf(30), "opencode")
+	proc.term(3100, 1, "zsh", 31, ptsOf(31), "-zsh") // %31: opencode from an upstream install
+	proc.term(3110, 3100, "opencode", 31, ptsOf(31), "/opt/oc/bin/opencode")
+	proc.term(5000, 1, "zsh", 50, ptsOf(50), "-zsh") // %legacy: the session's active pane, as the fake reports it
+	proc.term(5010, 5000, ".opencode-wrapp", 50, ptsOf(50), "opencode")
 	windows := []WindowInfo{
 		{Session: "scratch2", ID: "@4", Index: 1, Pane: "%14", PanePID: 1400, Command: "zsh"},
 		{Session: "scratch2", ID: "@7", Index: 8, Active: true, Pane: "%21", PanePID: 2100, Command: "claude", Claude: &ClaudePane{Pane: "%21", Gen: "g7"}},
 		{Session: "scratch2", ID: "@8", Index: 9, Pane: "%22", PanePID: 2200, Command: "opencode", Claude: &ClaudePane{Pane: "%22", Gen: "g8"}},
+		{Session: "scratch2", ID: "@12", Index: 10, Pane: "%23", PanePID: 2300, Command: "claude", Claude: &ClaudePane{Pane: "%23", Gen: "g12"}},
 		{Session: "solo", ID: "@9", Index: 0, Active: true, Pane: "%30", PanePID: 3000, Command: "opencode"},
 		// The label is NOT what the guard reads: this window's command reads
 		// "zsh", and its pane is refused all the same.
@@ -140,7 +232,7 @@ func TestEveryHostPasteIntoAnOpenCodePaneIsRefusedAndTypesNothing(t *testing.T) 
 	b := &windowsBackend{windows: windows}
 	var typed []string
 	g := guardedBackend{windowsBackend: b, proc: proc.root, mu: &sync.Mutex{}, typed: &typed,
-		roots: map[string]int{"%14": 1400, "%21": 2100, "%22": 2200, "%30": 3000, "%31": 3100, "%legacy": 5000}}
+		roots: map[string]int{"%14": 1400, "%21": 2100, "%22": 2200, "%23": 2300, "%30": 3000, "%31": 3100, "%legacy": 5000}}
 	d := newDrivenMuster(t)
 	d.run(t, wrapped{g}, nil, true)
 	pasted := func() []string { _, _, _, p, _ := b.snapshot(); return p }
@@ -171,6 +263,10 @@ func TestEveryHostPasteIntoAnOpenCodePaneIsRefusedAndTypesNothing(t *testing.T) 
 		{Type: mirror.TypePaste, Session: "scratch2", Window: "@7", Text: "to claude, terminal", AnyPane: true},
 		{Type: mirror.TypePaste, Session: "scratch2", Window: "@7", Text: "to claude, rendered"},
 		{Type: mirror.TypeAnswer, Session: "scratch2", Window: "@7", Ask: ask},
+		// 🔴 A Claude pane whose Bash tool runs opencode OFF the terminal
+		// (stdin /dev/null, no controlling tty) is Claude's, and pasted into.
+		{Type: mirror.TypePaste, Session: "scratch2", Window: "@12", Text: "to claude, beside opencode run", AnyPane: true},
+		{Type: mirror.TypePaste, Session: "scratch2", Window: "@12", Text: "rendered, beside opencode run"},
 	} {
 		m.ID = uint32(1 + i)
 		d.send(t, m)
@@ -178,7 +274,8 @@ func TestEveryHostPasteIntoAnOpenCodePaneIsRefusedAndTypesNothing(t *testing.T) 
 			t.Fatalf("control %d (%s into %s): refused %q (%q)", m.ID, m.Type, m.Window, a.Error, a.Refusal)
 		}
 	}
-	wantPasted := []string{"%14 ls -la", "%21 to claude, terminal", "%21 to claude, rendered"}
+	wantPasted := []string{"%14 ls -la", "%21 to claude, terminal", "%21 to claude, rendered",
+		"%23 to claude, beside opencode run", "%23 rendered, beside opencode run"}
 	if got := pasted(); !slices.Equal(got, wantPasted) {
 		t.Fatalf("instrument check: pasted %q, want %q", got, wantPasted)
 	}
