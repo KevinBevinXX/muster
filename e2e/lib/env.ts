@@ -215,6 +215,13 @@ export const sidenavPort = port + 185;
 // The rendered view's snapshot (mirror-snapshot.spec.ts): its own server (the
 // e2eterm binary, mirror plugin on) and one per-window mirrored host.
 export const mirrorSnapPort = port + 190;
+// The back/forward cache control (bfcache.spec.ts): a two-page static site the
+// spec serves itself, so whether a page is restored depends on the browser and
+// the harness alone, never on muster's headers.
+export const bfcacheControlPort = port + 194;
+// The long-transcript layout shift on a mirrored view (cls-long-transcript.spec.ts):
+// its own server (the e2eterm binary, mirror plugin on) and one mirrored host.
+export const clsLongMirrorPort = port + 196;
 export const baseURL = `http://localhost:${port}`;
 export const versionA = 'e2e-a';
 export const versionB = 'e2e-b';

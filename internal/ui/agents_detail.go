@@ -230,6 +230,15 @@ func AgentDetailPage(v AgentDetailView, feat Features) g.Node {
 				// mirroring Page's content column. The header and the main column each
 				// carry lg:pl-72 so nothing sits under the sidebar.
 				agentDetailHeader(v),
+				// 🔴 BEFORE THE CHAT PANE, NOT AT THE END OF <body>: the pane calls
+				// window.__cgLayoutLog (agentChatScript) right after #chat-form, so
+				// the transcript is converted, clamped and scrolled to its end before
+				// its first paint. The clamp script's MutationObserver must already be
+				// watching when the bubbles are parsed and converted. Neither script
+				// needs anything later in the document:
+				// agentChatScript's start() still waits for DOMContentLoaded.
+				bubbleClampScript(),
+				agentChatScript(v.Name),
 				// The detail page IS the chat: a single full-height chat pane between the
 				// header and the input bar at its bottom (flex-1 + min-h-0 so it fills + scrolls).
 				// 🔴 TWO ELEMENTS, NOT ONE, AND THAT IS THE FIX RATHER THAN A TIDY-UP.
@@ -270,8 +279,6 @@ func AgentDetailPage(v AgentDetailView, feat Features) g.Node {
 				// focusHistoryButton opens.
 				g.If(v.FocusHistory != "", focusHistoryDialog(v.FocusHistory)),
 				g.If(v.FocusHistory != "", focusHistoryScript()),
-				agentChatScript(v.Name),
-				bubbleClampScript(),
 				// Places the header's full-title popover (agentTitle) beside its "…"
 				// and keeps that button's aria-expanded in step — the same script
 				// the shell runs for the cards' popovers.
@@ -745,7 +752,17 @@ func agentChatPane(v AgentDetailView) g.Node {
 		g.If(v.Surface == ChatSurfacePage && v.AsksSrc != "", AskerAsksBlock(v.Asks, v.AsksSrc, true)),
 		Div(
 			ID("chat-log"),
-			Class("flex flex-1 flex-col gap-2 overflow-auto rounded-xl bg-s1/40 p-3 ring-1 ring-inset ring-line min-h-0"),
+			Class("flex flex-1 flex-col gap-2 overflow-auto rounded-xl bg-s1/40 p-3 ring-1 ring-inset ring-line min-h-0 [&[data-cg-unlaid]>*]:invisible"),
+			// 🔴 THE TRANSCRIPT IS NOT PAINTABLE UNTIL IT IS LAID OUT. The parser
+			// can paint mid-document — under load, between any two tags — and a
+			// frame of this log before window.__cgLayoutLog runs shows it raw and
+			// scrolled to the top, then everything moves (measured: 0.50 at 390px,
+			// one open in three, with the host at load 64). Its children are
+			// invisible (still laid out, so the clamp can measure them) until the
+			// layout call, or start(), removes this; content that becomes visible
+			// is not a layout shift. A <noscript> rule shows them without script.
+			// #chat-form carries the same marker (see there).
+			g.If(v.Surface == ChatSurfacePage, g.Attr("data-cg-unlaid", "")),
 			// Live-refresh the transcript from the canonical server state when a chat
 			// reply is persisted (chat.reply). This is what makes a KICKOFF turn — which
 			// streams server-side, NOT over this page's WS — appear live without a
@@ -837,7 +854,15 @@ func agentChatPane(v AgentDetailView) g.Node {
 			// mobile keyboard (the shell shrinks, keeping the input visible). It sits
 			// inside Main (already contentWidth() inside the lg:pl-72 column), so no
 			// width/offset classes here.
-			Class("flex-none border-t border-line pt-3"+classIf(withSwitcher, " "+switcherRoom(false))),
+			Class("flex-none border-t border-line pt-3 [&[data-cg-unlaid]]:invisible"+classIf(withSwitcher, " "+switcherRoom(false))),
+			// 🔴 INVISIBLE UNTIL THE TRANSCRIPT IS LAID OUT, LIKE #chat-log's
+			// children. The parser can stop mid-form (measured: a frame with only
+			// its first hidden <input> parsed, the form 58px tall, then 102px when
+			// its row arrived — a 0.00578 shift of the form at 390px, 3 opens in
+			// 25 on two loaded cores, throttled). The layout call, the form's last
+			// child, removes the marker from both; a hidden form growing moves
+			// nothing a reader sees.
+			g.If(v.Surface == ChatSurfacePage, g.Attr("data-cg-unlaid", "")),
 			// The outcome of a send the browser submitted (see above), drawn by the
 			// server on the page its redirect lands on.
 			g.If(v.SendNotice != "", P(ID("chat-note"), g.Attr("role", "status"),
@@ -868,7 +893,18 @@ func agentChatPane(v AgentDetailView) g.Node {
 					g.Text("Send"),
 				),
 			),
+			// The transcript's layout, applied before it can be painted (see
+			// window.__cgLayoutLog in agentChatScript): the form's LAST child, so
+			// a frame the parser yields after this long script paints a whole
+			// form, and nothing between the log and it is a script the parser
+			// could yield after. The page surface only: the chief panel's body
+			// arrives by an htmx swap, whose afterSwap hook lays it out in the
+			// same task.
+			g.If(v.Surface == ChatSurfacePage, Script(g.Raw(`window.__cgLayoutLog && window.__cgLayoutLog();`))),
 		),
+		// Without script nothing removes data-cg-unlaid: show the transcript
+		// and the form anyway.
+		g.If(v.Surface == ChatSurfacePage, NoScript(StyleEl(g.Raw(`#chat-form, #chat-log > * { visibility: visible !important; }`)))),
 		// The box grows with its text (composer_fit.go), the same one script as
 		// the mirrored composer's — it travels with the pane for the chief panel.
 		// First after the form, with the draft's (composer_draft.go), so a
@@ -1704,6 +1740,9 @@ func agentChatScript(name string) g.Node {
   if (!form || !input || !logEl) return;
   // Render any server-rendered transcript bubbles as markdown (idempotent).
   mdConvert(logEl);
+  // Laid out now, if window.__cgLayoutLog did not run (see #chat-log's data-cg-unlaid).
+  logEl.removeAttribute('data-cg-unlaid');
+  form.removeAttribute('data-cg-unlaid');
   // Already wired for this exact form (e.g. DOMContentLoaded + htmx:load both
   // fired for the same body): don't double-bind.
   if (form.hasAttribute('data-cg-chat')) return;
@@ -1972,9 +2011,21 @@ func agentChatScript(name string) g.Node {
     ws.onclose = function () { if (!session.disposed) setTimeout(connect, 2000); };
   }
   connect();
+  // The interim observer of window.__cgLayoutLog, when it ran for THIS log:
+  // torn down, and a reader who scrolled away meanwhile stays where they are.
+  // ⚠ NOT NAMED pre: start() already has a function pre() (the tool chip's
+  // <pre> blocks), and a var of that name, hoisted, replaced it — every tool
+  // result then threw.
+  var interim = window.__cgLayout;
+  window.__cgLayout = null;
+  if (interim) {
+    if (interim.ro) interim.ro.disconnect();
+    interim.log.removeEventListener('scroll', interim.onScroll);
+    if (interim.log !== logEl) interim = null;
+  }
   // Open scrolled to the latest message: the transcript is converted + laid out
   // by now, so forceScroll() reads the full scrollHeight and pins the log to bottom.
-  forceScroll();
+  if (interim && interim.away) session.stick = false; else forceScroll();
 
   // 🔴 NEVER A SILENT SEND. With the socket open the message goes over it and
   // the reply streams back. With it NOT open — still connecting, dropped, or
@@ -2032,6 +2083,65 @@ func agentChatScript(name string) g.Node {
     }
   } catch (e) {}
   } // end start
+
+  // 🔴 THE TRANSCRIPT IS LAID OUT BEFORE ITS FIRST PAINT, NOT AT start().
+  // start() waits for DOMContentLoaded, and DOMContentLoaded waits for the
+  // DEFERRED vendor scripts (htmx, sse.js in <head>). When they arrive after the
+  // document has parsed — a cold cache, a slow network — the browser paints the
+  // transcript in between: raw text (a message's blank lines collapsed),
+  // unclamped, scrolled to the TOP. start() then converts the markdown, the
+  // clamp shrinks the tall bubbles and the log jumps to its end, and every
+  // bubble on screen moves. Measured on a 200-message transcript at 1280px with
+  // 150 ms RTT and a 4x CPU: CLS 0.37 (markdown) and 0.43 (plain text), one
+  // shift each, the bubbles as its sources. A frame log of a cold-browser
+  // open that shifted showed two frames painted with 0 of 200 bubbles
+  // converted and scrollTop 0 before start() ran.
+  //
+  // So agentChatPane emits a call to this right after #chat-form and the
+  // composer's fit and draft scripts, while the parser is still blocked on that
+  // inline script: the markdown and the scroll to the end are applied in the
+  // same task that inserted the bubbles, before anything can paint them, and the clamp
+  // follows at the microtask checkpoint that ends the script (its
+  // MutationObserver sees the conversion), still before the parser goes on.
+  // A clamp that shrinks the log after the scroll leaves it at its end: the
+  // scroll position is clamped to the new height. It needs nothing htmx
+  // provides. start() later runs the same steps again, as no-ops.
+  //
+  // ⚠ THIS SCRIPT AND bubbleClampScript MUST THEREFORE BE PARSED BEFORE
+  // #chat-log (AgentDetailPage emits them ahead of the content column). Emitted
+  // after it, window.__cgLayoutLog is undefined at the call and the transcript
+  // is laid out at DOMContentLoaded again; the clamp script after it would
+  // clamp only when it ran.
+  //
+  // 🔴 AFTER THE FORM, NOT BETWEEN THE LOG AND THE FORM. The call is a long
+  // script, and the parser may yield after one: placed straight after
+  // #chat-log, a frame then painted #chat-form before #chat-input was parsed
+  // (13px tall, then 57px) — a shift of the form on every size, in about half
+  // of the opens of a seven-message agent, where main read 0.
+  //
+  // Until start() runs, an observer here keeps a reader who has not scrolled
+  // away at the end (the header, say, may still change the log's box), and
+  // records whether they HAVE scrolled away: start() reads that (.away)
+  // instead of pinning to the end, so a reader who scrolled up while the
+  // deferred scripts were loading is not pulled back down, and then tears the
+  // observer and its listener down.
+  window.__cgLayoutLog = function () {
+    var log = document.getElementById('chat-log');
+    if (!log) return;
+    mdConvert(log);
+    log.scrollTop = log.scrollHeight;
+    log.removeAttribute('data-cg-unlaid');
+    var cf = document.getElementById('chat-form');
+    if (cf) cf.removeAttribute('data-cg-unlaid');
+    var pre = { log: log, away: false, ro: null };
+    pre.onScroll = function () { pre.away = log.scrollHeight - log.scrollTop - log.clientHeight >= 48; };
+    log.addEventListener('scroll', pre.onScroll, { passive: true });
+    if (typeof ResizeObserver !== 'undefined') {
+      pre.ro = new ResizeObserver(function () { if (!pre.away) log.scrollTop = log.scrollHeight; });
+      pre.ro.observe(log);
+    }
+    window.__cgLayout = pre;
+  };
 
   // Global, document-lifetime hooks (the <body> survives hx-boost swaps, so
   // these must bind exactly once — guarded). start() reads its target agent from
