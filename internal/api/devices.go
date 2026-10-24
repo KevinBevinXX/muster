@@ -25,9 +25,12 @@ import (
 // THREE DOORS, AND WHICH CREDENTIAL OPENS WHICH IS THE DESIGN:
 //
 //   - The SESSION tier (a signed-in browser, same-origin writes):
-//     POST /account/devices/pair mints a one-time pairing code, and needs a
-//     sign-in from the last five minutes (stepup.CredentialMaxAge, the rule for
-//     adding a passkey: the credential it leads to outlives the session).
+//     POST /account/devices/pair mints a one-time pairing code for any valid
+//     signed-in browser session, however long ago it signed in (an operator
+//     decision: there is no recent-sign-in window here, unlike adding a
+//     passkey). The session's sign-in time is still required and stored with
+//     the code, so Sign out everywhere and the session cutoff still reach the
+//     phone it pairs.
 //     POST /account/devices/{id}/remove and the Account → Devices section.
 //   - The PUBLIC pairing route, POST /api/device/pair: the app redeems the code
 //     for the device credential. The code is the authority, so no credential
@@ -200,14 +203,20 @@ func (s *Server) handleDevicePairCode(w http.ResponseWriter, r *http.Request) {
 		s.writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": DevicesNotServed})
 		return
 	}
-	// A sign-in from the last five minutes, as for adding a passkey: the
-	// credential this leads to outlives the session.
-	if !stepup.FreshWithin(r.Context(), s.stepUpNow(), stepup.CredentialMaxAge) {
+	// 🔴 NO RECENT-SIGN-IN WINDOW, BY OPERATOR DECISION: any session
+	// requireSession admitted (not expired; in gotrue mode also not signed
+	// out and not before the session cutoff) may pair, however old its
+	// sign-in. What is still needed
+	// is the sign-in TIME itself: it becomes the device's paired_signin_at,
+	// which Authenticate and Redeem compare with Sign out everywhere and the
+	// cutoff. A session with none recorded (a GoTrue token without amr) is
+	// asked to sign in again rather than pair a phone nothing could revoke.
+	signin, ok := stepup.AuthTime(r.Context())
+	if !ok {
 		s.writeJSON(w, http.StatusUnauthorized, map[string]any{"error": PasskeyReauthRequired,
-			"detail": "pairing a phone needs a sign-in from the last " + stepup.HumanDuration(stepup.CredentialMaxAge)})
+			"detail": "this session records no sign-in time; sign in again to pair a phone"})
 		return
 	}
-	signin, _ := stepup.AuthTime(r.Context())
 	code, expires, err := s.ext.Devices.CreatePairingCode(r.Context(), signin)
 	if err != nil {
 		s.logger.Printf("devices: pairing code for user %d: %v", requestOwner(r.Context()), err)
@@ -615,7 +624,7 @@ const appBridgeJS = `(function () {
       var res = await fetch('` + accountDevicesPairPath + `', { method: 'POST', credentials: 'same-origin' });
       var data = await res.json().catch(function () { return {}; });
       if (res.status === 401 && data.error === '` + PasskeyReauthRequired + `') {
-        status.textContent = 'Pairing needs a sign-in from the last five minutes. Sign out, sign in again, then tap Pair this phone.';
+        status.textContent = 'Pairing needs you to sign in again. Sign out, sign in, then tap Pair this phone.';
         return;
       }
       if (!res.ok || !data.code) { status.textContent = data.error || ('Pairing failed (' + res.status + ').'); return; }
