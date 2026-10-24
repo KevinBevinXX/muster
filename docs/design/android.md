@@ -428,11 +428,14 @@ A notification action has no browser session, so none of this applies as is.
   there is no recent-sign-in window for pairing. Pairing used to ask for a
   sign-in from the last five minutes, the rule for adding a passkey; the
   operator removed it as an arbitrary requirement. What still gates the route
-  is a real browser session (expired, signed-out and cut-off sessions are
-  refused; a machine token, the hook token or a device credential never
-  reaches it), and the session's sign-in time is stored as the phone's
-  `paired_signin_at`, so Sign out everywhere and the session cutoff still cut
-  the phone off. It returns a one-time pairing code
+  is a real browser session; a machine token, the hook token or a device
+  credential never reaches it. In gotrue mode expired, signed-out and cut-off
+  sessions are refused, and the session's sign-in time is stored as the
+  phone's `paired_signin_at`, so Sign out everywhere and the session cutoff
+  still cut the phone off. In password mode the session is a stateless 30-day
+  cookie with no Sign out everywhere: Sign out clears only that browser's
+  cookie, so a copied cookie can still pair a phone until it expires, and such
+  a phone is cut off only by Remove on Account → Devices. It returns a one-time pairing code
   (single use, 60 s, stored as a hash). The page hands the code to the app over
   the bridge, and the app redeems it at `POST /api/device/pair` for the
   credential.
