@@ -14,6 +14,16 @@ import (
 
 // Every fixture here is synthetic: invented store paths, pids and directories.
 
+// openCodeTUIScreen is the opencode TUI idle at its composer, as a pane
+// shows it (synthetic text): a transcript line, the turn footer, the composer
+// box drawn with ┃ and closed by ╹▀▀▀, its agent · model line, and the
+// status line. It holds no Claude Code input box.
+const openCodeTUIScreen = "  The guard now checks the terminal.\n\n" +
+	"  build · model-x · 12s\n\n" +
+	"┃\n┃\n┃  build · model-x\n" +
+	"╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀\n" +
+	"  /work:main                                  12% · $0.04\n"
+
 // ptsOf is pseudo-terminal n's path, and ttyNrOf its device number as
 // /proc/<pid>/stat field 7 spells it (major 136, minor n).
 func ptsOf(n int) string { return fmt.Sprintf("/dev/pts/%d", n) }
@@ -229,7 +239,9 @@ func TestEveryHostPasteIntoAnOpenCodePaneIsRefusedAndTypesNothing(t *testing.T) 
 		// "zsh", and its pane is refused all the same.
 		{Session: "solo", ID: "@10", Index: 1, Pane: "%31", PanePID: 3100, Command: "zsh"},
 	}
-	b := &windowsBackend{windows: windows}
+	// %22's screen is opencode's TUI, which runs in its foreground — what a
+	// Claude pane shows once opencode was started in front of Claude Code.
+	b := &windowsBackend{windows: windows, screens: map[string]string{"%22": openCodeTUIScreen}}
 	var typed []string
 	g := guardedBackend{windowsBackend: b, proc: proc.root, mu: &sync.Mutex{}, typed: &typed,
 		roots: map[string]int{"%14": 1400, "%21": 2100, "%22": 2200, "%23": 2300, "%30": 3000, "%31": 3100, "%legacy": 5000}}
