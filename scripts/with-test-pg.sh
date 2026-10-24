@@ -14,8 +14,10 @@
 #   1. initdb a cluster in a fresh temp directory (under $TMPDIR), superuser
 #      `muster`, password `muster` — the SAME coordinates docker-compose.test.yml
 #      uses, so every DSN this repo spells works unchanged apart from the port.
-#   2. start it on 127.0.0.1 and a FREE port (the socket directory is the temp
-#      dir, never /run/postgresql), retrying on a port that turns out taken.
+#   2. start it on 127.0.0.1 and a FREE port, retrying on a port that turns out
+#      taken. TCP only: the Unix socket is turned off
+#      (unix_socket_directories=''), so a long $TMPDIR cannot overflow the
+#      ~107-byte socket-path limit, and nothing touches /run/postgresql.
 #   3. create the NAMED template database `muster_test` (see
 #      docker-compose.test.yml for why it must not be `postgres`) and migrate it
 #      with `go run ./cmd/muster-migrate`, as `make test-db` does.
@@ -23,13 +25,21 @@
 #      MUSTER_TEST_REQUIRE_DB=1 (a missing database FAILS rather than skips),
 #      then run the command.
 #   5. stop Postgres and delete the temp directory on EVERY exit: success,
-#      failure, Ctrl-C, SIGTERM, SIGHUP. The command's own exit code is the
-#      script's exit code; a signal exits 128+N.
+#      failure, Ctrl-C, SIGTERM, SIGHUP. The command runs in its OWN process
+#      group; on a signal the whole group gets TERM, then KILL after a 5 s grace
+#      period, so a grandchild (`go test`'s compiled *.test binary, a `bash -c`
+#      child) is not orphaned. The command's own exit code is the script's exit
+#      code; a signal exits 128+N.
 #
 # ⚠ SIGKILL cannot be trapped. A KILLed run leaves its temp directory behind
 # (and the postmaster, unless whatever killed the script killed its children
 # too). Each directory is named `muster-test-pg.*` under $TMPDIR, so it is
 # findable.
+#
+# ⚠ NOT AS ROOT: initdb refuses to run as root, so this helper does too (it
+# fails at step 1 with initdb's own message, exit 70). Run it as an ordinary
+# user; it does not try to drop privileges. A container that runs as root needs
+# a non-root user for this.
 #
 # Env: MUSTER_TEST_PG_SKIP_MIGRATE=1 skips step 3's migrate (dbtest then
 # bootstraps each package's copy itself — slower, never wrong).
@@ -52,12 +62,22 @@ for b in initdb pg_ctl psql; do
 done
 
 dir=""
-child=""
+child=""   # the command's PID, which is also its process-group ID (set -m below)
+# TERM the command's whole process group, then KILL whatever is still in it
+# after the grace period. Targets the group ID of a process this script started.
+stop_group() {
+  [ -n "$child" ] || return 0
+  kill -TERM -- "-$child" 2>/dev/null || return 0
+  local i
+  for ((i = 0; i < 50; i++)); do
+    kill -0 -- "-$child" 2>/dev/null || break
+    sleep 0.1
+  done
+  kill -KILL -- "-$child" 2>/dev/null
+  wait "$child" 2>/dev/null
+}
 cleanup() {
-  if [ -n "$child" ] && kill -0 "$child" 2>/dev/null; then
-    kill -TERM "$child" 2>/dev/null
-    wait "$child" 2>/dev/null
-  fi
+  stop_group
   if [ -n "$dir" ] && [ -d "$dir" ]; then
     if [ -f "$dir/data/postmaster.pid" ]; then
       pg_ctl -D "$dir/data" -m immediate -w -t 30 stop >/dev/null 2>&1 \
@@ -97,7 +117,7 @@ for _ in $(seq 1 20); do
     continue
   fi
   if pg_ctl -D "$dir/data" -l "$dir/log" -w -t 60 \
-      -o "-c listen_addresses=127.0.0.1 -c port=$p -k $dir -c fsync=off -c full_page_writes=off -c synchronous_commit=off" \
+      -o "-c listen_addresses=127.0.0.1 -c port=$p -c unix_socket_directories='' -c fsync=off -c full_page_writes=off -c synchronous_commit=off" \
       start >/dev/null 2>&1; then
     port=$p
     break
@@ -130,12 +150,16 @@ fi
 say "Postgres up on 127.0.0.1:$port (template muster_test migrated); running: $*"
 
 # Backgrounded + `wait` so a signal runs its trap NOW rather than after the
-# command finishes; the trap forwards TERM to the command before stopping
-# Postgres. ⚠ Consequence: the command's stdin is /dev/null (bash does that to
-# a background job in a script) — this is for test suites, not interactive tools.
-"$@" &
+# command finishes; the trap stops the command's process group before stopping
+# Postgres. `set -m` gives the background job its own process group (PGID = its
+# PID), which is what lets stop_group reach grandchildren. ⚠ stdin is /dev/null:
+# this is for test suites, not interactive tools.
+set -m
+"$@" </dev/null &
 child=$!
+set +m
 wait "$child"
 rc=$?
-child=""
+# The command exited by itself; anything it left running in its group is
+# stopped by cleanup's stop_group on the way out.
 exit "$rc"

@@ -26,8 +26,10 @@ own Postgres: it `initdb`s a throwaway cluster in a temp directory, starts it on
 a free loopback port, creates and migrates `muster_test`, exports
 `MUSTER_TEST_DATABASE_URL`, `MUSTER_TEST_PG_PORT` and `MUSTER_TEST_REQUIRE_DB=1`,
 runs your command, and stops Postgres and deletes the directory on exit —
-failure and SIGTERM/SIGINT included (SIGKILL cannot be trapped). It exits with
-the command's own code.
+failure and SIGTERM/SIGINT included (SIGKILL cannot be trapped). On a signal
+it stops the command's whole process group, grandchildren included. It exits
+with the command's own code. TCP only (no Unix socket), so a long `$TMPDIR` is
+fine. It cannot run as root, because `initdb` refuses to.
 
 ```sh
 nix develop -c scripts/with-test-pg.sh go test -race ./...
