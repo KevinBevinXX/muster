@@ -192,8 +192,8 @@ From the CLI these are `muster whoami`, `muster token ls` and
 Through it a mirror token **puts a question — fenced as the session's words —
 into a turn of its owner's chief** and **reads the chief's answer**; with
 `route_id` (any of the owner's routes) the chief is also shown that routed
-message's sender, subject and body. Every question, escalation and answer
-writes a `chief_question.*` audit row; the question's row names the host and
+message's sender, subject and body. Every question and answer writes a
+`chief_question.*` audit row; the question's row names the host and
 session it came from.
 
 🔴 **Accepted risk: a mirror token can start chief turns and read the chief's
@@ -202,6 +202,4 @@ so may a leaked mirror token, or a session fed outside text. The chief is told
 the question is data, not instructions; that is a prompt, not a boundary. The
 chief holds the fleet tools (`session_transcript`, `sessions_overview`, …), so
 a question can ask it to read another session, and the answer goes back to
-whoever asked. It cannot answer the question for you: an answer to the chief's
-escalation from the question's own host is refused, and the chief answers no
-ask but one put to it. Revoke a token you suspect.
+whoever asked. The chief answers no ask but one put to it. Revoke a token you suspect.

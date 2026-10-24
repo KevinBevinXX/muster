@@ -481,8 +481,8 @@ func (s *Server) attentionItems(ctx context.Context) ([]attentionItem, error) {
 			errs = append(errs, fmt.Errorf("asks: %w", err))
 		}
 		for _, a := range asks {
-			// A question to the chief is the chief's (chief_ask_tool.go): the
-			// queue lists the chief's escalation of it, if any, not the question.
+			// A question to the chief is the chief's (chief_ask_tool.go), not
+			// the owner's: the chief asks the owner with attention_ask if it must.
 			if a.ToChief {
 				continue
 			}
@@ -605,18 +605,6 @@ func attentionTag(key string) string { return "attention-" + key }
 func (s *Server) askSettled(a attention.Ask) {
 	s.attentionClear(a.Owner, attentionAskKey(a.ID))
 	s.attentionChanged(a.Owner, attentionAskKey(a.ID))
-	if a.ToChief && s.ext.Attention != nil {
-		// Its escalations were cancelled with it (migration 0050's trigger):
-		// clear their notifications and views too.
-		esc, err := s.ext.Attention.Escalations(s.attentionPrincipal(context.Background(), a.Owner), a.ID)
-		if err != nil {
-			s.logger.Printf("chief_ask: question %d's escalations: %v", a.ID, err)
-		}
-		for _, e := range esc {
-			s.attentionClear(e.Owner, attentionAskKey(e.ID))
-			s.attentionChanged(e.Owner, attentionAskKey(e.ID))
-		}
-	}
 }
 
 // attentionRepushAfter: a session that goes waiting again within this long of
@@ -1025,11 +1013,6 @@ func (s *Server) answerAskFrom(ctx context.Context, id int64, answer string, src
 	}
 	if err == nil {
 		s.askSettled(a)
-		// The chief's ask escalating a session's question (chief_ask_tool.go):
-		// its answer is the question's, and the chief is not sent it.
-		if a.Escalates > 0 && s.relayEscalation(ctx, a) {
-			return a, nil
-		}
 		if a.Delivery == attention.DeliveryQueued {
 			s.startAnswerDelivery(a.Owner, a.ID, s.deliveryGrace()+500*time.Millisecond)
 		}

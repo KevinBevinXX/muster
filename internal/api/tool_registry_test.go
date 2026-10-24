@@ -35,14 +35,14 @@ var (
 		"tasks_list", "task_get", "task_comment", "task_set_status",
 		"attention_list", "session_transcript",
 		// A mirrored session's question to the chief (chief_ask_tool.go).
-		"answer_session_question", "escalate_session_question"}
+		"answer_session_question"}
 	gatewayOnlyLedger = []string{"agent_get_task", "agent_comment_task", "agent_set_task_status",
 		"agent_list_pull_requests"}
 	// 🔴 chiefOnlyLedger IS PINNED THE SAME WAY: a tool joining it is offered to
 	// one agent per owner and refused to every other, and a tool LEAVING it is
 	// offered to every worker in the fleet. Either is a decision to review here.
 	chiefOnlyLedger = []string{"task_create_gated", "reply_draft", "fleet_list", "focus_search", "focus_refresh",
-		"sessions_overview", "attention_list", "session_transcript", "answer_session_question", "escalate_session_question"}
+		"sessions_overview", "attention_list", "session_transcript", "answer_session_question"}
 )
 
 // without returns list minus the names in drop, in order.

@@ -9,7 +9,7 @@ import (
 
 // TestMigration0050AddsTheChiefQuestionColumns: at version 49 an ask
 // has no to_chief (the control: the column is absent); 0050 adds it, false for
-// every existing ask, and the escalates link; its CHECK accepts answered_by
+// every existing ask, with route_id and chief_turn_at; its CHECK accepts answered_by
 // 'chief' and 'operator', and nothing else.
 func TestMigration0050AddsTheChiefQuestionColumns(t *testing.T) {
 	ctx := ctx0006(t)

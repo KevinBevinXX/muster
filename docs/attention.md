@@ -154,7 +154,6 @@ called by name):
 | `session_transcript {subject, max_entries?}` | The recent conversation of one of the owner's sessions (`agent:<id>` or `mirror:<claude session id>`, as `fleet_list` returns them): oldest first, at most 200 entries, each at most 2000 characters, 48 KiB in all; tool calls by name, tool output left out. |
 | `fleet_list` | (Existing.) Now also carries a mirrored session's `host`. |
 | `answer_session_question {id, answer}` | Answers a question a mirrored session put to the chief with `chief_ask` ([below](#asking-the-chief)), as the chief's (`answered_by: "chief"`). Only a question put to the chief: any other ask, another owner's, or a missing id is *"no such session question: N"*; one already answered, cancelled or expired is *"is no longer open (it is …)"*. |
-| `escalate_session_question {id, question, options?}` | Puts such a question to the owner: muster files the chief's `question` as **its** attention ask, linked to the session's question and expiring no later than it. The owner's answer to it goes to the session, not to the chief. Refused as `answer_session_question` refuses, and as too late when the question has under a minute left. |
 
 **Mirrored Claude Code sessions only** (the operator's own sessions, through
 their host's `muster-mirror` — [below](#mirrored-claude-code-sessions)):
@@ -384,32 +383,23 @@ owner's mirrored sessions may ask (no allowlist, by operator decision).
    (`mirror:<id>`, for `session_transcript`), and quotes, fenced as data, the
    window's title, the question, its options and — with a route — the routed
    message's sender, subject and body.
-3. **The answer.** The chief either answers it, `answer_session_question {id,
-   answer}`, or puts it to you, `escalate_session_question {id, question,
-   options?}`: that files the chief's own attention ask — listed on
-   `/attention` and pushed like any ask — **linked** to the session's question
-   (`escalates`), at most one open at a time, and expiring no later than it
-   (with under a minute left, the escalation is refused as too late). Your answer to it, on `/attention` or
-   through another host's `attention_answer`, is the session's answer, as
-   yours (`answered_by: "operator"`, with its provenance); the chief is not
-   sent it. When the question closes any other way — the chief answers it,
-   the session cancels it, it is answered in the session or it expires — its
-   open escalation is cancelled in the same statement (migration 0050's
-   trigger) and leaves your queue.
+3. **The answer.** The chief answers it with `answer_session_question {id,
+   answer}`. When only you can answer, the chief asks you with its own
+   `attention_ask` (listed and pushed like any ask), your answer reaches it as a
+   turn ([delivery](#delivery)), and it passes the answer on.
 4. **The wait.** The session waits with `attention_wait {id}`, as for any ask:
    only the session that asked can wait on or cancel it. It ends `answered`
    (with `answered_by`) or, past the deadline, `expired`.
 
 The question itself is **not** on your Attention queue and is not pushed to
 your phone: it is the chief's first. It shows in the chief's thread, where its
-turn lands; you see it when the chief escalates. Its answer, once given, is
+turn lands; you see it when the chief asks you. Its answer, once given, is
 listed under Answered like any mirrored session's — the chief's as *"Your
 chief's answer"*.
 
 Every step writes an audit row on `attention_ask:<question id>`:
-`chief_question.asked` (host, session, deadline, and the `route_id`),
-`chief_question.escalated` (the chief's ask) and `chief_question.answered`
-(`by: "chief"`, or `by: "operator"` with the escalation).
+`chief_question.asked` (host, session, deadline, and the `route_id`) and
+`chief_question.answered` (`by: "chief"`).
 
 What a mirror token reaches through it, and the accepted risk: [auth.md](auth.md#mirror-tokens-and-the-chief).
 

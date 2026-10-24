@@ -48,7 +48,7 @@ The chief is offered these tools, and no other agent is:
 | `fleet_list`, `focus_search`, `focus_refresh`, `sessions_overview` | session focus |
 | `route_to_session` | session routing |
 | `attention_list`, `session_transcript` | the attention queue |
-| `answer_session_question`, `escalate_session_question` | the attention queue: a mirrored session's [`chief_ask`](attention.md#asking-the-chief) |
+| `answer_session_question` | the attention queue: a mirrored session's [`chief_ask`](attention.md#asking-the-chief) |
 | `task_route_attention`, `task_forward` | task routing (`MUSTER_TASK_ROUTING`) |
 | `task_dispatch` | task routing, and you opted in (`MUSTER_CHIEF_DISPATCH_OWNERS`) |
 

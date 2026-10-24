@@ -797,7 +797,7 @@ turn for each message says when to do this.
 
    A session that needs to know something before it answers can ask the
    chief: `chief_ask {question, route_id}` ([attention.md](attention.md#asking-the-chief)).
-   The chief gets the question with the message quoted; its answer (or yours, if it asks you) comes back
+   The chief gets the question with the message quoted; its answer comes back
    through the session's `attention_wait`. The route keeps its own deadline
    meanwhile.
 4. **Back to the sender**, exactly once, as the message's reply draft:
