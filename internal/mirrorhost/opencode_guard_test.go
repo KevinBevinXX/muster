@@ -41,12 +41,18 @@ func TestTheGuardRefusesEveryOpenCodeShapeAndNothingElse(t *testing.T) {
 		{"comm alone (argv[0] set to something else, exec -a)", func(f *fakeProc, root int) {
 			f.add(7045, root, ".opencode-wrapp", "/work/d2", "oc")
 		}, 7045},
-		{"an npm shim under node", func(f *fakeProc, root int) {
+		// An npm or bun shim is a JavaScript runtime that spawns the native
+		// binary: the runtime itself is not matched, its opencode CHILD is
+		// (the walk goes on into a process that does not match).
+		{"an npm shim under node, refused by its native child", func(f *fakeProc, root int) {
 			f.add(7051, root, "node", "/work/e", "/usr/bin/node", "/usr/lib/node_modules/opencode-ai/bin/opencode")
-		}, 7051},
-		{"under bun", func(f *fakeProc, root int) {
+			f.add(7052, 7051, "opencode", "/work/e", "/usr/lib/node_modules/opencode-ai/node_modules/opencode-linux-x64/bin/opencode")
+		}, 7052},
+		{"a bun shim, refused by its native child two levels down", func(f *fakeProc, root int) {
 			f.add(7061, root, "bun", "/work/f", "bun", "/srv/oc/bin/opencode", "--continue")
-		}, 7061},
+			f.add(7062, 7061, "sh", "/work/f", "sh", "-c", "exec oc-native")
+			f.add(7063, 7062, ".opencode-wrapp", "/work/f", "opencode", "--continue")
+		}, 7063},
 		{"two levels down (nix develop, then bash)", func(f *fakeProc, root int) {
 			f.add(7071, root, "nix", "/work/g", "nix", "develop")
 			f.add(7072, 7071, "bash", "/work/g", "bash")

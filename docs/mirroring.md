@@ -330,7 +330,8 @@ Known gaps:
 🔴 The same host guard refuses to type into a pane whose process tree holds
 [opencode](https://github.com/anomalyco/opencode): a process whose name or
 first argument is `opencode` (the Nix wrapper's `.opencode-wrapped`
-included), or `node`, `bun` or `deno` running an `opencode` script. A paste
+included). An npm or bun install's JavaScript shim is refused through the
+native `opencode` it starts, which is in the same tree. A paste
 into opencode is blind, because nothing checks what its screen shows, and
 Enter there can answer a permission request it is showing. Every send is
 refused this way, Send, Queue and Send now alike, and the page says

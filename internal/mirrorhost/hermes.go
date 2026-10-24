@@ -330,27 +330,14 @@ var openCodeNames = map[string]bool{"opencode": true, ".opencode-wrapped": true,
 
 // openCodeShape reports whether p is opencode by its PROCESS identity — the
 // same identity the mirror's "opencode" label reads from tmux
-// (#{pane_current_command} is argv[0]'s basename), taken here from /proc and
-// widened, as this guard's bias is: its comm, its argv[0]'s basename, or a
-// JavaScript runtime (node, bun, deno) whose argument is an opencode script
-// (an npm install's shim). Any opencode counts — the TUI, `opencode run`,
-// a private `serve` — because none of them is safe to type blind into.
+// (#{pane_current_command} is argv[0]'s basename), taken here from /proc: its
+// comm or its argv[0]'s basename. Any opencode counts — the TUI, `opencode
+// run`, a private `serve` — because none of them is safe to type blind into.
+// A JavaScript shim (an npm or bun install) is not matched itself: it spawns
+// the native binary, and the walk, going on into a process that does not
+// match, finds that child.
 func openCodeShape(p procInfo) bool {
-	if openCodeNames[p.comm] || (len(p.argv) > 0 && openCodeNames[filepath.Base(p.argv[0])]) {
-		return true
-	}
-	if len(p.argv) < 2 {
-		return false
-	}
-	switch strings.TrimSuffix(filepath.Base(p.argv[0]), ".exe") {
-	case "node", "bun", "deno":
-		for _, a := range p.argv[1:] {
-			if openCodeNames[filepath.Base(a)] {
-				return true
-			}
-		}
-	}
-	return false
+	return openCodeNames[p.comm] || (len(p.argv) > 0 && openCodeNames[filepath.Base(p.argv[0])])
 }
 
 // hermesCheckout reports whether the directory of a cli.py path holds
