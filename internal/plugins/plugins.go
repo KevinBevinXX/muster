@@ -163,7 +163,7 @@ type Message struct {
 	// RoutedDoneAt is when that route's action completed; nil while it is
 	// reserved and not yet done (or never finished: NoticeRouteReclaimAfter).
 	RoutedDoneAt *time.Time `json:"routedDoneAt,omitempty"`
-	// SettleReason is why the message needs nothing more (migration 0050,
+	// SettleReason is why the message needs nothing more (migration 0051,
 	// unrouted.go): the chief's plugin_message_settle reason, the owner's
 	// answer to the ask raised for it, or "pre-existing". nil: not settled.
 	SettleReason *string `json:"settleReason,omitempty"`

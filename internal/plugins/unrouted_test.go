@@ -8,10 +8,10 @@ import (
 )
 
 // TestTheBackfillIsTheSweepsPredicate pins the RELATIONSHIP between migration
-// 0050's backfill and the sweep: the backfill settles exactly the messages the
+// 0051's backfill and the sweep: the backfill settles exactly the messages the
 // sweep would judge (awaitsDisposition), so a message the sweep would ask about
 // cannot be left out of the backfill and fire at the deploy. The migration is
-// found by its name, not its number (it is renumbered if it lands before 0049).
+// found by its name, not its number, which moves as other branches land.
 func TestTheBackfillIsTheSweepsPredicate(t *testing.T) {
 	files, err := filepath.Glob(filepath.Join("..", "db", "migrations", "*_plugin_message_unrouted.sql"))
 	if err != nil || len(files) != 1 {

@@ -189,7 +189,7 @@ var wantForeignKeys = []string{
 	"plugin_messages|plugin_messages_task_id_fkey|FOREIGN KEY (task_id) REFERENCES notes(id) ON DELETE CASCADE",
 	// 0032: the same shape, its owner checked by attention_asks_task_is_owners.
 	"attention_asks|attention_asks_task_id_fkey|FOREIGN KEY (task_id) REFERENCES notes(id) ON DELETE SET NULL",
-	// 0050: a PLAIN key with no owner check — its one writer, the unrouted-message
+	// 0051: a PLAIN key with no owner check — its one writer, the unrouted-message
 	// sweep, raises the ask as the message's own owner (see the migration).
 	"attention_asks|attention_asks_plugin_message_id_fkey|FOREIGN KEY (plugin_message_id) REFERENCES plugin_messages(id) ON DELETE SET NULL",
 	"plugin_reply_drafts|plugin_reply_drafts_agent_id_fkey|FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE SET NULL",

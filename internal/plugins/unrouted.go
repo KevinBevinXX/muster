@@ -12,10 +12,10 @@ import (
 	"github.com/ZacxDev/muster/internal/authz"
 )
 
-// A MESSAGE THE CHIEF DID NOT DISPOSITION (migration 0050): the rules, and why,
+// A MESSAGE THE CHIEF DID NOT DISPOSITION (migration 0051): the rules, and why,
 // are in docs/plugins.md#a-message-the-chief-does-not-act-on. The SQL below is
 // every reader's: the sweep that raises an ask, the sweep that closes one, and
-// (awaitsDisposition) migration 0050's backfill.
+// (awaitsDisposition) migration 0051's backfill.
 
 // UnroutedAskAfter is how long after its delivery a message the chief has not
 // dispositioned waits before it becomes an ask.
@@ -32,9 +32,9 @@ const MaxSettleReasonRunes = 2000
 const UnroutedAskPlugin = "agent-mail"
 
 // awaitsDisposition is whether message m (the alias) is one the chief must act
-// on: repliable and delivered to the chief. Migration 0050's backfill spells
+// on: repliable and delivered to the chief. Migration 0051's backfill spells
 // exactly this (TestTheBackfillIsTheSweepsPredicate), whatever the plugin, so
-// widening the plugin scope later fires nothing from before 0050 either.
+// widening the plugin scope later fires nothing from before 0051 either.
 const awaitsDisposition = `m.status = 'delivered' AND NOT m.no_reply`
 
 // fromUnroutedAskPlugin: message m came through UnroutedAskPlugin.

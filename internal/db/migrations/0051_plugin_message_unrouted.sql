@@ -1,4 +1,4 @@
--- muster 0050 — A PLUGIN MESSAGE THE CHIEF DID NOT ACT ON BECOMES AN ASK.
+-- muster 0051 — A PLUGIN MESSAGE THE CHIEF DID NOT ACT ON BECOMES AN ASK.
 --
 --   plugin_messages.settle_reason      why the message needs nothing more; NULL: not settled.
 --   attention_asks.plugin_message_id   the message muster raised the ask for; unique.
@@ -8,13 +8,13 @@
 -- predicate (internal/plugins awaitsDisposition). The rules, and why:
 -- docs/plugins.md#a-message-the-chief-does-not-act-on.
 --
--- Must apply after 0049. Not re-applied by db.RLSOn; idempotent.
+-- Must apply after 0050 (#263's chief questions). Not re-applied by db.RLSOn; idempotent.
 --
 -- ROLLBACK (after rolling the image back; an older image never reads these):
 --   DROP INDEX IF EXISTS attention_asks_one_per_plugin_message;
 --   ALTER TABLE attention_asks DROP COLUMN IF EXISTS plugin_message_id;
 --   ALTER TABLE plugin_messages DROP COLUMN IF EXISTS settle_reason;
---   DELETE FROM schema_migrations WHERE version = 50;
+--   DELETE FROM schema_migrations WHERE version = 51;
 
 SET LOCAL lock_timeout = '3s';
 

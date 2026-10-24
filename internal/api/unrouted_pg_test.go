@@ -14,7 +14,7 @@ import (
 )
 
 // A PLUGIN MESSAGE THE CHIEF DID NOT ACT ON BECOMES AN ASK (unrouted.go,
-// internal/plugins/unrouted.go, migration 0050), through the real server and
+// internal/plugins/unrouted.go, migration 0051), through the real server and
 // stores against a real Postgres: the attention sweep raises exactly one ask
 // for a delivered, repliable message nobody routed, drafted or settled within
 // plugins.UnroutedAskAfter — the sweep's clock injected, never slept — and
@@ -409,10 +409,10 @@ func TestOnlyALiveDraftCounts(t *testing.T) {
 	}
 }
 
-// TestAMessageSettledPreExistingRaisesNoAsk: what migration 0050's backfill
+// TestAMessageSettledPreExistingRaisesNoAsk: what migration 0051's backfill
 // leaves on a message delivered before it (settle_reason 'pre-existing') keeps
 // it out of the sweep for good (the backfill itself:
-// internal/db's TestMigration0050SettlesThePreExistingMessages).
+// internal/db's TestMigration0051SettlesThePreExistingMessages).
 func TestAMessageSettledPreExistingRaisesNoAsk(t *testing.T) {
 	g := newUnroutedFixture(t)
 	old := g.deliveredMessage(t, g.owner, g.chief.ID, "pre-existing-1")

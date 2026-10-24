@@ -798,7 +798,7 @@ the [retry list](#retrying-an-unconfirmed-message).
 - **Muster's, not the chief's**, so the chief cannot `attention_cancel` one:
   only a disposition closes it.
 
-**Nothing fires at the deploy.** Migration `0050` settles every message already
+**Nothing fires at the deploy.** Migration `0051` settles every message already
 awaiting a disposition, from any plugin, with the reason `pre-existing`, using
 the sweep's own predicate (`awaitsDisposition`). A message still queued then is
 judged when it is delivered.

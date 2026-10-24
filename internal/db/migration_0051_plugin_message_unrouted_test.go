@@ -5,20 +5,21 @@ import (
 	"testing"
 )
 
-// TestMigration0050SettlesThePreExistingMessages: at version 48 (the control:
+// TestMigration0051SettlesThePreExistingMessages: at version 48 (the control:
 // settle_reason does not exist yet) a delivered repliable message, an
-// unconfirmed one, a delivered no_reply one and a queued one exist. After 0050
+// unconfirmed one, a delivered no_reply one and a queued one exist. After 0051
 // only the delivered repliable one is settled 'pre-existing' — so the first
 // sweep after the deploy raises no ask for it — while the queued one,
 // delivered after the deploy, is judged like any new message (the sweep never
 // judges an unconfirmed one, nor a no_reply one, so neither is touched). Then the schema's one-ask-per-message rule: a second ask
 // naming the same message is refused.
 //
-// It starts at 48, not 49, so it runs unchanged whether or not 0049 (another
-// branch's) is on the tree: applyThroughFrom applies whatever lies between.
-func TestMigration0050SettlesThePreExistingMessages(t *testing.T) {
+// It starts at 48, before every migration that touches these tables, so it
+// runs unchanged whichever of 0049/0050 are on the tree: applyThroughFrom
+// applies whatever lies between.
+func TestMigration0051SettlesThePreExistingMessages(t *testing.T) {
 	ctx := ctx0006(t)
-	pool := freshAt(ctx, t, "ms_0050_unrouted", 48)
+	pool := freshAt(ctx, t, "ms_0051_unrouted", 48)
 	agent := scanID(ctx, t, pool, `INSERT INTO agents (owner_id, name, namespace) VALUES (1, 'unrouted-chief', 'ns-unrouted') RETURNING id`)
 	plugin := scanID(ctx, t, pool, `INSERT INTO plugins (owner_id, name, label, token_hash, data_scope)
 		VALUES (1, 'plugin-unrouted', 'Example inbox', 'pluginhash-unrouted', 'example') RETURNING id`)
@@ -40,7 +41,7 @@ func TestMigration0050SettlesThePreExistingMessages(t *testing.T) {
 		t.Fatalf("control: at version 48 settle_reason already exists: %v", err)
 	}
 
-	applyThroughFrom(ctx, t, pool, 50)
+	applyThroughFrom(ctx, t, pool, 51)
 
 	reason := func(id int64) string {
 		t.Helper()
@@ -54,7 +55,7 @@ func TestMigration0050SettlesThePreExistingMessages(t *testing.T) {
 		return *r
 	}
 	if got := reason(repliable); got != "pre-existing" {
-		t.Errorf("a repliable message delivered before 0050 has settle_reason %q; want pre-existing", got)
+		t.Errorf("a repliable message delivered before 0051 has settle_reason %q; want pre-existing", got)
 	}
 	if got := reason(unconfirmed); got != "" {
 		t.Errorf("an unconfirmed message was settled %q; the sweep never judges one, so it is left alone", got)
@@ -74,8 +75,8 @@ func TestMigration0050SettlesThePreExistingMessages(t *testing.T) {
 	}
 
 	// Idempotent: the body applies a second time over itself.
-	mustExec(ctx, t, pool, readMigration(t, "0050_plugin_message_unrouted.sql"))
+	mustExec(ctx, t, pool, readMigration(t, "0051_plugin_message_unrouted.sql"))
 	if got := reason(queued); got != "" {
-		t.Errorf("re-applying 0050 settled the queued message: %q", got)
+		t.Errorf("re-applying 0051 settled the queued message: %q", got)
 	}
 }

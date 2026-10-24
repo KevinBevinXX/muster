@@ -110,7 +110,7 @@ type Store interface {
 	// QueuedCounts is the principal's undelivered messages per plugin.
 	QueuedCounts(ctx context.Context) (map[int64]int, error)
 
-	// A message the chief did not disposition (unrouted.go, migration 0050).
+	// A message the chief did not disposition (unrouted.go, migration 0051).
 
 	// SettleMessage records agentID's judgement that a message delivered to it
 	// needs nothing more, with reason.
