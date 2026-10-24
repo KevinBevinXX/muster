@@ -109,7 +109,10 @@ CLIs run at once. `ccd` on port 18789 is still the only port the pod exposes.
 **The retired `gateway` runtime.** A `gateway` entry (an OpenRouter model on
 the gateway runtime, run as a second container beside `ccd` in a
 `claude-code` chief's pod, with a memory request of 512 MiB) used to be
-accepted here. It has been removed. muster now ignores a `gateway` entry in
+accepted here. It has been removed — for every chief, not only a
+`claude-code` one: a `gateway`-kind chief can no longer open sessions with a
+per-session OpenRouter model either; its sessions all run on its own runtime
+and model. muster now ignores a `gateway` entry in
 `MUSTER_CHIEF_SESSION_RUNTIMES` with one warning at boot, so a deployment
 that still names it keeps booting; drop it from the deployment. A chief started
 before the removal keeps that container until its next **Stop → Start**, which

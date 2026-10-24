@@ -401,9 +401,12 @@ func (s *Server) agentTools() []agentTool {
 // it is. It reads the agent list only when the registry HAS a tool on either
 // axis, so a deployment without one pays nothing per turn.
 //
-// 🔴 IT FAILS CLOSED: an agent list that cannot be read offers no chief-only
-// tool, the same direction agentIsChief's other callers take for the reverse
-// question.
+// 🔴 THE CHIEF-ONLY AXIS FAILS CLOSED: an agent list that cannot be read offers
+// no chief-only tool, the same direction agentIsChief's other callers take for
+// the reverse question. ⚠ The notChief axis therefore errs the OTHER way: the
+// same unreadable list counts the chief as "not the chief", so it is offered the
+// notChief tools. That is harmless — every worker has them, and they only file
+// requests the owner must approve — and it only lengthens a list.
 func (s *Server) toolsFor(ctx context.Context, a agents.Agent) []agentTool {
 	all := s.agentTools()
 	chief, decided := false, false
