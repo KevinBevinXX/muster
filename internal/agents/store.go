@@ -309,6 +309,12 @@ type Store interface {
 	// is written every time a turn completes, so it is the newest durable
 	// evidence this service holds that the agent was alive.
 	LastMessageByAgentIDs(ctx context.Context, ids []int64) (map[int64]time.Time, error)
+	// LatestSessionIDs returns, per requested agent id, the id of the session
+	// LatestOrCreateSession would return, creating nothing: an agent with no
+	// session is absent. An empty ids slice returns an empty map. It is what an
+	// in-app link to an agent names (ui.AgentSessionHref), so the link goes
+	// straight to the page the bare URL would 303 to.
+	LatestSessionIDs(ctx context.Context, ids []int64) (map[int64]int64, error)
 	NameExists(ctx context.Context, name string) (bool, error)
 	UpdateStatus(ctx context.Context, id int64, status, lastOutput, errMsg string) error
 	// SetModel updates an agent's model (OpenRouter slug; "" = cluster default) and

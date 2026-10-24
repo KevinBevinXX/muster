@@ -2,6 +2,7 @@ import { request as pwRequest, Page } from '@playwright/test';
 import { test, expect, expectAgentsDestroyed } from '../lib/fixtures';
 import { agentComposerPort, hookToken, password, versionTerm } from '../lib/env';
 import { startServer, Running } from '../lib/server';
+import { agentLink, agentPageRe } from '../lib/agent-link';
 
 // A DISPATCHED AGENT'S TWO VIEWS, in a real browser against a REAL muster-server
 // (the e2eterm build: the noop driver, whose terminal is played by
@@ -134,9 +135,9 @@ for (const vp of [
 
       // The card opens the RENDERED view: the chat.
       await page.goto(origin + '/agents');
-      const card = page.locator(`#agents-list article:has(a[href="/agents/${agent.name}"])`);
+      const card = page.locator(`#agents-list article:has(${agentLink(agent.name)})`);
       await expect(card).toBeVisible();
-      await card.locator(`a[href="/agents/${agent.name}"]`).click();
+      await card.locator(agentLink(agent.name)).first().click();
       await page.waitForURL((u) => u.pathname === '/agents/' + agent.name);
 
       // The switch: Rendered is where we are, Terminal one tap away, thumb-sized.
@@ -162,7 +163,7 @@ for (const vp of [
       const term = page.frameLocator('iframe[data-muster-view]');
       await expect(term.locator('#term .xterm-rows')).toContainText('FAKE-TUI mode=ro');
       await expect(term.locator('#view-terminal')).toHaveAttribute('aria-current', 'page');
-      await expect(term.locator('#view-rendered')).toHaveAttribute('href', '/agents/' + agent.name);
+      await expect(term.locator('#view-rendered')).toHaveAttribute('href', agentPageRe(agent.name));
       const input = term.locator('#mv-input');
       const send = term.locator('#mv-send');
       await expect(input).toBeVisible();

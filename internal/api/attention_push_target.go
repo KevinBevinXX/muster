@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"net/http"
-	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
@@ -13,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/ZacxDev/muster/internal/attention"
+	"github.com/ZacxDev/muster/internal/ui"
 )
 
 // ---------------------------------------------------------------------------
@@ -174,5 +174,7 @@ func (s *Server) askingAgentPath(ctx context.Context, owner, id int64) string {
 	if a.OwnerID != owner {
 		return ""
 	}
-	return "/agents/" + url.PathEscape(a.Name)
+	// The BARE page, on purpose (#237): the tap is resolved when tapped, and the
+	// bare URL resolves the agent's latest session at that moment too.
+	return ui.AgentPath(a.Name)
 }

@@ -175,7 +175,7 @@ func (s *Server) handleAgentSessionDefault(w http.ResponseWriter, r *http.Reques
 		s.writeChiefPanelBodyFor(ctx, w, a, strconv.FormatInt(sess.ID, 10))
 		return
 	}
-	w.Header().Set("HX-Redirect", "/agents/"+a.Name+"?session="+strconv.FormatInt(sess.ID, 10))
+	w.Header().Set("HX-Redirect", ui.AgentSessionHref(a.Name, sess.ID))
 	w.WriteHeader(http.StatusOK)
 }
 

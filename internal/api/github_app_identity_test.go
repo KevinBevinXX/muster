@@ -168,17 +168,17 @@ func TestAMemberGetsNoAppRepositories(t *testing.T) {
 func TestTheAgentCardShowsTheAppsProblemForARepoAgent(t *testing.T) {
 	s, _, _ := kindsServer(t, stubKinds{pick: "work"})
 	s.ext.GitHubApp = &listingApp{problem: "GitHub refused the GitHub App's credentials (401) while minting"}
-	withRepo := s.cardViewIndexed(agents.Agent{ID: 1, Name: "a", Repo: "example-org/widget", OwnerID: 1}, nil, time.Time{},
+	withRepo := s.cardViewIndexed(agents.Agent{ID: 1, Name: "a", Repo: "example-org/widget", OwnerID: 1}, nil, time.Time{}, 0,
 		func(agents.Agent) bool { return false }, pins.Set{}, nil)
 	if !strings.Contains(withRepo.GitHubProblem, "(401)") {
 		t.Fatalf("a repository agent's card carries no App problem: %+v", withRepo.GitHubProblem)
 	}
-	noRepo := s.cardViewIndexed(agents.Agent{ID: 2, Name: "b"}, nil, time.Time{},
+	noRepo := s.cardViewIndexed(agents.Agent{ID: 2, Name: "b"}, nil, time.Time{}, 0,
 		func(agents.Agent) bool { return false }, pins.Set{}, nil)
 	if noRepo.GitHubProblem != "" {
 		t.Fatalf("an agent without a repository shows the App's problem: %q", noRepo.GitHubProblem)
 	}
-	memberOwned := s.cardViewIndexed(agents.Agent{ID: 3, Name: "c", Repo: "example-org/widget", OwnerID: 2}, nil, time.Time{},
+	memberOwned := s.cardViewIndexed(agents.Agent{ID: 3, Name: "c", Repo: "example-org/widget", OwnerID: 2}, nil, time.Time{}, 0,
 		func(agents.Agent) bool { return false }, pins.Set{}, nil)
 	if memberOwned.GitHubProblem != "" {
 		t.Fatalf("a member's agent shows the (admin-only) App's problem: %q", memberOwned.GitHubProblem)

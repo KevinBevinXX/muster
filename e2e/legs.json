@@ -37,6 +37,7 @@
     "tests/tool-rows.spec.ts": 0.3,
     "tests/mirror-windows.spec.ts": 82.7,
     "tests/agent-composer.spec.ts": 42.8,
+    "tests/agent-open-hops.spec.ts": 8.0,
     "tests/dictation.spec.ts": 29.3,
     "tests/mirror-duplicate-labels.spec.ts": 48.1,
     "tests/plugins.spec.ts": 7.3,
@@ -96,7 +97,8 @@
       "chief-runtimes.spec.ts",
       "tests/agent-cards.spec.ts",
       "tests/agent-cards-work.spec.ts",
-      "tests/agents-list-ux.spec.ts"
+      "tests/agents-list-ux.spec.ts",
+      "tests/agent-open-hops.spec.ts"
     ],
     "2": [
       "tests/devices.spec.ts",

@@ -239,7 +239,7 @@ func AgentTerminalPage(v AgentTerminalView) g.Node {
 	title := plainOr(v.DisplayName, v.Name)
 	back := v.BackHref
 	if back == "" {
-		back = "/agents/" + url.PathEscape(v.Name)
+		back = AgentSessionHref(v.Name, 0)
 	}
 	return Doctype(
 		HTML(Class("dark"), Lang("en"),

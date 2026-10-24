@@ -379,6 +379,13 @@ test.afterAll(() => {
 
 // refreshChatLog fires task:changed on <body>, as the completion banner's
 // Mark-complete does, and resolves once #chat-log has been swapped.
+//
+// 🔴 IT DROPS #chat-log's data-chat-version FIRST, so the refetch is answered in
+// full and really swaps. With the version the page was drawn with, an unchanged
+// transcript is answered 204 and NOT swapped (ui.ChatLogBody's handshake) — the
+// real Mark-complete changes the task banner, so its refetch does swap; this
+// spec changes nothing server-side, so it has to ask for the full answer to test
+// what a swap does to an opened bubble. unchangedRefresh pins the 204 path.
 async function refreshChatLog(page: Page) {
   await page.evaluate(
     () =>
@@ -390,6 +397,34 @@ async function refreshChatLog(page: Page) {
           requestAnimationFrame(() => resolve());
         };
         document.body.addEventListener('htmx:afterSwap', on);
+        document.getElementById('chat-log')!.removeAttribute('data-chat-version');
+        document.body.dispatchEvent(new Event('task:changed'));
+      }),
+  );
+}
+
+// unchangedRefresh is the same refresh WITH the page's version: the status the
+// partial answered (204 when nothing changed), and whether htmx swapped.
+async function unchangedRefresh(page: Page): Promise<{ status: number; swapped: boolean }> {
+  return page.evaluate(
+    () =>
+      new Promise<{ status: number; swapped: boolean }>((resolve) => {
+        let swapped = false;
+        const onSwap = (e: Event) => {
+          if ((e as CustomEvent).detail?.target?.id === 'chat-log') swapped = true;
+        };
+        const onDone = (e: Event) => {
+          const d = (e as CustomEvent).detail;
+          if (d?.elt?.id !== 'chat-log') return;
+          document.body.removeEventListener('htmx:afterRequest', onDone);
+          // afterSwap would have fired before afterRequest; give it a frame anyway.
+          requestAnimationFrame(() => {
+            document.body.removeEventListener('htmx:afterSwap', onSwap);
+            resolve({ status: d.xhr.status, swapped });
+          });
+        };
+        document.body.addEventListener('htmx:afterSwap', onSwap);
+        document.body.addEventListener('htmx:afterRequest', onDone);
         document.body.dispatchEvent(new Event('task:changed'));
       }),
   );
@@ -421,6 +456,11 @@ test('an opened persisted message stays open across a chat-log refresh', async (
       if (m.type === 'attributes' && t.hasAttribute('data-msg-id')) (window as any).__states.push(t.getAttribute('data-clamp'));
     })).observe(l, { subtree: true, attributes: true, attributeFilter: ['data-clamp'] });
   }, id);
+  // Nothing changed server-side: the refresh is answered 204 and the opened
+  // bubble is not even redrawn.
+  expect(await unchangedRefresh(page), 'an unchanged refresh is a 204 with no swap').toEqual({ status: 204, swapped: false });
+  expect(await log.locator(`[data-msg-id="${id}"]`).evaluate((e) => !!(e as any).__old), 'the same element is still drawn').toBe(true);
+  await expect(long).toHaveAttribute('data-clamp', 'open');
   await refreshChatLog(page);
   const fresh = log.locator(`[data-msg-id="${id}"]`);
   await expect(fresh).toHaveCount(1);

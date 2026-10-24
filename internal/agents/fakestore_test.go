@@ -407,4 +407,14 @@ func (f *fakeStore) LastMessageByAgentIDs(ctx context.Context, ids []int64) (map
 	return out, nil
 }
 
+// LatestSessionIDs: the fake keeps no sessions table (LatestOrCreateSession
+// answers with the agent's id), so it answers the same way for every id.
+func (f *fakeStore) LatestSessionIDs(ctx context.Context, ids []int64) (map[int64]int64, error) {
+	out := make(map[int64]int64, len(ids))
+	for _, id := range ids {
+		out[id] = id
+	}
+	return out, nil
+}
+
 var _ Store = (*fakeStore)(nil)

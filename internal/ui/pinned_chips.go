@@ -135,7 +135,7 @@ func pinnedChip(e listEntry, label string) g.Node {
 	if e.agent != nil {
 		a := e.agent
 		ids := strconv.FormatInt(a.ID, 10)
-		id, href, kind = "agent-"+ids, "/agents/"+a.Name, "agent"
+		id, href, kind = "agent-"+ids, a.PageHref(), "agent"
 		attrs = agentListAttrs(*a)
 		icon = clusterMark()
 		wait = waitTokens(a.Attention, a.AwaitingApproval)

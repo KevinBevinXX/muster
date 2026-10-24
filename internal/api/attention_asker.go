@@ -58,11 +58,7 @@ type askerRef struct {
 // page is the session page itself: where an answer returns to.
 func (r askerRef) page() string {
 	if r.agent != "" {
-		p := "/agents/" + url.PathEscape(r.agent)
-		if r.session > 0 {
-			p += "?session=" + strconv.FormatInt(r.session, 10)
-		}
-		return p
+		return ui.AgentSessionHref(r.agent, r.session)
 	}
 	return r.mirror.ViewPath()
 }

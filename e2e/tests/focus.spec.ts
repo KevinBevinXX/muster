@@ -8,6 +8,7 @@ import { binDir, dsn, focusPort, password, repoRoot, versionTerm } from '../lib/
 import { serverBinary, startServer, Running } from '../lib/server';
 import { clsInit, readCls, resetCls, settle } from '../lib/cls';
 import { writeFileAtomic } from '../lib/atomic';
+import { agentLink } from '../lib/agent-link';
 
 // SESSION FOCUS ON THE CARDS, in a real browser, against a real muster-server
 // (MUSTER_MIRROR=1, its own port) and a real muster-mirror over the tunnel (the
@@ -125,7 +126,7 @@ const shellCard = (page: Page) =>
   page.locator(`#agents-list article[data-mirror-card]:has(a[href*="host=${host}"][href*="window=%402"])`);
 const failedCard = (page: Page) =>
   page.locator(`#agents-list article[data-mirror-card]:has(a[href*="host=${host}"][href*="window=%403"])`);
-const agentCard = (page: Page) => page.locator(`#agents-list article[id^="agent-"]:has(a[href="/agents/${agentName}"])`);
+const agentCard = (page: Page) => page.locator(`#agents-list article[id^="agent-"]:has(${agentLink(agentName)})`);
 const viewURL = origin + '/mirror/view?' + new URLSearchParams({ host, session: 'focuswin', window: '@1' }).toString();
 
 async function openList(page: Page) {

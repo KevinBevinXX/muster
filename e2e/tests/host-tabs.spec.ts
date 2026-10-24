@@ -4,6 +4,7 @@ import { test, expect, takeNew } from '../lib/fixtures';
 import { hostTabsPort } from '../lib/env';
 import { MirrorRig, mkchat } from '../lib/mirrorhost';
 import { writeFileAtomic } from '../lib/atomic';
+import { agentLink } from '../lib/agent-link';
 
 // THE AGENTS LIST'S HOST TABS (internal/ui/agents_filter.go agentsHostTabs), in
 // a real browser, against a real muster-server with the mirror plugin on and
@@ -97,7 +98,7 @@ const tab = (page: Page, host: string) => page.locator(`#agents-hosts [role="tab
 const allTab = (page: Page) => tab(page, '');
 const cardsOn = (page: Page, host: string) => page.locator(`#agents-list > article[data-f-host="${host}"]`);
 const shownOn = (page: Page, host: string) => cardsOn(page, host).filter({ visible: true });
-const agentCard = (page: Page) => page.locator(`#agents-list > article[id^="agent-"]:has(a[href="/agents/${agentName}"])`);
+const agentCard = (page: Page) => page.locator(`#agents-list > article[id^="agent-"]:has(${agentLink(agentName)})`);
 const labels = (page: Page) => page.locator('#agents-hosts [role="tab"] [data-tab-label]').allTextContents();
 const countOf = (t: Locator) => t.locator('[data-tab-count]').textContent();
 const stored = (page: Page) => page.evaluate(() => localStorage.getItem('muster:tabs:agents-host'));

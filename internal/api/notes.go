@@ -121,11 +121,18 @@ func (s *Server) taskCardViews(ctx context.Context, list []notes.Note) []ui.Task
 			s.logger.Printf("notes: agents by note ids: %v", err)
 		}
 	}
+	// The linked agents' latest sessions, in one read: the "Open chat" link names
+	// it (ui.AgentSessionHref).
+	agentIDs := make([]int64, 0, len(byNote))
+	for _, a := range byNote {
+		agentIDs = append(agentIDs, a.ID)
+	}
+	latest := s.latestSessionIDs(ctx, agentIDs)
 	views := make([]ui.TaskCardView, 0, len(list))
 	for _, n := range list {
 		v := ui.TaskCardView{Note: n}
 		if a, ok := byNote[n.ID]; ok {
-			v.Agent = agentBrief(a)
+			v.Agent = agentBrief(a, latest[a.ID])
 		}
 		views = append(views, v)
 	}
@@ -140,7 +147,7 @@ func (s *Server) taskCardView(ctx context.Context, n notes.Note) ui.TaskCardView
 	if s.ext.Agents != nil {
 		if m, err := s.ext.Agents.AgentsByNoteIDs(ctx, []int64{n.ID}); err == nil {
 			if a, ok := m[n.ID]; ok {
-				v.Agent = agentBrief(a)
+				v.Agent = agentBrief(a, s.latestSessionIDs(ctx, []int64{a.ID})[a.ID])
 			}
 		}
 	}
@@ -148,9 +155,10 @@ func (s *Server) taskCardView(ctx context.Context, n notes.Note) ui.TaskCardView
 }
 
 // agentBrief projects a stored agent into the minimal linked-agent view a task
-// card renders (id, slug name, display name, stored status).
-func agentBrief(a agents.Agent) *ui.AgentBrief {
-	return &ui.AgentBrief{ID: a.ID, Name: a.Name, DisplayName: a.DisplayName, Status: a.Status}
+// card renders (id, slug name, display name, stored status) plus its latest
+// session id (0 for none), which the card's "Open chat" link names.
+func agentBrief(a agents.Agent, sessionID int64) *ui.AgentBrief {
+	return &ui.AgentBrief{ID: a.ID, Name: a.Name, DisplayName: a.DisplayName, Status: a.Status, SessionID: sessionID}
 }
 
 // maxAttachmentBytes caps a single note attachment. Attachments are stored

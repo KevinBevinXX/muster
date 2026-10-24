@@ -8,6 +8,7 @@ import { binDir, dsn, hookToken, listUxPort, password, repoRoot, versionTerm } f
 import { serverBinary, startServer, Running } from '../lib/server';
 import { mkchat } from '../lib/mirrorhost';
 import { writeFileAtomic } from '../lib/atomic';
+import { agentLink } from '../lib/agent-link';
 
 // THE AGENTS LIST UX BATCH, in a real browser at a phone (390×844, touch) and
 // a desktop (1280×800), against a real muster-server (its own port, the
@@ -221,7 +222,7 @@ async function login(page: Page) {
 // card is one of this spec's cards: a window by its tmux session, an agent by
 // the link to its page.
 function card(page: Page, key: string): Locator {
-  if (key.startsWith('lux-')) return page.locator(`#agents-list > article[id^="agent-"]:has(a[href="/agents/${key}"])`);
+  if (key.startsWith('lux-')) return page.locator(`#agents-list > article[id^="agent-"]:has(${agentLink(key)})`);
   return page.locator(`#agents-list > article[data-mirror-card][data-f-session="${key}"]`);
 }
 
@@ -258,7 +259,7 @@ async function order(page: Page): Promise<string[]> {
     els.map((a) =>
       a.hasAttribute('data-mirror-card')
         ? a.getAttribute('data-f-session') || ''
-        : (a.querySelector('a[href^="/agents/"]')?.getAttribute('href') || '').slice('/agents/'.length),
+        : (a.querySelector('a[href^="/agents/"]')?.getAttribute('href') || '').split('?')[0].slice('/agents/'.length),
     ),
   );
   return keys.filter((k) => ORDER.includes(k));

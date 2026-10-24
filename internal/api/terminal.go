@@ -82,7 +82,7 @@ func (s *Server) handleAgentTerminalPage(w http.ResponseWriter, r *http.Request)
 	}
 	v := ui.AgentTerminalView{Name: a.Name, DisplayName: a.DisplayName,
 		// The Rendered | Terminal switch: the agent's chat is its rendered view.
-		RenderedHref: ui.AgentPath(a.Name)}
+		RenderedHref: s.agentPageHref(r.Context(), a)}
 	if s.ext.Provisioner == nil {
 		v.Unavailable = "this build has no agent provisioner wired, so it cannot attach a terminal"
 	}

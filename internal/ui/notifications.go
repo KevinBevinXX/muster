@@ -2,7 +2,6 @@ package ui
 
 import (
 	"io"
-	"strconv"
 
 	g "maragu.dev/gomponents"
 	. "maragu.dev/gomponents/html"
@@ -121,19 +120,11 @@ func notifSectionLabel(text string) g.Node {
 	)
 }
 
-// agentHref builds the detail deep-link for an agent + optional session. A zero
-// session id links to the bare detail page, which the server redirects to the
-// agent's active session.
+// The panel's rows link through AgentSessionHref: a zero session id links to the
+// bare detail page, which the server redirects to the agent's active session.
 //
 // ⚠ IT USED TO CARRY AN OPERATOR SPECIAL CASE (/operator, not /agents/operator).
 // Task #633 deleted that page, so the panel links every agent the same way.
-func agentHref(name string, sessionID int64) string {
-	base := "/agents/" + name
-	if sessionID > 0 {
-		return base + "?session=" + strconv.FormatInt(sessionID, 10)
-	}
-	return base
-}
 
 func activeRow(it ActiveRow) g.Node {
 	label := textplain.Title(it.DisplayName)
@@ -141,7 +132,7 @@ func activeRow(it ActiveRow) g.Node {
 		label = it.Name
 	}
 	return A(
-		Href(agentHref(it.Name, it.SessionID)),
+		Href(AgentSessionHref(it.Name, it.SessionID)),
 		Class("flex min-h-[44px] items-center justify-between gap-3 px-4 py-2.5 text-sm text-fg transition-colors hover:bg-s2/60"),
 		Span(Class("truncate"), g.Text(label)),
 		activePill(it),
@@ -183,7 +174,7 @@ func notifRow(it NotificationRow) g.Node {
 	// re-renders the transcript + agentChatScript's boost-safe init reconnects the
 	// WS for the picked session.
 	return A(
-		Href(agentHref(it.Name, it.SessionID)),
+		Href(AgentSessionHref(it.Name, it.SessionID)),
 		Class("flex min-h-[44px] items-center justify-between gap-3 px-4 py-2.5 text-sm text-fg transition-colors hover:bg-s2/60"),
 		Span(Class("truncate"), g.Text(label)),
 		Span(

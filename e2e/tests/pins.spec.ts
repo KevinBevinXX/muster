@@ -5,6 +5,7 @@ import { test, expect } from '../lib/fixtures';
 import { password, pinsPort } from '../lib/env';
 import { MirrorRig, mkchat } from '../lib/mirrorhost';
 import { writeFileAtomic } from '../lib/atomic';
+import { agentLink } from '../lib/agent-link';
 
 // PINNED ENTRIES COME FIRST — AS LABEL-ONLY CHIPS — in a real browser, against
 // a real muster-server (MUSTER_MIRROR=1, its own port) and a real muster-mirror
@@ -276,7 +277,7 @@ for (const vp of [
       try {
         await login(page);
         await page.goto(origin + '/agents');
-        const entry = page.locator(`#agents-list > article:has(a[href="/agents/${name}"])`);
+        const entry = page.locator(`#agents-list > article:has(${agentLink(name)})`);
         await expect(entry).toHaveCount(1, { timeout: 20_000 });
         const id = (await entry.getAttribute('id'))!.replace('agent-', '');
         await pinVia(page, true, { kind: 'agent', agent_id: id });
@@ -307,7 +308,7 @@ for (const vp of [
           .poll(async () => { await page.reload(); return chipEl.getAttribute('data-f-status'); }, { message: 'stopped from the chip', timeout: 20_000 })
           .toBe('stopped');
         await expect(chipEl).toHaveAttribute('data-pinned-chip', 'agent');
-        await expect(page.locator('#agents-list > article:not([data-pinned-chip])').filter({ has: page.locator(`a[href="/agents/${name}"]`) })).toHaveCount(0);
+        await expect(page.locator('#agents-list > article:not([data-pinned-chip])').filter({ has: page.locator(agentLink(name)) })).toHaveCount(0);
         // Out of edit mode (a reload starts out of it): the label again, with
         // the stopped dot beside it.
         await expect(page.locator('#agents-pins-edit')).toHaveAttribute('aria-pressed', 'false');

@@ -749,13 +749,46 @@ func (s *PGStore) GetSession(ctx context.Context, sessionID int64) (ChatSession,
 	return scanSession(s.pool.QueryRow(ctx, `SELECT `+sessionCols+` FROM chat_sessions WHERE id=$1`, sessionID))
 }
 
+// latestSessionOrder is what "an agent's latest session" means: the order
+// LatestOrCreateSession takes its first row in (the session a bare
+// GET /agents/{name} redirects to) and LatestSessionIDs takes each agent's first
+// row in (the session an in-app link names, ui.AgentSessionHref). ONE spelling,
+// so a link can never name a different session than the redirect would pick.
+const latestSessionOrder = `updated_at DESC, id DESC`
+
+// LatestSessionIDs returns, per requested agent id, the id of the session
+// LatestOrCreateSession would return for it, in ONE query, WITHOUT creating
+// anything: an agent with no session is absent from the map (its link stays the
+// bare page, whose handler creates one). It exists so a list of agent links can
+// name each agent's canonical ?session= URL instead of paying the bare URL's 303.
+func (s *PGStore) LatestSessionIDs(ctx context.Context, ids []int64) (map[int64]int64, error) {
+	out := make(map[int64]int64, len(ids))
+	if len(ids) == 0 {
+		return out, nil
+	}
+	rows, err := s.pool.Query(ctx,
+		`SELECT DISTINCT ON (agent_id) agent_id, id FROM chat_sessions WHERE agent_id = ANY($1) ORDER BY agent_id, `+latestSessionOrder, ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var agentID, id int64
+		if err := rows.Scan(&agentID, &id); err != nil {
+			return nil, err
+		}
+		out[agentID] = id
+	}
+	return out, rows.Err()
+}
+
 // LatestOrCreateSession returns the agent's most-recently-updated session, or
 // creates one. The created session uses the LEGACY key (so a pre-sessions agent
 // keeps its gateway context) — the legacy key is UNIQUE, so a second call after
 // one exists takes the latest branch and never collides.
 func (s *PGStore) LatestOrCreateSession(ctx context.Context, agentID int64, agentName string) (ChatSession, error) {
 	c, err := scanSession(s.pool.QueryRow(ctx,
-		`SELECT `+sessionCols+` FROM chat_sessions WHERE agent_id=$1 ORDER BY updated_at DESC, id DESC LIMIT 1`, agentID))
+		`SELECT `+sessionCols+` FROM chat_sessions WHERE agent_id=$1 ORDER BY `+latestSessionOrder+` LIMIT 1`, agentID))
 	if err == nil {
 		return c, nil
 	}

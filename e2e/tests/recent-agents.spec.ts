@@ -2,6 +2,7 @@ import { Browser, Page } from '@playwright/test';
 import { test, expect } from '../lib/fixtures';
 import { baseURL, password } from '../lib/env';
 import { touchDrag } from '../lib/touch';
+import { agentLink } from '../lib/agent-link';
 
 // RECENTLY VIEWED, in a real browser on the shared server: a strip above the
 // Agents list of the entries the operator last opened, newest first, one tap
@@ -19,7 +20,9 @@ test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true
 
 const strip = (page: Page) => page.locator('#agents-recent');
 const entries = (page: Page) => strip(page).locator('a[data-recent-entry]');
-const hrefs = (page: Page) => entries(page).evaluateAll((els) => els.map((e) => e.getAttribute('href')));
+// Which agent each entry opens (its path; the query is the session it names,
+// pinned by agent-open-hops.spec.ts).
+const hrefs = (page: Page) => entries(page).evaluateAll((els) => els.map((e) => (e.getAttribute('href') || '').split('?')[0]));
 
 async function openAgent(page: Page, name: string) {
   await page.goto('/agents/' + name);
@@ -100,7 +103,7 @@ test('a visit shows in the strip, newest first, one tap to open; it persists to 
 
   // Pinned entries are left out — and come back when unpinned.
   await openList(page);
-  pinnedID = (await page.locator('#agents-list > article:has(a[href="/agents/docs-sweeper"])').getAttribute('id'))!.replace('agent-', '');
+  pinnedID = (await page.locator(`#agents-list > article:has(${agentLink('docs-sweeper')})`).getAttribute('id'))!.replace('agent-', '');
   await pin(page, pinnedID, true);
   await openList(page);
   await expect(page.locator('#agents-list > article').first(), 'pinned first in the list').toHaveId('agent-' + pinnedID);

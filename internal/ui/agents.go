@@ -17,6 +17,10 @@ import (
 // AgentCardView is the per-agent data the card grid renders.
 type AgentCardView struct {
 	ID int64
+	// SessionID is the agent's latest session (agents.Store.LatestSessionIDs),
+	// 0 when it has none or the read failed. Every link the list draws to this
+	// agent — the card, a pinned chip, a Recent entry — names it (PageHref).
+	SessionID int64
 	// Kind and CCAccount are the agent's kind and Claude account name.
 	Kind      string
 	CCAccount string
@@ -330,6 +334,12 @@ func agentRenameForm(a AgentCardView) g.Node {
 // 🔴 ITS SHAPE IS mirrorCard's, SLOT FOR SLOT (cardSlot): controls, body,
 // header, footer. TestAgentAndMirrorCardsRenderTheSameSlots pins it, so the two
 // kinds of card cannot drift into two layouts again.
+// PageHref is the card's link to the agent's page: AgentListHref on the agent's
+// latest session, so a tap loads the page directly instead of the bare URL and
+// its 303 (and is moved to the latest if it went stale). The card, its pinned
+// chip and its Recent entry all use it.
+func (a AgentCardView) PageHref() string { return AgentListHref(a.Name, a.SessionID) }
+
 func agentCard(a AgentCardView) g.Node {
 	ids := strconv.FormatInt(a.ID, 10)
 	// textplain.Title, exactly as agentTitle on the detail page does. A
@@ -362,7 +372,7 @@ func agentCard(a AgentCardView) g.Node {
 		// With a focus, it heads the card (cardFocusTitle): a popover trigger
 		// OUTSIDE the nav anchor, and the name below becomes its subtitle.
 		cardFocusTitle("agent-"+ids, a.Focus, reserve),
-		g.If(long, cardLongTitle("agent-"+ids, "/agents/"+a.Name, name, cardHasFocusTitle(a.Focus), reserve)),
+		g.If(long, cardLongTitle("agent-"+ids, a.PageHref(), name, cardHasFocusTitle(a.Focus), reserve)),
 		// The card body is the navigation surface: a REAL-load link to the detail
 		// page (hx-boost="false"). The card sits inside #agents-list, which carries
 		// hx-get/hx-target="#agents-list"/hx-swap; htmx attrs are INHERITED by
@@ -373,7 +383,7 @@ func agentCard(a AgentCardView) g.Node {
 		// right padding (pr-28, see cardControls) keeps the title out from under
 		// the controls.
 		A(
-			Href("/agents/"+a.Name),
+			Href(a.PageHref()),
 			hx("hx-boost", "false"),
 			cardSlot("body"),
 			// A long name is in the title row above, so the anchor is named here.

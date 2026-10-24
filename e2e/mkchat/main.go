@@ -36,6 +36,9 @@
 // the agent's page draws the completion banner's Mark complete. Deleting with
 // MUSTER_E2E_TASK set deletes that task too.
 //
+// MUSTER_E2E_APPEND=1 instead APPENDS stdin's messages to the latest session of
+// the EXISTING agent MUSTER_E2E_AGENT (a message stored while a page is open).
+//
 // MUSTER_E2E_KIND=claude-code with MUSTER_E2E_CC_ACCOUNT=<name> makes the agent
 // that kind (its account is only a name: nothing is provisioned).
 //
@@ -114,6 +117,14 @@ func run() error {
 		return nil
 	}
 
+	if os.Getenv("MUSTER_E2E_APPEND") == "1" {
+		var msgs []agents.ChatMessage
+		if err := json.NewDecoder(os.Stdin).Decode(&msgs); err != nil {
+			return fmt.Errorf("messages on stdin: %w", err)
+		}
+		return appendMessages(ctx, pool, name, msgs)
+	}
+
 	display := os.Getenv("MUSTER_E2E_DISPLAY_NAME")
 	if os.Getenv("MUSTER_E2E_THREADS") == "1" {
 		var threads []thread
@@ -133,6 +144,30 @@ func run() error {
 		return err
 	}
 	return writeFocus(ctx, pool, as, name)
+}
+
+// appendMessages adds msgs, in order and in ONE transaction, to the latest
+// session of the EXISTING agent name — a message stored while a page is open,
+// for a spec that needs one to arrive server-side.
+func appendMessages(ctx context.Context, pool *pgxpool.Pool, name string, msgs []agents.ChatMessage) error {
+	return pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+		as := agents.NewPGTx(tx)
+		a, err := as.GetByName(ctx, name)
+		if err != nil {
+			return fmt.Errorf("find agent %q: %w", name, err)
+		}
+		sess, err := as.LatestOrCreateSession(ctx, a.ID, a.Name)
+		if err != nil {
+			return fmt.Errorf("latest session: %w", err)
+		}
+		for i, m := range msgs {
+			m.AgentID, m.SessionID = a.ID, sess.ID
+			if _, err := as.AddChatMessage(ctx, m); err != nil {
+				return fmt.Errorf("append message %d: %w", i, err)
+			}
+		}
+		return nil
+	})
 }
 
 // focusSpec is one MUSTER_E2E_FOCUS entry.

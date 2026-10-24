@@ -2,6 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { Page } from '@playwright/test';
 import { test, expect } from '../lib/fixtures';
 import { dsn, repoRoot } from '../lib/env';
+import { agentLink } from '../lib/agent-link';
 
 // A HELD FIRST TURN, in a real browser on the shared server: a claude-code agent
 // whose repository cannot be checked out until its owner approves the agent's
@@ -23,7 +24,7 @@ test.afterAll(() => {
   heldfix('delete', held);
 });
 
-const card = (page: Page, name: string) => page.locator('#agents-list > article', { has: page.locator(`a[href="/agents/${name}"]`) });
+const card = (page: Page, name: string) => page.locator('#agents-list > article', { has: page.locator(agentLink(name)) });
 
 for (const vp of [
   { label: 'phone', viewport: { width: 390, height: 844 }, touch: true },

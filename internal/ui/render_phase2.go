@@ -91,10 +91,5 @@ func RenderAgentDetail(w io.Writer, v AgentDetailView, feat Features) error {
 	return AgentDetailPage(v, feat).Render(w)
 }
 
-// RenderAgentChatLog writes the inner content of #chat-log (transcript bubbles +
-// provisioning/working indicators) for the active session — the GET
-// /ui/agents/{name}/chat-log partial swapped in on a sse:chat.reply refresh so a
-// server-side (kickoff) turn appears live without a page reload.
-func RenderAgentChatLog(w io.Writer, v AgentDetailView) error {
-	return chatLogInner(v).Render(w)
-}
+// The GET /ui/agents/{name}/chat-log partial (the inner content of #chat-log) is
+// rendered by ChatLogBody, which also gives its version (agents_detail.go).

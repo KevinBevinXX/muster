@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"net/http"
-	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -72,11 +71,8 @@ func agentSendBack(name, from, session string) string {
 	if from == ui.AgentSendFromTerminal {
 		return ui.AgentTerminalPath(name)
 	}
-	back := "/agents/" + url.PathEscape(name)
-	if id, err := strconv.ParseInt(session, 10, 64); err == nil && id > 0 {
-		back += "?session=" + strconv.FormatInt(id, 10)
-	}
-	return back
+	id, _ := strconv.ParseInt(session, 10, 64) // unparsable → 0 → the bare page
+	return ui.AgentSessionHref(name, id)
 }
 
 func (s *Server) handleAgentSendAgain(w http.ResponseWriter, r *http.Request) {

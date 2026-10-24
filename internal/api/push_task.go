@@ -13,6 +13,7 @@ import (
 	"github.com/ZacxDev/muster/internal/notes"
 	"github.com/ZacxDev/muster/internal/push"
 	"github.com/ZacxDev/muster/internal/textplain"
+	"github.com/ZacxDev/muster/internal/ui"
 )
 
 // Task-lifecycle Web Push notifications. Each hangs off an existing
@@ -290,7 +291,9 @@ func (s *Server) notifyAgentRunning(agentName string) {
 		Title: fmt.Sprintf("Task #%d: agent ready", noteID),
 		Body:  "The agent is now working on it.",
 		Tag:   fmt.Sprintf("task-%d-provisioned", noteID),
-		Data:  map[string]string{"url": "/agents/" + a.Name},
+		// The BARE page, on purpose (#237): it resolves the agent's latest session
+		// at TAP time, which is what a notification opened later must land on.
+		Data: map[string]string{"url": ui.AgentPath(a.Name)},
 	})
 }
 

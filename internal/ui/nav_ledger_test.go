@@ -116,9 +116,12 @@ func streamsIn(t *testing.T, n g.Node) int {
 // numbers it opened before the side nav, measured on main (74a7e059) with the
 // same counter.
 var documentStreams = map[string]int{
-	"PageWith":                  1,
-	"ComposePage":               1,
-	"AgentDetailPage":           2,
+	"PageWith":    1,
+	"ComposePage": 1,
+	// 1, not the 2 measured on 74a7e059: the second was agentChatScript's raw
+	// EventSource for "agent.stream", which nothing has published since
+	// bcdd60bf (#66), and it was removed.
+	"AgentDetailPage":           1,
 	"TaskDetailPage":            1,
 	"TaskNotFoundPage":          0,
 	"AgentTerminalPage":         0,
