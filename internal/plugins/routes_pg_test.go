@@ -217,3 +217,99 @@ func TestARelayThatCannotBeMadeFailsTheRoute(t *testing.T) {
 		t.Fatalf("audit = %v", got)
 	}
 }
+
+// TestCreateRouteFromRecordsWhoRoutedIt: an MCP origin's route is the same row
+// and audit action as the chief's, with routed_via "mcp from <host>/<session>";
+// a malformed origin is refused before anything is written. CONTROL: the
+// chief's (zero) origin records no routed_via.
+func TestCreateRouteFromRecordsWhoRoutedIt(t *testing.T) {
+	w := newDraftWorld(t)
+	const sid = "0b2c3d4e-5f60-4718-8a9b-0c1d2e3f4a5b"
+	for what, o := range map[string]RouteOrigin{
+		"mcp without a session":      {Via: RouteViaMCP, Host: "tower"},
+		"mcp without a host":         {Via: RouteViaMCP, Session: sid},
+		"the chief naming a host":    {Host: "tower"},
+		"the chief naming a session": {Session: sid},
+		"an unknown origin":          {Via: "browser", Host: "tower", Session: sid},
+	} {
+		if _, err := w.s.CreateRouteFrom(session(2), w.chief.ID, 2, w.m.ID, target, time.Hour, o); !errors.Is(err, ErrInvalid) {
+			t.Errorf("%s: %v, want ErrInvalid", what, err)
+		}
+	}
+	var n int
+	if err := w.s.pool.QueryRow(authz.System(context.Background()), `SELECT count(*) FROM session_routes WHERE plugin_message_id = $1`, w.m.ID).Scan(&n); err != nil || n != 0 {
+		t.Fatalf("a refused origin wrote %d route(s) (%v)", n, err)
+	}
+	via := func(r Route) string {
+		var v string
+		if err := w.s.pool.QueryRow(authz.System(context.Background()), `SELECT coalesce(detail->>'routed_via', '') FROM audit_log
+			WHERE object = $1 AND action = 'session_route.routed'`, RouteObject(r.RouteID)).Scan(&v); err != nil {
+			t.Fatalf("the routed audit row of %s: %v", r.RouteID, err)
+		}
+		return v
+	}
+	r, err := w.s.CreateRouteFrom(session(2), w.chief.ID, 2, w.m.ID, target, time.Hour, RouteOrigin{Via: RouteViaMCP, Host: "tower", Session: sid})
+	if err != nil || r.State != RouteRouted || r.AgentID == nil || *r.AgentID != w.chief.ID {
+		t.Fatalf("an MCP route: %+v %v", r, err)
+	}
+	if got := via(r); got != "mcp from tower/"+sid {
+		t.Fatalf("the MCP route's routed_via = %q", got)
+	}
+	if got := via(w.route(t, w.delivered(t, "m-chief", false))); got != "" {
+		t.Fatalf("control, the chief's route: routed_via = %q", got)
+	}
+}
+
+// TestRoutableMessagesIsTheOwnersDeliveredRepliableMessages: newest first, only
+// messages delivered to a chief that may be replied to, each with its LATEST
+// route — not a queued one, not a no_reply one, not another owner's.
+// MessageRoute is that latest route too.
+func TestRoutableMessagesIsTheOwnersDeliveredRepliableMessages(t *testing.T) {
+	w := newDraftWorld(t)
+	noReply := w.delivered(t, "m-noreply", true)
+	queued, _, err := w.s.Submit(plugin(2), w.p.ID, msg("m-queued"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	later := w.delivered(t, "m-later", false)
+	_, p3 := mustCreate(t, w.s, 3, "example-inbox")
+	chief3 := mustAgent(t, w.dsn, 3, "plg-chief-3")
+	theirs, _, err := w.s.Submit(plugin(3), p3.ID, msg("m-theirs"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := w.s.BeginDelivery(plugin(3), theirs.ID, chief3.ID); err != nil || !ok {
+		t.Fatal(ok, err)
+	}
+	first := w.route(t, w.m)
+	if _, err := w.s.FailRoute(session(2), first.RouteID, "test", ""); err != nil {
+		t.Fatal(err)
+	}
+	second := w.route(t, w.m)
+
+	got, err := w.s.RoutableMessages(session(2), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0].Message.ID != later.ID || got[1].Message.ID != w.m.ID {
+		t.Fatalf("RoutableMessages = %+v; want exactly [%d %d] (no_reply %d, queued %d, another owner's %d left out)",
+			got, later.ID, w.m.ID, noReply.ID, queued.ID, theirs.ID)
+	}
+	if got[0].Route.RouteID != "" || got[1].Route.RouteID != second.RouteID || got[1].Route.State != RouteRouted ||
+		got[1].Route.TargetKey != target.Key || got[1].PluginLabel != w.p.Label {
+		t.Fatalf("the routes: %+v / %+v", got[0].Route, got[1].Route)
+	}
+	if one, err := w.s.RoutableMessages(session(2), 1); err != nil || len(one) != 1 || one[0].Message.ID != later.ID {
+		t.Fatalf("limit 1: %+v %v", one, err)
+	}
+	if r, err := w.s.MessageRoute(session(2), w.m.ID); err != nil || r.RouteID != second.RouteID {
+		t.Fatalf("MessageRoute = %+v %v; want %s", r, err, second.RouteID)
+	}
+	if _, err := w.s.MessageRoute(session(2), later.ID); !errors.Is(err, ErrRouteNotFound) {
+		t.Fatalf("MessageRoute of an unrouted message: %v", err)
+	}
+	// Another owner's view is theirs alone.
+	if g3, err := w.s.RoutableMessages(session(3), 10); err != nil || len(g3) != 1 || g3[0].Message.ID != theirs.ID {
+		t.Fatalf("owner 3's RoutableMessages = %+v %v", g3, err)
+	}
+}
