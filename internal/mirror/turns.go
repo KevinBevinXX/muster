@@ -1,6 +1,9 @@
 package mirror
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 // TURNS: per mirrored window, what the send queue (internal/sendqueue) needs to
 // tell "the turn a paste started has ended" without comparing two clocks.
@@ -49,6 +52,61 @@ type turnState struct {
 	// inflight counts the pastes into the window handed out (beginPaste) and
 	// not yet settled (endPaste): a queued paste is refused while any is.
 	inflight int
+	// guardWhy, guardUntil and guardN are the Claude prompt guard's HOLD
+	// (guardHold): the host refused a paste on what it read at the moment of
+	// typing — a dialog, a non-empty input box, a screen it could not read —
+	// guardN times in a row; the window is held, with guardWhy, until
+	// guardUntil (muster's clock). Cleared by a new status (observe) and by a
+	// paste that landed (endPaste).
+	guardWhy   string
+	guardUntil time.Time
+	guardN     int
+}
+
+// Guard backoff: the first hold is guardHoldFirst, each refusal in a row
+// doubles it, up to guardHoldMax. So a refusal the status cannot see (a dialog
+// on screen while the status says idle, text left in the box) is retried
+// after 4 s, 8 s, 16 s, then every 30 s — not at every dispatcher pass.
+const (
+	guardHoldFirst = 4 * time.Second
+	guardHoldMax   = 30 * time.Second
+)
+
+// guardHold holds the window after the host's prompt guard refused a paste
+// into it, for why (the host's words), backing off (guardHoldFirst doubling
+// to guardHoldMax).
+func (h *Hub) guardHold(owner int64, host, session, window, why string) {
+	if window == "" {
+		return
+	}
+	k := turnKey{owner, host, session, window}
+	now := h.now()
+	h.turnsMu.Lock()
+	defer h.turnsMu.Unlock()
+	if h.turns == nil {
+		h.turns = map[turnKey]*turnState{}
+	}
+	t := h.turns[k]
+	if t == nil {
+		t = &turnState{}
+		h.turns[k] = t
+	}
+	t.guardN++
+	d := guardHoldMax
+	if t.guardN <= 4 {
+		d = min(guardHoldFirst<<(t.guardN-1), guardHoldMax)
+	}
+	t.guardWhy, t.guardUntil = why, now.Add(d)
+}
+
+// guardHeld is t's hold reason at now, "" when it is not held.
+func (t turnState) guardHeld(now time.Time) string {
+	if t.guardWhy == "" || !now.Before(t.guardUntil) {
+		return ""
+	}
+	return "Held: muster-mirror refused it at the moment of typing — " +
+		strings.TrimSuffix(strings.TrimPrefix(t.guardWhy, "Not sent: "), " Nothing was typed into the pane.") +
+		" It tries again at " + t.guardUntil.UTC().Format("15:04:05") + " UTC."
 }
 
 // observe records hc's window list at now: a window whose (status, time) pair
@@ -74,6 +132,9 @@ func (h *Hub) observe(owner int64, host string, windows []Window, now time.Time)
 		}
 		if t.status != w.Status || t.since != w.StatusSince || t.observed.IsZero() {
 			t.status, t.since, t.observed = w.Status, w.StatusSince, now
+			// A new status (the prompt answered, a turn ran): the guard's hold
+			// and its backoff start over.
+			t.guardWhy, t.guardUntil, t.guardN = "", time.Time{}, 0
 		}
 	}
 	for k := range h.turns {
@@ -165,5 +226,8 @@ func (h *Hub) endPaste(owner int64, host, session, window string, since int64, l
 	}
 	if landed && since > t.pasted {
 		t.pasted = since
+	}
+	if landed {
+		t.guardWhy, t.guardUntil, t.guardN = "", time.Time{}, 0
 	}
 }

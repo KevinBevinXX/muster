@@ -72,6 +72,17 @@ func (b *winBackend) Paste(ctx context.Context, p mirrorhost.ClaudePane, text st
 	return b.PastePane(ctx, p.Pane, text)
 }
 
+// ClaudeScreen and PasteChecked: the Claude prompt guard's two capabilities
+// (claudeBackend's, in rendered_test.go).
+func (b *winBackend) ClaudeScreen(context.Context, string) (string, error) {
+	return idleClaudeScreen, nil
+}
+
+func (b *winBackend) PasteChecked(ctx context.Context, p mirrorhost.ClaudePane, text string, before, beforeEnter func(context.Context) error) error {
+	return mirrorhost.CheckedPaste(ctx, func(context.Context) error { return nil },
+		func(ctx context.Context) error { return b.Paste(ctx, p, text) }, before, beforeEnter)
+}
+
 func (b *winBackend) ActivePane(context.Context, string) (string, bool) { return "", false }
 
 func (b *winBackend) PastePane(_ context.Context, pane, text string) error {

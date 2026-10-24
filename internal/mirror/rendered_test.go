@@ -69,6 +69,23 @@ func (b *claudeBackend) Paste(_ context.Context, p mirrorhost.ClaudePane, text s
 	return nil
 }
 
+// ClaudeScreen and PasteChecked: the host's Claude prompt guard refuses a
+// backend without them, so the fake has both — Claude Code's idle prompt, and
+// the real checked paste around Paste.
+func (b *claudeBackend) ClaudeScreen(context.Context, string) (string, error) {
+	return idleClaudeScreen, nil
+}
+
+func (b *claudeBackend) PasteChecked(ctx context.Context, p mirrorhost.ClaudePane, text string, before, beforeEnter func(context.Context) error) error {
+	return mirrorhost.CheckedPaste(ctx, func(context.Context) error { return nil },
+		func(ctx context.Context) error { return b.Paste(ctx, p, text) }, before, beforeEnter)
+}
+
+// idleClaudeScreen is Claude Code at its idle prompt, as the guard's screen
+// check reads one.
+const idleClaudeScreen = "● done\n\n" + "────────────────────────────────────────" + "\n❯ \n" +
+	"────────────────────────────────────────" + "\n  ? for shortcuts\n"
+
 func (b *claudeBackend) pasted() []string {
 	b.mu.Lock()
 	defer b.mu.Unlock()

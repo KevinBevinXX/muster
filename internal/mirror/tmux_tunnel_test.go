@@ -139,7 +139,11 @@ func TestTmuxThroughTheTunnel(t *testing.T) {
 // tunnelClaude writes a stand-in Claude Code CLI under dir and returns the argv
 // that runs it in a pane: its argv names the npm package's entry script (what
 // the host's locator looks for), it records itself in <home>/sessions/<pid>.json
-// as the CLI does, prints a marker and echoes what is typed.
+// as the CLI does, prints a marker and echoes what is typed. After the marker
+// and after every line it reads it draws Claude Code's idle prompt — the input
+// box between two rules, the status line under it, as the real CLI does
+// (cmd/ccd/testdata/pane_idle_2.1.296.txt) — because the host's prompt guard
+// pastes only into a pane whose screen shows an empty input box.
 func tunnelClaude(t *testing.T, dir, home, sessionID string) []string {
 	t.Helper()
 	script := filepath.Join(dir, "node_modules", "@anthropic-ai", "claude-code", "cli.js")
@@ -148,7 +152,10 @@ func tunnelClaude(t *testing.T, dir, home, sessionID string) []string {
 	}
 	body := "mkdir -p \"$1/sessions\"\n" +
 		"printf '{\"sessionId\":\"%s\",\"cwd\":\"%s\",\"status\":\"idle\"}' \"$2\" \"$PWD\" > \"$1/sessions/$$.json\"\n" +
-		"printf 'FAKE-CLAUDE %s\\n' \"$2\"\ncat\n"
+		"rule=$(printf '%.0s─' $(seq 1 40))\n" +
+		"draw() { printf '%s\\n❯ \\n%s\\n  ? for shortcuts\\n' \"$rule\" \"$rule\"; }\n" +
+		"printf 'FAKE-CLAUDE %s\\n' \"$2\"\ndraw\n" +
+		"while IFS= read -r line; do printf '%s\\n' \"$line\"; draw; done\n"
 	if err := os.WriteFile(script, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
