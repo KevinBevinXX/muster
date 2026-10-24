@@ -7,7 +7,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/attention"
 	"github.com/ZacxDev/muster/internal/connectors"
 	"github.com/ZacxDev/muster/internal/flows"
@@ -144,34 +143,4 @@ func TestNoChiefToolCollidesWithTheGatewayRuntimesBuiltins(t *testing.T) {
 		t.Errorf("muster's chief tools collide with the gateway runtime's built-ins (or each other): %v — every "+
 			"gateway-runtime turn would fail with \"client tool name conflict\"", got)
 	}
-	// And the retired name is never listed, under any gate.
-	for _, n := range names {
-		if _, retired := toolNameAliases[n]; retired {
-			t.Errorf("the retired tool name %s is listed; listing it brings the conflict back", n)
-		}
-	}
-}
-
-// TestARetiredToolNameStillRunsAndStaysChiefOnly: a running Claude Code chief
-// that still calls agents_list gets fleet_list's answer, and the alias does not
-// step around the chief-only check for anyone else.
-func TestARetiredToolNameStillRunsAndStaysChiefOnly(t *testing.T) {
-	g := newGatedFixture(t)
-	for old, now := range toolNameAliases {
-		if got, want := g.srv.dispatchAgentTool(g.asOwner, g.chief, old, "{}"), g.srv.dispatchAgentTool(g.asOwner, g.chief, now, "{}"); got != want {
-			t.Errorf("the chief calling %s got %s, want %s's answer %s", old, got, now, want)
-		}
-		if out := g.srv.dispatchAgentTool(g.asOwner, g.worker, old, "{}"); !strings.Contains(out, "chief agent only") {
-			t.Errorf("a worker calling the retired %s got %s, want the chief-only refusal", old, out)
-		}
-		r, _ := g.mcp(t, g.chiefTok, `{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"`+old+`","arguments":{}}}`, nil)
-		if r == nil || r.Error != nil {
-			t.Errorf("tools/call %s over /mcp for the chief: %+v, want fleet_list's result", old, r)
-		}
-	}
-	// Control: a name that is neither listed nor retired is still unknown.
-	if out := g.srv.dispatchAgentTool(g.asOwner, g.chief, "agents_lists", "{}"); out != toolErr("unknown tool %q", "agents_lists") {
-		t.Errorf("control: an unregistered name answered %s", out)
-	}
-	_ = agents.Agent{}
 }

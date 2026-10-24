@@ -189,9 +189,6 @@ func (s *Server) serveMCP(w http.ResponseWriter, r *http.Request, surface mcpSur
 		}
 		// Only a tool this surface LISTS may be called through it: a gateway-only
 		// tool's name is as unknown here as a made-up one.
-		// A retired name is looked up — and called — as the tool it became
-		// (tool_names.go); the retired name itself is never listed.
-		p.Name = canonicalToolName(p.Name)
 		listed := false
 		for _, d := range surface.tools() {
 			listed = listed || d.Name == p.Name
