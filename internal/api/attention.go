@@ -479,6 +479,11 @@ func (s *Server) attentionItems(ctx context.Context) ([]attentionItem, error) {
 			errs = append(errs, fmt.Errorf("asks: %w", err))
 		}
 		for _, a := range asks {
+			// A question to the chief is the chief's (chief_ask_tool.go): the
+			// queue lists the chief's escalation of it, if any, not the question.
+			if a.ToChief {
+				continue
+			}
 			out = append(out, askItem(a))
 		}
 	}
@@ -1005,6 +1010,11 @@ func (s *Server) answerAskFrom(ctx context.Context, id int64, answer string, src
 	}
 	if err == nil {
 		s.askSettled(a)
+		// The chief's ask escalating a session's question (chief_ask_tool.go):
+		// its answer is the question's, and the chief is not sent it.
+		if a.Escalates > 0 && s.relayEscalation(ctx, a) {
+			return a, nil
+		}
 		if a.Delivery == attention.DeliveryQueued {
 			s.startAnswerDelivery(a.Owner, a.ID, s.deliveryGrace()+500*time.Millisecond)
 		}

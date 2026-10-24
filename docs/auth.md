@@ -85,6 +85,16 @@ offered only in gotrue mode, and only when GoTrue reports `passkeys_enabled`.
 | Plugin token (`mpl_…`) | its owner, on `/plugin/v1/*` only | Minted at `/plugins` and shown once. Every other route refuses it. See [plugins.md](plugins.md). |
 | Device credential (`mdv_…`) | its owner, on `/api/device/*` only | A phone paired with the [Android app](design/android.md). See [Paired devices](#paired-devices). Every other route refuses it. |
 
+🔴 **A mirror token also reaches the chief, through `chief_ask`.** A leaked one
+can put a question — fenced as the session's words — into a **turn of its
+owner's chief**, and read the chief's answer back (the chief holds the fleet
+tools, so a question can ask it to read another session); with `route_id`, only
+about a route sent to that very session. It cannot answer the question for
+you: an answer to the chief's escalation from the question's own host is
+refused. Every question, escalation and answer has an audit row. Any of the
+owner's mirrored sessions may ask, by operator decision — the accepted risk in
+[attention.md](attention.md#asking-the-chief).
+
 The two shared secrets may not start with `mst_`, `mpl_` or `mdv_`. The server
 refuses to boot if one does.
 

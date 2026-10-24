@@ -794,6 +794,13 @@ turn for each message says when to do this.
    addresses. It no longer asks the session to leave out infrastructure names:
    the reply screen below still refuses the deployment's own names, with an
    error the session can act on.
+
+   A session that needs to know something before it answers can ask the
+   chief: `chief_ask {question, route_id}` ([attention.md](attention.md#asking-the-chief)).
+   The chief gets the question in the thread the message was delivered in,
+   with the message quoted; its answer (or yours, if it asks you) comes back
+   through the session's `attention_wait`. The route keeps its own deadline
+   meanwhile.
 4. **Back to the sender**, exactly once, as the message's reply draft:
    - when the message's sender is on your allowlist (`MUSTER_ROUTE_RELAY_ALLOW`)
      **for the plugin that delivered it**, and that plugin marked the sender

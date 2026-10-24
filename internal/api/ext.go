@@ -260,6 +260,10 @@ type Extensions struct {
 	// migration 0025). nil (no database): the attention tools are not offered,
 	// /attention answers 404, and no link is drawn.
 	Attention attention.Store
+	// ChiefAskTimeout is MUSTER_CHIEF_ASK_TIMEOUT: how long a mirrored
+	// session's question to the chief (chief_ask_tool.go) waits for an answer
+	// before it times out. 0 is DefaultChiefAskTimeout.
+	ChiefAskTimeout time.Duration
 	// MirrorTokens authenticates a mirror host's token for the mirrored
 	// sessions' MCP door (mirror_mcp.go) — *mirror.PGStore, the same table
 	// /mirror/connect reads. nil: POST /mirror/mcp answers 404.

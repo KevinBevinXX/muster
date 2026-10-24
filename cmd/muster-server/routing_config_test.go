@@ -119,3 +119,31 @@ func TestTheRouteTimeoutMustOutlastTheSendQueueIdleWait(t *testing.T) {
 		}
 	}
 }
+
+// MUSTER_CHIEF_ASK_TIMEOUT: unset is api.DefaultChiefAskTimeout (30m); a
+// duration inside [1m, 24h] is taken as given; anything else refuses to boot,
+// naming the variable.
+func TestTheChiefAskTimeoutDefaultsParsesAndRefusesNonsense(t *testing.T) {
+	load := func(v string) (config, error) {
+		return loadConfig(func(n string) string {
+			if n == envChiefAskTimeout {
+				return v
+			}
+			return ""
+		})
+	}
+	cfg, err := load("")
+	if err != nil || cfg.ChiefAskTimeout != 30*time.Minute {
+		t.Fatalf("unset: %v, %v; want 30m", cfg.ChiefAskTimeout, err)
+	}
+	for v, want := range map[string]time.Duration{"1m": time.Minute, "7m": 7 * time.Minute, " 3h ": 3 * time.Hour, "24h": 24 * time.Hour} {
+		if cfg, err := load(v); err != nil || cfg.ChiefAskTimeout != want {
+			t.Errorf("%q: %v, %v; want %v", v, cfg.ChiefAskTimeout, err, want)
+		}
+	}
+	for _, bad := range []string{"soon", "30", "0", "-5m", "59s", "24h1s"} {
+		if _, err := load(bad); err == nil || !strings.Contains(err.Error(), envChiefAskTimeout) {
+			t.Errorf("%q: booted (%v)", bad, err)
+		}
+	}
+}

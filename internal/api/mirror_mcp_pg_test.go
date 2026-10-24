@@ -105,7 +105,7 @@ func TestAMirroredSessionGetsTheAllAgentsToolsAndNothingElse(t *testing.T) {
 	for _, tl := range res.Tools {
 		names = append(names, tl.Name)
 	}
-	want := "attention_ask attention_wait attention_cancel tasks_list task_get task_comment task_set_status attention_answer agent_destroy connector_requests_list connector_request_decide"
+	want := "attention_ask attention_wait attention_cancel tasks_list task_get task_comment task_set_status attention_answer agent_destroy chief_ask connector_requests_list connector_request_decide"
 	if strings.Join(names, " ") != want {
 		t.Fatalf("tools = %v, want %s", names, want)
 	}

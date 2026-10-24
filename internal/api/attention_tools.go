@@ -334,12 +334,19 @@ func (s *Server) openAskForTask(ctx context.Context, taskID int64) (int64, strin
 // askView is an ask as a tool returns it.
 func askView(a attention.Ask) map[string]any {
 	status := string(a.Status)
-	if a.Status == attention.Open {
+	switch {
+	case a.Status == attention.Open:
 		status = "pending"
+	case a.Status == attention.Expired && a.ToChief:
+		// A question to the chief (chief_ask) that nobody answered in time.
+		status = "timed_out"
 	}
 	out := map[string]any{"id": a.ID, "status": status, "question": a.Question}
 	if a.Status == attention.Answered || a.Status == attention.AnsweredInSession {
 		out["answer"] = a.Answer
+	}
+	if a.ToChief && a.Status == attention.Answered {
+		out["answered_by"] = a.AnsweredBy
 	}
 	if a.Status == attention.AnsweredInSession {
 		out["note"] = answeredInSessionNote

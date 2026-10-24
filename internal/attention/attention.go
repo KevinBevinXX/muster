@@ -33,6 +33,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -42,6 +43,7 @@ import (
 
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/mirror"
+	"github.com/ZacxDev/muster/internal/users"
 )
 
 // Status is where an ask is.
@@ -61,8 +63,14 @@ const (
 
 // ByOperator is who answers an ask: the operator — on the attention view, or
 // (migration 0034) through one of their own mirrored Claude Code sessions'
-// attention_answer. No dispatched agent answers one — not even the chief.
+// attention_answer. No dispatched agent answers one — not even the chief —
+// except a question a mirrored session addressed TO the chief (ByChief).
 const ByOperator = "operator"
+
+// ByChief is answered_by for the chief's answer to a question a mirrored
+// session put to it with chief_ask (New.ToChief, migration 0049): the only ask
+// an agent answers (AnswerByChief).
+const ByChief = "chief"
 
 // ViaMCP is answered_via for an answer given through attention_answer, from a
 // mirrored session (migration 0034). An answer given on the attention view has
@@ -200,6 +208,14 @@ type Ask struct {
 	// attention view (migration 0034): the zero value for the view (and for
 	// every answer recorded before 0034).
 	AnsweredVia AnswerSource `json:"-"`
+	// ToChief: a mirrored session's question to its owner's chief (chief_ask,
+	// migration 0049) — the chief may answer it (AnswerByChief), and the owner's
+	// Attention queue does not list it.
+	ToChief bool `json:"-"`
+	// Escalates is, on the chief's own ask, the session question it put to the
+	// owner (0 for none): the owner's answer to it is relayed to that question
+	// (RelayEscalation).
+	Escalates int64 `json:"-"`
 }
 
 // Delivery is where an answer stands on its way to the asker (migration 0031).
@@ -245,6 +261,15 @@ type New struct {
 	// Timeout is how long the ask waits; 0 is DefaultTimeout, and anything
 	// else is clamped to [MinTimeout, MaxTimeout].
 	Timeout time.Duration
+	// ToChief addresses the ask to the owner's chief: set only by the mirrored
+	// sessions' chief_ask. Escalates links the chief's ask to the session
+	// question it escalates: set only by escalate_session_question. Either one
+	// writes an audit row with the ask (chief_question.asked / .escalated);
+	// RouteID, when set, is the routed message the question is about, recorded
+	// on that row only.
+	ToChief   bool
+	Escalates int64
+	RouteID   string
 }
 
 // Clean validates and normalises n: the question and options trimmed, blank
@@ -324,6 +349,13 @@ type Store interface {
 	// Answer records the operator's answer to an open ask, given on the
 	// attention view.
 	Answer(ctx context.Context, id int64, answer string) (Ask, error)
+	// AnswerByChief records the chief's answer to an open question a mirrored
+	// session addressed to it (ToChief); ErrNotFound for any other ask.
+	AnswerByChief(ctx context.Context, id int64, answer string) (Ask, error)
+	// RelayEscalation gives the owner's answer to the chief's escalation ask to
+	// the session question it escalates, and returns that question
+	// (ErrNotOpen when it is no longer open).
+	RelayEscalation(ctx context.Context, escalationID int64) (Ask, error)
 	// AnswerFromSession records the operator's answer to an open ask, given
 	// through attention_answer by their mirrored Claude Code session (host,
 	// session): the same transition as Answer, plus its provenance (ViaMCP).
@@ -418,7 +450,8 @@ const cols = `id, owner_id, coalesce(agent_id, 0), coalesce(mirror_host, ''), co
 	coalesce(answer, ''), coalesce(answered_by, ''), created_at, expires_at, resolved_at,
 	coalesce(delivery, ''), delivery_detail, delivery_attempts, coalesce(delivered_session_id, 0), delivery_queued_at,
 	coalesce(task_id, 0),
-	coalesce(answered_via, ''), coalesce(answered_via_host, ''), coalesce(answered_via_session, '')`
+	coalesce(answered_via, ''), coalesce(answered_via_host, ''), coalesce(answered_via_session, ''),
+	to_chief, coalesce(escalates, 0)`
 
 func scan(row pgx.Row) (Ask, error) {
 	var a Ask
@@ -428,7 +461,7 @@ func scan(row pgx.Row) (Ask, error) {
 	if err := row.Scan(&a.ID, &a.Owner, &a.Asker.AgentID, &a.Asker.MirrorHost, &a.Asker.MirrorSession, &a.Asker.System, &a.Asker.Label,
 		&a.Question, &opts, &status, &a.Answer, &a.AnsweredBy, &a.CreatedAt, &a.ExpiresAt, &resolved,
 		&delivery, &a.DeliveryDetail, &a.DeliveryAttempts, &a.DeliveredSession, &queued, &a.TaskID,
-		&a.AnsweredVia.Via, &a.AnsweredVia.Host, &a.AnsweredVia.Session); err != nil {
+		&a.AnsweredVia.Via, &a.AnsweredVia.Host, &a.AnsweredVia.Session, &a.ToChief, &a.Escalates); err != nil {
 		return Ask{}, err
 	}
 	if queued != nil {
@@ -505,17 +538,48 @@ func (s *PGStore) Create(ctx context.Context, n New) (Ask, error) {
 	if open >= MaxOpenPerOwner {
 		return Ask{}, ErrTooMany
 	}
-	var task any
+	var task, escalates any
 	if n.TaskID > 0 {
 		task = n.TaskID
 	}
-	a, err := scan(tx.QueryRow(ctx, `INSERT INTO attention_asks (agent_id, mirror_host, mirror_session, system_asker, asker_label, question, options, expires_at, task_id)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, now() + make_interval(secs => $8), $9)
-		RETURNING `+cols, agent, nullable(n.Asker.MirrorHost), nullable(n.Asker.MirrorSession), n.Asker.System, n.Asker.Label, n.Question, opts, n.Timeout.Seconds(), task))
+	if n.Escalates > 0 {
+		escalates = n.Escalates
+	}
+	a, err := scan(tx.QueryRow(ctx, `INSERT INTO attention_asks (agent_id, mirror_host, mirror_session, system_asker, asker_label, question, options, expires_at, task_id,
+			to_chief, escalates)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, now() + make_interval(secs => $8), $9, $10, $11)
+		RETURNING `+cols, agent, nullable(n.Asker.MirrorHost), nullable(n.Asker.MirrorSession), n.Asker.System, n.Asker.Label, n.Question, opts, n.Timeout.Seconds(), task,
+		n.ToChief, escalates))
+	if err != nil {
+		return Ask{}, err
+	}
+	switch {
+	case n.ToChief:
+		detail := map[string]any{"host": n.Asker.MirrorHost, "session": n.Asker.MirrorSession, "expires_at": a.ExpiresAt.UTC().Format(time.RFC3339)}
+		if n.RouteID != "" {
+			detail["route_id"] = n.RouteID
+		}
+		err = auditAsk(ctx, tx, "chief_question.asked", a.ID, detail)
+	case n.Escalates > 0:
+		err = auditAsk(ctx, tx, "chief_question.escalated", n.Escalates, map[string]any{"escalation_id": a.ID, "agent_id": n.Asker.AgentID})
+	}
 	if err != nil {
 		return Ask{}, err
 	}
 	return a, tx.Commit(ctx)
+}
+
+// AskObject is the audit_log `object` naming an ask.
+func AskObject(id int64) string { return "attention_ask:" + strconv.FormatInt(id, 10) }
+
+// auditAsk appends one audit_log row about ask id as ctx's principal (0009's
+// self_append), in tx.
+func auditAsk(ctx context.Context, tx pgx.Tx, action string, id int64, detail map[string]any) error {
+	p, ok := authz.From(ctx)
+	if !ok || p.UserID <= 0 {
+		return errors.New("attention: an audited write needs a user principal")
+	}
+	return users.AuditTx(ctx, tx, users.Actor{UserID: p.UserID, Via: p.Via}, action, AskObject(id), detail)
 }
 
 func (s *PGStore) Get(ctx context.Context, id int64) (Ask, error) {
@@ -578,12 +642,19 @@ func (s *PGStore) settle(ctx context.Context, id int64, q string, args ...any) (
 // (ErrSameHost says why the host, not the session). An agent's, the chief's
 // or a system ask has no mirror_host, so it is unaffected; an answer from
 // the view ($4 NULL) is unaffected. 0034's CHECK states the same rule again.
+//
+// 🔴 AND THROUGH AN ESCALATION (migration 0049): the chief's ask that escalates
+// a session's question relays its answer to that question, so an MCP answer
+// from the question's own host is refused on the chief's ask too — or a
+// session could answer its own question as the operator, one hop removed.
 const answerSQL = `UPDATE attention_asks SET status = 'answered', answer = $2, answered_by = $3, resolved_at = now(),
 	  delivery = CASE WHEN agent_id IS NOT NULL THEN 'queued' WHEN mirror_session IS NOT NULL THEN 'pull' END,
 	  delivery_queued_at = CASE WHEN agent_id IS NOT NULL THEN now() END,
 	  answered_via = $4::text, answered_via_host = $5::text, answered_via_session = $6::text
 	WHERE id = $1 AND status = 'open' AND expires_at > now()
 	  AND ($4::text IS NULL OR mirror_host IS DISTINCT FROM $5::text)
+	  AND ($4::text IS NULL OR escalates IS NULL
+	       OR NOT EXISTS (SELECT 1 FROM attention_asks q WHERE q.id = attention_asks.escalates AND q.mirror_host = $5::text))
 	RETURNING ` + cols
 
 func (s *PGStore) Answer(ctx context.Context, id int64, answer string) (Ask, error) {
@@ -610,11 +681,104 @@ func (s *PGStore) AnswerFromSession(ctx context.Context, id int64, answer, host,
 	}
 	a, err := s.settle(ctx, id, answerSQL, id, answer, ByOperator, ViaMCP, host, session)
 	// Only a STILL-OPEN ask is refused for its host: one already answered,
-	// cancelled or expired says so (ErrNotOpen), whoever asked.
-	if errors.Is(err, ErrNotOpen) && a.Status == Open && a.Asker.MirrorHost == host {
+	// cancelled or expired says so (ErrNotOpen), whoever asked. An escalation
+	// still open was refused for the host of the question it escalates.
+	if errors.Is(err, ErrNotOpen) && a.Status == Open && (a.Asker.MirrorHost == host || a.Escalates > 0) {
 		return a, ErrSameHost
 	}
 	return a, err
+}
+
+// AnswerByChief records the chief's answer to question id — an open question a
+// mirrored session addressed to the chief (ToChief) — as answered_by ByChief,
+// left for the session's attention_wait (pull), with its audit row. Any other
+// ask, another owner's (row-level security) and a missing one are ErrNotFound
+// alike: the chief answers no ask but one put to it.
+func (s *PGStore) AnswerByChief(ctx context.Context, id int64, answer string) (Ask, error) {
+	answer, err := CleanAnswer(answer)
+	if err != nil {
+		return Ask{}, err
+	}
+	var a Ask
+	err = s.inTx(ctx, func(tx pgx.Tx) error {
+		var err error
+		a, err = scan(tx.QueryRow(ctx, `UPDATE attention_asks SET status = 'answered', answer = $2, answered_by = $3, resolved_at = now(),
+			  delivery = 'pull'
+			WHERE id = $1 AND to_chief AND status = 'open' AND expires_at > now() RETURNING `+cols, id, answer, ByChief))
+		if err != nil {
+			return err
+		}
+		return auditAsk(ctx, tx, "chief_question.answered", id, map[string]any{"by": ByChief})
+	})
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return a, err
+	}
+	cur, gerr := s.Get(ctx, id)
+	if gerr != nil {
+		return Ask{}, gerr
+	}
+	if !cur.ToChief {
+		return Ask{}, ErrNotFound
+	}
+	return cur, ErrNotOpen
+}
+
+// RelayEscalation gives the owner's answer to the chief's escalation ask
+// escalationID — answered, and escalating a session question — to that
+// question, as the owner's answer (ByOperator, with the escalation's own
+// provenance), in one transaction with its audit row and with the
+// escalation's delivery to the chief settled as read (DeliveryWaited): the
+// answer went where it was asked for, so no turn is pushed. It returns the
+// question; ErrNotOpen (and the question as it stands) when the question is no
+// longer open — answered by the chief, cancelled or timed out — and then
+// nothing changes, so the chief still gets the answer delivered.
+func (s *PGStore) RelayEscalation(ctx context.Context, escalationID int64) (Ask, error) {
+	var q Ask
+	var questionID int64
+	err := s.inTx(ctx, func(tx pgx.Tx) error {
+		e, err := scan(tx.QueryRow(ctx, `SELECT `+cols+` FROM attention_asks
+			WHERE id = $1 AND status = 'answered' AND escalates IS NOT NULL FOR UPDATE`, escalationID))
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrNotFound
+		}
+		if err != nil {
+			return err
+		}
+		questionID = e.Escalates
+		if q, err = scan(tx.QueryRow(ctx, `UPDATE attention_asks SET status = 'answered', answer = $2, answered_by = $3, resolved_at = now(),
+			  delivery = 'pull', answered_via = $4::text, answered_via_host = $5::text, answered_via_session = $6::text
+			WHERE id = $1 AND to_chief AND status = 'open' AND expires_at > now() RETURNING `+cols,
+			questionID, e.Answer, ByOperator, nullable(e.AnsweredVia.Via), nullable(e.AnsweredVia.Host), nullable(e.AnsweredVia.Session))); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `UPDATE attention_asks SET delivery = 'waited', delivery_detail = '',
+			  delivery_claimed_by = NULL, delivery_lease_until = NULL
+			WHERE id = $1 AND delivery IN ('queued', 'delivering', 'unconfirmed')`, escalationID); err != nil {
+			return err
+		}
+		return auditAsk(ctx, tx, "chief_question.answered", questionID, map[string]any{"by": ByOperator, "escalation_id": escalationID})
+	})
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return q, err
+	}
+	cur, gerr := s.Get(ctx, questionID)
+	if gerr != nil {
+		return Ask{}, gerr
+	}
+	return cur, ErrNotOpen
+}
+
+// inTx runs fn in one transaction under ctx's principal.
+func (s *PGStore) inTx(ctx context.Context, fn func(pgx.Tx) error) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := fn(tx); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 // cutDetail bounds a delivery detail (0031's CHECK).

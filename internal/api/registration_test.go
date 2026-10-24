@@ -99,6 +99,8 @@ func fullyWiredServer(t *testing.T) *Server {
 		Suggest:         &suggest.Engine{},
 		Routes:          stubRoutes{},
 		Attention:       stubAttention{},
+		// NON-ZERO on purpose: the zero value is the default.
+		ChiefAskTimeout: time.Minute,
 		MirrorTokens:    stubMirrorTokens{},
 		Routing:         &Routing{},
 		// NON-ZERO on purpose: the zero TaskRouting offers no task_dispatch.

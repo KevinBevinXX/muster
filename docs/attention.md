@@ -153,6 +153,8 @@ called by name):
 | `attention_list` | The whole queue, as the view shows it, newest first: each item's `text` (the question; what a session waits on; a draft's inbound message), `detail` (a session's last words; the draft) and `focus`. Read-only: the chief cannot answer an ask (no dispatched agent can); only the operator does — on `/attention`, or through one of their own mirrored sessions' `attention_answer` (below). |
 | `session_transcript {subject, max_entries?}` | The recent conversation of one of the owner's sessions (`agent:<id>` or `mirror:<claude session id>`, as `fleet_list` returns them): oldest first, at most 200 entries, each at most 2000 characters, 48 KiB in all; tool calls by name, tool output left out. |
 | `fleet_list` | (Existing.) Now also carries a mirrored session's `host`. |
+| `answer_session_question {id, answer}` | Answers a question a mirrored session put to the chief with `chief_ask` ([below](#asking-the-chief)), as the chief's (`answered_by: "chief"`). Only a question put to the chief: any other ask, another owner's, or a missing id is *"no such session question: N"*; one already answered, cancelled or timed out is *"is no longer open (it is …)"*. |
+| `escalate_session_question {id, question, options?}` | Puts such a question to the owner: muster files the chief's `question` as **its** attention ask, linked to the session's question and expiring with it. The owner's answer to it goes to the session, not to the chief. Refused as `answer_session_question` refuses. |
 
 **Mirrored Claude Code sessions only** (the operator's own sessions, through
 their host's `muster-mirror` — [below](#mirrored-claude-code-sessions)):
@@ -161,6 +163,7 @@ their host's `muster-mirror` — [below](#mirrored-claude-code-sessions)):
 |---|---|
 | `attention_answer {id \| task_id, answer}` | Answers one of the owner's OPEN asks as the operator: free text or one of its options, the same validation as the `/attention` form (blank refused, at most 8000 characters). The ask is named by **exactly one** of `id` (the ask's id) or `task_id` (the task it is about — the chief's *"Task #776 needs you"* is `{task_id: 776}`); `task_id` must have exactly one open ask of yours (*"task N has no open ask"* — also what another owner's task reads — or *"task N has K open asks (ids …): answer one by id"*). It takes the form's own answer path, so the notification is withdrawn, waiters wake and an agent's answer is [delivered](#delivery) exactly as a browser answer is. The row records where it came from (`answered_via = 'mcp'`, the calling host and the Claude session it named, migration 0034); `answered_by` is still `operator`. **It counts as your own words for `task_dispatch` instructions**, exactly as a browser answer does (operator decision; see the risk [below](#mirrored-claude-code-sessions)); the started agent's first message and the `task.chief_dispatch` audit row then say it came via MCP from `<host>`/`<session>` ([chief.md](chief.md)). Refused: an open ask raised by **any mirrored session on the calling host** (*"was raised by a mirrored session on this host"*), an ask that is no longer open (*"is no longer open (it is …)"* — also for a same-host ask once it has closed), and another owner's ask or a missing id (both *"no such ask: N"*). |
 | `agent_destroy {name \| id}` | Destroys one of the owner's agents through the Agents page's own teardown ([provisioner.md](provisioner.md#destroying-an-agent)), named by **exactly one** of `name` (its slug) or `id`. The pod and the row go in the background; its open asks go with the row; a running turn is cut off. **The task is kept**: once the agent is gone, a task still `in_progress` with no other live agent is back to `open`, so the chief can `task_dispatch` it — and if the chief started the destroyed agent, the chief may start **one** new agent on the task again (see [chief.md](chief.md); the browser's Delete releases it too). **No audit row** is written: where the call came from (the host the token proves, the session the caller named) is in muster's server log only. Find a name with `muster agent ls`. Refused: the chief (*"the chief agent cannot be deleted…; to replace the chief use `muster chief replace`"*), and another owner's agent, an unknown name or a missing id (all *"no such agent: X"*). Operator decision ("Build agent_destroy MCP": mirrored owner sessions only). |
+| `chief_ask {question, options?, route_id?}` | Asks the owner's **chief** a question instead of the owner ([below](#asking-the-chief)). Returns `{id, status: "pending", expires_at, delivered_as, next}`: `delivered_as` is `turn` (the chief got it as a turn) or `note` (the chief was mid-turn or not running: it reads it on its next turn). The session then calls `attention_wait {id}`, which ends `answered` with `answered_by` `chief` or `operator`, or `timed_out` after `MUSTER_CHIEF_ASK_TIMEOUT` (30 minutes unless set). `route_id` must name a route sent to **this** session (*"route X was not routed to this session…"*; another owner's route or a missing one: *"no such route: X"*). Refused when the owner has no chief. Not offered, and unknown, to every dispatched agent, the chief included. |
 | `route_reply {route_id, body}` | With [session routing](plugins.md#routing-a-message-to-a-session) on: answers a plugin message the chief routed to **this** session, through the same path as `muster route reply` (screened, relayed once — sent at once to a verified, allowlisted sender, otherwise a draft the owner approves). Refused: a route sent to another session (*"route X was not routed to this session…"* — whatever the caller holds, including the route id), a route no longer waiting (*"route X is no longer waiting for an answer (it is …)"* — answered, timed out back to the chief or failed; the same body again is refused too), and another owner's route or a missing id (both *"no such route: X"*). Not offered, and refused, to every dispatched agent, the chief included. |
 
 🔴 **Who can answer, and how that is enforced.** `attention_answer` is listed
@@ -247,7 +250,8 @@ too, through its host's `muster-mirror`:
    tool error and the tool does not run. The tool set is exactly
    `attention_ask`, `attention_wait`, `attention_cancel`, the task tools,
    `attention_answer` (the operator answering an ask through this session),
-   `agent_destroy` (the operator tearing down one of their agents) and,
+   `agent_destroy` (the operator tearing down one of their agents),
+   `chief_ask` (a question to the owner's chief — [below](#asking-the-chief)) and,
    with a connector store, `connector_requests_list` / `connector_request_decide`
    (the operator deciding a connector request through this session —
    [connectors.md](connectors.md#deciding-a-request-from-your-own-session)); the
@@ -283,6 +287,10 @@ MCP from that host; the accepted risk is in
 through `agent_destroy`, it can **destroy any of the owner's agents but the
 chief** — with no audit row: the only record of which host did it is muster's
 server log.
+
+Through `chief_ask` a mirror token also **starts turns of the owner's chief
+and reads the chief's answers** — the accepted risk in
+[Asking the chief](#asking-the-chief).
 
 🔴 **Accepted risk: a mirror token can destroy agents.** The operator chose it
 ("Build agent_destroy MCP", *"Mirrored owner sessions only, same pattern"*) so
@@ -354,6 +362,68 @@ names and server instructions load at startup",
 
 If muster sits behind an auth proxy, `POST /mirror/mcp` must bypass it, as
 `GET /mirror/connect` does.
+
+## Asking the chief
+
+A mirrored Claude Code session can ask the owner's **chief** a clarifying
+question instead of the owner — about a plugin message the chief routed to it,
+say, or anything the chief, which sees the fleet, is likely to know. Any of the
+owner's mirrored sessions may ask (no allowlist, by operator decision).
+
+1. **The question.** `chief_ask {question, options?, route_id?}` on `POST
+   /mirror/mcp` files an attention ask of the session's **addressed to the
+   chief** (`to_chief`, migration 0049), open for `MUSTER_CHIEF_ASK_TIMEOUT`
+   (30 minutes unless set; [configuration](configuration.md)). With `route_id`
+   — which must name a route sent to this very session — the question is
+   about that routed message.
+2. **To the chief.** muster puts the question to the chief as a **turn**: in
+   the thread the routed message was delivered in when there is one, else the
+   chief's default session — holding the chief's session claim and turn gate,
+   as an answer's [delivery](#delivery) does, so it never overlaps another
+   turn. If the chief is busy or not running, the question is written into that
+   thread as a note it reads on its next turn instead (`delivered_as:
+   "note"`). The turn names
+   the question's id and the asking session's host and Claude session id
+   (`mirror:<id>`, for `session_transcript`), and quotes, fenced as data, the
+   window's title, the question, its options and — with a route — the routed
+   message's sender, subject and body.
+3. **The answer.** The chief either answers it, `answer_session_question {id,
+   answer}`, or puts it to you, `escalate_session_question {id, question,
+   options?}`: that files the chief's own attention ask — listed on
+   `/attention` and pushed like any ask — **linked** to the session's question
+   (`escalates`) and expiring with it. Your answer to it, on `/attention` or
+   through another host's `attention_answer`, is the session's answer, as
+   yours (`answered_by: "operator"`, with its provenance); the chief is not
+   sent it. An escalation you answer after the question has closed (the chief
+   answered it itself, or it timed out) changes nothing there, and is
+   [delivered](#delivery) to the chief like any answer to its ask.
+4. **The wait.** The session waits with `attention_wait {id}`, as for any ask:
+   only the session that asked can wait on or cancel it. It ends `answered`
+   (with `answered_by`) or, past the deadline, `timed_out`.
+
+The question itself is **not** on your Attention queue and is not pushed to
+your phone: it is the chief's first. It shows in the chief's thread, where its
+turn lands; you see it when the chief escalates. Its answer, once given, is
+listed under Answered like any mirrored session's.
+
+Every step writes an audit row on `attention_ask:<question id>`:
+`chief_question.asked` (host, session, deadline, and the `route_id`),
+`chief_question.escalated` (the chief's ask) and `chief_question.answered`
+(`by: "chief"`, or `by: "operator"` with the escalation).
+
+What holds: the chief answers no ask but one put to it (0049's CHECK allows
+`answered_by = 'chief'` only on a `to_chief` ask); no session answers for you —
+an MCP answer to an escalation from the **question's own host** is refused,
+exactly as for an ask raised on that host; and another owner's session or chief
+reads the question as *"no such ask"* / *"no such session question"*.
+
+🔴 **Accepted risk: a mirror token can start chief turns and read the chief's
+answers.** Any of the owner's mirrored sessions may ask — so may a leaked
+mirror token, or a session fed outside text. The question is fenced as the
+session's words and the chief is told it is data, not instructions; that is a
+prompt, not a boundary. The chief holds the fleet tools (`session_transcript`,
+`sessions_overview`, …), so a question can ask it to read another session and
+the answer goes back to whoever asked. Revoke a token you suspect.
 
 ## Delivery
 

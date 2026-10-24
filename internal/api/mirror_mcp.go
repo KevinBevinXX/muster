@@ -188,6 +188,11 @@ func (s *Server) mirrorTools() []agents.ToolDef {
 	var out []agents.ToolDef
 	if s.attentionToolsOn() {
 		out = append(append(append(append(out, attentionToolDefs()...), taskToolDefs()...), attentionAnswerToolDef()), agentDestroyToolDef())
+		// chief_ask — a session's question to the owner's chief
+		// (chief_ask_tool.go) — when there are agents to find the chief among.
+		if s.chiefAskOn() {
+			out = append(out, chiefAskToolDef())
+		}
 	}
 	if s.connectorDecideToolsOn() {
 		out = append(out, connectorDecideToolDefs()...)
@@ -227,6 +232,11 @@ func (s *Server) handleMirrorMCP(w http.ResponseWriter, r *http.Request) {
 					t.Host, sid, mirrorSessionHeader)
 			}
 			c := toolCaller{asker: attention.Asker{MirrorHost: t.Host, MirrorSession: sid, Label: e.DisplayTitle() + " @ " + t.Host}}
+			// chief_ask is this door's alone, like route_reply below (listed only
+			// with chiefAskOn, and serveMCP refuses an unlisted name).
+			if name == chiefAskTool {
+				return s.toolChiefAsk(r.Context(), c, args)
+			}
 			// route_reply is this door's alone: it is not in dispatchCallerTool,
 			// which a gateway agent reaches naming any tool.
 			if name == routeReplyToolName {
