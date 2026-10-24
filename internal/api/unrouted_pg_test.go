@@ -22,6 +22,20 @@ import (
 // the owner's answer settles the message; and plugin_message_settle is the
 // chief's alone, for its own messages.
 
+// newUnroutedFixture is newGatedFixture whose owner's plugin is the agent-mail
+// one, the only plugin the sweep judges, so deliveredMessage files through it.
+// Its name is spelled here, not read from plugins.UnroutedAskPlugin: the live
+// plugin is named "agent-mail", and a constant that drifted from it would
+// otherwise pass with it.
+func newUnroutedFixture(t *testing.T) *gatedFixture {
+	t.Helper()
+	g := newGatedFixture(t)
+	if _, _, err := g.plugins.Create(g.asOwner, "agent-mail", "Agent mail", "civitai"); err != nil {
+		t.Fatal(err)
+	}
+	return g
+}
+
 // unroutedSweep runs one unrouted-message sweep as if d had passed since now.
 func unroutedSweep(t *testing.T, g *gatedFixture, d time.Duration) {
 	t.Helper()
@@ -94,7 +108,7 @@ func (g *gatedFixture) settle(t *testing.T, id int64, reason string) {
 // mark, the subject, the body, the chief and the message, with the
 // "No action needed" option; sweeps after that raise no second one.
 func TestAnUnactedMessageBecomesExactlyOneAskAfterTheDelay(t *testing.T) {
-	g := newGatedFixture(t)
+	g := newUnroutedFixture(t)
 	m := g.deliveredMessage(t, g.owner, g.chief.ID, "unrouted-1")
 
 	unroutedSweep(t, g, plugins.UnroutedAskAfter-time.Minute)
@@ -112,7 +126,7 @@ func TestAnUnactedMessageBecomesExactlyOneAskAfterTheDelay(t *testing.T) {
 		t.Fatalf("the ask %+v; want an open system ask offering \"No action needed\"", a)
 	}
 	for _, want := range []string{"From: someone@example.test " + plugins.UnverifiedSenderMark, "Subject: (none)",
-		"please do a thing", "your chief (chief)", "Message: " + itoa(m.ID), "Example inbox"} {
+		"please do a thing", "reached your chief,", "Message: " + itoa(m.ID), "Agent mail"} {
 		if !strings.Contains(a.Question, want) {
 			t.Errorf("the question does not carry %q:\n%s", want, a.Question)
 		}
@@ -144,7 +158,7 @@ func TestAnUnactedMessageBecomesExactlyOneAskAfterTheDelay(t *testing.T) {
 // TestTheAttentionSweepRaisesTheAsk: the wiring — RunAttentionSweep itself, not
 // only its step, raises the ask.
 func TestTheAttentionSweepRaisesTheAsk(t *testing.T) {
-	g := newGatedFixture(t)
+	g := newUnroutedFixture(t)
 	m := g.deliveredMessage(t, g.owner, g.chief.ID, "wired-1")
 	g.srv.unroutedNow = func() time.Time { return time.Now().Add(plugins.UnroutedAskAfter + time.Minute) }
 	ctx, cancel := context.WithCancel(context.Background())
@@ -161,41 +175,20 @@ func TestTheAttentionSweepRaisesTheAsk(t *testing.T) {
 	}
 }
 
-// TestTheRaiseRechecksUnderTheLock: a message dispositioned after the sweep
-// read it as due, but before its ask was raised, gets none — RaiseUnrouted
-// re-checks, under the message's lock, and does not call raise.
-func TestTheRaiseRechecksUnderTheLock(t *testing.T) {
-	g := newGatedFixture(t)
-	m := g.deliveredMessage(t, g.owner, g.chief.ID, "recheck-1")
-	asOf := time.Now().Add(plugins.UnroutedAskAfter + time.Minute)
-	due, err := g.plugins.UnroutedDue(context.Background(), asOf, 1000)
-	if err != nil {
-		t.Fatal(err)
-	}
-	found := false
-	for _, d := range due {
-		found = found || d.ID == m.ID
-	}
-	if !found {
-		t.Fatalf("control: message %d is not due before it is settled", m.ID)
-	}
-	g.settle(t, m.ID, "handled")
-	called := false
-	raised, err := g.plugins.RaiseUnrouted(g.asOwner, m.ID, asOf, func(plugins.Message) error { called = true; return nil })
-	if err != nil || raised || called {
-		t.Fatalf("raise of a message settled since it was read: raised=%v called=%v err=%v; want neither", raised, called, err)
-	}
-}
-
-// TestAMessageActedOnInTimeRaisesNoAsk: routed, drafted, settled before the
-// delay — no ask for any of them — while an untouched one in the SAME sweep
+// TestAMessageActedOnInTimeRaisesNoAsk: routed, drafted, settled, or cited by a
+// gated task before the delay — no ask for any of them — while an untouched one in the SAME sweep
 // gets one (the positive control: the sweep did run and could raise).
 func TestAMessageActedOnInTimeRaisesNoAsk(t *testing.T) {
-	g := newGatedFixture(t)
+	g := newUnroutedFixture(t)
 	routed := g.deliveredMessage(t, g.owner, g.chief.ID, "acted-routed")
 	drafted := g.deliveredMessage(t, g.owner, g.chief.ID, "acted-drafted")
 	settled := g.deliveredMessage(t, g.owner, g.chief.ID, "acted-settled")
+	gated := g.deliveredMessage(t, g.owner, g.chief.ID, "acted-gated")
 	control := g.deliveredMessage(t, g.owner, g.chief.ID, "acted-control")
+	if text, isErr, rpc := g.callGated(t, g.chiefTok, map[string]any{"title": "Book it", "body": "The sender asks for a booking.",
+		"gate_reason": "owner approval", "message_id": gated.ID}); rpc != nil || isErr {
+		t.Fatalf("task_create_gated: %+v %s", rpc, text)
+	}
 
 	if _, err := g.plugins.CreateRoute(g.asOwner, g.chief.ID, g.owner, routed.ID,
 		plugins.RouteTarget{Kind: "mirror", Key: routeSID, Label: "w"}, time.Hour); err != nil {
@@ -207,7 +200,7 @@ func TestAMessageActedOnInTimeRaisesNoAsk(t *testing.T) {
 	g.settle(t, settled.ID, "a newsletter; nothing to do")
 
 	unroutedSweep(t, g, plugins.UnroutedAskAfter+time.Minute)
-	for name, id := range map[string]int64{"routed": routed.ID, "drafted": drafted.ID, "settled": settled.ID} {
+	for name, id := range map[string]int64{"routed": routed.ID, "drafted": drafted.ID, "settled": settled.ID, "gated": gated.ID} {
 		if asks := unroutedAsks(t, g, id); len(asks) != 0 {
 			t.Errorf("the %s message raised %d ask(s); want none", name, len(asks))
 		}
@@ -223,7 +216,7 @@ func TestAMessageActedOnInTimeRaisesNoAsk(t *testing.T) {
 // TestConcurrentSweepsRaiseOneAsk: four sweeps at once over one due message —
 // two processes sweeping, say — leave exactly one ask for it.
 func TestConcurrentSweepsRaiseOneAsk(t *testing.T) {
-	g := newGatedFixture(t)
+	g := newUnroutedFixture(t)
 	m := g.deliveredMessage(t, g.owner, g.chief.ID, "concurrent-1")
 	g.srv.unroutedNow = func() time.Time { return time.Now().Add(plugins.UnroutedAskAfter + time.Minute) }
 	var wg sync.WaitGroup
@@ -244,7 +237,7 @@ func TestConcurrentSweepsRaiseOneAsk(t *testing.T) {
 // the chief then settles one, drafts a reply to one, routes one — the next
 // sweep cancels all three asks — and an untouched fourth's ask stays open.
 func TestADispositionAfterTheAskClosesIt(t *testing.T) {
-	g := newGatedFixture(t)
+	g := newUnroutedFixture(t)
 	settled := g.deliveredMessage(t, g.owner, g.chief.ID, "late-settled")
 	drafted := g.deliveredMessage(t, g.owner, g.chief.ID, "late-drafted")
 	routed := g.deliveredMessage(t, g.owner, g.chief.ID, "late-routed")
@@ -289,7 +282,7 @@ func TestADispositionAfterTheAskClosesIt(t *testing.T) {
 // TestANoReplyMessageNeverRaisesAnAsk: a message its plugin marked no_reply is
 // never put to the owner, however long it waits; a repliable one beside it is.
 func TestANoReplyMessageNeverRaisesAnAsk(t *testing.T) {
-	g := newGatedFixture(t)
+	g := newUnroutedFixture(t)
 	control := g.deliveredMessage(t, g.owner, g.chief.ID, "noreply-control")
 	m, _, err := g.plugins.Submit(g.asOwner, control.PluginID, plugins.MessageIn{ExternalID: "noreply-1", Sender: "alerts@example.test",
 		Body: "your build passed", NoReply: true})
@@ -311,12 +304,11 @@ func TestANoReplyMessageNeverRaisesAnAsk(t *testing.T) {
 	}
 }
 
-// TestAnUndeliveredMessageRaisesNoAsk: a message still queued (never reached
-// the chief) is not the chief's to have acted on; nor is one whose delivery
-// is unconfirmed — the chief may never have seen it, and it is already on
-// /plugins as a delivery for the owner to retry.
+// TestAnUndeliveredMessageRaisesNoAsk: a message still queued never reached
+// the chief; one whose delivery is unconfirmed is not judged either (operator
+// decision: delivered only).
 func TestAnUndeliveredMessageRaisesNoAsk(t *testing.T) {
-	g := newGatedFixture(t)
+	g := newUnroutedFixture(t)
 	queued := g.deliveredMessage(t, g.owner, 0, "undelivered-1")
 	unconfirmed := g.deliveringMessage(t, g.owner, g.chief.ID, "undelivered-unconfirmed")
 	if ok, err := g.plugins.RecordDelivery(g.asOwner, unconfirmed.ID, g.chief.ID, plugins.StatusUnconfirmed); err != nil || !ok {
@@ -335,12 +327,94 @@ func TestAnUndeliveredMessageRaisesNoAsk(t *testing.T) {
 	}
 }
 
+// TestOnlyAgentMailRaisesAnAsk: a message from any other plugin — Discord DMs,
+// which the owner reads where they arrive — never raises an unrouted ask; an
+// agent-mail message beside it in the same sweep does.
+func TestOnlyAgentMailRaisesAnAsk(t *testing.T) {
+	g := newUnroutedFixture(t)
+	mail := g.deliveredMessage(t, g.owner, g.chief.ID, "scope-mail")
+	_, discord, err := g.plugins.Create(g.asOwner, "discord", "Discord DMs", "discord")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dm, _, err := g.plugins.Submit(g.asOwner, discord.ID, plugins.MessageIn{ExternalID: "scope-dm", Sender: "someone#1234", Body: "hey, you around?"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := g.plugins.BeginDelivery(g.asOwner, dm.ID, g.chief.ID); err != nil || !ok {
+		t.Fatal(ok, err)
+	}
+	if ok, err := g.plugins.RecordDelivery(g.asOwner, dm.ID, g.chief.ID, plugins.StatusDelivered); err != nil || !ok {
+		t.Fatal(ok, err)
+	}
+	unroutedSweep(t, g, 10*plugins.UnroutedAskAfter)
+	if asks := unroutedAsks(t, g, dm.ID); len(asks) != 0 {
+		t.Fatalf("a Discord message raised %d unrouted ask(s); want none", len(asks))
+	}
+	if asks := unroutedAsks(t, g, mail.ID); len(asks) != 1 {
+		t.Fatalf("an agent-mail message raised %d ask(s); want 1", len(asks))
+	}
+}
+
+// TestAnAskPastTheCapWaitsForTheNextSweep: unrouted asks count toward the
+// owner's MaxOpenPerOwner like any ask. At the cap the sweep raises none — the
+// message is not lost — and once an ask closes the next sweep raises it.
+func TestAnAskPastTheCapWaitsForTheNextSweep(t *testing.T) {
+	g := newUnroutedFixture(t)
+	store := attention.NewPG(g.pool)
+	var last attention.Ask
+	for i := 0; i < attention.MaxOpenPerOwner; i++ {
+		a, err := store.Create(g.asOwner, attention.New{Asker: attention.Asker{AgentID: g.worker.ID, Label: "w"}, Question: "q " + itoa(int64(i))})
+		if err != nil {
+			t.Fatalf("agent ask %d: %v", i, err)
+		}
+		last = a
+	}
+	m := g.deliveredMessage(t, g.owner, g.chief.ID, "cap-1")
+	unroutedSweep(t, g, plugins.UnroutedAskAfter+time.Minute)
+	if asks := unroutedAsks(t, g, m.ID); len(asks) != 0 {
+		t.Fatalf("at the cap, %d ask(s) for the message; want none (it counts like any ask)", len(asks))
+	}
+	if _, err := store.Cancel(g.asOwner, last.ID); err != nil {
+		t.Fatal(err)
+	}
+	unroutedSweep(t, g, plugins.UnroutedAskAfter+time.Minute)
+	if asks := unroutedAsks(t, g, m.ID); len(asks) != 1 {
+		t.Fatalf("with a slot free, %d ask(s) for the message; want 1", len(asks))
+	}
+}
+
+// TestOnlyALiveDraftCounts: the chief's draft that the owner rejected is work
+// that ended without an answer (chiefActed is live drafts and routes, the
+// retry list's rule), so the message still becomes an ask.
+func TestOnlyALiveDraftCounts(t *testing.T) {
+	g := newUnroutedFixture(t)
+	m := g.deliveredMessage(t, g.owner, g.chief.ID, "rejected-1")
+	d, _, err := g.plugins.FileDraft(g.asOwner, g.chief.ID, g.owner, g.chief.Name, m.ID, "Sure.")
+	if err != nil {
+		t.Fatal(err)
+	}
+	unroutedSweep(t, g, plugins.UnroutedAskAfter+time.Minute)
+	if asks := unroutedAsks(t, g, m.ID); len(asks) != 0 {
+		t.Fatalf("control: a pending draft raised %d ask(s); want none", len(asks))
+	}
+	// Rejected as the owner's decision leaves it (a direct write: the decide
+	// door is being renamed by another branch, and its rules are not under test).
+	if _, err := g.pool.Exec(authz.System(context.Background()), `UPDATE plugin_reply_drafts SET status = 'rejected', decided_at = now() WHERE id = $1`, d.ID); err != nil {
+		t.Fatal(err)
+	}
+	unroutedSweep(t, g, plugins.UnroutedAskAfter+time.Minute)
+	if asks := unroutedAsks(t, g, m.ID); len(asks) != 1 {
+		t.Fatalf("a message whose only draft was rejected raised %d ask(s); want 1", len(asks))
+	}
+}
+
 // TestAMessageSettledPreExistingRaisesNoAsk: what migration 0050's backfill
 // leaves on a message delivered before it (settle_reason 'pre-existing') keeps
 // it out of the sweep for good (the backfill itself:
 // internal/db's TestMigration0050SettlesThePreExistingMessages).
 func TestAMessageSettledPreExistingRaisesNoAsk(t *testing.T) {
-	g := newGatedFixture(t)
+	g := newUnroutedFixture(t)
 	old := g.deliveredMessage(t, g.owner, g.chief.ID, "pre-existing-1")
 	control := g.deliveredMessage(t, g.owner, g.chief.ID, "pre-existing-control")
 	if _, err := g.pool.Exec(authz.System(context.Background()), `UPDATE plugin_messages SET settle_reason = 'pre-existing' WHERE id = $1`, old.ID); err != nil {
@@ -359,7 +433,7 @@ func TestAMessageSettledPreExistingRaisesNoAsk(t *testing.T) {
 // with the answer as the reason; the ask is answered, and no sweep raises
 // another. Answering an ordinary ask settles nothing.
 func TestTheOwnersAnswerSettlesTheMessage(t *testing.T) {
-	g := newGatedFixture(t)
+	g := newUnroutedFixture(t)
 	m := g.deliveredMessage(t, g.owner, g.chief.ID, "answered-1")
 	other := g.deliveredMessage(t, g.owner, g.chief.ID, "answered-other")
 	unroutedSweep(t, g, plugins.UnroutedAskAfter+time.Minute)
@@ -399,7 +473,7 @@ func TestTheOwnersAnswerSettlesTheMessage(t *testing.T) {
 // never delivered to it; a blank reason is refused; a second settle keeps the
 // first reason.
 func TestSettleIsTheChiefsAloneForItsOwnDeliveredMessages(t *testing.T) {
-	g := newGatedFixture(t)
+	g := newUnroutedFixture(t)
 	mine := g.deliveredMessage(t, g.owner, g.chief.ID, "settle-mine")
 
 	if _, _, rpc := g.callTool(t, g.workerTok, pluginMessageSettleToolName, map[string]any{"message_id": mine.ID, "reason": "x"}); rpc == nil {

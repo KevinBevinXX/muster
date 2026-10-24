@@ -244,8 +244,7 @@ type New struct {
 	TaskID int64
 	// PluginMessageID links the ask to the plugin message it was raised for
 	// (0: none; migration 0050). Set ONLY by muster's unrouted-message sweep
-	// (internal/api unrouted.go); a second ask for one message is refused by
-	// the schema (attention_asks_one_per_plugin_message).
+	// (internal/api unrouted.go; docs/plugins.md#a-message-the-chief-does-not-act-on).
 	PluginMessageID int64
 	// Timeout is how long the ask waits; 0 is DefaultTimeout, and anything
 	// else is clamped to [MinTimeout, MaxTimeout].

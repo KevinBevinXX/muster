@@ -57,13 +57,23 @@ const revokedPlugin = `EXISTS (SELECT 1 FROM plugins p WHERE p.id = m.plugin_id 
 const gatedTaskCited = `EXISTS (SELECT 1 FROM audit_log a WHERE a.action = '` + ActionGatedTask + `'
 		AND a.user_id = m.owner_id AND a.detail->>'message_id' = m.id::text)`
 
+// chiefActed is THE ONE "the chief acted on this message" predicate (over
+// plugin_messages aliased m), read by the retry list (retryableWhere) and by
+// the unrouted-message sweep (unrouted.go): a LIVE reply draft, a LIVE route,
+// or a gated task filed citing it. Live, not any state: a draft rejected,
+// superseded, expired or failed, and a route timed out, failed or fallen back
+// (its draft is the live part), are work that ended without an answer — the
+// message is back where it started, so it may be retried and it may become an
+// ask.
+const chiefActed = `(` + liveDraft + ` OR ` + liveRoute + ` OR ` + gatedTaskCited + `)`
+
 // chiefActedTask: a task event (task_id set) the chief already acted on
 // (chiefActedOn, chief_dispatch.go): a retry would forward or ask twice.
 const chiefActedTask = `(m.task_id IS NOT NULL AND ` + chiefActedOn + `)`
 
 // retryableWhere is that predicate over plugin_messages aliased m.
-const retryableWhere = `m.status = 'unconfirmed' AND NOT ` + liveDraft + ` AND NOT ` + liveRoute + ` AND NOT ` + chiefActedTask +
-	` AND NOT ` + gatedTaskCited + ` AND NOT ` + revokedPlugin
+const retryableWhere = `m.status = 'unconfirmed' AND NOT ` + chiefActed + ` AND NOT ` + chiefActedTask +
+	` AND NOT ` + revokedPlugin
 
 // ActionRetried is the audit_log action a requeue appends (object
 // MessageObject). Retries COUNTS these rows, so the audit trail and what the

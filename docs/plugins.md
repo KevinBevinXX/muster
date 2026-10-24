@@ -746,46 +746,62 @@ for why the lookup reads a time window of history.
 
 ## A message the chief does not act on
 
-A message that can be replied to (not `no_reply`) and has reached your chief
-is **dispositioned** once any of these exists for it:
+A message that can be replied to (not `no_reply`) and was delivered to your
+chief **awaits a disposition**. It is dispositioned once it is settled, or once
+the chief **acted on it**:
 
-- a route to a session (`route_to_session`, [below](#routing-a-message-to-a-session)) — in whatever state;
-- a reply draft (`reply_draft`, or a routed session's answer) — in whatever state;
-- a **settle**: the chief's `plugin_message_settle {message_id, reason}`, its
-  judgement that the message needs nothing more (a notice, a status update,
-  a newsletter, or one dealt with some other way), with why. The reason is
-  recorded on the message (`settle_reason`, migration `0050`) and in the
-  `plugin.message.settled` audit row, and the message carries it wherever it
-  is read (`settleReason`). A second settle keeps the first reason. Only the
-  chief may settle, and only a message delivered to it: another agent is not
-  offered the tool, and another owner's message — or one still queued — is
-  *"not a plugin message delivered to you"*.
+- a **live** reply draft: pending, approved, sent or unconfirmed;
+- a **live** route to a session: routed, answered or relayed;
+- a gated task filed citing it (`task_create_gated` with its `message_id`).
 
-One still not dispositioned **15 minutes** after its delivery is put in front
-of you by muster, not by the chief: the attention sweep (every 30 s) raises
-an [ask](attention.md) on your Attention view, asked by `muster`, showing who
-sent it (with the **UNVERIFIED** mark unless the plugin verified the sender),
-its subject, its plugin and id, which chief it reached, and its first 600
-characters. Exactly one ask per message, ever: the schema refuses a second
-(`attention_asks.plugin_message_id` is unique), so a sweep run again, two
-processes sweeping at once or a retry after a crash raise no other — and
-whatever that ask's fate, the message is not asked about again.
+That "acted on it" rule is the same one that keeps a message off the
+[retry list](#retrying-an-unconfirmed-message) (`chiefActed`, one predicate
+for both). Live, not any state: a draft rejected, superseded, expired or
+failed, and a route timed out or failed, ended without an answer, so the
+message is back where it started.
 
-- **Answer it** — the offered **No action needed**, or anything you type — and
-  the message is settled with your answer as the reason. Nothing is sent to
-  the sender and the chief is not told: to reply, ask your chief for a draft.
-- **A later disposition closes it.** When the chief routes, drafts or settles
-  the message after the ask was raised, the next sweep withdraws the ask
-  (cancelled, and its notification cleared).
-- **Dismiss without answering** withdraws it and leaves the message
-  unsettled; no second ask is raised.
+A **settle** is the chief's `plugin_message_settle {message_id, reason}`: its
+judgement that the message needs nothing more (a notice, a status update, a
+newsletter, or one dealt with some other way), with why. The reason is stored
+on the message (`settle_reason`, at most 2000 characters) and in the
+`plugin.message.settled` audit row, and travels with the message
+(`settleReason`). A second settle keeps the first reason. Only the chief is
+offered the tool, and only for a message delivered to it: another owner's
+message, or one still queued, is *"not a plugin message delivered to you"*.
 
-The ask is muster's own, not the chief's, so the chief cannot withdraw it with
-`attention_cancel`: only a disposition closes it. A message still queued, a
-`no_reply` one, and a message delivered **before migration `0050`** never
-raise one — the migration settles every repliable message already delivered
-with the reason `pre-existing`, so the first sweep after the deploy raises
-nothing for them.
+An **agent-mail** message — one from the plugin named `agent-mail`
+(`plugins.UnroutedAskPlugin`; plugins are named this way everywhere, as in the
+route allowlist) — still awaiting a disposition **15 minutes** after its
+delivery is put in front of you by muster: the attention sweep (every 30 s)
+raises an [ask](attention.md), asked by `muster`, showing the sender (with the
+**UNVERIFIED** mark unless the plugin verified the sender), the subject, the
+plugin and id, and the first 600 characters. Messages from every other plugin
+never raise one: Discord DMs, for one, you already read in Discord, and a
+chief that answers few of them would otherwise turn each into an ask. An
+unconfirmed delivery (its turn was cut off) is not judged either: it waits on
+the [retry list](#retrying-an-unconfirmed-message).
+
+- **One ask per message, ever.** `attention_asks.plugin_message_id` is unique,
+  so a sweep run again, two processes sweeping at once or a retry after a
+  crash cannot raise a second; whatever the ask's fate, the message is not
+  asked about again. A disposition that races the raise is caught by the next
+  sweep's close.
+- **Answer it** — **No action needed**, or anything you type — and the message
+  is settled with your answer as the reason. Nothing is sent and the chief is
+  not told: to reply, ask your chief for a draft.
+- **A later disposition closes it**: the next sweep cancels the ask and clears
+  its notification.
+- **Dismiss without answering** withdraws it and leaves the message unsettled.
+- **Capped like any ask.** They count toward your limit of open asks (50,
+  shared with your agents) and expire after a day. At the limit the sweep
+  raises none and tries again on the next one (one log line per sweep).
+- **Muster's, not the chief's**, so the chief cannot `attention_cancel` one:
+  only a disposition closes it.
+
+**Nothing fires at the deploy.** Migration `0050` settles every message already
+awaiting a disposition, from any plugin, with the reason `pre-existing`, using
+the sweep's own predicate (`awaitsDisposition`). A message still queued then is
+judged when it is delivered.
 
 ## Routing a message to a session
 

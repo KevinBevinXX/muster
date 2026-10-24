@@ -5,9 +5,6 @@ import (
 	"fmt"
 	"strings"
 	"testing"
-	"time"
-
-	"github.com/ZacxDev/muster/internal/plugins"
 )
 
 // TestTheInstructionsAndTheDaemonReferToEachOther is the guard the tripwire's own
@@ -361,7 +358,7 @@ func TestNoTextReachesTheSupervisorPromptWithoutAPin(t *testing.T) {
 		{
 			name: "chiefPluginSection",
 			text: chiefPluginSection,
-			want: "e0220705a2fe16a8d6d765c6994135d63024c199676d46fcfb81be68b3543ba2",
+			want: "312db52b633a43577dde787ee6fedae8f5bd7d3d1bd0bd408e250c19b2957f99",
 			min:  1000,
 		},
 		{
@@ -373,7 +370,7 @@ func TestNoTextReachesTheSupervisorPromptWithoutAPin(t *testing.T) {
 		{
 			name: "chiefPluginSectionClaudeCode",
 			text: chiefPluginSectionClaudeCode,
-			want: "5c7669a3c89d4d8ead32887798193eb18a03991ce96b11d76a6e4941c452c3ae",
+			want: "e92e6cc5f08b31b0f1fafef8f597eec524f5e26515f129ce6dd8a42b980a7c6a",
 			min:  1000,
 		},
 	} {
@@ -738,36 +735,27 @@ func TestTheClaudeCodeSupervisorProseIsTrueInItsImage(t *testing.T) {
 	}
 }
 
-// TestThePluginSectionLeavesTheUnactedMessageToMuster pins, WHOLE and in both
-// runtimes' spelling against a literal typed here, what the plugin section says
-// about a message the chief does not act on: muster itself puts it in front of
-// the owner after plugins.UnroutedAskAfter (internal/api unrouted.go), and the
-// chief settles one that needs nothing with plugin_message_settle. It also pins
-// that the old PROSE FALLBACK is gone — the instruction to raise an
-// attention_ask for such a message, which the server now does deterministically
-// — so no variant names attention_ask in its plugin section, and that the delay
-// the prose states is the constant the sweep uses.
-func TestThePluginSectionLeavesTheUnactedMessageToMuster(t *testing.T) {
+// TestThePluginSectionHasNoAskFallback: the old PROSE FALLBACK — raise an
+// attention_ask for a message no session is on — is gone from every variant's
+// plugin section (muster raises that ask itself: internal/api unrouted.go), and
+// the one-line pointer to plugin_message_settle is there, in each runtime's
+// spelling, and only with plugins on.
+func TestThePluginSectionHasNoAskFallback(t *testing.T) {
 	norm := func(s string) string { return strings.Join(strings.Fields(s), " ") }
-	rule := func(settle string) string {
-		return "A message that can be replied to and that you neither route to a session nor draft a reply to is put " +
-			"in front of your owner by muster 15 minutes after it reached you. When one needs nothing more — a notice, " +
-			"a status update, a newsletter — call the " + settle + " tool with its message_id and a short reason."
-	}
-	if plugins.UnroutedAskAfter != 15*time.Minute {
-		t.Fatalf("the prose says 15 minutes; the sweep waits %s", plugins.UnroutedAskAfter)
+	line := func(settle string) string {
+		return "When a message needs nothing more, call " + settle + " with its message_id and why."
 	}
 	for _, c := range []struct {
-		name, section, prompt, off, rule string
+		name, section, prompt, off, line string
 	}{
-		{"gateway", chiefPluginSection, ChiefInstructions(false, true), ChiefInstructions(false, false), rule("`plugin_message_settle`")},
-		{"gateway with cairn", chiefPluginSection, ChiefInstructions(true, true), ChiefInstructions(true, false), rule("`plugin_message_settle`")},
-		{"function tools", chiefPluginSection, ChiefInstructionsFunctionTools(true), ChiefInstructionsFunctionTools(false), rule("`plugin_message_settle`")},
-		{"claude-code", chiefPluginSectionClaudeCode, ChiefInstructionsClaudeCode(true), ChiefInstructionsClaudeCode(false), rule("`mcp__muster__plugin_message_settle`")},
+		{"gateway", chiefPluginSection, ChiefInstructions(false, true), ChiefInstructions(false, false), line("`plugin_message_settle`")},
+		{"gateway with cairn", chiefPluginSection, ChiefInstructions(true, true), ChiefInstructions(true, false), line("`plugin_message_settle`")},
+		{"function tools", chiefPluginSection, ChiefInstructionsFunctionTools(true), ChiefInstructionsFunctionTools(false), line("`plugin_message_settle`")},
+		{"claude-code", chiefPluginSectionClaudeCode, ChiefInstructionsClaudeCode(true), ChiefInstructionsClaudeCode(false), line("`mcp__muster__plugin_message_settle`")},
 	} {
 		got := norm(c.prompt)
-		if !strings.Contains(got, c.rule) {
-			t.Errorf("%s: the chief prompt does not carry the unacted-message rule:\n%s", c.name, c.rule)
+		if !strings.Contains(got, c.line) {
+			t.Errorf("%s: the chief prompt does not carry the settle pointer:\n%s", c.name, c.line)
 		}
 		if strings.Contains(norm(c.off), "plugin_message_settle") {
 			t.Errorf("%s: plugins OFF, but the prompt names plugin_message_settle", c.name)

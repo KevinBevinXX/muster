@@ -458,10 +458,7 @@ or rejects it, and nothing is sent until they approve. A newer draft for the sam
 message replaces your pending one. Some messages cannot be answered — their turn
 says so — and a draft for one is refused.
 
-A message that can be replied to and that you neither route to a session nor draft a
-reply to is put in front of your owner by muster 15 minutes after it reached you. When
-one needs nothing more — a notice, a status update, a newsletter — call the
-` + "`plugin_message_settle`" + ` tool with its message_id and a short reason.
+When a message needs nothing more, call ` + "`plugin_message_settle`" + ` with its message_id and why.
 
 Anything you record durably from a plugin message goes to that plugin's data scope
 only — the scope named on the line above the message — and never to any other
@@ -588,10 +585,7 @@ or rejects it, and nothing is sent until they approve. A newer draft for the sam
 message replaces your pending one. Some messages cannot be answered — their turn
 says so — and a draft for one is refused.
 
-A message that can be replied to and that you neither route to a session nor draft a
-reply to is put in front of your owner by muster 15 minutes after it reached you. When
-one needs nothing more — a notice, a status update, a newsletter — call the
-` + "`mcp__muster__plugin_message_settle`" + ` tool with its message_id and a short reason.
+When a message needs nothing more, call ` + "`mcp__muster__plugin_message_settle`" + ` with its message_id and why.
 
 Anything you record durably from a plugin message goes to that plugin's data scope
 only — the scope named on the line above the message — and never to any other

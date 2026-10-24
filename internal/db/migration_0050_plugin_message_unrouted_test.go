@@ -6,11 +6,12 @@ import (
 )
 
 // TestMigration0050SettlesThePreExistingMessages: at version 48 (the control:
-// settle_reason does not exist yet) a delivered repliable message, a delivered
-// no_reply one and a queued one exist. After 0050 only the delivered repliable
-// one is settled 'pre-existing' — so the first sweep after the deploy raises no
-// ask for it — while the queued one, delivered after the deploy, is judged like
-// any new message. Then the schema's one-ask-per-message rule: a second ask
+// settle_reason does not exist yet) a delivered repliable message, an
+// unconfirmed one, a delivered no_reply one and a queued one exist. After 0050
+// only the delivered repliable one is settled 'pre-existing' — so the first
+// sweep after the deploy raises no ask for it — while the queued one,
+// delivered after the deploy, is judged like any new message (the sweep never
+// judges an unconfirmed one, nor a no_reply one, so neither is touched). Then the schema's one-ask-per-message rule: a second ask
 // naming the same message is refused.
 //
 // It starts at 48, not 49, so it runs unchanged whether or not 0049 (another
@@ -32,6 +33,7 @@ func TestMigration0050SettlesThePreExistingMessages(t *testing.T) {
 			plugin, ext, status, agentID, noReply, delivered)
 	}
 	repliable := msg("ext-repliable", "delivered", false)
+	unconfirmed := msg("ext-unconfirmed", "unconfirmed", false)
 	noReply := msg("ext-noreply", "delivered", true)
 	queued := msg("ext-queued", "queued", false)
 	if _, err := pool.Exec(ctx, `UPDATE plugin_messages SET settle_reason = 'x' WHERE id = $1`, repliable); err == nil || !strings.Contains(err.Error(), "settle_reason") {
@@ -54,6 +56,9 @@ func TestMigration0050SettlesThePreExistingMessages(t *testing.T) {
 	if got := reason(repliable); got != "pre-existing" {
 		t.Errorf("a repliable message delivered before 0050 has settle_reason %q; want pre-existing", got)
 	}
+	if got := reason(unconfirmed); got != "" {
+		t.Errorf("an unconfirmed message was settled %q; the sweep never judges one, so it is left alone", got)
+	}
 	if got := reason(noReply); got != "" {
 		t.Errorf("a no_reply message was settled %q; it never raises an ask, so it is left alone", got)
 	}
@@ -66,10 +71,6 @@ func TestMigration0050SettlesThePreExistingMessages(t *testing.T) {
 	mustExec(ctx, t, pool, ask, queued)
 	if _, err := pool.Exec(ctx, ask, queued); err == nil || !strings.Contains(err.Error(), "attention_asks_one_per_plugin_message") {
 		t.Fatalf("a second ask for one message was not refused: %v", err)
-	}
-	if _, err := pool.Exec(ctx, `UPDATE plugin_messages SET settle_reason = $2 WHERE id = $1`, queued, strings.Repeat("r", 2001)); err == nil ||
-		!strings.Contains(err.Error(), "plugin_messages_settle_reason_cap") {
-		t.Fatalf("a 2001-character reason was not refused: %v", err)
 	}
 
 	// Idempotent: the body applies a second time over itself.

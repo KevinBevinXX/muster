@@ -117,9 +117,6 @@ type Store interface {
 	SettleMessage(ctx context.Context, agentID, ownerID, messageID int64, reason string) (m Message, fresh bool, err error)
 	// UnroutedDue is every owner's messages due an ask as of asOf (system scope).
 	UnroutedDue(ctx context.Context, asOf time.Time, limit int) ([]Message, error)
-	// RaiseUnrouted runs raise for message id only while it is still due as of
-	// asOf, holding the message against a concurrent disposition.
-	RaiseUnrouted(ctx context.Context, id int64, asOf time.Time, raise func(Message) error) (bool, error)
 	// UnroutedAsksToClose is every owner's open ask raised for a message that
 	// has since been dispositioned (system scope).
 	UnroutedAsksToClose(ctx context.Context, limit int) ([]UnroutedAsk, error)

@@ -12,41 +12,41 @@ import (
 	"github.com/ZacxDev/muster/internal/authz"
 )
 
-// A MESSAGE THE CHIEF DID NOT DISPOSITION (migration 0050): a repliable inbound
-// message (no_reply false) delivered to the chief must not silently go nowhere.
-// The chief DISPOSITIONS it by routing it to a session (a session_routes row),
-// drafting a reply (a plugin_reply_drafts row), or settling it
-// (plugin_message_settle: settle_reason, its own judgement that the message
-// needs nothing more, with why). One still not dispositioned UnroutedAskAfter
-// after its delivery becomes an ask on the owner's Attention view, raised by
-// muster's attention sweep (internal/api unrouted.go), once; a disposition
-// after that closes the ask, and the owner's answer to it settles the message.
-//
-// 🔴 ONE RULE, ONE PLACE: dispositioned is the SQL every reader here uses — the
-// sweep that raises an ask, the re-check under the message's lock, and the
-// sweep that closes one — so "the chief acted on it" cannot mean two things.
+// A MESSAGE THE CHIEF DID NOT DISPOSITION (migration 0050): the rules, and why,
+// are in docs/plugins.md#a-message-the-chief-does-not-act-on. The SQL below is
+// every reader's: the sweep that raises an ask, the sweep that closes one, and
+// (awaitsDisposition) migration 0050's backfill.
 
 // UnroutedAskAfter is how long after its delivery a message the chief has not
 // dispositioned waits before it becomes an ask.
 const UnroutedAskAfter = 15 * time.Minute
 
-// MaxSettleReasonRunes bounds a settle reason (0050's CHECK).
+// MaxSettleReasonRunes bounds a settle reason.
 const MaxSettleReasonRunes = 2000
 
-// dispositioned is whether message m (the alias) has been acted on: routed to
-// a session, answered with a reply draft, or settled — whoever did it, through
-// whichever door.
-const dispositioned = `(m.settle_reason IS NOT NULL
-	OR EXISTS (SELECT 1 FROM session_routes r WHERE r.plugin_message_id = m.id)
-	OR EXISTS (SELECT 1 FROM plugin_reply_drafts d WHERE d.message_id = m.id))`
+// UnroutedAskPlugin is the one plugin, by name (as muster names a plugin
+// everywhere: the route allowlist's "<user>:<plugin>:…"), whose messages the
+// sweep judges: agent mail. Every other plugin's — Discord DMs, which the owner
+// already reads where they arrive — never raises an unrouted ask (operator
+// decision).
+const UnroutedAskPlugin = "agent-mail"
 
-// unroutedDue is whether message m is due an ask as of the cutoff $1: delivered
-// to the chief at or before it, repliable, not dispositioned, and with no ask
-// raised for it yet (whatever that ask's state now). settle_reason IS NULL is
-// also inside dispositioned; it is spelled here too so the planner can use
-// idx_plugin_messages_unsettled, whose predicate it is.
-const unroutedDue = `m.status = 'delivered' AND NOT m.no_reply AND m.settle_reason IS NULL AND m.delivered_at <= $1
-	AND NOT ` + dispositioned + `
+// awaitsDisposition is whether message m (the alias) is one the chief must act
+// on: repliable and delivered to the chief. Migration 0050's backfill spells
+// exactly this (TestTheBackfillIsTheSweepsPredicate), whatever the plugin, so
+// widening the plugin scope later fires nothing from before 0050 either.
+const awaitsDisposition = `m.status = 'delivered' AND NOT m.no_reply`
+
+// fromUnroutedAskPlugin: message m came through UnroutedAskPlugin.
+const fromUnroutedAskPlugin = `EXISTS (SELECT 1 FROM plugins p WHERE p.id = m.plugin_id AND p.name = '` + UnroutedAskPlugin + `')`
+
+// dispositioned: settled, or the chief acted on it (chiefActed, retry.go).
+const dispositioned = `(m.settle_reason IS NOT NULL OR ` + chiefActed + `)`
+
+// unroutedDue is whether message m is due an ask as of the cutoff $1: it came
+// through UnroutedAskPlugin, awaits a disposition, was delivered at or before
+// $1, has none, and no ask was raised for it yet (whatever that ask's state now).
+const unroutedDue = fromUnroutedAskPlugin + ` AND ` + awaitsDisposition + ` AND m.delivered_at <= $1 AND NOT ` + dispositioned + `
 	AND NOT EXISTS (SELECT 1 FROM attention_asks a WHERE a.plugin_message_id = m.id)`
 
 // UnroutedAsk is an open ask raised for a message that has since been
@@ -55,7 +55,7 @@ type UnroutedAsk struct {
 	AskID, OwnerID, MessageID int64
 }
 
-// cleanSettleReason trims a settle reason and checks it against 0050's CHECK.
+// cleanSettleReason trims a settle reason and bounds it.
 func cleanSettleReason(reason string) (string, error) {
 	reason = strings.TrimSpace(reason)
 	switch {
@@ -83,8 +83,6 @@ func (s *PGStore) SettleMessage(ctx context.Context, agentID, ownerID, messageID
 	var m Message
 	fresh := false
 	err = s.inTx(ctx, func(tx pgx.Tx) error {
-		// The message row lock, as every disposition takes it (lockMessage), so
-		// a settle and the sweep's raise (RaiseUnrouted) are serialised.
 		cur, err := scanMessage(tx.QueryRow(ctx, `SELECT `+messageCols+` FROM plugin_messages WHERE id = $1 FOR UPDATE`, messageID))
 		if errors.Is(err, pgx.ErrNoRows) || (err == nil && !DeliveredTo(cur, agentID, ownerID)) {
 			return ErrNotFound
@@ -112,7 +110,7 @@ func (s *PGStore) SettleMessage(ctx context.Context, agentID, ownerID, messageID
 // UnroutedDue is every owner's messages due an ask as of asOf (unroutedDue:
 // delivered at or before asOf - UnroutedAskAfter), longest-waiting first, at
 // most limit. Under the system scope (internal/authz's ledger names it): each
-// is then raised as its owner (RaiseUnrouted).
+// is then raised as its owner.
 func (s *PGStore) UnroutedDue(ctx context.Context, asOf time.Time, limit int) ([]Message, error) {
 	rows, err := s.pool.Query(authz.System(ctx), `SELECT `+prefixed("m", messageCols)+` FROM plugin_messages m
 		WHERE `+unroutedDue+` ORDER BY m.delivered_at, m.id LIMIT $2`, asOf.Add(-UnroutedAskAfter), limit)
@@ -131,40 +129,8 @@ func (s *PGStore) UnroutedDue(ctx context.Context, asOf time.Time, limit int) ([
 	return out, rows.Err()
 }
 
-// RaiseUnrouted calls raise for message id when — re-checked now, under the
-// message's row lock — it is still due an ask as of asOf, and reports whether
-// it did. raise's error is returned.
-//
-// 🔴 THE LOCK IS HELD WHILE raise RUNS, so a disposition racing the raise
-// (route, draft, settle: each takes the message row FOR UPDATE first) lands
-// either before it — and the re-check sees it, so no ask is raised — or after
-// it, when the ask exists and the closing sweep (UnroutedAsksToClose) ends it.
-// It is FOR NO KEY UPDATE, not FOR UPDATE: raise inserts an ask whose foreign
-// key to this row takes FOR KEY SHARE on another connection, which FOR UPDATE
-// blocks — until the statement timeout cancels the insert, on every sweep, so
-// no ask would ever be raised (measured with that mutant).
-func (s *PGStore) RaiseUnrouted(ctx context.Context, id int64, asOf time.Time, raise func(Message) error) (bool, error) {
-	raised := false
-	err := s.inTx(ctx, func(tx pgx.Tx) error {
-		m, err := scanMessage(tx.QueryRow(ctx, `SELECT `+prefixed("m", messageCols)+` FROM plugin_messages m
-			WHERE m.id = $2 AND `+unroutedDue+` FOR NO KEY UPDATE OF m`, asOf.Add(-UnroutedAskAfter), id))
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil
-		}
-		if err != nil {
-			return err
-		}
-		if err := raise(m); err != nil {
-			return err
-		}
-		raised = true
-		return nil
-	})
-	return raised, err
-}
-
 // UnroutedAsksToClose is every owner's OPEN ask raised for a message that has
-// since been dispositioned (routed, drafted or settled), oldest first, at most
+// since been dispositioned, oldest first, at most
 // limit. Under the system scope (internal/authz's ledger names it): each is
 // then cancelled as its owner.
 func (s *PGStore) UnroutedAsksToClose(ctx context.Context, limit int) ([]UnroutedAsk, error) {

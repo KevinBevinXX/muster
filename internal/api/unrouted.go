@@ -13,23 +13,13 @@ import (
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/attention"
 	"github.com/ZacxDev/muster/internal/fence"
-	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/plugins"
 )
 
-// A PLUGIN MESSAGE THE CHIEF DID NOT ACT ON BECOMES AN ASK (internal/plugins
-// unrouted.go, migration 0050). A repliable message delivered to the chief that
-// is neither routed to a session, nor answered with a reply draft, nor settled
-// with plugin_message_settle plugins.UnroutedAskAfter after its delivery is put
-// in front of the owner by the attention sweep (sweepUnroutedMessages): one ask,
-// raised by muster itself, ever. A disposition after that closes the ask on the
-// next sweep; the owner's answer to it settles the message, the answer as the
-// reason.
-//
-// 🔴 THE ASK IS MUSTER'S (a system asker), NOT THE CHIEF'S: the chief cannot
-// cancel it with attention_cancel and so cannot make a message go nowhere
-// without recording why; only a disposition closes it. Its answer is delivered
-// to nobody: it settles the message and sends nothing (the question says so).
+// A PLUGIN MESSAGE THE CHIEF DID NOT ACT ON BECOMES AN ASK, raised by muster
+// (a system asker) on the attention sweep: the rules, and why, are in
+// docs/plugins.md#a-message-the-chief-does-not-act-on; the SQL is
+// internal/plugins unrouted.go.
 
 const pluginMessageSettleToolName = "plugin_message_settle"
 
@@ -45,8 +35,8 @@ const unroutedPreviewRunes = 600
 func pluginMessageSettleToolDef() agents.ToolDef {
 	return agents.ToolDef{Type: "function", Name: pluginMessageSettleToolName,
 		Description: "Record that a plugin message delivered to you needs nothing more — a notice, a status update, a " +
-			"newsletter, or one dealt with some other way — and why. A repliable message you neither route to a session, " +
-			"nor answer with reply_draft, nor settle here is put in front of your owner as an ask " +
+			"newsletter, or one dealt with some other way — and why. A repliable agent-mail message you neither route to a " +
+			"session, nor answer with reply_draft, nor cite in task_create_gated, nor settle here is put in front of your owner as an ask " +
 			strconv.Itoa(int(plugins.UnroutedAskAfter/time.Minute)) + " minutes after it reached you; settling it after " +
 			"that withdraws the ask. Settling sends nothing to anyone. Your reason is recorded with the message and shown " +
 			"to your owner. A message already settled keeps its first reason.",
@@ -109,8 +99,16 @@ func (s *Server) sweepUnroutedMessages(ctx context.Context) {
 	if err != nil {
 		s.logger.Printf("plugins: unrouted messages: %v", err)
 	}
+	capped := 0
 	for _, m := range due {
-		s.raiseUnroutedAsk(ctx, m.OwnerID, m.ID, asOf)
+		if errors.Is(s.raiseUnroutedAsk(ctx, m), attention.ErrTooMany) {
+			capped++
+		}
+	}
+	if capped > 0 {
+		// The owner's open asks are at MaxOpenPerOwner; each is retried on the
+		// next sweep. One line per sweep, not one per message.
+		s.logger.Printf("plugins: %d unrouted message(s) wait for an ask: their owner's open asks are at the cap (%d)", capped, attention.MaxOpenPerOwner)
 	}
 	closing, err := s.ext.Plugins.UnroutedAsksToClose(ctx, unroutedSweepBatch)
 	if err != nil {
@@ -123,50 +121,38 @@ func (s *Server) sweepUnroutedMessages(ctx context.Context) {
 	}
 }
 
-// raiseUnroutedAsk raises owner's ask for message id, as that owner, while it is
-// still due (plugins.RaiseUnrouted), and tells the owner's devices.
-func (s *Server) raiseUnroutedAsk(ctx context.Context, owner, id int64, asOf time.Time) {
-	octx := s.attentionPrincipal(ctx, owner)
-	var ask attention.Ask
-	raised, err := s.ext.Plugins.RaiseUnrouted(octx, id, asOf, func(m plugins.Message) error {
-		var err error
-		ask, err = s.ext.Attention.Create(octx, attention.New{
-			Asker:           attention.Asker{System: true, Label: attention.SystemAskerLabel},
-			Question:        s.unroutedQuestion(octx, m),
-			Options:         []string{unroutedNoAction},
-			PluginMessageID: m.ID,
-		})
-		return err
+// raiseUnroutedAsk raises the ask for message m, as its owner, and tells the
+// owner's devices; ErrTooMany when the owner's open asks are at the cap. A
+// disposition racing it is caught by the next sweep's close;
+// a second sweep racing it, by the unique link.
+func (s *Server) raiseUnroutedAsk(ctx context.Context, m plugins.Message) error {
+	octx := s.attentionPrincipal(ctx, m.OwnerID)
+	ask, err := s.ext.Attention.Create(octx, attention.New{
+		Asker:           attention.Asker{System: true, Label: attention.SystemAskerLabel},
+		Question:        s.unroutedQuestion(octx, m),
+		Options:         []string{unroutedNoAction},
+		PluginMessageID: m.ID,
 	})
 	var pg *pgconn.PgError
 	switch {
 	case errors.As(err, &pg) && pg.Code == "23505" && pg.ConstraintName == "attention_asks_one_per_plugin_message":
-		return // another sweep raised it first
+		return nil // another sweep raised it first
+	case errors.Is(err, attention.ErrTooMany):
+		return err // the caller logs once per sweep
 	case err != nil:
-		s.logger.Printf("plugins: raise an ask for message %d: %v", id, err)
-		return
-	case !raised:
-		return
+		s.logger.Printf("plugins: raise an ask for message %d: %v", m.ID, err)
+		return err
 	}
 	s.attentionNotify(ask.Owner, askItem(ask))
 	s.attentionChanged(ask.Owner, attentionAskKey(ask.ID))
+	return nil
 }
 
 // unroutedQuestion is the ask for message m: muster's sentence, then who sent
 // it (with the UNVERIFIED mark unless the plugin verified the sender), its
-// subject, its plugin and id, which chief it reached, and a bounded preview of
+// subject, its plugin and id, and a bounded preview of
 // its body — every outside field sanitised.
 func (s *Server) unroutedQuestion(ctx context.Context, m plugins.Message) string {
-	chief := "your chief"
-	if m.AgentID != nil && s.ext.Agents != nil {
-		if a, err := s.ext.Agents.Get(ctx, *m.AgentID); err == nil {
-			name := a.DisplayName
-			if strings.TrimSpace(name) == "" {
-				name = a.Name
-			}
-			chief = "your chief (" + mirror.OneLine(name, 80) + ")"
-		}
-	}
 	label := "a plugin"
 	if p, err := s.ext.Plugins.Plugin(ctx, m.PluginID); err == nil {
 		label = fence.Sanitize(p.Label)
@@ -176,7 +162,7 @@ func (s *Server) unroutedQuestion(ctx context.Context, m plugins.Message) string
 		subject = "(none)"
 	}
 	q := "A message from " + label + " has not been acted on: " + strconv.Itoa(int(plugins.UnroutedAskAfter/time.Minute)) +
-		" minutes after it reached " + chief + ", it is not routed to a session, has no reply draft, and was not settled.\n\n" +
+		" minutes after it reached your chief, it is not routed to a session, has no reply draft, and was not settled.\n\n" +
 		"From: " + plugins.SenderText(m) + "\n" +
 		"Subject: " + subject + "\n" +
 		"Message: " + strconv.FormatInt(m.ID, 10) + "\n\n" +
