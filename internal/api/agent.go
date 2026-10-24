@@ -338,6 +338,10 @@ func (s *Server) agentTools() []agentTool {
 		// owner must approve before the plugin sends it. MCP and chief-only for
 		// task_create_gated's reasons.
 		tools = append(tools, agentTool{def: replyDraftToolDef(), mcp: true, chiefOnly: true})
+		// plugin_message_settle (unrouted.go): the chief records that a message
+		// needs nothing more, so muster raises no ask for it. MCP and chief-only
+		// for reply_draft's reasons.
+		tools = append(tools, agentTool{def: pluginMessageSettleToolDef(), mcp: true, chiefOnly: true})
 	}
 	// Session focus (focus_tools.go): the chief lists, searches and refreshes
 	// its owner's sessions' focus. MCP too, so a claude-code chief reaches them.
@@ -625,6 +629,8 @@ func (s *Server) dispatchAgentTool(ctx context.Context, a agents.Agent, name, ar
 		return s.toolTaskCreateGated(ctx, a, arguments)
 	case replyDraftToolName:
 		return s.toolReplyDraft(ctx, a, arguments)
+	case pluginMessageSettleToolName:
+		return s.toolPluginMessageSettle(ctx, a, arguments)
 	case fleetListToolName:
 		return s.toolFleetList(ctx)
 	case focusSearchToolName:

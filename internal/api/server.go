@@ -158,6 +158,9 @@ type Server struct {
 	jobSecond        time.Duration
 	jobNow           func() time.Time
 	jobFinishBackoff time.Duration
+	// unroutedNow is the unrouted-message sweep's clock (nil: time.Now;
+	// unrouted.go).
+	unroutedNow func() time.Time
 	// mirrorMCPFails counts failed mirror-token checks on /mirror/mcp, per
 	// (address, token hash) (mirror_mcp.go).
 	mirrorMCPFails boundedWindow

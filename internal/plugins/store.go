@@ -109,6 +109,22 @@ type Store interface {
 	QueuedForOwner(ctx context.Context, ownerID int64, limit int) ([]Message, error)
 	// QueuedCounts is the principal's undelivered messages per plugin.
 	QueuedCounts(ctx context.Context) (map[int64]int, error)
+
+	// A message the chief did not disposition (unrouted.go, migration 0050).
+
+	// SettleMessage records agentID's judgement that a message delivered to it
+	// needs nothing more, with reason.
+	SettleMessage(ctx context.Context, agentID, ownerID, messageID int64, reason string) (m Message, fresh bool, err error)
+	// UnroutedDue is every owner's messages due an ask as of asOf (system scope).
+	UnroutedDue(ctx context.Context, asOf time.Time, limit int) ([]Message, error)
+	// RaiseUnrouted runs raise for message id only while it is still due as of
+	// asOf, holding the message against a concurrent disposition.
+	RaiseUnrouted(ctx context.Context, id int64, asOf time.Time, raise func(Message) error) (bool, error)
+	// UnroutedAsksToClose is every owner's open ask raised for a message that
+	// has since been dispositioned (system scope).
+	UnroutedAsksToClose(ctx context.Context, limit int) ([]UnroutedAsk, error)
+	// SettleByAsk settles the message ask askID was raised for, with reason.
+	SettleByAsk(ctx context.Context, askID int64, reason string) (bool, error)
 }
 
 // PGStore is the Postgres Store.
@@ -134,7 +150,7 @@ func scanPlugin(row pgx.Row) (Plugin, error) {
 }
 
 const messageCols = `id, owner_id, plugin_id, external_id, sender, subject, body, received_at, created_at, status,
-	attempts, last_attempt_at, delivered_at, agent_id, no_reply, sender_verified, task_id, routed_to, routed_done_at`
+	attempts, last_attempt_at, delivered_at, agent_id, no_reply, sender_verified, task_id, routed_to, routed_done_at, settle_reason`
 
 // messageDest is the scan destinations for messageCols, in its order, with the
 // status into *st. THE ONE COPY: every reader of messageCols scans through it,
@@ -142,7 +158,8 @@ const messageCols = `id, owner_id, plugin_id, external_id, sender, subject, body
 // its own copy, which a new column broke).
 func messageDest(m *Message, st *string) []any {
 	return []any{&m.ID, &m.OwnerID, &m.PluginID, &m.ExternalID, &m.Sender, &m.Subject, &m.Body, &m.ReceivedAt,
-		&m.CreatedAt, st, &m.Attempts, &m.LastAttemptAt, &m.DeliveredAt, &m.AgentID, &m.NoReply, &m.SenderVerified, &m.TaskID, &m.RoutedTo, &m.RoutedDoneAt}
+		&m.CreatedAt, st, &m.Attempts, &m.LastAttemptAt, &m.DeliveredAt, &m.AgentID, &m.NoReply, &m.SenderVerified, &m.TaskID, &m.RoutedTo, &m.RoutedDoneAt,
+		&m.SettleReason}
 }
 
 func scanMessage(row pgx.Row) (Message, error) {

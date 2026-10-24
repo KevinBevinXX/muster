@@ -736,16 +736,56 @@ block's header cannot reach column 0 or add a session. The titles inside it are
 still a summarizer's output, so the block says to treat them as data. The
 chief's standing instructions tell it to check those sessions, and
 `sessions_overview`, before filing a task or drafting a reply, and to route
-with `route_to_session` only when one is clearly on it. When none is and
-the message asks you to do or decide something (a question to you, a request,
-an approval), they tell it not to stop at reading it: it raises an
-`attention_ask` summarising who the message is from and what it asks, so it
-reaches your Attention view. A message that only informs gets no ask: asks
-stay open a day and every agent shares your open-ask limit.
+with `route_to_session` only when one is clearly on it. A message it acts on
+in none of those ways is not left to its judgement: muster puts it in front of
+you itself ([below](#a-message-the-chief-does-not-act-on)).
 
 This is pushed rather than left to the chief because a chief that was not
 told called no session tool at all. See [focus](focus.md#why-a-time-window-over-history-and-not-the-current-focus)
 for why the lookup reads a time window of history.
+
+## A message the chief does not act on
+
+A message that can be replied to (not `no_reply`) and has reached your chief
+is **dispositioned** once any of these exists for it:
+
+- a route to a session (`route_to_session`, [below](#routing-a-message-to-a-session)) — in whatever state;
+- a reply draft (`reply_draft`, or a routed session's answer) — in whatever state;
+- a **settle**: the chief's `plugin_message_settle {message_id, reason}`, its
+  judgement that the message needs nothing more (a notice, a status update,
+  a newsletter, or one dealt with some other way), with why. The reason is
+  recorded on the message (`settle_reason`, migration `0050`) and in the
+  `plugin.message.settled` audit row, and the message carries it wherever it
+  is read (`settleReason`). A second settle keeps the first reason. Only the
+  chief may settle, and only a message delivered to it: another agent is not
+  offered the tool, and another owner's message — or one still queued — is
+  *"not a plugin message delivered to you"*.
+
+One still not dispositioned **15 minutes** after its delivery is put in front
+of you by muster, not by the chief: the attention sweep (every 30 s) raises
+an [ask](attention.md) on your Attention view, asked by `muster`, showing who
+sent it (with the **UNVERIFIED** mark unless the plugin verified the sender),
+its subject, its plugin and id, which chief it reached, and its first 600
+characters. Exactly one ask per message, ever: the schema refuses a second
+(`attention_asks.plugin_message_id` is unique), so a sweep run again, two
+processes sweeping at once or a retry after a crash raise no other — and
+whatever that ask's fate, the message is not asked about again.
+
+- **Answer it** — the offered **No action needed**, or anything you type — and
+  the message is settled with your answer as the reason. Nothing is sent to
+  the sender and the chief is not told: to reply, ask your chief for a draft.
+- **A later disposition closes it.** When the chief routes, drafts or settles
+  the message after the ask was raised, the next sweep withdraws the ask
+  (cancelled, and its notification cleared).
+- **Dismiss without answering** withdraws it and leaves the message
+  unsettled; no second ask is raised.
+
+The ask is muster's own, not the chief's, so the chief cannot withdraw it with
+`attention_cancel`: only a disposition closes it. A message still queued, a
+`no_reply` one, and a message delivered **before migration `0050`** never
+raise one — the migration settles every repliable message already delivered
+with the reason `pre-existing`, so the first sweep after the deploy raises
+nothing for them.
 
 ## Routing a message to a session
 

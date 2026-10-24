@@ -94,7 +94,7 @@ func (f *ccChiefFixture) listed(t *testing.T, token string) map[string]bool {
 // chiefToolNames are the chief-only tools, spelled here rather than read from
 // the registry (a list derived from the implementation would agree with any bug
 // in it).
-var chiefToolNames = []string{"task_create_gated", "reply_draft", "fleet_list", "focus_search", "focus_refresh",
+var chiefToolNames = []string{"task_create_gated", "reply_draft", "plugin_message_settle", "fleet_list", "focus_search", "focus_refresh",
 	"sessions_overview", "route_to_session", "attention_list", "session_transcript"}
 
 // TestAClaudeCodeChiefIsOfferedEveryChiefToolOverMCPAndAWorkerNone.

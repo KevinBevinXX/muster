@@ -173,6 +173,12 @@ var (
 		// deadlines; no body), read once per process so a notification shown
 		// before a restart is still withdrawn when its draft expires.
 		"internal/plugins.(*PGStore).PendingDrafts",
+		// …and its unrouted-message half (migration 0050): every owner's
+		// delivered messages the chief has not dispositioned past the delay, and
+		// every owner's open ask raised for a message dispositioned since — each
+		// row handed back with its owner, then raised or cancelled as THAT owner.
+		"internal/plugins.(*PGStore).UnroutedDue",
+		"internal/plugins.(*PGStore).UnroutedAsksToClose",
 		// The machine job API (migration 0037): the reaper that fails every
 		// owner's job left queued or running past its own deadline
 		// (jobs.PGStore.ReapOverdue — one UPDATE that returns only a count).

@@ -5,6 +5,9 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/ZacxDev/muster/internal/plugins"
 )
 
 // TestTheInstructionsAndTheDaemonReferToEachOther is the guard the tripwire's own
@@ -358,7 +361,7 @@ func TestNoTextReachesTheSupervisorPromptWithoutAPin(t *testing.T) {
 		{
 			name: "chiefPluginSection",
 			text: chiefPluginSection,
-			want: "463fbbf8cdf0f3dd23b6b925c125aaaf8f9db6a06bf17337608b29529a058182",
+			want: "e0220705a2fe16a8d6d765c6994135d63024c199676d46fcfb81be68b3543ba2",
 			min:  1000,
 		},
 		{
@@ -370,7 +373,7 @@ func TestNoTextReachesTheSupervisorPromptWithoutAPin(t *testing.T) {
 		{
 			name: "chiefPluginSectionClaudeCode",
 			text: chiefPluginSectionClaudeCode,
-			want: "49ffcb30800052f16f3395c316dafad5c10f91c61c5dcee957bedd68964eb570",
+			want: "5c7669a3c89d4d8ead32887798193eb18a03991ce96b11d76a6e4941c452c3ae",
 			min:  1000,
 		},
 	} {
@@ -694,7 +697,7 @@ func TestTheClaudeCodePluginSectionIsTheGatewaysWithMCPNames(t *testing.T) {
 		"`reply_draft`", "`mcp__muster__reply_draft`",
 		"`sessions_overview`", "`mcp__muster__sessions_overview`",
 		"`route_to_session`", "`mcp__muster__route_to_session`",
-		"`attention_ask`", "`mcp__muster__attention_ask`",
+		"`plugin_message_settle`", "`mcp__muster__plugin_message_settle`",
 	).Replace(chiefPluginSection)
 	if derived == chiefPluginSection {
 		t.Fatal("control: the replacer changed nothing, so the comparison below would compare a section to itself")
@@ -735,53 +738,42 @@ func TestTheClaudeCodeSupervisorProseIsTrueInItsImage(t *testing.T) {
 	}
 }
 
-// TestTheChiefDoesNotStopWhenNoSessionIsOnAMessage pins the chief's FALLBACK
-// rule WHOLE, in both runtimes' spelling, against literals typed here: when no
-// session is clearly on a plugin message that asks the owner to do or decide
-// something, the chief raises an attention_ask summarising it — never only a
-// summary in its own conversation. A message that only informs gets NO ask:
-// asks stay open a day and the owner's open-ask cap is shared by every agent,
-// so an ask per FYI would fill it and refuse every worker's ask. The failure it closes: messages asking the owner to act
-// were read and summarised in the chief's own chat only, no session matched,
-// and nothing reached the Attention view.
-//
-// It also pins WHERE the rule sits — straight after the routing paragraph it is
-// the other branch of — and that it ships only with the plugin section.
-func TestTheChiefDoesNotStopWhenNoSessionIsOnAMessage(t *testing.T) {
+// TestThePluginSectionLeavesTheUnactedMessageToMuster pins, WHOLE and in both
+// runtimes' spelling against a literal typed here, what the plugin section says
+// about a message the chief does not act on: muster itself puts it in front of
+// the owner after plugins.UnroutedAskAfter (internal/api unrouted.go), and the
+// chief settles one that needs nothing with plugin_message_settle. It also pins
+// that the old PROSE FALLBACK is gone — the instruction to raise an
+// attention_ask for such a message, which the server now does deterministically
+// — so no variant names attention_ask in its plugin section, and that the delay
+// the prose states is the constant the sweep uses.
+func TestThePluginSectionLeavesTheUnactedMessageToMuster(t *testing.T) {
 	norm := func(s string) string { return strings.Join(strings.Fields(s), " ") }
-	rule := func(ask string) string {
-		return "If no session is clearly on the subject and the message asks your owner to do or decide something " +
-			"— a question to them, a request, an approval — do not stop at reading it: a summary you write only in " +
-			"this conversation reaches nobody. Call the " + ask + " tool with a short summary of the message — who " +
-			"it is from and what it asks your owner to do or decide — so it reaches your owner's Attention view; " +
-			"their answer comes back to you as a new message, so do not wait for it. A message that only informs " +
-			"(a notice, a status update, a newsletter) gets no ask: your owner's open asks are limited, and every " +
-			"agent shares them."
+	rule := func(settle string) string {
+		return "A message that can be replied to and that you neither route to a session nor draft a reply to is put " +
+			"in front of your owner by muster 15 minutes after it reached you. When one needs nothing more — a notice, " +
+			"a status update, a newsletter — call the " + settle + " tool with its message_id and a short reason."
+	}
+	if plugins.UnroutedAskAfter != 15*time.Minute {
+		t.Fatalf("the prose says 15 minutes; the sweep waits %s", plugins.UnroutedAskAfter)
 	}
 	for _, c := range []struct {
-		name, prompt, off, route, rule string
+		name, section, prompt, off, rule string
 	}{
-		{"gateway", ChiefInstructions(false, true), ChiefInstructions(false, false), "`route_to_session`",
-			rule("`attention_ask`")},
-		{"gateway with cairn", ChiefInstructions(true, true), ChiefInstructions(true, false), "`route_to_session`",
-			rule("`attention_ask`")},
-		{"function tools", ChiefInstructionsFunctionTools(true), ChiefInstructionsFunctionTools(false), "`route_to_session`",
-			rule("`attention_ask`")},
-		{"claude-code", ChiefInstructionsClaudeCode(true), ChiefInstructionsClaudeCode(false), "`mcp__muster__route_to_session`",
-			rule("`mcp__muster__attention_ask`")},
+		{"gateway", chiefPluginSection, ChiefInstructions(false, true), ChiefInstructions(false, false), rule("`plugin_message_settle`")},
+		{"gateway with cairn", chiefPluginSection, ChiefInstructions(true, true), ChiefInstructions(true, false), rule("`plugin_message_settle`")},
+		{"function tools", chiefPluginSection, ChiefInstructionsFunctionTools(true), ChiefInstructionsFunctionTools(false), rule("`plugin_message_settle`")},
+		{"claude-code", chiefPluginSectionClaudeCode, ChiefInstructionsClaudeCode(true), ChiefInstructionsClaudeCode(false), rule("`mcp__muster__plugin_message_settle`")},
 	} {
 		got := norm(c.prompt)
-		at := strings.Index(got, c.rule)
-		if at < 0 {
-			t.Errorf("%s: the chief prompt does not carry the fallback rule:\n%s", c.name, c.rule)
-			continue
+		if !strings.Contains(got, c.rule) {
+			t.Errorf("%s: the chief prompt does not carry the unacted-message rule:\n%s", c.name, c.rule)
 		}
-		before := "hand the message to it rather than filing a task. "
-		if !strings.HasSuffix(got[:at], c.route+", "+before) {
-			t.Errorf("%s: the fallback rule does not follow the routing paragraph it is the other branch of", c.name)
+		if strings.Contains(norm(c.off), "plugin_message_settle") {
+			t.Errorf("%s: plugins OFF, but the prompt names plugin_message_settle", c.name)
 		}
-		if strings.Contains(norm(c.off), "If no session is clearly on the subject and the message asks") {
-			t.Errorf("%s: plugins OFF, but the prompt carries the fallback rule", c.name)
+		if strings.Contains(c.section, "attention_ask") || strings.Contains(got, "If no session is clearly on the subject") {
+			t.Errorf("%s: the plugin section still carries the prose fallback (an attention_ask for an unrouted message)", c.name)
 		}
 	}
 }
