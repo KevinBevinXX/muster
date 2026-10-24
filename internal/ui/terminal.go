@@ -1014,12 +1014,41 @@ func agentTerminalScript() g.Node {
     // left to the browser (touch-action pan-x: #term-scroll pans as before);
     // a vertical one is ours, and never reaches xterm, whose own touch scroll
     // has nothing real to show. Two fingers are a pinch, never a scroll.
-    var start = null, axis = '', lastY = 0;
+    //
+    // 🔴 A TOUCH'S EVENTS ALL GO TO THE ELEMENT IT STARTED ON, even once that
+    // element has left the page. Here that is a span of xterm's rows, which
+    // xterm replaces whenever it redraws — the host's scrolled view arriving, a
+    // re-attach painting the screen. A node out of the page has no ancestors,
+    // so its touchmoves never passed scrollEl's capture listener and the REST
+    // OF THE DRAG WAS LOST (measured: a drag that began as a re-attach redrew
+    // asked for nothing). So the touch's own target is listened on too. A move
+    // on a target still in the page is not counted twice: scrollEl's capture
+    // listener sees it first and, once the axis is 'y', stops it there, so it
+    // never reaches the target. One it lets through (under the slop, or
+    // sideways) adds no lines either way.
+    var start = null, axis = '', lastY = 0, held = null;
+    function release() {
+      if (!held) return;
+      held.removeEventListener('touchmove', onMove);
+      held.removeEventListener('touchend', onEnd);
+      held.removeEventListener('touchcancel', onEnd);
+      held = null;
+    }
+    function hold(el) {
+      release();
+      if (!el || el === scrollEl) return;
+      held = el;
+      el.addEventListener('touchmove', onMove, { passive: true });
+      el.addEventListener('touchend', onEnd, { passive: true });
+      el.addEventListener('touchcancel', onEnd, { passive: true });
+    }
     function onStart(ev) {
       start = null;
+      release();
       if (ev.touches.length !== 1) return;
       start = { x: ev.touches[0].clientX, y: ev.touches[0].clientY };
       axis = '';
+      hold(ev.target);
     }
     function onMove(ev) {
       if (!start) return;
@@ -1037,7 +1066,7 @@ func agentTerminalScript() g.Node {
       lastY = t.clientY;
       if (d) addPx(d);
     }
-    function onEnd() { start = null; }
+    function onEnd() { start = null; release(); }
     // The wheel: vertical only (a sideways one pans #term-scroll as before).
     function onWheel(ev) {
       if (Math.abs(ev.deltaX) > Math.abs(ev.deltaY) || !ev.deltaY) return;
@@ -1056,6 +1085,7 @@ func agentTerminalScript() g.Node {
       scrollEl.removeEventListener('touchend', onEnd, true);
       scrollEl.removeEventListener('touchcancel', onEnd, true);
       scrollEl.removeEventListener('wheel', onWheel, true);
+      release();
       touchTargets.forEach(function (el) { if (el) el.style.touchAction = ''; });
       host.removeAttribute('data-scroll-on');
       showNote('');
