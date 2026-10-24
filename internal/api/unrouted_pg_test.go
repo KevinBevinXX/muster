@@ -127,6 +127,64 @@ func TestAnUnactedMessageBecomesExactlyOneAskAfterTheDelay(t *testing.T) {
 	if asks := unroutedAsks(t, g, m.ID); len(asks) != 1 {
 		t.Fatalf("%d ask(s) after two more sweeps; want still 1", len(asks))
 	}
+	// …and the sweep no longer selects it at all: a message already asked about
+	// that stayed in the due set would be re-read every sweep, and enough of
+	// them would fill the batch and starve every newer message.
+	due, err := g.plugins.UnroutedDue(context.Background(), time.Now().Add(3*plugins.UnroutedAskAfter), 1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range due {
+		if d.ID == m.ID {
+			t.Fatalf("message %d, already asked about, is still due an ask", m.ID)
+		}
+	}
+}
+
+// TestTheAttentionSweepRaisesTheAsk: the wiring — RunAttentionSweep itself, not
+// only its step, raises the ask.
+func TestTheAttentionSweepRaisesTheAsk(t *testing.T) {
+	g := newGatedFixture(t)
+	m := g.deliveredMessage(t, g.owner, g.chief.ID, "wired-1")
+	g.srv.unroutedNow = func() time.Time { return time.Now().Add(plugins.UnroutedAskAfter + time.Minute) }
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { defer close(done); g.srv.RunAttentionSweep(ctx, 20*time.Millisecond) }()
+	deadline := time.Now().Add(10 * time.Second)
+	for len(unroutedAsks(t, g, m.ID)) == 0 && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	cancel()
+	<-done
+	if asks := unroutedAsks(t, g, m.ID); len(asks) != 1 {
+		t.Fatalf("RunAttentionSweep raised %d ask(s); want 1", len(asks))
+	}
+}
+
+// TestTheRaiseRechecksUnderTheLock: a message dispositioned after the sweep
+// read it as due, but before its ask was raised, gets none — RaiseUnrouted
+// re-checks, under the message's lock, and does not call raise.
+func TestTheRaiseRechecksUnderTheLock(t *testing.T) {
+	g := newGatedFixture(t)
+	m := g.deliveredMessage(t, g.owner, g.chief.ID, "recheck-1")
+	asOf := time.Now().Add(plugins.UnroutedAskAfter + time.Minute)
+	due, err := g.plugins.UnroutedDue(context.Background(), asOf, 1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, d := range due {
+		found = found || d.ID == m.ID
+	}
+	if !found {
+		t.Fatalf("control: message %d is not due before it is settled", m.ID)
+	}
+	g.settle(t, m.ID, "handled")
+	called := false
+	raised, err := g.plugins.RaiseUnrouted(g.asOwner, m.ID, asOf, func(plugins.Message) error { called = true; return nil })
+	if err != nil || raised || called {
+		t.Fatalf("raise of a message settled since it was read: raised=%v called=%v err=%v; want neither", raised, called, err)
+	}
 }
 
 // TestAMessageActedOnInTimeRaisesNoAsk: routed, drafted, settled before the
@@ -215,6 +273,17 @@ func TestADispositionAfterTheAskClosesIt(t *testing.T) {
 	if asks := unroutedAsks(t, g, control.ID); len(asks) != 1 || asks[0].Status != attention.Open {
 		t.Fatalf("control: the untouched message's asks %+v; want one, still open", asks)
 	}
+	// Closed asks leave the closing set: one that stayed would be re-read every
+	// sweep, and enough of them would starve every newer close.
+	left, err := g.plugins.UnroutedAsksToClose(context.Background(), 1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, u := range left {
+		if u.MessageID == settled.ID || u.MessageID == drafted.ID || u.MessageID == routed.ID {
+			t.Fatalf("ask %d (message %d) is still to be closed after it was closed", u.AskID, u.MessageID)
+		}
+	}
 }
 
 // TestANoReplyMessageNeverRaisesAnAsk: a message its plugin marked no_reply is
@@ -243,14 +312,23 @@ func TestANoReplyMessageNeverRaisesAnAsk(t *testing.T) {
 }
 
 // TestAnUndeliveredMessageRaisesNoAsk: a message still queued (never reached
-// the chief) is not the chief's to have acted on.
+// the chief) is not the chief's to have acted on; nor is one whose delivery
+// is unconfirmed — the chief may never have seen it, and it is already on
+// /plugins as a delivery for the owner to retry.
 func TestAnUndeliveredMessageRaisesNoAsk(t *testing.T) {
 	g := newGatedFixture(t)
 	queued := g.deliveredMessage(t, g.owner, 0, "undelivered-1")
+	unconfirmed := g.deliveringMessage(t, g.owner, g.chief.ID, "undelivered-unconfirmed")
+	if ok, err := g.plugins.RecordDelivery(g.asOwner, unconfirmed.ID, g.chief.ID, plugins.StatusUnconfirmed); err != nil || !ok {
+		t.Fatal(ok, err)
+	}
 	control := g.deliveredMessage(t, g.owner, g.chief.ID, "undelivered-control")
 	unroutedSweep(t, g, 10*plugins.UnroutedAskAfter)
 	if asks := unroutedAsks(t, g, queued.ID); len(asks) != 0 {
 		t.Fatalf("a queued message raised %d ask(s); want none", len(asks))
+	}
+	if asks := unroutedAsks(t, g, unconfirmed.ID); len(asks) != 0 {
+		t.Fatalf("an unconfirmed message raised %d ask(s); want none", len(asks))
 	}
 	if asks := unroutedAsks(t, g, control.ID); len(asks) != 1 {
 		t.Fatalf("control: %d ask(s); want 1", len(asks))
