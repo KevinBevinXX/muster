@@ -143,8 +143,8 @@ func (s *Server) Requests() []Request {
 // {"id", "title", "parentID"?, "time": {"created", "updated"}}.
 func (s *Server) PutSession(id, title, parent string) {
 	m := map[string]any{"id": id, "title": title, "projectID": "prj_fixture", "cost": 0,
-		"tokens": map[string]any{"input": 0, "output": 0, "reasoning": 0, "cache": map[string]any{"read": 0, "write": 0}},
-		"time":   map[string]any{"created": 1700000000000, "updated": 1700000000000},
+		"tokens":   map[string]any{"input": 0, "output": 0, "reasoning": 0, "cache": map[string]any{"read": 0, "write": 0}},
+		"time":     map[string]any{"created": 1700000000000, "updated": 1700000000000},
 		"location": map[string]any{"directory": "/srv/fixture"}}
 	if parent != "" {
 		m["parentID"] = parent
