@@ -123,6 +123,41 @@ async function backShow(page: Page, path: string, since: number): Promise<Show> 
   return got!;
 }
 
+// The page's own record of its streams: every WebSocket and EventSource it
+// opens, when (performance.now()), and how many messages each received.
+// 🔴 IN THE PAGE: Playwright's websocket event does not see a socket a RESTORED
+// document opens (measured: a restored terminal said Connected while
+// page.on('websocket') reported nothing new), and an EventSource has no
+// Playwright event at all, so the instrument lives in the document and
+// survives the restore with it.
+const streamLog = `(() => {
+  window.__socks = [];
+  const wrap = (C, kind) => {
+    const N = function (url, p) {
+      const o = p === undefined ? new C(url) : new C(url, p);
+      const rec = { kind, url: String(url), at: performance.now(), msgs: 0, opened: false };
+      window.__socks.push(rec);
+      o.addEventListener('message', () => rec.msgs++);
+      o.addEventListener('open', () => (rec.opened = true));
+      return o;
+    };
+    N.prototype = C.prototype;
+    for (const k of ['CONNECTING', 'OPEN', 'CLOSING', 'CLOSED']) N[k] = C[k];
+    return N;
+  };
+  window.WebSocket = wrap(window.WebSocket, 'ws');
+  window.EventSource = wrap(window.EventSource, 'sse');
+  addEventListener('pageshow', (e) => { if (e.persisted) window.__restoredAt = performance.now(); });
+})()`;
+
+// opened is how many streams of kind whose URL contains part this document
+// opened since its last restore, and saw open.
+const openedSinceRestore = (page: Page, kind: string, part: string) =>
+  page.evaluate(([kind, part]) => {
+    const w = window as any;
+    return w.__socks.filter((s: any) => s.kind === kind && s.url.includes(part) && s.at >= w.__restoredAt && s.opened).length;
+  }, [kind, part]);
+
 // --- an agent's chat page (the shared server) ---------------------------------
 
 const agent = 'e2e-bfc-' + Date.now().toString(36);
@@ -149,7 +184,7 @@ async function openAgent(page: Page): Promise<string> {
 }
 
 test('back to an agent page restores it, and it then shows a message stored while it was away', async () => {
-  const { ctx, page } = await newContext();
+  const { ctx, page } = await newContext({ init: [streamLog] });
   try {
     const url = await openAgent(page);
     const doc = await docOf(page);
@@ -161,16 +196,72 @@ test('back to an agent page restores it, and it then shows a message stored whil
     // refetches the transcript, so the message would never appear.
     await expect(page.locator('#chat-log')).toContainText(marker, { timeout: 5000 });
     expect(await docOf(page), 'and it was not reloaded to get it').toBe(doc);
+    // Its event stream is open again, for what comes NEXT: the refetch above
+    // caught up on what came while it was away, and the stream is how the
+    // page hears of anything after that.
+    await expect.poll(() => openedSinceRestore(page, 'sse', '/events'), { message: 'the /events stream was reopened after the restore' }).toBeGreaterThan(0);
     // The service worker stored no document: only its shell, stylesheet and
-    // manifest (sw.js SHELL).
+    // manifest (sw.js SHELL). Read once it is installed, so the listing can
+    // see what it holds (the shell, below, is the positive control).
     const cached = await page.evaluate(async () => {
+      await navigator.serviceWorker.ready;
       const out: string[] = [];
       for (const k of await caches.keys()) for (const r of await (await caches.open(k)).keys()) out.push(new URL(r.url).pathname);
       return out;
     });
+    expect(cached, 'the instrument sees the worker\'s cache: its shell is there').toContain('/');
     expect(cached.filter((p) => p.startsWith('/agents') || p.startsWith('/mirror')), 'no view document in the service worker cache').toEqual([]);
   } finally {
     await ctx.close();
+  }
+});
+
+// 🔴 #247's DIRECT LINKS: every switcher entry names the session it opens
+// (ui.AgentSessionHref), drawn when the page was. A restored page re-requests
+// itself, as a reload would have — which records the visit and marks the
+// session read — and redraws the switcher's rows from the answer, so Recent
+// and Pins name what is current now.
+test('a restored agent page redraws its switcher: an agent opened meanwhile is in Recent', async () => {
+  const other = 'e2e-bfc-other-' + Date.now().toString(36);
+  mkchat(other, [{ role: 'user', content: 'The other agent.' }]);
+  const { ctx, page } = await newContext();
+  try {
+    const url = await openAgent(page);
+    const doc = await docOf(page);
+    const recent = page.locator('[data-switcher-list="recent"]');
+    await expect(recent).toBeAttached();
+    expect(await recent.locator(`a[href^="/agents/${other}"]`).count(), 'the other agent is not in Recent yet').toBe(0);
+    const t0 = Date.now();
+    await awayAndBack(page, '/tasks', async () => {
+      // Opened elsewhere (another tab, another device): the server records the visit.
+      const r = await page.request.get('/agents/' + other);
+      expect(r.status()).toBe(200);
+    });
+    await expectRestored(page, await backShow(page, new URL(url, baseURL).pathname, t0), doc);
+    await expect(recent.locator(`a[href^="/agents/${other}"]`), 'Recent was redrawn with it').toHaveCount(1, { timeout: 5000 });
+    expect(await docOf(page), 'without a reload').toBe(doc);
+  } finally {
+    await ctx.close();
+    mkchat(other, null);
+  }
+});
+
+// The Agents list (the shell) was already restorable; its restore reopens the
+// list's event stream too, and the list catches up on the stream's (re)open.
+test('a restored Agents list shows an agent created while it was away', async () => {
+  const fresh = 'e2e-bfc-new-' + Date.now().toString(36);
+  const { ctx, page } = await newContext();
+  try {
+    await page.goto('/agents');
+    await expect(page.locator('#agents-list > article').first()).toBeVisible();
+    const doc = await docOf(page);
+    const t0 = Date.now();
+    await awayAndBack(page, '/tasks', async () => mkchat(fresh, [{ role: 'user', content: 'Created while the list was away.' }]));
+    await expectRestored(page, await backShow(page, '/agents', t0), doc);
+    await expect(page.locator(`#agents-list a[href^="/agents/${fresh}"]`).first(), 'the list caught up').toBeAttached({ timeout: 10_000 });
+  } finally {
+    await ctx.close();
+    mkchat(fresh, null);
   }
 });
 
@@ -579,27 +670,9 @@ test.describe('mirrored', () => {
     }
   });
 
-  // The page's own record of its sockets: Playwright's websocket event does
-  // not see one a RESTORED document opens (measured: the restored terminal
-  // said Connected while page.on('websocket') reported nothing new), so the
-  // instrument is in the page, and survives the restore with it.
-  const socketLog = `(() => {
-    const W = window.WebSocket;
-    window.__socks = [];
-    window.WebSocket = function (url, p) {
-      const ws = p === undefined ? new W(url) : new W(url, p);
-      const rec = { url: String(url), at: performance.now(), msgs: 0 };
-      window.__socks.push(rec);
-      ws.addEventListener('message', () => rec.msgs++);
-      return ws;
-    };
-    window.WebSocket.prototype = W.prototype;
-    for (const k of ['CONNECTING', 'OPEN', 'CLOSING', 'CLOSED']) window.WebSocket[k] = W[k];
-    addEventListener('pageshow', (e) => { if (e.persisted) window.__restoredAt = performance.now(); });
-  })()`;
 
   test('back to a terminal restores it and attaches again', async () => {
-    const { ctx, page } = await mirrorPage(390, [socketLog]);
+    const { ctx, page } = await mirrorPage(390, [streamLog]);
     try {
       await page.goto(rig.origin + term());
       await expect(page.locator('.xterm-rows')).toContainText('FAKE-MIRROR', { timeout: 15_000 });
@@ -609,7 +682,7 @@ test.describe('mirrored', () => {
       await expectRestored(page, await backShow(page, '/mirror/terminal', t0), doc);
       await expect.poll(() => page.evaluate(() => {
         const w = window as any;
-        return w.__socks.filter((s: any) => s.url.includes('/mirror/terminal/ws') && s.at >= w.__restoredAt && s.msgs > 0).length;
+        return w.__socks.filter((s: any) => s.kind === 'ws' && s.url.includes('/mirror/terminal/ws') && s.at >= w.__restoredAt && s.msgs > 0).length;
       }), { message: 'after the restore a new terminal socket was opened and the far side answered on it', timeout: 10_000 }).toBeGreaterThan(0);
       await expect(page.locator('#term-status')).not.toHaveText('Disconnected');
     } finally {
