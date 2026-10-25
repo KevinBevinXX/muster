@@ -372,7 +372,8 @@ func (s *Server) handleAccountPage(w http.ResponseWriter, r *http.Request) {
 <a href="/" class="inline-flex min-h-[44px] items-center text-sm text-accent underline">Back to muster</a>
 </section>
 `+s.accountDevicesSection(r)+`
-`+s.accountNotificationsSection(r)+`</div>`)
+`+s.accountNotificationsSection(r)+`
+`+s.accountSuggestSection(r)+`</div>`)
 }
 
 // --- the admin claim ------------------------------------------------------------

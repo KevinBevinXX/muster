@@ -78,22 +78,31 @@ func (s *Server) handleMirrorViewPage(w http.ResponseWriter, r *http.Request) {
 	v := ui.MirrorViewView{Host: h.Host, Session: e.Session, Window: e.Window, Title: mirrorTitle(e), Label: e.Label, Qualifier: e.Qualifier, Interactive: h.Interactive,
 		StepUp: s.stepUpView(r, ""), Nonce: newSendNonce(), Dictate: s.dictatePath(), Upload: s.uploadPath(),
 		FocusHistory: s.mirrorFocusHistoryPath(e.SessionKey()), DraftUser: draftUser(r.Context())}
-	// 🔴 A HERMES WINDOW SENDS ONLY WHEN ITS HOST ADVERTISED hermesSend
-	// (Phase 3): otherwise its composer is drawn disabled, with no queue, and
-	// every send is refused again at the hub (the hermesSend switch) and on
-	// the host (its own switch, and the paste guard).
-	if e.HermesView() {
-		v.Hermes, v.HermesSend = true, h.HermesSend && h.Interactive
+	// 🔴 A WINDOW OF A RUNTIME WITH A GATED SEND (Hermes) SENDS ONLY WHEN
+	// ITS HOST ADVERTISED IT (Phase 3): otherwise its composer is drawn
+	// disabled, with no queue, and every send is refused again at the hub
+	// (the gated-send switch) and on the host (its own switch, and the paste
+	// guard). v.Hermes and v.HermesSend are that composer's (its words are
+	// Hermes's, the one such runtime).
+	if rt, ok := e.Spec(); ok && rt.GatedSend && e.AgentView() {
+		send, _ := h.GatedSendOn(rt)
+		v.Hermes, v.HermesSend = true, send && h.Interactive
 	}
 	if !v.Hermes || v.HermesSend {
 		v.Queue = s.mirrorComposerQueue(r.Context(), h, e, sendQueueEditing(r))
 	}
 	v.Notice, v.NoticeOK = composerNotice(r)
+	// The suggested replies' row (suggest.go): a Claude Code window on an
+	// interactive host, while the server has suggestions wired at all.
+	v.Suggest = s.suggestPath(r.Context(), h, e)
+	v.SuggestPaused = v.Suggest == "" && s.suggestPaused(r.Context(), h, e)
 	v.HostIcon = s.mirrorHostIcon(r.Context(), h.Host)
 	// The window's sessions' open attention asks, answerable here
 	// (attention_asker.go).
 	v.Asks, v.AsksSrc = s.askerAsksBlock(r.Context(), askerRef{mirror: ui.MirrorRef{Host: h.Host, Session: e.Session, Window: e.Window}})
 	v.Nav = ui.NavChrome{Feat: s.shellFeatures(r.Context())}
+	// The session switcher below the composer (ui/switcher.go).
+	v.Switcher = s.switcher(r.Context(), ui.SwitcherCurrent{Mirror: ui.MirrorRef{Host: h.Host, Session: e.Session, Window: e.Window}})
 	allowSameOriginFrame(w)
 	formDocument(w)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -169,10 +178,17 @@ func (s *Server) handleMirrorViewWS(w http.ResponseWriter, r *http.Request) {
 			}
 		})
 	}
+	// Suggested replies (suggest.go): this socket's tracker — nil when the
+	// window cannot have any — fed every batch, and the page told what its
+	// turn ends make of them.
+	sg := s.suggestSocket(ctx, r, c, host, session, window, drawn.Resumed)
 	err = s.ext.Mirror.WatchWindow(ctx, host, session, window, gen, offset, func(m mirror.Msg) error {
 		if m.Reset {
 			drawn.Reset()
 		}
+		// After the batch is written: the page has drawn the reply its
+		// suggestions answer before it hears of them.
+		defer sg.observe(m)
 		// A host that reports subagents says so before it draws an Agent call
 		// (the Reset batch, a resume's marker): those calls are then cards.
 		if m.SubagentList {
@@ -501,6 +517,11 @@ func (s *Server) mirrorDeliver(ctx context.Context, w http.ResponseWriter, r *ht
 			status, notice, msg = http.StatusConflict, hermesSendNotices[pr.Refusal], pr.Why
 		case errors.Is(err, mirror.ErrPasteUnconfirmed):
 			status, notice, msg = http.StatusBadGateway, noticeUnconfirmed, MirrorSendUnconfirmed
+		case errors.As(err, &pr) && claudeGuardNotices[pr.Refusal] != "":
+			// The Claude prompt guard (the hub's or the host's): its own words.
+			// Waiting is "nothing was typed"; pasted-not-submitted is said as
+			// such, never as "not sent".
+			status, notice, msg = http.StatusConflict, claudeGuardNotices[pr.Refusal], pr.Why
 		case mirror.PasteGuardRefusal(err) != "":
 			// The host's Hermes paste guard: its own words, without this
 			// side's "the host refused the message:" in front, and a notice
@@ -557,7 +578,7 @@ func (s *Server) mirrorPaste(ctx context.Context, host, session, window, text, n
 	resolved := window
 	opts = append(opts, mirror.ReportWindow(&resolved))
 	repeat, err = s.mirrorPasteOnce(ctx, host, session, window, text, nonce, target, opts...)
-	if !repeat && (err == nil || errors.Is(err, mirror.ErrPasteUnconfirmed)) {
+	if !repeat && (err == nil || errors.Is(err, mirror.ErrPasteUnconfirmed) || mirror.ClaudePastedRefusal(err)) {
 		s.sendQueueNotePaste(ctx, host, session, resolved)
 	}
 	return repeat, err

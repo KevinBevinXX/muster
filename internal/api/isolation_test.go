@@ -45,6 +45,7 @@ import (
 	"github.com/ZacxDev/muster/internal/recents"
 	"github.com/ZacxDev/muster/internal/sendqueue"
 	"github.com/ZacxDev/muster/internal/sse"
+	"github.com/ZacxDev/muster/internal/suggest"
 	"github.com/ZacxDev/muster/internal/uploads"
 	"github.com/ZacxDev/muster/internal/uploads/uploadstest"
 	"github.com/ZacxDev/muster/internal/users"
@@ -189,6 +190,7 @@ var isolationClasses = map[string]routeClass{
 	// device tier is the device credential's alone.
 	"POST /account/devices/pair":        classList,
 	"POST /account/devices/{id}/remove": classParam,
+	"GET /account/devices/live":         classList, // the caller's paired phones (A's is canary-named) and, out of band, push devices
 	"POST /api/device/pair":             classPublic,
 	"DELETE /api/device":                classDevice,
 	"GET /api/device/config":            classDevice,
@@ -439,6 +441,13 @@ var isolationClasses = map[string]routeClass{
 	// An opened subagent card's steps: the same address in the query, plus
 	// the agent id.
 	"GET /mirror/view/subagent": classMirror,
+	// Suggested replies (suggest.go): the window's set (address in the query)
+	// — B naming A's window must 404; the toggle is the caller's own row (list).
+	"GET /mirror/view/suggest": classMirror,
+	"POST /account/suggest":    classList,
+	// The chip row's reports (numbers only): the window's address in the
+	// form — B naming A's window must 404.
+	"POST /mirror/view/suggest/event": classMirror,
 	// A message to an agent as a form post, and the GET it can come back as.
 	"POST /agents/{name}/send": classParam,
 	"GET /agents/{name}/send":  classParam,
@@ -498,8 +507,9 @@ var wantCanaryForA = []string{
 	// token list and A's runner's claim (of A's second job) each show it.
 	"GET /flows", "GET /api/flows/jobs", "POST /runner/flows/claim",
 	// Web Push: the account page lists the caller's devices, and A's carries
-	// the canary in its user agent.
-	"GET /account",
+	// the canary in its user agent. The Devices list's re-fetch shows A's
+	// canary-named paired phone.
+	"GET /account", "GET /account/devices/live",
 	// Plugins: A's second plugin is canary-labelled, so A's page shows it.
 	"GET /plugins",
 	// The attention asks: A's agent's asks block shows A's canary-carrying
@@ -978,6 +988,8 @@ func newIsoWorld(t *testing.T) *isoWorld {
 				return nil, fmt.Errorf("no such host %s", host)
 			}},
 	}
+	// Suggested replies (0048): A's window's set and A's toggle are A's.
+	ext.Suggest = &suggest.Engine{Gen: isoNoSuggestions{}, Prefs: suggest.NewPGPrefs(pool), Usage: suggest.NewPGUsage(pool)}
 	srv.UseExtensions(ext)
 	w.router = &isoRouter{dirs: []string{"/srv/projects/" + w.opCanary}}
 	srv.UseRouter(w.router)
@@ -1385,7 +1397,7 @@ func (w *isoWorld) snapshot() map[string]string {
 		"chat_sessions", "chat_messages", "connectors", "connector_grants", "connector_audit", "github_connection", "mirror_tokens",
 		"user_credentials", "cc_account_marks", "flow_jobs", "flow_runner_tokens", "push_subscriptions", "push_preferences", "flow_requests",
 		"plugins", "plugin_messages", "plugin_reply_drafts", "pins", "recents", "send_queue", "agent_focus", "agent_focus_history", "session_routes", "uploads", "attention_asks", "jobs",
-		"devices", "device_pairing_codes", "connector_standing_grants"} {
+		"devices", "device_pairing_codes", "connector_standing_grants", "suggest_preferences", "suggest_usage"} {
 		var js string
 		if err := w.pool.QueryRow(w.sys, `SELECT coalesce(json_agg(t ORDER BY t.id)::text, '[]') FROM `+tbl+` t WHERE owner_id=$1`, w.a.uid).Scan(&js); err != nil {
 			// task_sessions/github_connection have no `id` ordering column in every
@@ -1470,7 +1482,7 @@ func namesObject(route string) bool {
 	return paramRE.MatchString(route) || route == "POST /agents" || route == "POST /tasks/merge" ||
 		strings.HasPrefix(route, "GET /mirror/terminal") || strings.HasPrefix(route, "GET /mirror/view") ||
 		route == "POST /mirror/view/send" || route == "POST /mirror/terminal/send" || route == "POST /mirror/confirm-send" ||
-		route == "POST /mirror/terminal/scroll" || route == "POST /mirror/view/ask" || route == "POST /mirror/view/ask/cancel" || route == "POST /attention/hermes/approve" ||
+		route == "POST /mirror/terminal/scroll" || route == "POST /mirror/view/ask" || route == "POST /mirror/view/suggest/event" || route == "POST /mirror/view/ask/cancel" || route == "POST /attention/hermes/approve" ||
 		route == "GET /send-queue" || route == "POST /send-queue" || route == "POST /send-queue/confirm" ||
 		// Focus history (0022) names its session in the query (?subject=agent:<id>),
 		// so it is held to the object routes' rules: B's answer about A's agent
@@ -2236,4 +2248,12 @@ func (p *isoPusher) sentTo(endpoint string) int {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.sent[endpoint]
+}
+
+// isoNoSuggestions is the walk's model: it answers no suggestions, so the
+// walk spends nothing and a set is never the object under test.
+type isoNoSuggestions struct{}
+
+func (isoNoSuggestions) Generate(context.Context, int64, string) (suggest.Generation, error) {
+	return suggest.Generation{}, nil
 }

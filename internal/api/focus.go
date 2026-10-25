@@ -3,7 +3,6 @@ package api
 import (
 	"context"
 	"fmt"
-	"strings"
 	"sync"
 	"time"
 
@@ -236,8 +235,8 @@ func (f focusSessions) Tail(ctx context.Context, sub focus.Subject) ([]focus.Ent
 			return nil, errNoSession
 		}
 		// The stream names its conversation by the bare id (Msg.Gen): a
-		// Hermes key is "hermes:<id>".
-		return f.s.mirrorTail(ctx, e, strings.TrimPrefix(sub.Key, mirror.HermesKeyPrefix))
+		// runtime-qualified key is "<prefix><id>" ("hermes:<id>").
+		return f.s.mirrorTail(ctx, e, mirror.SessionIDOf(sub.Key))
 	}
 	return nil, focus.ErrBadSubject
 }

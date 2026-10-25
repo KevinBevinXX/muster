@@ -217,12 +217,25 @@ func (s *Server) agentsListCards(ctx context.Context) ([]ui.AgentCardView, []ui.
 // bounded by instancesWithin (0 = unbounded): past it the cards are drawn with
 // their STORED status (a nil index, liveStatusIndexed). See shellData.
 func (s *Server) agentsListCardsWithin(ctx context.Context, instancesWithin time.Duration) ([]ui.AgentCardView, []ui.MirrorCardView, error) {
+	return s.agentsListCardsLive(ctx, instancesWithin, true)
+}
+
+// agentsListCardsLive is agentsListCardsWithin, with the instance read made
+// optional: live false draws every agent with its STORED status and reads no
+// instances at all — for a surface that shows the list's entries but not their
+// live status (the session switcher, switcher.go), which must not hold a page's
+// first byte on the apiserver.
+func (s *Server) agentsListCardsLive(ctx context.Context, instancesWithin time.Duration, live bool) ([]ui.AgentCardView, []ui.MirrorCardView, error) {
 	list, err := s.ext.Agents.List(ctx)
 	if err != nil {
 		return nil, nil, err
 	}
 
-	instIdx := s.instanceIndexWithin(ctx, instancesWithin)
+	// nil = "live state was not observed": the stored status (liveStatusIndexed).
+	var instIdx map[string]*provision.Instance
+	if live {
+		instIdx = s.instanceIndexWithin(ctx, instancesWithin)
+	}
 	// 🔴 MOST RECENTLY ACTIVE FIRST, BY agents.LastActivity — the same definition
 	// GET /api/agents publishes as lastActivityAt. The store's own order
 	// (created_at DESC) is left alone because the machine read documents
@@ -1457,6 +1470,8 @@ func (s *Server) handleAgentDetail(w http.ResponseWriter, r *http.Request) {
 	view.SendNotice, view.SendNoticeOK = composerNotice(r)
 	// The agent's open attention asks, answerable here (attention_asker.go).
 	view.Asks, view.AsksSrc = s.askerAsksBlock(ctx, askerRef{agent: a.Name, session: active.ID})
+	// The session switcher below the chat form (ui/switcher.go).
+	view.Switcher = s.switcher(ctx, ui.SwitcherCurrent{AgentID: a.ID})
 	// A claude-code agent's chat is the Rendered half of its Rendered |
 	// Terminal switch, which its terminal opens in a frame (ui/view_swap.go).
 	if agents.ResolveKind(view.Kind) == agents.KindClaudeCode {

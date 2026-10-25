@@ -66,8 +66,24 @@ type AgentState struct {
 	// Pasted is the Since the window held at its latest paste through this
 	// hub (a Send or a queued message), on the host's clock; 0 for none.
 	Pasted int64
+	// TurnError is how the window's latest turn ended, when it ended in an
+	// error Claude Code wrote itself (Window.TurnError); nil otherwise, and
+	// whenever Status is not idle.
+	TurnError *TurnError
+	// HostLimit is a usage limit the window's HOST reports for all its Claude
+	// windows (Msg.HostLimit), set on a Claude window whenever the host
+	// reports one; nil otherwise.
+	HostLimit *HostLimit
+	// Session is the Claude Code session id of the conversation in the window
+	// (Window.ClaudeSession), "" when the host does not say.
+	Session string
 	// Unknown is why Status is unknown; nil when it is known.
 	Unknown error
+
+	// GuardHeld is, while the window is held by the Claude prompt guard's
+	// backoff (turns.go guardHold), why — the host's refusal, in words — and
+	// "" otherwise. The send queue sends nothing while it is set.
+	GuardHeld string
 }
 
 // AgentState is the state of the agent session (Claude Code or Hermes) in
@@ -89,8 +105,8 @@ func (h *Hub) AgentState(owner int64, host, session, window string) AgentState {
 	}
 	// noStatus is the "host cannot read it" refusal of this runtime.
 	noStatus := ErrNoStatus
-	if runtime == RuntimeHermes {
-		noStatus = ErrNoHermesStatus
+	if r, ok := LookupRuntime(runtime); ok {
+		noStatus = r.NoStatus
 	}
 	hc.mu.Lock()
 	defer hc.mu.Unlock()
@@ -110,12 +126,16 @@ func (h *Hub) AgentState(owner int64, host, session, window string) AgentState {
 		case w.StatusSince <= 0:
 			return AgentState{Runtime: runtime, Unknown: fmt.Errorf("%w (host %q, session %q)", ErrNoStatusSince, host, session)}
 		}
-		st := AgentState{Runtime: runtime, Status: w.Status, Since: w.StatusSince}
+		st := AgentState{Runtime: runtime, Status: w.Status, Since: w.StatusSince, TurnError: w.TurnError}
+		if runtime == RuntimeClaude {
+			st.HostLimit, st.Session = hc.hostLimit, w.ClaudeSession
+		}
 		t := h.turn(owner, host, session, id)
 		if t.since == w.StatusSince && t.status == w.Status {
 			st.Observed = t.observed
 		}
 		st.Pasted = t.pasted
+		st.GuardHeld = t.guardHeld(h.now())
 		return st
 	}
 	return AgentState{Runtime: runtime, Unknown: fmt.Errorf("%w (host %q, session %q)", noStatus, host, session)}

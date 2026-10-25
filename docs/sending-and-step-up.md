@@ -29,6 +29,37 @@ box also keeps what you type as a draft on this device; see
   is pasted — except the rendered view's send to a Hermes window on a host
   started with `-hermes-send`, which goes through Hermes's gated send
   ([mirroring.md](mirroring.md#muster-pastes-into-hermes-only-through-its-gated-send)).
+- 🔴 **Never into a Claude Code prompt.** The Rendered view's Send, Send now and
+  a queued or routed message are refused while the window's Claude Code is
+  waiting on you (a permission prompt, a question, a menu): the paste's Enter
+  would answer it, for example approve a tool call. muster refuses a window its
+  host reports `waiting`, and the host checks again at the moment it types —
+  Claude Code's own session status and the pane's screen (ccd's dialog reading,
+  [`internal/ccdialog`](../internal/ccdialog/ccdialog.go)), before the paste and
+  again before its Enter — so a prompt that opened after the host's last report
+  is caught too. The refusal says "Claude is waiting on a permission prompt —
+  answer it first", and nothing is typed. The host also refuses while Claude's
+  input box already holds text ("Claude's input box already has text — clear
+  or send it first"): a message pasted after it would be submitted with it as
+  one turn. If a prompt opens between the paste and its Enter, the Enter is
+  withheld and the reply says "Pasted, not submitted"; the text stays in the
+  box, so it counts as possibly delivered — the queue waits for the turn after
+  it, and its Retry asks first.
+  - **A queued message is held, not failed**, and sent once the prompt is
+    answered (or the box is cleared). When the host refused it on what it read
+    at the moment of typing, the queue shows the host's reason and tries again
+    after 4 s, 8 s, 16 s, then every 30 s, until the window's status changes.
+  - **A Send or Send now that is refused is not held.** A Send says why and
+    keeps its text in the box. A Send now that the host refuses at the moment
+    of typing ends its row failed, saying why; Retry queues it again.
+
+  The Terminal view's box is not gated: it is you typing into the pane you are
+  looking at. It is a check before each key, not a lock: a prompt that opens in
+  the milliseconds between the last check and a key is not caught. A host
+  whose muster-mirror cannot read the screen and check the paste refuses every
+  Rendered-view message into Claude Code. Deploy muster before upgrading the
+  hosts' muster-mirror: an older muster shows the new host's refusals as plain
+  failures and fails a queued message instead of holding it.
 - Only newline and tab are accepted as control characters. Several lines arrive
   as one bracketed paste, and the single Enter runs them in order. A program that
   did not ask for bracketed paste gets the text as typed, so each newline is an
@@ -94,6 +125,8 @@ dispatched agents and the chief panel have no Queue.
   a queue post is refused saying why. A message already queued for such a
   window is held with the reason shown. So is one for a host that reports the
   status without its time.
+- 🔴 **A usage limit holds the queue.** See
+  [A usage limit holds the queue](#a-usage-limit-holds-the-queue) below.
 - **At most 20** messages can wait per window. Finished ones are shown for a
   while and deleted after 7 days, or sooner with their **Delete** (below).
 - **Never twice.** A message is claimed (`queued` → `sending`) before it is sent
@@ -123,6 +156,62 @@ message is being edited. **Copy message** copies the whole message, and is not
 offered without JavaScript. The menu works without JavaScript (Send now, Edit
 and Cancel are forms). The list is not redrawn while a menu is open, or while a
 message is open for editing.
+
+### A usage limit holds the queue
+
+When Claude Code hits a usage limit it ends the turn at once with a message of
+its own ("You've hit your session limit · resets 10:30pm (…)") and goes back to
+its prompt. Its status then reads idle, with a newer time, exactly as after an
+answer. Before this, the queue sent the next message into the same limit, and
+the next, until the queue was empty: every message used up by the limit.
+
+`muster-mirror` now reads, from the transcript of each idle Claude Code
+window, how the latest turn ended. When it ended in a message Claude Code wrote
+itself (model `<synthetic>` with an error flag), muster is told the kind, the
+reset time when the message names one, and whether the prompt it answered got
+any real reply at all. With that:
+
+- **The queue holds.** It shows **Held — usage limit, resumes 10:30 PM**, the
+  time in your own local time, until the reset time plus one minute; then it
+  sends again. If the limit names no reset time muster can place, it holds
+  until Claude Code gives a real answer (for example to a message you send by
+  hand) or you tap **Send now**. A real answer lifts the hold at once. The reset
+  time is the record's `quotaLimits.resetsAt` when it has one (newer Claude
+  Code), else the time its text names, read in the zone it names.
+- **A message Claude Code refused is failed, for a Retry by hand.** If a
+  queued message was sent and Claude Code refused it before working on it — a
+  usage limit, "Not logged in", an API error, as its only reply — that message
+  is marked failed, *Rejected: …*, with its ordinary **Retry**. Nothing
+  re-sends it on its own. muster marks it only when the transcript shows it
+  was THAT message (the refused prompt's text matches, in the same Claude
+  Code session it was pasted into — muster remembers that in memory, so after
+  a restart it marks nothing) and nothing came
+  between its paste and the refusal (the newest record before the refused
+  prompt is no later than the status it was pasted on). A message Claude
+  answered, followed by another prompt typed in the terminal that hit the
+  limit, stays sent; so does one whose text a fresh `claude` in the same
+  pane happens to start with; so does any message the transcript cannot show
+  was refused. A Retry of a message that was in fact answered would run it twice.
+- **The limit is the account's — and muster assumes ONE account per host.**
+  When any Claude Code window on a host hits it, `muster-mirror` also reports
+  it for the whole host, and every Claude Code window there holds — until the
+  reset, or until any of its windows gets a real answer (which lifts it for
+  all of them). A window on that host signed in to another account, or using
+  another provider, is held too, until the reset, unless you tap **Send now**.
+  If the newer of a window's own limit and its host's is the host's, that one
+  holds.
+- **Other immediate failures trip a breaker that backs off.** When the last 2
+  turns each ended within 10 seconds of their prompt in another error Claude
+  Code wrote itself ("Not logged in", an API error), the queue holds, saying
+  so and when it retries: 1 minute after muster saw the failure, then 2, then
+  5, then every 15 minutes, one message each time. A real answer resets it.
+- **When.** The time a held queue resumes is shown in your local time, with
+  its date when it is not today (a weekly limit). The line takes at most two
+  lines; tap it (or press Enter on it) for the whole text.
+- **Send now** still works while the queue is held, and sends only the one
+  message you tapped.
+- A `muster-mirror` that predates this reports nothing about how a turn ended,
+  and its windows' queues behave as before.
 
 ### Editing a queued message
 

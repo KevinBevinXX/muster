@@ -339,6 +339,9 @@ type hostConn struct {
 	// statusReport: the host advertised Msg.StatusReport, speaks v2 and
 	// registers per window — the only shape whose Window.Status is believed.
 	statusReport bool
+	// hostLimit is the usage limit the host last reported for all its Claude
+	// windows (Msg.HostLimit); nil for none. Read only with statusReport.
+	hostLimit *HostLimit
 	// catalogReport: the host advertised Msg.CatalogReport and speaks v2.
 	catalogReport bool
 	// subagentReport: the host advertised Msg.SubagentReport and speaks v2.
@@ -349,12 +352,12 @@ type hostConn struct {
 	// askCancel: the host advertised Msg.AskCancel, speaks v2 and is
 	// -interactive.
 	askCancel bool
-	// hermesSend: the host advertised Msg.HermesSend, speaks v2 and is
-	// -interactive — the server half of the hermesSend switch (PasteWindow).
-	hermesSend bool
-	// hermesAnswer: the host advertised Msg.HermesAnswer, speaks v2 and is
-	// -interactive (AnswerHermesApproval).
-	hermesAnswer bool
+	// gatedSends and gatedAnswers: per runtime with a gated send (RuntimeSpec.
+	// Advertises), whether the host advertised that it sends to it (Hermes:
+	// Msg.HermesSend — the server half of the gated-send switch, PasteWindow)
+	// and answers its asks (Msg.HermesAnswer, AnswerHermesApproval), speaks v2
+	// and is -interactive.
+	gatedSends, gatedAnswers map[string]bool
 
 	mu       sync.Mutex
 	sessions []string
@@ -414,7 +417,7 @@ func (h *Hub) Hosts(owner int64) []HostView {
 		hc.mu.Lock()
 		out = append(out, HostView{Host: k.host, Sessions: append([]string(nil), hc.sessions...), Windows: slices.Clone(hc.windows),
 			Claude: append([]string(nil), hc.claude...), Labels: maps.Clone(hc.labels), Activity: maps.Clone(hc.activity), Repos: maps.Clone(hc.repos), Work: maps.Clone(hc.work), Colors: maps.Clone(hc.colors), Rendered: hc.version >= 2, Online: true, Interactive: hc.interactive, PanePaste: hc.panePaste, PaneScroll: hc.paneScroll,
-			StatusReport: hc.statusReport, AskAnswer: hc.askAnswer, AskCancel: hc.askCancel, HermesSend: hc.hermesSend, HermesAnswer: hc.hermesAnswer})
+			StatusReport: hc.statusReport, AskAnswer: hc.askAnswer, AskCancel: hc.askCancel, HermesSend: hc.gatedSends[RuntimeHermes], HermesAnswer: hc.gatedAnswers[RuntimeHermes]})
 		hc.mu.Unlock()
 	}
 	now := h.now()
@@ -659,6 +662,7 @@ func (h *Hub) ServeConn(ctx context.Context, owner int64, host string, ws *webso
 		streams: map[uint32]*stream{}, watches: map[uint32]*watch{}, pastes: map[uint32]chan error{}, scrolls: map[uint32]chan error{},
 		catalogs: map[uint32]chan catalogAnswer{}, answers: map[uint32]chan error{}, tails: map[uint32]chan tailAnswer{}}
 	hc.sessions, hc.windows, hc.claude, hc.labels, hc.activity = hc.list(hello, h.now().Unix())
+	hc.hostLimit = CleanHostLimit(hello.HostLimit)
 	h.observe(owner, host, hc.windows, h.now())
 	if hc.version >= 2 {
 		// A read-only host cannot be pasted into whatever it claims.
@@ -678,12 +682,17 @@ func (h *Hub) ServeConn(ctx context.Context, owner int64, host string, ws *webso
 		hc.askAnswer = hello.AskAnswer && hello.Interactive
 		// So is the Escape that dismisses a picker.
 		hc.askCancel = hello.AskCancel && hello.Interactive
-		// The hermesSend switch: a paste into a Hermes window is a write into
-		// the pane like any other, so -interactive hosts only.
-		hc.hermesSend = hello.HermesSend && hello.Interactive
-		// Answering a Hermes approval is a write into the session (it can let
-		// a command run): -interactive hosts only, like the rest.
-		hc.hermesAnswer = hello.HermesAnswer && hello.Interactive
+		// Each runtime's gated-send switch: a send into its window is a write
+		// into the pane like any other, and answering its approval is a write
+		// into the session (it can let a command run): -interactive hosts
+		// only, like the rest.
+		hc.gatedSends, hc.gatedAnswers = map[string]bool{}, map[string]bool{}
+		for _, r := range runtimes {
+			if r.Advertises != nil {
+				send, answer := r.Advertises(hello)
+				hc.gatedSends[r.Name], hc.gatedAnswers[r.Name] = send && hello.Interactive, answer && hello.Interactive
+			}
+		}
 	}
 	// 🔴 THE WELCOME IS THE FIRST FRAME THE HOST READS, SO hc IS NOT IN h.hosts
 	// UNTIL IT HAS BEEN WRITTEN. Everything that sends a host a request (an
@@ -804,6 +813,7 @@ func (h *Hub) ServeConn(ctx context.Context, owner int64, host string, ws *webso
 				same := slices.Equal(hc.sessions, list) && slices.Equal(hc.claude, claude) && maps.Equal(hc.labels, labels) && sameWindows(hc.windows, windows)
 				waitingMoved := !slices.Equal(waitingWindows(hc.windows), waitingWindows(windows))
 				hc.sessions, hc.windows, hc.labels, hc.activity, hc.claude = list, windows, labels, activity, claude
+				hc.hostLimit = CleanHostLimit(m.HostLimit)
 				hc.mu.Unlock()
 				// 🔴 A STATUS-ONLY CHANGE NUDGES NO CARD (sameWindows ignores
 				// Status), so it gets its own hook: the attention queue must hear

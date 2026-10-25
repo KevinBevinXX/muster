@@ -45,17 +45,92 @@ func (l *lockedBuf) String() string {
 	return l.b.String()
 }
 
+// 🔴 NO WAIT HERE IS ON WALL TIME. A pass's return value is the number of
+// teardowns it started (each counted as it starts, before the pass returns),
+// so "nothing was started" needs no wait at all; and each teardown it did
+// start is awaited through the server's agentReapDone signal, which fires once
+// Destroy and the after-steps have finished. The one deadline left
+// (reapHangGuard) is a hang guard that only a stuck teardown reaches.
+const reapHangGuard = time.Minute
+
+// reapDone is one finished reaper teardown, as agentReapDone signals it.
+type reapDone struct {
+	id  int64
+	err error
+}
+
 type reapAPIFixture struct {
 	*destroyFixture
-	log *lockedBuf
+	log    *lockedBuf
+	reaped chan reapDone
 }
 
 func newReapAPIFixture(t *testing.T) *reapAPIFixture {
 	t.Helper()
-	f := &reapAPIFixture{destroyFixture: newDestroyFixture(t), log: &lockedBuf{}}
+	f := &reapAPIFixture{destroyFixture: newDestroyFixture(t), log: &lockedBuf{}, reaped: make(chan reapDone, 256)}
 	f.srv.logger = log.New(f.log, "", 0)
 	f.srv.SetAgentReapStoppedAfter(14 * 24 * time.Hour)
+	// A teardown finishing after the test stopped reading (one a loop started,
+	// or the shared database's other due agents) must not block its goroutine:
+	// once the test ends, the send gives way.
+	stopped := make(chan struct{})
+	t.Cleanup(func() { close(stopped) })
+	f.srv.agentReapDone = func(id int64, err error) {
+		select {
+		case f.reaped <- reapDone{id, err}:
+		case <-stopped:
+		}
+	}
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Logf("server log:\n%s", f.log.String())
+		}
+	})
 	return f
+}
+
+// awaitTeardowns waits for n reaper teardowns to finish, failing on one whose
+// Destroy failed.
+func (f *reapAPIFixture) awaitTeardowns(t *testing.T, n int) {
+	t.Helper()
+	for i := 0; i < n; i++ {
+		select {
+		case d := <-f.reaped:
+			if d.err != nil {
+				t.Fatalf("the teardown of agent %d failed: %v", d.id, d.err)
+			}
+		case <-time.After(reapHangGuard):
+			t.Fatalf("%d of %d teardown(s) never finished", n-i, n)
+		}
+	}
+}
+
+// awaitTeardownOf waits for the teardown of agent id to finish, skipping
+// others' (a loop's pass reaps whatever in the shared database is due).
+func (f *reapAPIFixture) awaitTeardownOf(t *testing.T, id int64) {
+	t.Helper()
+	for {
+		select {
+		case d := <-f.reaped:
+			if d.id != id {
+				continue
+			}
+			if d.err != nil {
+				t.Fatalf("the teardown of agent %d failed: %v", d.id, d.err)
+			}
+			return
+		case <-time.After(reapHangGuard):
+			t.Fatalf("agent %d's teardown never finished", id)
+		}
+	}
+}
+
+// mustBeGone fails unless agent id's row is gone.
+func (f *reapAPIFixture) mustBeGone(t *testing.T, id int64) {
+	t.Helper()
+	if f.exists(t, id) {
+		t.Fatalf("agent %d is still there (destroyed: %v)", id, f.prov.destroyedIDs())
+	}
 }
 
 // stopAged is an agent that RAN and was stopped: agent id is brought up
@@ -106,16 +181,12 @@ func (f *reapAPIFixture) setAgentStatus(t *testing.T, id int64, status string) {
 }
 
 // reap runs one reaper pass, as RunTaskReap does (under System), and waits for
-// the teardowns it started to have reached Destroy.
+// every teardown it started to have finished. A pass that started none
+// returns 0 and there is nothing to wait for.
 func (f *reapAPIFixture) reap(t *testing.T) int {
 	t.Helper()
-	before := len(f.prov.destroyedIDs())
 	n := f.srv.reapStoppedAgents(authz.System(context.Background()))
-	if n > 0 {
-		f.waitDestroyCalled(t, before+n)
-	} else {
-		time.Sleep(200 * time.Millisecond) // a teardown wrongly started would land here
-	}
+	f.awaitTeardowns(t, n)
 	return n
 }
 
@@ -176,7 +247,7 @@ func TestTheReaperDestroysOnlyAnAgentStoppedPastTheWindow(t *testing.T) {
 	if got := f.reap(t); got < 1 {
 		t.Fatalf("the pass started %d teardown(s); want the due agent's", got)
 	}
-	f.waitGone(t, due.ID)
+	f.mustBeGone(t, due.ID)
 	f.destroyedOnly(t, watch, due.ID)
 	for name, id := range map[string]int64{"13 days stopped": young.ID, "running": running.ID, "error": errored.ID,
 		"the reserved-slug chief": f.ownChief.ID, "the labelled chief": f.chief.ID} {
@@ -205,7 +276,7 @@ func TestANeverStartedAgentIsNotReaped(t *testing.T) {
 	ran := f.agentOn(t, 1, "rpran", nil)
 	f.stopAged(t, ran.ID, 15)
 	f.reap(t)
-	f.waitGone(t, ran.ID)
+	f.mustBeGone(t, ran.ID)
 	if !f.exists(t, saved.ID) {
 		t.Fatal("a never-started (saved) agent stopped for 15 days was destroyed")
 	}
@@ -273,7 +344,7 @@ func TestAnAgentStartedBetweenTheScanAndTheClaimSurvives(t *testing.T) {
 			}}
 			f.reap(t)
 			if statuses == nil {
-				f.waitGone(t, a.ID)
+				f.mustBeGone(t, a.ID)
 				f.destroyedOnly(t, []int64{a.ID}, a.ID)
 				return
 			}
@@ -325,8 +396,10 @@ func TestTwoPassesAtOnceDestroyAnAgentOnce(t *testing.T) {
 	}
 	passes.Wait()
 	close(gate)
-	f.waitGone(t, a.ID)
-	time.Sleep(200 * time.Millisecond) // a second teardown, if one was started, lands here
+	// Every teardown either pass started is awaited — the count is the passes'
+	// own, so a second teardown, had one been started, is waited for too.
+	f.awaitTeardowns(t, started[0]+started[1])
+	f.mustBeGone(t, a.ID)
 	if started[0]+started[1] != 1 {
 		t.Errorf("the two passes started %d and %d teardown(s); want one between them", started[0], started[1])
 	}
@@ -347,7 +420,7 @@ func TestReapingTheChiefsAgentReleasesItsStart(t *testing.T) {
 	f.setStatus(t, n.ID, notes.StatusOpen)
 	f.mustBeAlreadyDispatched(t, n.ID) // control: spent before the reap
 	f.reap(t)
-	f.waitGone(t, started)
+	f.mustBeGone(t, started)
 	if got := f.releases(t, n.ID); got != 1 {
 		t.Fatalf("release rows for the task = %d, want 1\n%s", got, f.log.String())
 	}
@@ -367,7 +440,8 @@ func TestRunTaskReapAlsoReapsStoppedAgents(t *testing.T) {
 	done := make(chan struct{})
 	go func() { defer close(done); f.srv.RunTaskReap(ctx, 20*time.Millisecond) }()
 	t.Cleanup(func() { cancel(); <-done })
-	f.waitGone(t, a.ID)
+	f.awaitTeardownOf(t, a.ID)
+	f.mustBeGone(t, a.ID)
 	if logs := f.log.String(); !strings.Contains(logs, "agent reaper: sweeping every 20ms for agents stopped for >336h0m0s") {
 		t.Errorf("the loop did not announce the agent reaper:\n%s", logs)
 	}
@@ -385,8 +459,10 @@ func TestTheReaperIsOffAtZero(t *testing.T) {
 	f.destroyedOnly(t, []int64{a.ID})
 	// CONTROL: the same agent with the reaper on.
 	f.srv.SetAgentReapStoppedAfter(14 * 24 * time.Hour)
-	f.reap(t)
-	f.waitGone(t, a.ID)
+	if got := f.reap(t); got < 1 {
+		t.Fatalf("control: the reaper turned on started %d teardown(s)", got)
+	}
+	f.mustBeGone(t, a.ID)
 	f.destroyedOnly(t, []int64{a.ID}, a.ID)
 }
 
@@ -448,8 +524,10 @@ func TestAStoppedRowOverALiveInstanceIsNotReaped(t *testing.T) {
 	if err := driver.Scale(context.Background(), agents.RefOf(a), 0); err != nil {
 		t.Fatal(err)
 	}
-	f.srv.reapStoppedAgents(authz.System(context.Background()))
-	f.waitGone(t, a.ID)
+	if n := f.reap(t); n != 1 {
+		t.Fatalf("control: the pass started %d teardown(s) once the instance was stopped, want 1", n)
+	}
+	f.mustBeGone(t, a.ID)
 }
 
 // blindProv is the destroy fixture's provisioner whose instance list fails.

@@ -459,6 +459,8 @@ var bannerExempt = map[string]string{
 		"pointing GitHub calls at the pickers spec's fake; the shipped binary has no reader",
 	envE2EOpenRouterModels: "the same: a browser-test fixture read ONLY by a `-tags e2eterm` build (e2eupstreams.go), " +
 		"pointing the model search at the pickers spec's fake catalogue; the shipped binary has no reader",
+	envE2ESuggestURL: "the same: a browser-test fixture read ONLY by a `-tags e2eterm` build (e2eupstreams.go), " +
+		"pointing the suggested replies' model at the chip row spec's fake; the shipped binary has no reader",
 	envE2EAgentEndpoint: "the same: a browser-test fixture read ONLY by a `-tags e2eterm` build's fake driver " +
 		"(every agent endpoint at the answer-delivery spec's loopback fake runtime); the shipped binary has no reader",
 	envE2EGoTrueSkew: "the same: a browser-test fixture read ONLY by a `-tags e2eterm` build (e2egotrue.go), " +
@@ -506,6 +508,11 @@ var bannerExempt = map[string]string{
 		"with no database there is no queue and nothing reads it, and an out-of-bounds value refuses to boot",
 	envFocusRetention: "the focus refresher's pruning logs each prune with the VALUE (internal/focus: \"pruned %d " +
 		"mirrored session(s) not seen for %s\"); an out-of-bounds value refuses to boot",
+	envSuggest: "suggested replies announce their own state at boot (cmd/muster-server/main.go: " +
+		"\"suggest: suggested replies are OFF (MUSTER_SUGGEST=off)…\" / \"…are on with %s, but NOT GENERATED YET…\"); " +
+		"a value it refuses stops the boot",
+	envSuggestModel: "announced with the VALUE on the same boot line as MUSTER_SUGGEST " +
+		"(\"suggest: suggested replies are on with %s…\")",
 	envFocusInterval: "the focus refresher announces its own state with the VALUE when it starts " +
 		"(internal/api/focus.go: \"focus: refresh every %s …\"); with no database or no " +
 		"summarizer nothing reads it, and an out-of-bounds value refuses to boot",

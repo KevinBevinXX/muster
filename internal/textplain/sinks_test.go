@@ -122,6 +122,7 @@ var uiExempt = map[string]exemption{
 	"connectors.go ConnectorForm p.Label":              {1, whyStatic},
 	"list_signals.go agentsFilterChips c.Label":        {1, whyStatic},
 	"recents.go recentEntry it.Title":                  {2, "recentItem.Title is built through Title by recentItems"},
+	"switcher.go switcherEntry it.Label":               {3, "SwitcherItem.Label is built through Title by switcherItems (pinnedChipLabels: pinnedChipName's plainOr), the pinned chips' own labels; plaining it again here would apply Title twice"},
 	"mirror.go mirrorFields m.Label":                   {2, whyFilter},
 	"mirror.go mirrorFields m.Title":                   {2, whyFilter},
 	"mirror_ask.go askForm o.Label":                    {2, whyOption},

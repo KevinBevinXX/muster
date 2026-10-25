@@ -29,6 +29,10 @@ func TestTheDefaultBuildCarriesNoUpstreamHooks(t *testing.T) {
 		t.Fatal("e2eupstreams.go's init ran in a build without -tags e2eterm; a deployable binary would let " +
 			"MUSTER_E2E_GITHUB_API / MUSTER_E2E_OPENROUTER_MODELS redirect its upstreams")
 	}
+	if e2eSuggestGen != nil {
+		t.Fatal("e2eSuggestGen is set in a build without -tags e2eterm; a deployable binary would let " +
+			"MUSTER_E2E_SUGGEST_URL replace the suggested replies' model")
+	}
 }
 
 // TestTheDefaultBuildCannotChangeTheGoTrueSkew: without the e2eterm tag the

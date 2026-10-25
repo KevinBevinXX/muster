@@ -63,3 +63,21 @@ func (s *Server) recentRefs(ctx context.Context) []ui.RecentRef {
 	}
 	return out
 }
+
+// switcher is the viewer's session switcher for the page of cur (ui.Switcher):
+// the Agents list's entries — built the way the list builds them, minus the
+// live instance read (the bar shows names, not status) — and the same recently
+// viewed refs the strip reads, resolved by ui.NewSwitcher. nil — no bar — when
+// there is no agent store, or the list cannot be read (logged): the page
+// renders without it rather than failing.
+func (s *Server) switcher(ctx context.Context, cur ui.SwitcherCurrent) *ui.Switcher {
+	if s.ext.Agents == nil {
+		return nil
+	}
+	cards, mirrors, err := s.agentsListCardsLive(ctx, 0, false)
+	if err != nil {
+		s.logger.Printf("switcher: list: %v", err)
+		return nil
+	}
+	return ui.NewSwitcher(cards, mirrors, s.recentRefs(ctx), cur)
+}

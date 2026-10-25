@@ -197,43 +197,103 @@ func (c *codeStore) CreatePairingCode(_ context.Context, signin time.Time) (stri
 	return "mdp_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", time.Now().Add(devices.PairingCodeTTL), nil
 }
 
-// TestPairingNeedsASignInFromTheLastFiveMinutes: a session signed in more than
-// stepup.CredentialMaxAge ago is refused a pairing code (reauth_required) and
-// the store is never asked; a session signed in just now gets one, recorded
-// with THAT sign-in time.
-func TestPairingNeedsASignInFromTheLastFiveMinutes(t *testing.T) {
+// TestAnyValidSessionMayPairHoweverOldItsSignIn: by operator decision there is
+// no recent-sign-in window on POST /account/devices/pair. Sessions signed in
+// six minutes, two hours and 29 days ago (the cookie lives 30 days) each get a
+// code, recorded with THAT session's sign-in time — which becomes the device's
+// paired_signin_at, the input to every later revocation check.
+func TestAnyValidSessionMayPairHoweverOldItsSignIn(t *testing.T) {
 	store := &codeStore{}
 	s := New(nil, AuthConfig{UIPassword: pPassword}, log.New(io.Discard, "", 0))
 	s.UseExtensions(Extensions{Devices: store})
 	h := s.Handler()
-	post := func(issued time.Time) *httptest.ResponseRecorder {
+	for i, age := range []time.Duration{6 * time.Minute, 2 * time.Hour, 29 * 24 * time.Hour} {
+		signedIn := time.Now().Add(-age).Truncate(time.Second)
 		req := httptest.NewRequest("POST", accountDevicesPairPath, nil)
-		req.Header.Set("Cookie", sessionCookieName+"="+auth.SignSession(s.auth.uiSessionSecret(), issued, sessionTTL))
+		req.Header.Set("Cookie", sessionCookieName+"="+auth.SignSession(s.auth.uiSessionSecret(), signedIn, sessionTTL))
 		req.Header.Set("Origin", "http://"+req.Host)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		var out struct {
+			Code      string `json:"code"`
+			ExpiresIn int    `json:"expires_in"`
+		}
+		if rec.Code != http.StatusOK || json.Unmarshal(rec.Body.Bytes(), &out) != nil || !devices.CodeShapeOK(out.Code) || out.ExpiresIn != 60 {
+			t.Fatalf("a sign-in %v old: %d %s; want 200 and a code", age, rec.Code, rec.Body.String())
+		}
+		if rec.Header().Get("Cache-Control") != "no-store" {
+			t.Error("the pairing code response is cacheable")
+		}
+		if len(store.signins) != i+1 || !store.signins[i].Equal(signedIn) {
+			t.Fatalf("a sign-in %v old: the code was minted with sign-ins %v; want the session's %v last", age, store.signins, signedIn)
+		}
+	}
+}
+
+// TestPairingStillNeedsAValidBrowserSession: with the recent-sign-in window
+// gone, requireSession is the wall. No credential, an expired session cookie,
+// a cookie signed by another server, a personal mst_ token and the shared hook
+// token (as X-Muster-Token and as a bearer) are each refused by requireSession
+// itself ("not signed in", not the handler's reauth_required), and the store is
+// never asked. The control is a valid session two hours old, admitted.
+func TestPairingStillNeedsAValidBrowserSession(t *testing.T) {
+	store := &codeStore{}
+	s := New(nil, AuthConfig{UIPassword: pPassword, HookToken: pHookToken, ServiceToken: pServiceToken}, log.New(io.Discard, "", 0))
+	s.UseExtensions(Extensions{Devices: store})
+	h := s.Handler()
+	secret := s.auth.uiSessionSecret()
+	cookie := func(v string) func(*http.Request) {
+		return func(r *http.Request) { r.Header.Set("Cookie", sessionCookieName+"="+v) }
+	}
+	header := func(k, v string) func(*http.Request) { return func(r *http.Request) { r.Header.Set(k, v) } }
+	post := func(set func(*http.Request)) *httptest.ResponseRecorder {
+		req := httptest.NewRequest("POST", accountDevicesPairPath, nil)
+		req.Header.Set("Origin", "http://"+req.Host)
+		set(req)
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, req)
 		return rec
 	}
-	stale := post(time.Now().Add(-6 * time.Minute))
-	if stale.Code != http.StatusUnauthorized || !strings.Contains(stale.Body.String(), PasskeyReauthRequired) {
-		t.Fatalf("a six-minute-old sign-in: %d %s; want 401 %s", stale.Code, stale.Body.String(), PasskeyReauthRequired)
+	other := []byte("another server's session secret")
+	for name, set := range map[string]func(*http.Request){
+		"no credential":           func(*http.Request) {},
+		"an expired session":      cookie(auth.SignSession(secret, time.Now().Add(-2*time.Hour), time.Hour)),
+		"another server's cookie": cookie(auth.SignSession(other, time.Now().Add(-time.Minute), sessionTTL)),
+		"a personal mst_ token":   header("Authorization", "Bearer "+pAPIToken),
+		"the hook token (header)": header("X-Muster-Token", pHookToken),
+		"the hook token (bearer)": header("Authorization", "Bearer "+pHookToken),
+		"the service token":       header("Authorization", "Bearer "+pServiceToken),
+	} {
+		rec := post(set)
+		var body struct {
+			Error string `json:"error"`
+		}
+		if rec.Code != http.StatusUnauthorized || json.Unmarshal(rec.Body.Bytes(), &body) != nil || body.Error != "not signed in" {
+			t.Errorf("%s: %d %s; want 401 not signed in (requireSession's refusal)", name, rec.Code, rec.Body.String())
+		}
 	}
 	if len(store.signins) != 0 {
-		t.Fatal("the store was asked for a code on a stale sign-in")
+		t.Fatalf("the store was asked for a code without a valid session: %v", store.signins)
 	}
-	signedIn := time.Now().Add(-time.Minute).Truncate(time.Second)
-	fresh := post(signedIn)
-	var out struct {
-		Code      string `json:"code"`
-		ExpiresIn int    `json:"expires_in"`
+	if rec := post(cookie(auth.SignSession(secret, time.Now().Add(-2*time.Hour), sessionTTL))); rec.Code != http.StatusOK {
+		t.Fatalf("CONTROL: a valid two-hour-old session: %d %s", rec.Code, rec.Body.String())
 	}
-	if fresh.Code != http.StatusOK || json.Unmarshal(fresh.Body.Bytes(), &out) != nil || !devices.CodeShapeOK(out.Code) || out.ExpiresIn != 60 {
-		t.Fatalf("CONTROL: a one-minute-old sign-in: %d %s", fresh.Code, fresh.Body.String())
+}
+
+// TestPairingWithNoRecordedSignInTimeAsksForASignIn: a session the wrapper
+// admitted without a sign-in time (a GoTrue token with no amr) gets
+// reauth_required and never reaches the store, so no phone is paired with a
+// paired_signin_at that Sign out everywhere could not compare.
+func TestPairingWithNoRecordedSignInTimeAsksForASignIn(t *testing.T) {
+	store := &codeStore{}
+	s := New(nil, AuthConfig{UIPassword: pPassword}, log.New(io.Discard, "", 0))
+	s.UseExtensions(Extensions{Devices: store})
+	rec := httptest.NewRecorder()
+	s.handleDevicePairCode(rec, httptest.NewRequest("POST", accountDevicesPairPath, nil))
+	if rec.Code != http.StatusUnauthorized || !strings.Contains(rec.Body.String(), PasskeyReauthRequired) {
+		t.Fatalf("no sign-in time: %d %s; want 401 %s", rec.Code, rec.Body.String(), PasskeyReauthRequired)
 	}
-	if fresh.Header().Get("Cache-Control") != "no-store" {
-		t.Error("the pairing code response is cacheable")
-	}
-	if len(store.signins) != 1 || !store.signins[0].Equal(signedIn) {
-		t.Fatalf("the code was minted with sign-in %v; want the session's %v", store.signins, signedIn)
+	if len(store.signins) != 0 {
+		t.Fatalf("the store was asked for a code with no sign-in time: %v", store.signins)
 	}
 }

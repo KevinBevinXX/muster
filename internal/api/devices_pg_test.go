@@ -25,6 +25,7 @@ import (
 	"github.com/ZacxDev/muster/internal/db"
 	"github.com/ZacxDev/muster/internal/dbtest"
 	"github.com/ZacxDev/muster/internal/devices"
+	"github.com/ZacxDev/muster/internal/gotrue"
 	"github.com/ZacxDev/muster/internal/gotrue/gotruetest"
 	"github.com/ZacxDev/muster/internal/push"
 	"github.com/ZacxDev/muster/internal/users"
@@ -603,5 +604,103 @@ func TestARefusedKeyCanRetryOnTheSameCode(t *testing.T) {
 	}
 	if w := redeem(devices.KeyBiometric); w.Code != http.StatusUnauthorized || !strings.Contains(w.Body.String(), DevicePairRefusal) {
 		t.Fatalf("CONTROL: a third use of the spent code: %d %s; want 401", w.Code, w.Body.String())
+	}
+}
+
+// TestARevokedSessionCannotPair: with no recent-sign-in window on pairing, the
+// session's own validity is what is left, over the real gotrue session. A
+// session ended by Sign out everywhere, and one from before the session cutoff
+// (users.sessions_not_before), are each refused a pairing code and no code row
+// is written. The control is a live session, which pairs.
+func TestARevokedSessionCannotPair(t *testing.T) {
+	r := newDeviceRig(t)
+	codes := func() int {
+		var n int
+		if err := r.pool.QueryRow(authz.System(context.Background()), `SELECT count(*) FROM device_pairing_codes WHERE owner_id = $1`, r.uid).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	refused := func(name, at, rt string) {
+		t.Helper()
+		w := do(r.edge, "POST", accountDevicesPairPath, nil, withCookies(at, rt))
+		if w.Code == http.StatusOK || strings.Contains(w.Body.String(), `"code"`) {
+			t.Fatalf("%s: %d %s; want a refusal", name, w.Code, w.Body.String())
+		}
+		if strings.Contains(w.Body.String(), PasskeyReauthRequired) {
+			t.Fatalf("%s: refused by the handler's sign-in-time check, not by the session tier: %s", name, w.Body.String())
+		}
+		if n := codes(); n != 0 {
+			t.Fatalf("%s: %d pairing code rows written", name, n)
+		}
+	}
+
+	at, rt := r.login()
+	if w := do(r.edge, "POST", "/logout", url.Values{"scope": {"global"}}, withCookies(at, rt)); w.Code != http.StatusSeeOther {
+		t.Fatalf("global logout: %d", w.Code)
+	}
+	refused("a session ended by Sign out everywhere", at, rt)
+
+	at, rt = r.login()
+	time.Sleep(1100 * time.Millisecond) // the cutoff compares whole seconds
+	// The real writer of the cutoff (a credentials reset), then the user-cache
+	// drop every server-side writer of the cutoff does with it (DisableUser,
+	// accounts.go). A raw UPDATE alone is hidden for up to 30 s by that cache.
+	if _, err := users.NewPG(r.pool).ResetCredentials(context.Background(), r.uid); err != nil {
+		t.Fatal(err)
+	}
+	r.s.gt.forgetUser(r.uid)
+	refused("a session from before the session cutoff", at, rt)
+
+	time.Sleep(1100 * time.Millisecond)
+	at, rt = r.login()
+	if _, _ = r.pair(at, rt, "Pixel"); codes() != 1 {
+		t.Fatal("CONTROL: a live session did not leave exactly one (spent) code row")
+	}
+}
+
+// TestAPhonePairsFromAGoTrueSessionSignedInTwoHoursAgo: the operator decision
+// over the real gotrue session. A session whose sign-in (GoTrue's amr) is two
+// hours old gets a code, the app redeems it, the device row records THAT
+// sign-in as paired_signin_at, and the phone's credential is admitted. A
+// session whose token carries no amr at all is asked to sign in again
+// (reauth_required) and writes no code.
+func TestAPhonePairsFromAGoTrueSessionSignedInTwoHoursAgo(t *testing.T) {
+	r := newDeviceRig(t)
+	signedIn := time.Now().Add(-2 * time.Hour).Truncate(time.Second)
+	session := func(amr gotrue.AMR) (string, string) {
+		_, rt, sid := r.fake.Mint(r.subject())
+		r.fake.SetSessionAMR(sid, amr)
+		sess, err := r.fake.Client().Refresh(context.Background(), "203.0.113.9", rt)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return sess.AccessToken, sess.RefreshToken
+	}
+
+	at, rt := session(gotrue.AMR{{Method: "password", Timestamp: signedIn.Unix()}})
+	if c, err := r.fake.Verifier().Verify(at); err != nil || len(c.AMR) != 1 || c.AMR[0].Timestamp != signedIn.Unix() {
+		t.Fatalf("fixture: the token's amr is %+v (%v); want one entry at %v", c.AMR, err, signedIn)
+	}
+	tok, id := r.pair(at, rt, "Pixel")
+	var paired time.Time
+	if err := r.pool.QueryRow(authz.System(context.Background()), `SELECT paired_signin_at FROM devices WHERE id = $1`, id).Scan(&paired); err != nil {
+		t.Fatal(err)
+	}
+	if !paired.Equal(signedIn) {
+		t.Fatalf("paired_signin_at = %v; want the session's sign-in %v", paired, signedIn)
+	}
+	if c := r.config(tok); c != http.StatusOK {
+		t.Fatalf("the phone paired from a two-hour-old sign-in got %d on its first request", c)
+	}
+
+	at, rt = session(nil)
+	w := do(r.edge, "POST", accountDevicesPairPath, nil, withCookies(at, rt))
+	if w.Code != http.StatusUnauthorized || !strings.Contains(w.Body.String(), PasskeyReauthRequired) {
+		t.Fatalf("a session with no amr: %d %s; want 401 %s", w.Code, w.Body.String(), PasskeyReauthRequired)
+	}
+	var n int
+	if err := r.pool.QueryRow(authz.System(context.Background()), `SELECT count(*) FROM device_pairing_codes WHERE owner_id = $1 AND used_at IS NULL`, r.uid).Scan(&n); err != nil || n != 0 {
+		t.Fatalf("unspent pairing codes after the amr-less request: %d (%v)", n, err)
 	}
 }

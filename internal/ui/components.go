@@ -384,6 +384,9 @@ func shell(activeTab string, feat Features, extra g.Node, data ShellData) g.Node
 					resyncScript(),
 					// Sidebar open/close + SPA tab routing (pushState) + FAB toggle.
 					appScript(feat),
+					// The mirrored views' snapshot store: on the Agents list it warms
+					// the pinned and recently viewed windows (mirror_snap.go).
+					SnapScript(feat),
 					// PWA: the service worker, install, update toast and app badge
 					// (pwa.go) — then the push-subscribe flow behind the "Enable"
 					// control, which uses the registration pwaScript made.

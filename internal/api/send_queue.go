@@ -130,20 +130,23 @@ func (s *Server) resolveSendQueueTarget(w http.ResponseWriter, r *http.Request, 
 
 // mirrorQueueOff is why a mirrored entry cannot be queued for, "" when it can:
 // the host must report the agent's status, and the window must run Claude
-// Code — or Hermes, on a host that advertised hermesSend (Hermes Phase 3;
-// the delivery then goes through the hub's idle gate and the host's gated
-// send).
+// Code — or a runtime with a gated send (Hermes), on a host that advertised
+// it (Hermes Phase 3; the delivery then goes through the hub's idle gate and
+// the host's gated send).
 func mirrorQueueOff(h mirror.HostView, e mirror.SessionView) string {
 	switch {
 	case !h.Online:
 		return unprefixed(mirror.ErrHostOffline)
 	case !h.StatusReport || h.Windows == nil:
 		return unprefixed(mirror.ErrNoStatusReport)
-	case e.HermesView() && h.HermesSend:
-		return ""
-	case e.HermesView():
-		return unprefixed(mirror.ErrHermesSendOff)
-	case !e.Claude:
+	}
+	if rt, ok := e.Spec(); ok && rt.GatedSend && e.AgentView() {
+		if send, _ := h.GatedSendOn(rt); send {
+			return ""
+		}
+		return unprefixed(rt.SendOffErr)
+	}
+	if !e.Claude {
 		return SendQueueNotClaude
 	}
 	return ""
@@ -395,7 +398,7 @@ func (s *Server) sendQueueListView(ctx context.Context, t sendqueue.Target, edit
 	}
 	if h, ok, err := s.ext.SendQueue.HeadOf(ctx, t); err == nil && ok {
 		if d := s.sendQueueDecide(h, s.sendQueueProbe(ctx, h)); !d.Send {
-			v.Waiting = d.Why
+			v.Waiting, v.Held, v.ResumeAt, v.Now = d.Why, d.Held, d.ResumeAt, s.sendQueueNow()
 		} else {
 			v.Waiting = "sending shortly"
 		}
@@ -767,18 +770,37 @@ func (s *Server) sendQueueProbe(ctx context.Context, h sendqueue.Head) sendqueue
 	}
 	st := s.ext.Mirror.AgentState(ctx, h.Target.Host, h.Target.Session, h.Target.Window)
 	switch {
+	case st.GuardHeld != "":
+		// The host's Claude prompt guard refused the last paste on what it
+		// read at the moment of typing; held, with its words, and backing off.
+		return sendqueue.AgentState{Why: st.GuardHeld}
 	case st.Unknown != nil:
 		return sendqueue.AgentState{Why: unprefixed(st.Unknown)}
 	case st.Status == mirror.StatusIdle:
-		return sendqueue.AgentState{Idle: true, Since: st.Since, Observed: st.Observed, Pasted: st.Pasted}
-	case st.Runtime == mirror.RuntimeHermes && st.Status == mirror.StatusWaiting:
-		return sendqueue.AgentState{Why: "Hermes is waiting for you (an approval or a question)."}
-	case st.Runtime == mirror.RuntimeHermes:
-		return sendqueue.AgentState{Why: "Hermes is working."}
+		return sendqueue.AgentState{Idle: true, Since: st.Since, Observed: st.Observed, Pasted: st.Pasted, TurnError: st.TurnError,
+			HostLimit: st.HostLimit, Session: st.Session}
 	case st.Status == mirror.StatusWaiting:
-		return sendqueue.AgentState{Why: "Claude Code is waiting for you (a prompt or a question)."}
+		return sendqueue.AgentState{Why: queueWordsOf(st.Runtime).waiting}
 	}
-	return sendqueue.AgentState{Why: "Claude Code is working."}
+	return sendqueue.AgentState{Why: queueWordsOf(st.Runtime).working}
+}
+
+// queueWords is what the queue says of a window of a runtime that is not
+// idle: waiting on the person, or working.
+type queueWords struct{ waiting, working string }
+
+// runtimeQueueWords is each runtime's queueWords; a runtime with none is
+// spoken of as Claude Code, as every window was before Hermes.
+var runtimeQueueWords = map[string]queueWords{
+	mirror.RuntimeClaude: {"Claude Code is waiting for you (a prompt or a question).", "Claude Code is working."},
+	mirror.RuntimeHermes: {"Hermes is waiting for you (an approval or a question).", "Hermes is working."},
+}
+
+func queueWordsOf(runtime string) queueWords {
+	if w, ok := runtimeQueueWords[runtime]; ok {
+		return w
+	}
+	return runtimeQueueWords[mirror.RuntimeClaude]
 }
 
 // sendQueueNonce is the nonce a queued message is delivered with: one per
@@ -888,6 +910,16 @@ func sendQueueFailure(err error) sendqueue.Outcome {
 			// The host's gated send says it in full ("May have been
 			// submitted: …", "Pasted, not submitted: …", "Not sent: …").
 			return sendqueue.Outcome{MayHaveDelivered: may, Pasted: pr.Refusal == mirror.PasteRefusalHermesPasted, Detail: pr.Why}
+		case mirror.PasteRefusalClaudeWaiting, mirror.PasteRefusalClaudeBox:
+			// The Claude prompt guard, nothing typed, in its own words. A
+			// queued message never gets here (the hub supersedes it, and it is
+			// held); a Send now does, and fails.
+			return sendqueue.Outcome{Detail: pr.Why}
+		case mirror.PasteRefusalClaudePasted:
+			// 🔴 Its text is in Claude Code's input box: it MAY be delivered
+			// (with whatever is typed next), so it is never resent blindly —
+			// its Retry asks first.
+			return sendqueue.Outcome{Pasted: true, MayHaveDelivered: true, Detail: pr.Why}
 		}
 	}
 	if may {

@@ -47,6 +47,11 @@ type Features struct {
 	// (internal/attention). False draws no Attention link and no badge: the
 	// routes behind them would only answer 404.
 	Attention bool
+	// SnapUser and SnapBuild are the signed-in user and the running build: the
+	// key, and the check, of the mirrored view's snapshot store
+	// (mirror_snap.go). A zero SnapUser draws no snapshot script at all.
+	SnapUser  int64
+	SnapBuild string
 }
 
 // visibleTabs is the subset of musterTabs a document with these features may

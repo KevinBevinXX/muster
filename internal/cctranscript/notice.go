@@ -37,6 +37,9 @@ import (
 //	task-notification     11025  a background task / agent / monitor reported
 //	local-command-stdout    151  what a local command (/model, /cost) printed
 //
+// and, added later (not in that survey), the bash-mode records:
+// <bash-input>, <bash-stdout>, <bash-stderr>.
+//
 // <system-reminder> and <local-command-caveat> lead only isMeta records, which
 // are dropped before this is asked.
 //
@@ -59,7 +62,17 @@ const (
 var noticeTags = map[string]string{
 	"task-notification":    NoticeTask,
 	"local-command-stdout": NoticeCommandOutput,
+	// Bash mode ("!cmd" typed in the CLI): the command and what it printed,
+	// written as a user record the agent reads but nobody asked it anything
+	// in. Not a prompt — so neither the prompt index, focus nor suggested
+	// replies read it as one of the operator's messages.
+	"bash-input":  NoticeCommandOutput,
+	"bash-stdout": NoticeCommandOutput,
+	"bash-stderr": NoticeCommandOutput,
 }
+
+// bashTags are the blocks a bash-mode record is made of.
+var bashTags = map[string]bool{"bash-input": true, "bash-stdout": true, "bash-stderr": true}
 
 // tagBlock is one <tag>…</tag> block at the start of a string. Go's RE2 has no
 // backreferences, so the closing tag is checked by the caller.
@@ -156,6 +169,9 @@ func noticeOf(r Record, text string) (Event, bool) {
 			Text: Cap(summary, MaxText), Output: Cap(detail, MaxOutput),
 			TaskToolID: innerTag(body, "tool-use-id"), At: r.Time()}, true
 	case NoticeCommandOutput:
+		if bashTags[blocks[0][0]] {
+			return bashNotice(blocks), true
+		}
 		out := strings.TrimSpace(ansi.ReplaceAllString(blocks[0][1], ""))
 		return Event{Kind: KindNotice, Notice: NoticeCommandOutput, Text: Cap(firstLine(out), MaxText), Output: Cap(out, MaxOutput)}, true
 	}
@@ -199,4 +215,30 @@ func slashCommand(text string) (string, bool) {
 		return "", false
 	}
 	return strings.TrimSpace(name + " " + args), true
+}
+
+// bashNotice is a bash-mode record as a notice: its text the command as typed
+// ("!cmd"), or its output's first line when the record holds no input; its
+// output what the command printed (stdout, then stderr; any other block in
+// the record is appended too, so nothing it holds is hidden).
+func bashNotice(blocks [][2]string) Event {
+	var input string
+	var outs []string
+	for _, b := range blocks {
+		body := strings.TrimSpace(ansi.ReplaceAllString(b[1], ""))
+		switch {
+		case b[0] == "bash-input":
+			if input == "" {
+				input = body
+			}
+		case body != "":
+			outs = append(outs, body)
+		}
+	}
+	out := strings.Join(outs, "\n")
+	text := firstLine(out)
+	if input != "" {
+		text = "!" + firstLine(input)
+	}
+	return Event{Kind: KindNotice, Notice: NoticeCommandOutput, Text: Cap(text, MaxText), Output: Cap(out, MaxOutput)}
 }

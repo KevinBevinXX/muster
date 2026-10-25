@@ -147,6 +147,8 @@ var routeVias = map[authz.Via][]string{
 		// session's own (a device credential cannot reach either).
 		"POST /account/devices/pair",
 		"POST /account/devices/{id}/remove",
+		// …and Account → Devices' live list, the session's own devices.
+		"GET /account/devices/live",
 		// Passkeys: the caller's own, acted on AS the caller at GoTrue.
 		"GET /account/passkeys",
 		"POST /account/passkeys/options",
@@ -178,6 +180,11 @@ var routeVias = map[authz.Via][]string{
 		"GET /mirror/view/ws",
 		// The composer menu's data (mirror_complete.go): the session tier.
 		"GET /mirror/view/complete",
+		// Suggested replies (suggest.go): the composer's set and its counts,
+		// and the caller's own toggle — the session tier.
+		"GET /mirror/view/suggest",
+		"POST /mirror/view/suggest/event",
+		"POST /account/suggest",
 		"GET /mirror/view/subagent",
 		"POST /mirror/view/send",
 		"POST /mirror/terminal/send",

@@ -26,7 +26,7 @@ import (
 //     function, Hub.pasteTo;
 //  2. pasteTo is CALLED from exactly one, Hub.PasteWindow — and Hub.Paste,
 //     the other entry point, only delegates to PasteWindow;
-//  3. inside PasteWindow the switch (hermesSendGate) runs BEFORE pasteTo;
+//  3. inside PasteWindow the switch (gatedSendSwitch) runs BEFORE pasteTo;
 //  4. outside internal/mirror and the host (internal/mirrorhost, which
 //     RECEIVES pastes), no source file names TypePaste: no other package can
 //     write one onto a host's connection.
@@ -92,7 +92,7 @@ func TestEveryServerPasteGoesThroughPasteWindow(t *testing.T) {
 						paste = x.Pos()
 					case "PasteWindow":
 						delegates = append(delegates, where)
-					case "hermesSendGate":
+					case "gatedSendSwitch":
 						gate = x.Pos()
 					}
 				}
@@ -117,7 +117,7 @@ func TestEveryServerPasteGoesThroughPasteWindow(t *testing.T) {
 		t.Errorf("PasteWindow is called from %q; want exactly %q (the entry points that delegate to it)", delegates, want)
 	}
 	if !gateBeforePaste {
-		t.Error("Hub.PasteWindow does not run hermesSendGate before pasteTo")
+		t.Error("Hub.PasteWindow does not run gatedSendSwitch before pasteTo")
 	}
 
 	// 4: no other package names TypePaste.

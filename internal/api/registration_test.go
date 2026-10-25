@@ -28,6 +28,7 @@ import (
 	"github.com/ZacxDev/muster/internal/plugins"
 	"github.com/ZacxDev/muster/internal/provision"
 	"github.com/ZacxDev/muster/internal/recents"
+	"github.com/ZacxDev/muster/internal/suggest"
 	"github.com/ZacxDev/muster/internal/ui"
 	"github.com/ZacxDev/muster/internal/uploads"
 )
@@ -95,6 +96,7 @@ func fullyWiredServer(t *testing.T) *Server {
 		Focus:           stubFocus{},
 		FocusSummarizer: stubSummarizer{},
 		FocusRetention:  time.Hour,
+		Suggest:         &suggest.Engine{},
 		Routes:          stubRoutes{},
 		Attention:       stubAttention{},
 		MirrorTokens:    stubMirrorTokens{},

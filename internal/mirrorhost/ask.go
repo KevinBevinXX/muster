@@ -302,11 +302,13 @@ func (h *hostSide) askAnswer() bool {
 // untouched — or exactly as muster's own earlier typing left it (m.Ask.Prior;
 // internal/askdrive's DriveFrom).
 func (h *hostSide) answer(m mirror.Msg) {
-	if m.Runtime == mirror.RuntimeHermes {
-		// A Hermes approval: answered through Hermes's gateway, never by
-		// keys (hermes_asks.go).
-		h.answerHermes(m)
-		return
+	if r, ok := runtimeNamed(m.Runtime); ok {
+		if an, ok := r.(answerer); ok {
+			// The runtime's own answer (a Hermes approval: through Hermes's
+			// gateway, never by keys, hermes_asks.go).
+			an.answer(h, m)
+			return
+		}
 	}
 	// keys is how many keys of the answer's plan the picker has received
 	// (Msg.Keys): what muster hands the next answer, if this one stops.

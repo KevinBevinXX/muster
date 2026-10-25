@@ -35,6 +35,12 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	// The zone database, built in: a usage-limit message names its reset in an
+	// IANA zone ("resets 10:30pm (Europe/London)", cctranscript.LimitReset),
+	// and a host with no /usr/share/zoneinfo (a minimal container) must still
+	// place it — else the queue holds until a real answer instead of resuming
+	// at the reset.
+	_ "time/tzdata"
 
 	"github.com/ZacxDev/muster/internal/hermeshost"
 	"github.com/ZacxDev/muster/internal/mirror"

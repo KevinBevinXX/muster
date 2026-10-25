@@ -90,7 +90,7 @@ func (h *Hub) AnswerHermesApproval(ctx context.Context, owner int64, host, sessi
 	if runtime != RuntimeHermes {
 		return fmt.Errorf("%w: %w (the window does not run Hermes)", ErrAskNotSent, ErrHermesApprovalGone)
 	}
-	if !hc.hermesAnswer || !hc.interactive || hc.version < 2 {
+	if !hc.gatedAnswers[RuntimeHermes] || !hc.interactive || hc.version < 2 {
 		return fmt.Errorf("%w: %w (host %q)", ErrAskNotSent, ErrHermesAnswerUnsupported, host)
 	}
 	if !stepup.Fresh(ctx, h.now()) {

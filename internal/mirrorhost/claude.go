@@ -123,6 +123,14 @@ type ClaudePane struct {
 	// (lastmsg.go: read from its tail by the host's listing, not by the
 	// locator); 0 when unknown.
 	LastMessage int64
+	// TurnError is how the latest turn ended when it ended in an error the CLI
+	// wrote itself (turnend.go: read from the transcript's tail by the host's
+	// listing, for an idle window only); nil otherwise.
+	TurnError *mirror.TurnError
+	// ReplyAt is, for an idle window whose latest turn ended in a real answer,
+	// that answer's time (Unix ms, host clock; turnend.go); 0 otherwise. Not
+	// on the wire: the host's limit reads it (hostLimitOf).
+	ReplyAt int64
 	// Source says how Transcript was found: SourcePaneMap, SourceSessions or
 	// SourceGuessed (see ClaudeLocator) — for a Hermes pane, SourceBreadcrumb
 	// or SourceProcess.
@@ -229,6 +237,9 @@ type procInfo struct {
 	start string
 	// state is /proc/<pid>/stat field 3 ("S", "R", "Z" for a zombie, …).
 	state string
+	// tty is /proc/<pid>/stat field 7 (tty_nr), the controlling terminal's
+	// device number; 0 for none.
+	tty int
 	// argvUnread: /proc/<pid>/cmdline could not be read, so argv is empty for
 	// want of reading it, not because the process has none. The Claude
 	// locator does not look at it (a process it cannot read simply is not
@@ -271,7 +282,7 @@ func readProcTable(root string) (map[int]procInfo, map[int][]int, error) {
 			continue
 		}
 		ppid := st.PPID
-		info := procInfo{ppid: ppid, comm: st.Comm, state: st.State, start: st.Start}
+		info := procInfo{ppid: ppid, comm: st.Comm, state: st.State, start: st.Start, tty: st.TTY}
 		if cmd, err := os.ReadFile(filepath.Join(dir, "cmdline")); err == nil {
 			for _, a := range bytes.Split(bytes.TrimRight(cmd, "\x00"), []byte{0}) {
 				info.argv = append(info.argv, string(a))
