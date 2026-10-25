@@ -299,3 +299,49 @@ type syncBuf struct {
 func (s *syncBuf) Write(p []byte) (int, error) { s.mu.Lock(); defer s.mu.Unlock(); return s.b.Write(p) }
 func (s *syncBuf) String() string              { s.mu.Lock(); defer s.mu.Unlock(); return s.b.String() }
 func (s *syncBuf) Reset()                      { s.mu.Lock(); defer s.mu.Unlock(); s.b.Reset() }
+
+// TestHealthSaysWhenTheTokenNeedsThePerson: nothing while the token is fine;
+// within WarnBefore of its expiry, that it expires soon; once a renewal has
+// failed, that it is failing and why; once expired, that it expired and how
+// to pair again. A renewal that succeeds clears the failure. Each line is
+// pinned whole: the rendered view and -list -opencode print it as it is.
+func TestHealthSaysWhenTheTokenNeedsThePerson(t *testing.T) {
+	srv := opencodetest.New(fixturePassword)
+	defer srv.Close()
+	c, _ := pairedCredentials(t, srv)
+	exp := c.Expires()
+	if h := c.Health(time.Now()); h != "" {
+		t.Fatalf("a fresh token: %q", h)
+	}
+	// Two days left, no renewal tried: soon.
+	if h := c.Health(exp.Add(-2*24*time.Hour - time.Minute)); h != "opencode token expires in 2 days and has not been renewed" {
+		t.Fatalf("two days left: %q", h)
+	}
+	if h := c.Health(exp.Add(-5 * time.Hour)); h != "opencode token expires in 5 hours and has not been renewed" {
+		t.Fatalf("five hours left: %q", h)
+	}
+	// Renewal failing (the password rotated): said, with the reason, even
+	// with days to spare.
+	srv.Rotate("rotated-fixture-password")
+	at := exp.Add(-6 * 24 * time.Hour)
+	if _, err := c.Renew(context.Background(), at); err == nil {
+		t.Fatal("the renewal did not fail")
+	}
+	want := "opencode token expires in 6 days — renewal failing: renew the opencode token: " + ErrUnauthorized.Error()
+	if h := c.Health(at); h != want {
+		t.Fatalf("failing:\n got %q\nwant %q", h, want)
+	}
+	// Expired.
+	if h := c.Health(exp.Add(time.Second)); h != "the opencode token expired "+exp.UTC().Format(time.RFC3339)+": pair this host again with `muster-mirror opencode-pair`" {
+		t.Fatalf("expired: %q", h)
+	}
+	// A renewal that succeeds clears the failure.
+	srv.Rotate(fixturePassword)
+	srv.SetNow(func() time.Time { return at })
+	if ok, err := c.Renew(context.Background(), at); !ok || err != nil {
+		t.Fatalf("renew: %v %v", ok, err)
+	}
+	if h := c.Health(at); h != "" {
+		t.Fatalf("after a renewal: %q", h)
+	}
+}

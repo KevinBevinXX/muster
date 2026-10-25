@@ -5,9 +5,11 @@
 // The flow, in one line each:
 //
 //   - A signed-in web session asks for a pairing code (CreatePairingCode, the
-//     caller's own principal). It needs a sign-in from the last five minutes —
-//     internal/api checks that, as for adding a passkey — because the device
-//     credential it leads to outlives the session.
+//     caller's own principal). Any valid signed-in session may ask, however
+//     long ago it signed in (an operator decision; internal/api has no
+//     recent-sign-in window for this). The session's sign-in time is stored
+//     with the code and becomes the device's paired_signin_at, which the
+//     revocation rule below reads.
 //   - The app redeems the code (Redeem) for the device credential, sending the
 //     device's name, app version and its step-up public key. The code is single
 //     use and lives PairingCodeTTL.

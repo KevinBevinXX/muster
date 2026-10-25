@@ -52,7 +52,7 @@ func TestListOpenCodeSaysWhatEachWindowShowsAndWhy(t *testing.T) {
 	}
 	got := out.String()
 	for _, want := range []string{
-		"token\t" + envOpenCodeToken + "\t" + opencodehost.Fingerprint(tok) + "\texpires=",
+		"token\t-\t" + opencodehost.Fingerprint(tok) + "\texpires=",
 		"server\t" + srv.URL + "\tok\tversion=2.0.0-fixture",
 		"window\ts\t@1\tpane=%1\ttui=42\ttty=-\tsession=ses_fixtureA\t",
 		"\tsource=title\n  pane-title\t\"OC | Fix the flaky fixture\"\n  match\tses_fixtureA\tmatched by title\n",
