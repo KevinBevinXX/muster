@@ -66,6 +66,9 @@ var notLinkedLedger = map[string]string{
 		"breadcrumbs, decoy secret files) for the Hermes mirroring tests. Imported only by _test.go files and " +
 		"the browser suite's build-tagged fake host (cmd/muster-mirror's e2emirror build, never shipped): " +
 		"a writer of Hermes's state.db linked into muster-mirror would break its read-only promise.",
+	"internal/opencodehost/opencodetest": "a fake opencode v2 server (pair tokens signed as upstream signs " +
+		"them, synthetic sessions and messages) for the opencode tests. Imported only by _test.go files: a " +
+		"server that mints opencode tokens has no place in muster-mirror.",
 	"internal/agentprovision/worktreetest": "the repository a machine job's worktree is made from in " +
 		"the job tests: an origin, a clone, and a commit carrying hostile agent configuration (hooks and an " +
 		"MCP server that write marker files). Imported only by _test.go files, the real-CLI one among them.",

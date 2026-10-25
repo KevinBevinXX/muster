@@ -206,6 +206,10 @@ Each setting is also a flag (`-url`, `-token-file`, …). See
 | `MUSTER_MIRROR_HERMES_HOME` | `$HERMES_HOME`, else `~/.hermes` | no | The Hermes home a Hermes window's session is resolved from, read-only: only `state.db`, `terminal-sessions/tty-*` and `shell-hooks-allowlist.json`. Also where `muster-mirror hermes-allowlist` writes. See [mirroring.md](mirroring.md#hermes-windows). |
 | `HERMES_HOME` | `~/.hermes` | no | Hermes's own home variable, the default of `MUSTER_MIRROR_HERMES_HOME`. |
 | `MUSTER_MIRROR_HERMES_STATUS_DIR` | `~/.muster/hermes-status` | no | Where `muster-mirror hermes-hook` writes one status file per Hermes session (0700 directory, 0600 files), and where the daemon reads them. Recorded for the hook with `-write-hook-config`. |
+| `MUSTER_MIRROR_OPENCODE_TOKEN_FILE` | `~/.muster/opencode-token` | no | The opencode pair token, `{url, token}`, mode 0600: written by `muster-mirror opencode-pair`, read and renewed by the daemon. A file others can read, a symlink or a non-loopback url is refused. See [mirroring.md](mirroring.md#opencodes-token-muster-mirror-opencode-pair). |
+| `MUSTER_MIRROR_OPENCODE_TOKEN` | none | no | An opencode pair token itself, instead of the file (with `MUSTER_MIRROR_OPENCODE_URL`). Never renewed. |
+| `MUSTER_MIRROR_OPENCODE_URL` | none | no | The loopback url of the server `MUSTER_MIRROR_OPENCODE_TOKEN` was minted by. |
+| `XDG_STATE_HOME` | `~/.local/state` | no | Where `muster-mirror opencode-pair` looks for the opencode service's registration file (`opencode/service-prod.json`, then `opencode/service.json`). Read by the pairing step only. |
 | `CLAUDE_CONFIG_DIR` | `~/.claude` | no | Claude Code's config directory, where `sessions/` and `projects/` are read from, and the user's `skills/`, `commands/` and enabled plugins the composer's `/` menu lists. `ccd` reads it too. |
 
 ## muster (CLI)
