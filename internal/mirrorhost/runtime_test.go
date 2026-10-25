@@ -180,7 +180,8 @@ func TestAHermesWindowIsListedWithNoRenderedViewAndUnknownStatus(t *testing.T) {
 	}
 }
 
-// TestTheLargestWindowListWithHermesWindowsFitsOneFrame is the Hermes twin of
+// TestTheLargestWindowListWithHermesWindowsFitsOneFrame is the Hermes (and
+// opencode: its runtime name is two bytes longer) twin of
 // TestTheLargestWindowListFitsOneFrame: a Hermes window carries Runtime and an
 // AgentSession of up to 128 bytes in place of a Claude window's flag and
 // 64-byte id, so a list of them is the new worst case. Every window that does
@@ -188,6 +189,14 @@ func TestAHermesWindowIsListedWithNoRenderedViewAndUnknownStatus(t *testing.T) {
 // them) is a Hermes window here, every field at its bound. An INVARIANT GUARD
 // over the constants, with the same control: twice the count must not fit.
 func TestTheLargestWindowListWithHermesWindowsFitsOneFrame(t *testing.T) {
+	for _, rt := range []string{mirror.RuntimeHermes, mirror.RuntimeOpenCode} {
+		t.Run(rt, func(t *testing.T) { largestAgentList(t, rt) })
+	}
+}
+
+// largestAgentList is the frame-budget check with every non-pending window
+// one of runtime rt's.
+func largestAgentList(t *testing.T, rt string) {
 	worst := func(n int) []WindowInfo {
 		out := make([]WindowInfo, 0, n)
 		for i := 0; i < n; i++ {
@@ -201,7 +210,7 @@ func TestTheLargestWindowListWithHermesWindowsFitsOneFrame(t *testing.T) {
 						Last: strings.Repeat(">", mirror.MaxPendingLast)}}
 			} else {
 				id := itoa(i) + "h"
-				w.Agent = &AgentPane{Runtime: mirror.RuntimeHermes, Status: mirror.StatusWaiting, StatusSince: math.MaxInt64,
+				w.Agent = &AgentPane{Runtime: rt, Status: mirror.StatusWaiting, StatusSince: math.MaxInt64,
 					Gen: id + strings.Repeat("a", 128-len(id))}
 			}
 			out = append(out, w)
@@ -223,9 +232,9 @@ func TestTheLargestWindowListWithHermesWindowsFitsOneFrame(t *testing.T) {
 		}
 		hermes := 0
 		for _, w := range l.windows {
-			if w.Runtime == mirror.RuntimeHermes {
+			if w.Runtime == rt {
 				if len(w.AgentSession) != 128 || w.Status != mirror.StatusWaiting || w.StatusSince != math.MaxInt64 || w.Label == "" {
-					t.Fatalf("instrument check: a worst-case Hermes field was dropped by normalisation: %+v", w)
+					t.Fatalf("instrument check: a worst-case %s field was dropped by normalisation: %+v", rt, w)
 				}
 				hermes++
 			}
@@ -238,7 +247,7 @@ func TestTheLargestWindowListWithHermesWindowsFitsOneFrame(t *testing.T) {
 			want = mirror.MaxWindows
 		}
 		if hermes != want || len(l.windows) != min(n, mirror.MaxWindows) {
-			t.Fatalf("instrument check: %d Hermes windows of %d on the wire, want %d", hermes, len(l.windows), want)
+			t.Fatalf("instrument check: %d %s windows of %d on the wire, want %d", hermes, rt, len(l.windows), want)
 		}
 		m := l.msg(mirror.TypeHello)
 		m.Version, m.Host, m.Interactive, m.PanePaste, m.StatusReport, m.HermesSend = mirror.ProtocolVersion, strings.Repeat("h", 63), true, true, true, true
@@ -250,7 +259,7 @@ func TestTheLargestWindowListWithHermesWindowsFitsOneFrame(t *testing.T) {
 	}
 	got := encode(mirror.MaxWindows)
 	if got > mirror.MaxFrame {
-		t.Fatalf("the largest window list with Hermes windows encodes to %d bytes, over MaxFrame (%d)", got, mirror.MaxFrame)
+		t.Fatalf("the largest window list with %s windows encodes to %d bytes, over MaxFrame (%d)", rt, got, mirror.MaxFrame)
 	}
 	if over := encode(2 * mirror.MaxWindows); over > mirror.MaxFrame {
 		t.Fatalf("a host with twice MaxWindows encodes to %d bytes, over MaxFrame (%d): the bound did not hold", over, mirror.MaxFrame)
@@ -258,7 +267,7 @@ func TestTheLargestWindowListWithHermesWindowsFitsOneFrame(t *testing.T) {
 	if perWindow := got / mirror.MaxWindows; 2*mirror.MaxWindows*perWindow <= mirror.MaxFrame {
 		t.Fatalf("instrument check: at %d bytes a window, even twice MaxWindows fits a frame — this test could not see an overrun", perWindow)
 	}
-	t.Logf("largest list with Hermes windows: %d windows in %d bytes (%.1f%% of MaxFrame)", mirror.MaxWindows, got, 100*float64(got)/float64(mirror.MaxFrame))
+	t.Logf("largest list with %s windows: %d windows in %d bytes (%.1f%% of MaxFrame)", rt, mirror.MaxWindows, got, 100*float64(got)/float64(mirror.MaxFrame))
 }
 
 // TestTheHermesLocatorWalksNothingWithoutAHermesProcess: the listing reads the

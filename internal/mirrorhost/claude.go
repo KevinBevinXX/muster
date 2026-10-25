@@ -139,6 +139,10 @@ type ClaudePane struct {
 	// and, when it has no rendered view, why): what -list -hermes prints. nil
 	// for Claude Code, and for a host with no HermesSource.
 	Hermes *hermeshost.PaneSession
+	// OpenCode is how an opencode pane resolved (its title, the match, why it
+	// has no rendered view): what -list -opencode prints. nil for the other
+	// runtimes, and for a host with no OpenCodeSource.
+	OpenCode *OpenCodePane
 }
 
 // How a ClaudePane's transcript was resolved, most to least authoritative.

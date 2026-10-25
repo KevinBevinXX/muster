@@ -51,53 +51,57 @@ func TestAHostGatedSenderExistsExactlyWhereTheServerGatesTheSend(t *testing.T) {
 		}
 	}
 	// The listing's runtimes are the ones that locate panes: Claude Code
-	// first, then Hermes; the opencode stub locates nothing.
+	// first, then Hermes, then opencode.
 	var loc []string
 	for _, r := range (Tmux{}).runtimes() {
 		loc = append(loc, r.Name())
 	}
-	if want := []string{mirror.RuntimeClaude, mirror.RuntimeHermes}; !slices.Equal(loc, want) {
+	if want := []string{mirror.RuntimeClaude, mirror.RuntimeHermes, mirror.RuntimeOpenCode}; !slices.Equal(loc, want) {
 		t.Fatalf("locating runtimes %q, want %q", loc, want)
 	}
 }
 
-// TestTheOpenCodeStubReportsNoViewAndNoSend: opencode is a runtime of the
-// interface that can do nothing yet — "view: no, send: no", no prompts, in
-// the server's table — claims no pane even when one runs opencode, has no
-// view source, no gated send and no answerer, and its one behaviour is the
-// paste guard's refusal.
-func TestTheOpenCodeStubReportsNoViewAndNoSend(t *testing.T) {
+// TestOpenCodeIsViewOnly: opencode is a runtime of the interface that
+// muster VIEWS and nothing more — "view: yes, send: no, prompts: no" in the
+// server's table, on the wire with its own key prefix ("opencode:", 0050) and
+// a view only once its host names the session — and on the host it has a view
+// source, no gated send and no answerer, claims a pane whose terminal runs the
+// TUI, and keeps the paste guard's refusal.
+func TestOpenCodeIsViewOnly(t *testing.T) {
 	r, ok := runtimeNamed(mirror.RuntimeOpenCode)
 	if !ok {
 		t.Fatal("no opencode runtime")
 	}
 	spec, ok := mirror.LookupRuntime(mirror.RuntimeOpenCode)
-	if !ok || spec.Caps.View || spec.Caps.Send || spec.Caps.Prompts || spec.OnWire || spec.KeyPrefix != "" || spec.GatedSend {
-		t.Fatalf("the stub's spec does more than report itself: %+v", spec)
+	if !ok || !spec.Caps.View || spec.Caps.Send || spec.Caps.Prompts || !spec.OnWire || spec.KeyPrefix != "opencode:" || !spec.ViewNeedsSession ||
+		spec.GatedSend || spec.Advertises != nil || spec.PendingNamesAsk {
+		t.Fatalf("opencode's spec is not view-only: %+v", spec)
 	}
-	if _, ok := r.(viewSource); ok {
-		t.Error("the stub has a view source")
+	if _, ok := r.(viewSource); !ok {
+		t.Error("opencode has no view source")
 	}
 	if _, ok := r.(gatedSender); ok {
-		t.Error("the stub has a send")
+		t.Error("opencode has a send")
 	}
 	if _, ok := r.(answerer); ok {
-		t.Error("the stub answers")
+		t.Error("opencode answers")
 	}
 	proc := newFakeProc(t)
 	proc.add(10, 1, "zsh", "/w", "-zsh")
 	proc.stdin(10, "/dev/pts/1")
 	proc.add(11, 10, ".opencode-wrapp", "/w", "opencode")
+	proc.stdin(11, "/dev/pts/1")
 	procs, children := (ClaudeLocator{Proc: proc.root}).table()
-	if got := r.LocatePanes([]pane{{Session: "s", ID: "%1", PID: 10, TTY: "/dev/pts/1"}}, procs, children); len(got) != 0 {
-		t.Fatalf("the stub claimed %+v", got)
+	got := (openCodeRuntime{proc: proc.root}).LocatePanes([]pane{{Session: "s", ID: "%1", PID: 10, TTY: "/dev/pts/1"}}, procs, children)
+	if ap := got["%1"]; len(got) != 1 || ap.Runtime != mirror.RuntimeOpenCode || ap.PID != 11 || ap.Gen != "" {
+		t.Fatalf("opencode claimed %+v", got)
 	}
 	g, ok := r.(pasteGuard)
 	if !ok {
-		t.Fatal("the stub is not a paste guard")
+		t.Fatal("opencode is not a paste guard")
 	}
 	if rule, ok := g.shape(procInfo{comm: ".opencode-wrapp", argv: []string{"opencode"}}, func() string { return "" }); !ok || !g.owns(rule) ||
 		g.refusal() != ErrOpenCodePane || g.refusalKind() != mirror.PasteRefusalOpenCode {
-		t.Fatalf("the stub's guard: rule %q ok %v", rule, ok)
+		t.Fatalf("opencode's guard: rule %q ok %v", rule, ok)
 	}
 }

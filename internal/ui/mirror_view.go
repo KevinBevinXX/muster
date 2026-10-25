@@ -71,6 +71,10 @@ type MirrorViewView struct {
 	Hermes bool
 	// HermesSend: a Hermes window whose host sends to Hermes.
 	HermesSend bool
+	// ViewOnly is the Kind of a runtime muster VIEWS but never sends to
+	// (opencode); "" otherwise. Its composer is drawn disabled saying why
+	// (MirrorViewOnlyNote), with no queue.
+	ViewOnly string
 	// StepUp is the "Confirm it's you" wiring (stepup_confirm.go): a send
 	// refused as stale asks there — passkey or password — and retries. Unused
 	// (no dialog is drawn) on a read-only host, which cannot be sent to at all.
@@ -116,6 +120,12 @@ const MirrorReadOnlyNote = "This host is read-only — its muster-mirror was not
 // disabled on a host that does not send to Hermes (docs/design/hermes.md).
 const MirrorHermesNoSendNote = "This host does not send to Hermes: its muster-mirror runs without -hermes-send, because Enter there can answer a prompt Hermes is showing, such as a command approval. Type in the terminal."
 
+// MirrorViewOnlyNote is the disabled composer of a window of kind, a runtime
+// muster only views (opencode, docs/design/opencode.md).
+func MirrorViewOnlyNote(kind string) string {
+	return "muster shows this " + kind + " session read-only: it found the session by the pane's title, and it does not send to " + kind + " yet. Type in the terminal."
+}
+
 // MirrorViewPage is the rendered view's document.
 //
 // ⚠ ITS OWN DOCUMENT, like the terminal page: a real load (the links into it
@@ -137,6 +147,11 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 	}
 	working := "Claude is working…"
 	switch {
+	case v.ViewOnly != "":
+		working = v.ViewOnly + " is working…"
+		composer.Placeholder, composer.Aria = "Message "+v.ViewOnly+"…", "Message "+v.ViewOnly+" in this session"
+		composer.Disabled, composer.DisabledPlaceholder, composer.Queue = MirrorViewOnlyNote(v.ViewOnly), "Sending to "+v.ViewOnly+" is not available", nil
+		composer.Suggest, composer.SuggestPaused = "", false
 	case v.Hermes && !v.HermesSend:
 		working = "Hermes is working…"
 		composer.Placeholder, composer.Aria = "Message Hermes…", "Message Hermes in this session"
@@ -230,8 +245,8 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 					Span(Class("animate-pulse"), g.Text(working)),
 				),
 				mirrorComposer(composer),
-				g.If(v.Interactive && (!v.Hermes || v.HermesSend), confirmDialog(v.StepUp)),
-				g.If(v.Interactive && (!v.Hermes || v.HermesSend), stepUpScript()),
+				g.If(v.Interactive && (!v.Hermes || v.HermesSend) && v.ViewOnly == "", confirmDialog(v.StepUp)),
+				g.If(v.Interactive && (!v.Hermes || v.HermesSend) && v.ViewOnly == "", stepUpScript()),
 				// The snapshot store (deferred: it runs before DOMContentLoaded,
 				// which is when mirrorViewScript reads it).
 				SnapScript(v.Nav.Feat),
@@ -703,6 +718,8 @@ func noticeRow(ev cctranscript.Event) g.Node {
 		icon, label = "▸", "output"
 	case cctranscript.NoticeHermes:
 		icon, label = "☤", "hermes"
+	case cctranscript.NoticeOpenCode:
+		icon, label = "◇", "opencode"
 	}
 	// The status as the harness wrote it, drawn the tool rows' way: a known
 	// good one ✓, a known bad one ✗, anything else by name.

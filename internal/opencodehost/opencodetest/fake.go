@@ -52,6 +52,16 @@ type Server struct {
 	seq      int
 	// RefuseRedeem makes /auth/connect refuse every code.
 	refuseRedeem bool
+	// failEvents makes /api/event answer 503.
+	failEvents bool
+}
+
+// FailEvents makes the event stream answer 503 (on) — a server whose stream
+// is down while its REST reads work — and closes none already open.
+func (s *Server) FailEvents(on bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.failEvents = on
 }
 
 // New starts a fake opencode server whose password is password.
@@ -271,6 +281,13 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodGet && strings.HasPrefix(path, "/api/session/") && strings.HasSuffix(path, "/message"):
 		s.listMessages(w, r, strings.TrimSuffix(strings.TrimPrefix(path, "/api/session/"), "/message"))
 	case r.Method == http.MethodGet && path == "/api/event":
+		s.mu.Lock()
+		fail := s.failEvents
+		s.mu.Unlock()
+		if fail {
+			http.Error(w, `{"_tag":"Unavailable"}`, http.StatusServiceUnavailable)
+			return
+		}
 		s.events(w, r)
 	default:
 		http.Error(w, `{"_tag":"NotFound"}`, http.StatusNotFound)

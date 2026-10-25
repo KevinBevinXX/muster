@@ -1,8 +1,8 @@
 # opencode: what muster can rely on from its server
 
-Notes for muster's opencode runtime (the stub in `internal/mirror/runtime.go`
-and `internal/mirrorhost/runtime.go` today; a read-only view and an API send
-next). Facts are read from upstream source, <https://github.com/anomalyco/opencode>,
+Notes for muster's opencode runtime (`internal/mirror/runtime.go`,
+`internal/mirrorhost/opencode*.go`, `internal/opencodehost`): a read-only view
+today, an API send next. Facts are read from upstream source, <https://github.com/anomalyco/opencode>,
 at commit `6ec5682` (opencode v2.0.32+6ec5682). They are not measured against
 a running server.
 
@@ -76,3 +76,22 @@ Issuing a token takes two HTTP calls. This is what `opencode pair` does
   token itself, and writes the new one to the same file before using it.
 - `internal/opencodehost` makes only GETs, except that renewal (a test reads
   the source and pins the set of requests it can send).
+
+### As built: the read-only view
+
+- **Capabilities**: view yes, send no, prompts no (`mirror.RuntimeSpec`). An
+  opencode window is on the wire (`Window.Runtime`), keyed `opencode:<id>`
+  (migration 0050 widens the four session-key CHECKs).
+- **Pane to session**: the pane title, `OC | <title>` (a cut title ends in
+  `…` and is a prefix match), against the server's ROOT sessions
+  (`GET /api/session?parentID=null`); exactly one match or none. View-only: a
+  send needs a launcher record that names the session deterministically.
+- **Messages**: `GET /api/session/{id}/message` (newest first, reversed),
+  re-read when the event stream names the session, and every tenth poll
+  regardless. Rendered by `opencodehost.Render`: prompts, final text, tool
+  calls by name and target, results by ok/error; never reasoning, a tool's
+  input, or its output.
+- **Status**: `session.status` on `GET /api/event`, seeded on each connect
+  from `GET /api/session/active`; unknown while the stream is down.
+- **One stream per host**, opened on the first opencode pane, reconnecting
+  (1 s doubling to 30 s; a refused token waits a minute).

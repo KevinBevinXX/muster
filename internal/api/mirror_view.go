@@ -88,7 +88,13 @@ func (s *Server) handleMirrorViewPage(w http.ResponseWriter, r *http.Request) {
 		send, _ := h.GatedSendOn(rt)
 		v.Hermes, v.HermesSend = true, send && h.Interactive
 	}
-	if !v.Hermes || v.HermesSend {
+	// 🔴 A WINDOW OF A RUNTIME MUSTER ONLY VIEWS (opencode: Caps.Send off)
+	// has its composer drawn disabled, with no queue; every send is refused
+	// again at the hub (lookupAgent) and on the host (the paste guard).
+	if rt, ok := e.Spec(); ok && !rt.Caps.Send && e.AgentView() {
+		v.ViewOnly = rt.Kind
+	}
+	if (!v.Hermes || v.HermesSend) && v.ViewOnly == "" {
 		v.Queue = s.mirrorComposerQueue(r.Context(), h, e, sendQueueEditing(r))
 	}
 	v.Notice, v.NoticeOK = composerNotice(r)

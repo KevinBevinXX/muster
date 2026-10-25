@@ -211,7 +211,8 @@ func TestAgentStateNamesTheRuntime(t *testing.T) {
 
 // TestNormalizeWindowsKeepsRuntimesApart: on the wire a window is Claude Code,
 // Hermes, or neither — never both (Hermes, the more restrictive, wins) and
-// never a runtime muster does not mirror. A Hermes id of 70 characters is
+// never a runtime muster does not mirror; an opencode window keeps its session
+// and status. A Hermes id of 70 characters is
 // kept, one over the 128 bound is not, and a non-Hermes window has none; a
 // Claude window's status and id are untouched.
 func TestNormalizeWindowsKeepsRuntimesApart(t *testing.T) {
@@ -219,12 +220,13 @@ func TestNormalizeWindowsKeepsRuntimesApart(t *testing.T) {
 	got := mirror.NormalizeWindows([]mirror.Window{
 		{Session: "s", ID: "@1", Runtime: mirror.RuntimeHermes, AgentSession: hermesID, Status: mirror.StatusIdle, StatusSince: 5},
 		{Session: "s", ID: "@2", Runtime: mirror.RuntimeHermes, Claude: true, ClaudeSession: "abc", Pending: &mirror.Pending{Summary: "x"}, Status: mirror.StatusWaiting},
-		{Session: "s", ID: "@3", Runtime: "opencode", AgentSession: "abc", Status: mirror.StatusIdle},
+		{Session: "s", ID: "@3", Runtime: "aider", AgentSession: "abc", Status: mirror.StatusIdle},
 		{Session: "s", ID: "@4", Runtime: mirror.RuntimeHermes, AgentSession: strings.Repeat("a", 129)},
 		{Session: "s", ID: "@5", Claude: true, ClaudeSession: "abc", AgentSession: "def", Status: mirror.StatusBusy, StatusSince: 7},
 		{Session: "s", ID: "@6", Runtime: mirror.RuntimeClaude, Status: mirror.StatusBusy},
+		{Session: "s", ID: "@7", Runtime: mirror.RuntimeOpenCode, AgentSession: "ses_0fixture", Status: mirror.StatusBusy, StatusSince: 9},
 	}, 0)
-	if len(got) != 6 {
+	if len(got) != 7 {
 		t.Fatalf("%+v", got)
 	}
 	if w := got[0]; w.AgentRuntime() != mirror.RuntimeHermes || w.AgentSession != hermesID || w.Status != mirror.StatusIdle || w.StatusSince != 5 ||
@@ -246,9 +248,16 @@ func TestNormalizeWindowsKeepsRuntimesApart(t *testing.T) {
 	if w := got[5]; w.Runtime != "" || w.AgentRuntime() != "" || w.Status != "" {
 		t.Errorf(`Runtime "claude" without Claude: %+v; want a plain window (Claude Code is Window.Claude)`, w)
 	}
+	// An opencode window is on the wire (its view, by title): its session, keyed
+	// "opencode:<id>", and its status.
+	if w := got[6]; w.AgentRuntime() != mirror.RuntimeOpenCode || w.AgentSession != "ses_0fixture" || w.Status != mirror.StatusBusy ||
+		w.StatusSince != 9 || w.SessionKey() != "opencode:ses_0fixture" {
+		t.Errorf("an opencode window: %+v (key %q)", w, w.SessionKey())
+	}
 	for key, ok := range map[string]bool{
 		"0b2c3d4e-5f60-4718-8a9b-0c1d2e3f4a5b": true, "hermes:" + hermesID: true, hermesID: false,
 		"hermes:": false, "claude:abc": false, strings.Repeat("c", 65): false,
+		"opencode:ses_0fixture": true, "opencode:": false,
 	} {
 		if mirror.ValidSessionKey(key) != ok {
 			t.Errorf("ValidSessionKey(%q) = %t, want %t", key, !ok, ok)

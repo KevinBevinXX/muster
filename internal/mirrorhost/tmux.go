@@ -32,6 +32,10 @@ type Tmux struct {
 	// Hermes is where Hermes windows' sessions and status are read from
 	// (hermes_source.go); nil detects Hermes windows without resolving them.
 	Hermes *HermesSource
+	// OpenCode is the host's opencode server, which opencode windows' sessions
+	// and status are read from (opencode.go); nil detects opencode windows
+	// without resolving them.
+	OpenCode *OpenCodeSource
 }
 
 func (t Tmux) bin() string {

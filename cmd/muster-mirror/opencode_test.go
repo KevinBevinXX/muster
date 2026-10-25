@@ -78,7 +78,8 @@ func TestOpenCodePairPrintsWhatItDidNeverTheTokenOrThePassword(t *testing.T) {
 	logger := log.New(&logb, "", 0)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	c := startOpenCode(ctx, tokFile, getenv, logger)
+	cr, why := openCodeCredentials(tokFile, getenv)
+	c := startOpenCode(ctx, cr, why, logger)
 	if c == nil || !strings.Contains(logb.String(), opencodehost.Fingerprint(tf.Token)) || strings.Contains(logb.String(), sig) {
 		t.Fatalf("daemon log %q", logb.String())
 	}

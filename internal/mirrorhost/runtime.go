@@ -11,13 +11,14 @@ import (
 
 // THE RUNTIME INTERFACE, HOST HALF (docs/design/hermes.md, "A runtime seam
 // instead of Claude-only code"): one implementation per agent CLI this host
-// knows — Claude Code, Hermes, and the opencode stub — and every per-runtime
+// knows — Claude Code, Hermes and opencode — and every per-runtime
 // decision the host makes goes through it, never through a comparison with a
 // runtime's name:
 //
 //   - DETECTION, SESSION RESOLUTION AND STATUS: LocatePanes (every runtime);
 //   - the RENDERED VIEW SOURCE: viewSource (Claude Code's transcript tail,
-//     Hermes's state.db tail), chosen by the window a watch names;
+//     Hermes's state.db tail, opencode's server API), chosen by the window a
+//     watch names;
 //   - the SEND CAPABILITY: gatedSender, for a runtime whose send is its own
 //     (Hermes's), routed by Msg.Runtime;
 //   - the PROMPT CAPABILITY: answerer, for a runtime whose answers are its
@@ -166,17 +167,30 @@ func (hermesRuntime) refusal() error      { return ErrHermesPane }
 func (hermesRuntime) refusalKind() string { return mirror.PasteRefusalHermes }
 func (hermesRuntime) label() string       { return "Hermes" }
 
-// openCodeRuntime is opencode behind the interface: a STUB. It claims no
-// pane (no view, no status: the window is the plain one its command labels),
-// muster sends nothing to it, and its one behaviour is the paste guard's
-// refusal (openCodeShape). The read-only view is the next phase.
-type openCodeRuntime struct{}
+// openCodeRuntime is opencode behind the interface (opencode.go): it DETECTS
+// an opencode TUI in a pane (openCodeTUI, on the pane's terminal) and, with an
+// OpenCodeSource, resolves the session its pane title names. VIEW ONLY: its
+// view is the session's messages from the opencode server's API; it has no
+// send and no answerer, and the paste guard refuses its panes
+// (openCodeShape).
+type openCodeRuntime struct {
+	proc  string
+	src   *OpenCodeSource
+	title func(paneID string) (string, bool)
+}
 
 func (openCodeRuntime) Name() string { return mirror.RuntimeOpenCode }
 
-// LocatePanes claims nothing: the stub has no locator yet.
-func (openCodeRuntime) LocatePanes([]pane, map[int]procInfo, map[int][]int) map[string]AgentPane {
-	return map[string]AgentPane{}
+// viewer is the opencode tail (opencode_stream.go), for an opencode window
+// whose host names its session, on a backend with an OpenCodeSource and a v2
+// connection.
+func (openCodeRuntime) viewer(h *hostSide) (func(context.Context, mirror.Msg) bool, func(context.Context, mirror.Msg) error, error, bool) {
+	src, ok := h.openCodeSource()
+	if !ok {
+		return nil, nil, nil, false
+	}
+	claims := func(ctx context.Context, m mirror.Msg) bool { _, is := h.openCodeWindow(ctx, m); return is }
+	return claims, func(ctx context.Context, m mirror.Msg) error { return h.openCodeTail(ctx, src, m) }, errNoOpenCodeViewNow, true
 }
 
 func (openCodeRuntime) shape(p procInfo, _ func() string) (string, bool) {
@@ -245,9 +259,13 @@ const SourceProcess = "process"
 
 // runtimes is t's runtimes that LOCATE panes, in the order they claim one:
 // Claude Code first, so a pane that runs both is the Claude window it always
-// was. The opencode stub locates nothing, so it is not asked.
+// was; then Hermes, then opencode.
 func (t Tmux) runtimes() []Runtime {
-	return []Runtime{t.claudeRuntime(), t.hermesRuntime()}
+	return []Runtime{t.claudeRuntime(), t.hermesRuntime(), t.openCodeRuntime()}
+}
+
+func (t Tmux) openCodeRuntime() openCodeRuntime {
+	return openCodeRuntime{proc: t.Claude.proc(), src: t.OpenCode, title: t.paneTitle}
 }
 
 func (t Tmux) claudeRuntime() claudeRuntime { return claudeRuntime{loc: t.Claude} }

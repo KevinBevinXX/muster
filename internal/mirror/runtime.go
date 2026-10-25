@@ -15,7 +15,7 @@ import (
 // (and its host implementation, internal/mirrorhost's Runtime), not a branch
 // at every site.
 //
-// Claude Code, Hermes and the opencode stub are its implementations. Claude
+// Claude Code, Hermes and opencode are its implementations. Claude
 // Code is still special where the WIRE is: it travels as Window.Claude and
 // ClaudeSession (never Window.Runtime), and its questions as askq entries.
 
@@ -75,8 +75,12 @@ type RuntimeSpec struct {
 	PendingNamesAsk bool
 }
 
-// RuntimeOpenCode: opencode. A STUB: muster neither views nor sends to it
-// yet (the host's paste guard refuses it), and no host names it on the wire.
+// RuntimeOpenCode: opencode v2 (docs/design/opencode.md). VIEW ONLY: a host
+// whose pane runs an opencode TUI names the session the pane's title matches
+// (Window.AgentSession), and muster draws its rendered view from the opencode
+// server's API. It sends nothing to it (the host's paste guard refuses its
+// panes) and reads no prompt: its permission requests and questions are
+// answered in the terminal.
 const RuntimeOpenCode = "opencode"
 
 // runtimes is every runtime muster knows, Claude Code first.
@@ -101,6 +105,8 @@ var runtimes = []RuntimeSpec{
 	},
 	{
 		Name: RuntimeOpenCode, Kind: KindOpenCode,
+		Caps:   Capabilities{View: true},
+		OnWire: true, KeyPrefix: RuntimeOpenCode + ":", ViewNeedsSession: true,
 		NoStatus: ErrNoStatus,
 	},
 }
@@ -189,9 +195,10 @@ var sessionKeyPattern = regexp.MustCompile(SessionKeyPattern)
 // validates with it, and the CHECKs of agent_focus.subject_key,
 // agent_focus_history.subject_key, session_routes.target_key and
 // attention_asks.mirror_session carry the same expression — the migration
-// that last wrote them (0036) is read by a test in internal/db that fails
-// when the two differ. A runtime that adds a KeyPrefix changes this pattern,
-// so it fails that test until a NEW migration writes the wider CHECKs.
+// that last wrote them is read by a test in internal/db that fails
+// when the two differ (0050 since opencode's prefix). A runtime that adds a
+// KeyPrefix changes this pattern, so it fails that test until a NEW migration
+// writes the wider CHECKs.
 var SessionKeyPattern = buildSessionKeyPattern()
 
 func buildSessionKeyPattern() string {

@@ -438,6 +438,49 @@ and only then uses it. It checks hourly and logs each renewal and each failure
 by fingerprint. A token handed over in `MUSTER_MIRROR_OPENCODE_TOKEN` (with
 `MUSTER_MIRROR_OPENCODE_URL`) works but is never renewed.
 
+### opencode windows
+
+A window whose pane runs the opencode TUI is listed as an **opencode window**.
+The TUI is an `opencode` process on the pane's terminal (its stdin) with no
+subcommand (`serve`, `run`, `pair`… are not the TUI). With a token, the host
+also resolves the session the pane shows, **by the pane's title**. The TUI
+names its pane `OC | <session title>` and cuts a long title with `…`. The host
+matches that title against the server's root sessions: the whole title, or the
+part before `…` as a prefix. It shows a session only when **exactly one** root
+session matches. Two sessions with one title (opencode's default title, say)
+match nothing, and that window gets no view rather than a guess. A TUI started
+with `--standalone` or `--server` runs on another server and is never matched.
+
+The window's card opens a **read-only rendered view**: the session's prompts,
+the agent's replies, and each tool call by its name and target (the command,
+the file). It never shows a tool's input or output, nor the model's reasoning.
+The view opens with a "matched by title" row, because a title is a heuristic:
+a renamed session, or a TUI that switched sessions, moves it. Text appears once
+it is final (a reply streams in place upstream), and the view starts over when
+something it drew changes. The busy marker comes from the server's event
+stream (`session.status`). While that stream is down the status is unknown, and
+unknown fails closed.
+
+The composer is disabled, saying why: muster sends nothing to opencode, and the
+paste guard above still refuses its panes. Permission requests and the
+question tool's forms are answered in the terminal; muster's attention queue
+does not see them yet.
+
+A window has no view, and an unknown status, when the host has no token, the
+server refuses the token (it expired, or the server's password was rotated),
+the title matches no root session or several, or the TUI is on another server.
+`muster-mirror -list -opencode` says which:
+
+- `token`: the token file, its fingerprint and expiry, or `none` and why;
+- `server`: `ok` and the server's version, `REFUSED the token`, or
+  `unreachable`;
+- per opencode window: its pane, TUI process, session (`-` for none), status
+  and `source` (`title` when matched); its `pane-title`; the `match` ("matched
+  by title", noting a prefix match); and `no-view` with the reason.
+
+`-list -windows` prints an opencode window as
+`opencode <pane> <state> <session id or -> <source>`.
+
 🔴 **A token is not scoped and cannot be revoked on its own** (upstream at
 `6ec5682`, docs/design/opencode.md). It reaches the whole opencode API. muster
 only ever reads with it, and its one other call is the renewal's

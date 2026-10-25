@@ -72,7 +72,8 @@
     "tests/view-swap.spec.ts": 20.0,
     "tests/agents-idle.spec.ts": 25.0,
     "tests/sidenav.spec.ts": 35.0,
-    "tests/suggested-replies.spec.ts": 72.0
+    "tests/suggested-replies.spec.ts": 72.0,
+    "tests/opencode-view.spec.ts": 20.0
   },
   "legs": {
     "1": [
@@ -107,7 +108,8 @@
       "tests/agents-list-ux.spec.ts",
       "tests/mirror-snapshot.spec.ts",
       "tests/agent-open-hops.spec.ts",
-      "tests/suggested-replies.spec.ts"
+      "tests/suggested-replies.spec.ts",
+      "tests/opencode-view.spec.ts"
     ],
     "2": [
       "tests/devices.spec.ts",

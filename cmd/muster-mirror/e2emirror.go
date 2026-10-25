@@ -490,7 +490,8 @@ func (w windowFake) Windows(context.Context) ([]mirrorhost.WindowInfo, error) {
 		out = append(out, info)
 	}
 	// Hermes windows (e2ehermes.go), after the file's.
-	return append(out, hermesWindowsE2E(context.Background())...), nil
+	out = append(out, hermesWindowsE2E(context.Background())...)
+	return append(out, openCodeWindowsE2E()...), nil
 }
 
 // windowFakeStatus is a Claude window's status and when it was written. From

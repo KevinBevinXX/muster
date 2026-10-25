@@ -45,6 +45,7 @@ import (
 	"github.com/ZacxDev/muster/internal/hermeshost"
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/mirrorhost"
+	"github.com/ZacxDev/muster/internal/opencodehost"
 )
 
 // e2eBackend replaces the tmux backend in a browser-test build (e2emirror.go,
@@ -177,9 +178,10 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 	catalog := fs.Bool("catalog", false, "print the composer menu's catalog this host would report for a pane whose working directory is the current one — commands, skills (source and name) and snippet triggers — and exit")
 	list := fs.Bool("list", false, "print the sessions this host would register, and exit (a labelled session's line ends in a label=<label> column)")
 	listClaude := fs.Bool("claude", false, "with -list: print, for each WINDOW whose active pane runs Claude Code, what its rendered view would stream (one line each: session, window id, index, claude, pane, state, session id, transcript, source = pane-map|sessions|guessed, then label=<label>); per session on a backend that does not list windows")
-	listWindows := fs.Bool("windows", false, "with -list: print every WINDOW this host would register instead (one line each: session, window id, index, active|-, command, then claude <pane> <state> <session id> <transcript> <source> for a Claude Code window, or hermes <pane> <state> <session id or -> <source> for a Hermes one, then label=<label>)")
+	listWindows := fs.Bool("windows", false, "with -list: print every WINDOW this host would register instead (one line each: session, window id, index, active|-, command, then claude <pane> <state> <session id> <transcript> <source> for a Claude Code window, or hermes|opencode <pane> <state> <session id or -> <source> for a Hermes or opencode one, then label=<label>)")
 	hermesSend := fs.Bool("hermes-send", envBool(envHermesSend), "with -interactive: let muster SEND to Hermes windows, through the gated send (screen check, Escapes, a database-confirmed submit; docs/design/hermes.md). OFF by default. Enable it on a host only after `make test-livehermes` is green against its Hermes. The host reads display.vim_mode from the Hermes home's config.yaml and sends nothing while it is on, or unreadable ("+envHermesSend+")")
 	hermesAnswer := fs.Bool("hermes-answer", envBool(envHermesAns), "with -interactive: let muster ANSWER a Hermes approval (once or deny) through Hermes's gateway viewer, which the host attaches only to a session waiting on an approval (docs/design/hermes.md, Phase 4). OFF by default: answering \"once\" lets the command run. Never a key into the pane; a sudo prompt and a clarify are answered in the terminal ("+envHermesAns+")")
+	listOpenCode := fs.Bool("opencode", false, "with -list: diagnose this host's opencode windows — the opencode token (by fingerprint) and whether the server accepts it, and per window its TUI, pane title, the session the title matched and why it has no rendered view")
 	listHermes := fs.Bool("hermes", false, "with -list: diagnose this host's Hermes windows — each window's breadcrumb, session, status file and why it has no rendered view or no status — and, per hook command Hermes's config.yaml declares (its hooks: section only), its consent in the allowlist")
 	hermesHome := fs.String("hermes-home", hermesHomeDefault(getenv), "the Hermes home whose sessions a Hermes window is resolved from — read-only, and only state.db, terminal-sessions/tty-* and shell-hooks-allowlist.json ("+envHermesHome+"; else $HERMES_HOME, else ~/.hermes)")
 	hermesStatusDir := fs.String("hermes-status-dir", hermesStatusDirDefault(getenv), "the directory `muster-mirror hermes-hook` writes Hermes status files in; recorded for the hook with -write-hook-config ("+envHermesStatusDir+")")
@@ -199,7 +201,19 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 	if *hermesStatusDir == "" {
 		fmt.Fprintln(stderr, "muster-mirror: HOME is not set, so there is no Hermes status directory (set -hermes-status-dir): every Hermes window's status is unknown")
 	}
-	backend := newTmuxBackend(*socket, *socketPath, *paneMapDir, mirrorhost.NewHermesSource(*hermesHome, *hermesStatusDir))
+	ctx, stop := runContext()
+	defer stop()
+	logger := log.New(stderr, "", log.LstdFlags)
+	// The opencode token (opencode.go): ONE Credentials for the source that
+	// reads opencode windows and the renewal that keeps it valid.
+	// A browser-test build reads no token file: its opencode is a fake server
+	// of its own (e2eopencode.go).
+	ocCreds, ocWhy := (*opencodehost.Credentials)(nil), "this is a browser-test build"
+	if e2eBackend == nil {
+		ocCreds, ocWhy = openCodeCredentials(*openCodeTokenFile, getenv)
+	}
+	backend := withOpenCode(newTmuxBackend(*socket, *socketPath, *paneMapDir, mirrorhost.NewHermesSource(*hermesHome, *hermesStatusDir)),
+		mirrorhost.NewOpenCodeSource(ctx, ocCreds, ocWhy, logger))
 	if e2eBackend != nil {
 		backend = e2eBackend()
 	}
@@ -210,9 +224,6 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 	if e2eWrap != nil {
 		backend = e2eWrap(backend)
 	}
-	ctx, stop := runContext()
-	defer stop()
-	logger := log.New(stderr, "", log.LstdFlags)
 	codenames := loadCodenames(*labelsFile, logger)
 
 	if *catalog {
@@ -233,6 +244,11 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 		lctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		defer cancel()
 		return printHermes(lctx, backend, *hermesHome, *hermesStatusDir, stdout, stderr)
+	}
+	if *list && *listOpenCode {
+		lctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		defer cancel()
+		return printOpenCode(lctx, backend, ocCreds, ocWhy, stdout, stderr)
 	}
 	if *list && *listWindows {
 		lctx, cancel := context.WithTimeout(ctx, 10*time.Second)
@@ -384,7 +400,7 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 	// The opencode token is renewed whether or not a window uses it, so a
 	// paired host stays paired (opencode.go). Never in a browser-test build.
 	if e2eBackend == nil {
-		startOpenCode(ctx, *openCodeTokenFile, getenv, logger)
+		startOpenCode(ctx, ocCreds, ocWhy, logger)
 	}
 	err = c.Run(ctx)
 	// Give the MCP setup a moment to settle (and say why it is off) before

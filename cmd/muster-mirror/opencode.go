@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ZacxDev/muster/internal/mirrorhost"
 	"github.com/ZacxDev/muster/internal/opencodehost"
 )
 
@@ -109,10 +110,19 @@ func openCodeCredentials(path string, getenv func(string) string) (*opencodehost
 	return c, ""
 }
 
-// startOpenCode logs the daemon's opencode credential and keeps it renewed
-// until ctx ends. nil when there is none.
-func startOpenCode(ctx context.Context, path string, getenv func(string) string, logger *log.Logger) *opencodehost.Credentials {
-	c, why := openCodeCredentials(path, getenv)
+// withOpenCode is b with its opencode windows resolved from src, when b is the
+// tmux backend.
+func withOpenCode(b mirrorhost.Backend, src *mirrorhost.OpenCodeSource) mirrorhost.Backend {
+	if t, ok := b.(mirrorhost.Tmux); ok {
+		t.OpenCode = src
+		return t
+	}
+	return b
+}
+
+// startOpenCode logs the daemon's opencode credential c (nil: why there is
+// none) and keeps it renewed until ctx ends.
+func startOpenCode(ctx context.Context, c *opencodehost.Credentials, why string, logger *log.Logger) *opencodehost.Credentials {
 	if c == nil {
 		logger.Printf("muster-mirror: opencode: %s", why)
 		return nil
