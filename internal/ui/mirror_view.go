@@ -943,7 +943,17 @@ func mirrorViewScript() g.Node {
   if (typeof ResizeObserver !== 'undefined') {
     new ResizeObserver(function () { if (atEnd) log.scrollTop = log.scrollHeight; }).observe(log);
   }
-  window.addEventListener('pagehide', function () { closed = true; save(); if (sock) sock.close(); });
+  // 🔴 NO STORAGE WRITE MAY BE IN FLIGHT AS THE PAGE GOES INTO THE BACK/FORWARD
+  // CACHE. A save is a chain of storage transactions, and one still running
+  // when the page is frozen there evicts it (measured, Chromium 153: Back
+  // reloaded the view, CDP reason IgnoreEventAndEvict, whenever the page was
+  // left within the save delay of a batch; with the store's put stubbed out it
+  // was restored). So a page that MAY be kept (pagehide persisted) saves
+  // nothing as it goes; one that is going for good saves, as before. Skipping
+  // it costs only freshness: the stored snapshot is the last one saved, whole
+  // at its own offset, and a later open resumes from there.
+  var leaving = false;
+  window.addEventListener('pagehide', function (e) { closed = true; leaving = !!e.persisted; if (!e.persisted) save(); if (sock) sock.close(); });
   // Back and Forward (restore.go): the pagehide above closed the socket; a
   // restore opens it again, resuming from the offset the page already drew,
   // so nothing is painted twice. Caught up is the socket's first answer.
@@ -951,14 +961,19 @@ func mirrorViewScript() g.Node {
   function caughtUp() { if (restoring) { var r = restoring; restoring = null; r(); } }
   ` + restoreJoinJS(`{
     show: function () {
-      closed = false; retry = 0;
+      closed = false; leaving = false; retry = 0;
       return new Promise(function (resolve) {
         restoring = resolve;
         if (!sock || sock.readyState > 1) connect();
       });
     }
   }`) + `
-  document.addEventListener('visibilitychange', function () { if (document.hidden) save(); });
+  // Leaving fires visibilitychange BEFORE pagehide, so the hidden save waits
+  // a quarter second and is skipped once pagehide has said the page may be kept:
+  // a tab that was only switched away gets no pagehide and saves then.
+  document.addEventListener('visibilitychange', function () {
+    if (document.hidden) setTimeout(function () { if (!leaving) save(); }, 250);
+  });
   // Open: paint this window's snapshot, if there is one this user may see,
   // then connect — resuming from its offset. Storage that is slow or absent
   // costs at most readWaitMs, then the socket opens without it. Run once the

@@ -227,6 +227,12 @@ export const clsLongMirrorPort = port + 196;
 // and that fake chat-completions endpoint.
 export const suggestPort = port + 197;
 export const suggestFakePort = port + 198;
+// Back and Forward restoring the view pages (bfcache-restore.spec.ts): its own
+// mirrored server (the e2eterm binary, mirror plugin on) and one mirrored host,
+// and a port of its own for the build A / build B pair (a deploy while a page
+// sits in the back/forward cache).
+export const bfcacheRestorePort = port + 150;
+export const bfcacheBuildPort = port + 151;
 export const baseURL = `http://localhost:${port}`;
 export const versionA = 'e2e-a';
 export const versionB = 'e2e-b';

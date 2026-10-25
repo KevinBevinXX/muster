@@ -413,7 +413,20 @@
         resolve(bytes);
       }
       try { sock = new WebSocket(wsURL(ref, prev)); } catch (e) { resolve(0); return; }
-      current = { stop: function () { finish(n > 0); } };
+      current = {
+        stop: function () { finish(n > 0); },
+        // abort: closed with nothing stored (the page is going into the
+        // back/forward cache — see the pagehide wiring below).
+        abort: function () {
+          if (done) return;
+          done = true;
+          current = null;
+          clearTimeout(quiet);
+          clearTimeout(cap);
+          try { sock.onclose = null; sock.close(); } catch (e) {}
+          resolve(bytes);
+        },
+      };
       cap = setTimeout(function () { finish(n > 0); }, WARM_CAP_MS);
       sock.onmessage = function (ev) {
         bytes += (ev.data && ev.data.length) || 0;
@@ -470,10 +483,20 @@
       setInterval(function () { if (Date.now() - lastWarm >= WARM_EVERY_MS) idle(warmPass); }, 30000);
     };
     if (document.readyState === 'complete') arm(); else root.addEventListener('load', arm);
+    // 🔴 NO WRITE MAY BE IN FLIGHT AS THE PAGE GOES INTO THE BACK/FORWARD
+    // CACHE: a storage transaction still running when the page is frozen
+    // evicts it (Chromium: IgnoreEventAndEvict), so Back reloads the page.
+    // Leaving fires visibilitychange BEFORE pagehide, so the hidden stop (which
+    // stores what the warm read) waits a quarter second, and pagehide aborts the
+    // warm without storing anything. A tab only switched away gets no pagehide;
+    // its stop runs then and stores as before.
+    var leaving = false;
     document.addEventListener('visibilitychange', function () {
-      if (document.hidden) { if (current) current.stop(); return; }
+      if (document.hidden) { setTimeout(function () { if (current && !leaving) current.stop(); }, 250); return; }
       if (Date.now() - lastWarm >= WARM_EVERY_MS) setTimeout(function () { idle(warmPass); }, 500);
     });
+    root.addEventListener('pagehide', function (e) { leaving = !!e.persisted; if (e.persisted && current) current.abort(); });
+    root.addEventListener('pageshow', function (e) { if (e.persisted) leaving = false; });
   }
 
   root.musterSnap = {

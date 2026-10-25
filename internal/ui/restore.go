@@ -149,10 +149,8 @@ func restoreJS(feat Features) string {
           c.setAttribute('aria-hidden', on ? 'false' : 'true');
         });
       }
-      function reload(why) {
-        window.__musterRestoreReload = why; // the browser suite reads it
-        location.reload();
-      }
+      // reload: why is for a reader of this code; the page simply loads again.
+      function reload(why) { void why; location.reload(); }
       // within: p, or nothing after ms — a catch-up that never answers
       // must not hold the chip up for ever.
       function within(p, ms) {
@@ -227,7 +225,6 @@ func restoreJS(feat Features) string {
         if (!e.persisted) return;
         var m = readHidden(), at = m[DOC] || hiddenAt;
         delete m[DOC]; writeHidden(m);
-        window.__musterRestores = (window.__musterRestores || 0) + 1; // the browser suite reads it
         if (TOP && at && Date.now() - at > MAX_AWAY) { reload('away'); return; }
         catchUp('restore');
       });
