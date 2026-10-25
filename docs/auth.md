@@ -94,9 +94,18 @@ The native Android app gets its own credential, the **device credential**
 (`mdv_…`), one per paired phone. It opens `/api/device/*` and nothing else.
 
 **Pairing.** A signed-in page inside the app asks for a one-time pairing code
-(`POST /account/devices/pair`). That needs a sign-in from the last five minutes,
-as adding a passkey does, because the credential outlives the session. The code
-is single use and expires after 60 seconds. The app redeems it at
+(`POST /account/devices/pair`). Any valid signed-in browser session may ask,
+however long ago it signed in: there is no recent-sign-in window, unlike adding
+a passkey (an operator decision). The session must still be valid, and what
+that means depends on the mode. In gotrue mode a session that is expired,
+signed out, or from before Sign out everywhere or the session cutoff is
+refused, and the session's sign-in time is stored with the phone, so those
+revocations still reach it. In password mode the session is a stateless cookie
+valid for 30 days: Sign out only clears that browser's cookie and there is no
+Sign out everywhere, so a copy of the cookie can still pair a phone until it
+expires, and such a phone is cut off only by Remove on Account → Devices. A
+machine token, the hook token or a device credential cannot ask for
+a code. The code is single use and expires after 60 seconds. The app redeems it at
 `POST /api/device/pair` with the phone's name, its app version and its step-up
 key: an EC P-256 public key the app generates in the Android Keystore at
 pairing, its type, and the Keystore security level the app reports. The
