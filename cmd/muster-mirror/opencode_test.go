@@ -72,13 +72,13 @@ func TestOpenCodePairPrintsWhatItDidNeverTheTokenOrThePassword(t *testing.T) {
 	}
 	// The daemon's start-up line names it the same way.
 	var logb bytes.Buffer
-	if c, why := openCodeCredentials(tokFile, getenv); c == nil || why != "" {
+	if c, why := openCodeCredentials(tokFile); c == nil || why != "" {
 		t.Fatalf("the daemon cannot read it: %s", why)
 	}
 	logger := log.New(&logb, "", 0)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	c := startOpenCode(ctx, tokFile, getenv, logger)
+	c := startOpenCode(ctx, tokFile, logger)
 	if c == nil || !strings.Contains(logb.String(), opencodehost.Fingerprint(tf.Token)) || strings.Contains(logb.String(), sig) {
 		t.Fatalf("daemon log %q", logb.String())
 	}
@@ -113,8 +113,8 @@ func TestOpenCodePairFailsWithoutPrintingThePassword(t *testing.T) {
 	}
 }
 
-// TestTheDaemonSaysWhyItHasNoOpenCodeToken: no file, a file others can read,
-// and a token from the environment.
+// TestTheDaemonSaysWhyItHasNoOpenCodeToken: no file, and a file others can
+// read. (A token in the environment is not a source: it could not be renewed.)
 func TestTheDaemonSaysWhyItHasNoOpenCodeToken(t *testing.T) {
 	dir := t.TempDir()
 	env := map[string]string{"HOME": dir}
@@ -123,7 +123,7 @@ func TestTheDaemonSaysWhyItHasNoOpenCodeToken(t *testing.T) {
 	if p != filepath.Join(dir, ".muster", "opencode-token") {
 		t.Fatalf("default %q", p)
 	}
-	if c, why := openCodeCredentials(p, getenv); c != nil || !strings.Contains(why, "muster-mirror opencode-pair") {
+	if c, why := openCodeCredentials(p); c != nil || !strings.Contains(why, "muster-mirror opencode-pair") {
 		t.Fatalf("missing: %v %q", c, why)
 	}
 	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
@@ -132,16 +132,8 @@ func TestTheDaemonSaysWhyItHasNoOpenCodeToken(t *testing.T) {
 	if err := os.WriteFile(p, []byte(`{"url":"http://127.0.0.1:13420","token":"1893456000.c2ln"}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if c, why := openCodeCredentials(p, getenv); c != nil || !strings.Contains(why, "readable by others") {
+	if c, why := openCodeCredentials(p); c != nil || !strings.Contains(why, "readable by others") {
 		t.Fatalf("0644: %v %q", c, why)
-	}
-	env[envOpenCodeToken], env[envOpenCodeURL] = "1893456000.c2ln", "http://127.0.0.1:13420"
-	if c, why := openCodeCredentials(p, getenv); c == nil || why != "" || c.Path != "" {
-		t.Fatalf("env: %v %q", c, why)
-	}
-	env[envOpenCodeURL] = "http://192.0.2.4:13420"
-	if c, why := openCodeCredentials(p, getenv); c != nil || !strings.Contains(why, "loopback") {
-		t.Fatalf("env foreign: %v %q", c, why)
 	}
 	env[envOpenCodeTokenFile] = "/elsewhere/tok"
 	if got := openCodeTokenFileDefault(getenv); got != "/elsewhere/tok" {

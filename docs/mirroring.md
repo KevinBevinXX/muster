@@ -435,8 +435,9 @@ refuses a file others can read, a symlink, and a url that is not loopback. A
 token lives 30 days. Within 10 days of its expiry, the daemon mints its
 replacement with the token itself, writes it to the same file (0600, whole),
 and only then uses it. It checks hourly and logs each renewal and each failure
-by fingerprint. A token handed over in `MUSTER_MIRROR_OPENCODE_TOKEN` (with
-`MUSTER_MIRROR_OPENCODE_URL`) works but is never renewed.
+by fingerprint. A failing renewal, a token within 3 days of expiry and an
+expired token are also shown in the opencode window's rendered view and by
+`-list -opencode`.
 
 🔴 **A token is not scoped and cannot be revoked on its own** (upstream at
 `6ec5682`, docs/design/opencode.md). It reaches the whole opencode API. muster

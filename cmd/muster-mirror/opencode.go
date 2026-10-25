@@ -23,10 +23,6 @@ const (
 	// envOpenCodeTokenFile names the token file (default
 	// ~/.muster/opencode-token).
 	envOpenCodeTokenFile = "MUSTER_MIRROR_OPENCODE_TOKEN_FILE"
-	// envOpenCodeToken is a token itself, with envOpenCodeURL its server:
-	// for a host that hands the token over another way. Never renewed.
-	envOpenCodeToken = "MUSTER_MIRROR_OPENCODE_TOKEN"
-	envOpenCodeURL   = "MUSTER_MIRROR_OPENCODE_URL"
 )
 
 // openCodeTokenFileDefault is the token file's default: ~/.muster/opencode-token,
@@ -87,15 +83,9 @@ func runOpenCodePair(args []string, getenv func(string) string, stdout, stderr i
 }
 
 // openCodeCredentials is the daemon's opencode credential: the token file at
-// path, else a token from the environment, else none (nil, with why).
-func openCodeCredentials(path string, getenv func(string) string) (*opencodehost.Credentials, string) {
-	if tok := strings.TrimSpace(getenv(envOpenCodeToken)); tok != "" {
-		c, err := opencodehost.EnvCredentials(getenv(envOpenCodeURL), tok)
-		if err != nil {
-			return nil, fmt.Sprintf("%s: %v", envOpenCodeToken, err)
-		}
-		return c, ""
-	}
+// path, or none (nil, with why). There is no other source: a token the daemon
+// cannot renew would stop working, silently, 30 days on.
+func openCodeCredentials(path string) (*opencodehost.Credentials, string) {
 	if path == "" {
 		return nil, "no opencode token file (HOME is not set; set -opencode-token-file)"
 	}
@@ -111,8 +101,8 @@ func openCodeCredentials(path string, getenv func(string) string) (*opencodehost
 
 // startOpenCode logs the daemon's opencode credential and keeps it renewed
 // until ctx ends. nil when there is none.
-func startOpenCode(ctx context.Context, path string, getenv func(string) string, logger *log.Logger) *opencodehost.Credentials {
-	c, why := openCodeCredentials(path, getenv)
+func startOpenCode(ctx context.Context, path string, logger *log.Logger) *opencodehost.Credentials {
+	c, why := openCodeCredentials(path)
 	if c == nil {
 		logger.Printf("muster-mirror: opencode: %s", why)
 		return nil

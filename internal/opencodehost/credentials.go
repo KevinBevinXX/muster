@@ -14,12 +14,14 @@ import (
 // its own replacement (POST /api/pair is accepted with a token wherever the
 // password is) — and writes the new one to the same file, 0600.
 type Credentials struct {
-	// Path is the token file; "" for a token from the environment, which
-	// cannot be renewed (there is nowhere to keep the new one).
+	// Path is the token file; "" only for a test's fixed token
+	// (EnvCredentials), which cannot be renewed.
 	Path string
 
 	mu sync.Mutex
 	tf TokenFile
+	// renewErr is why the last renewal failed; nil once one succeeds.
+	renewErr error
 }
 
 // LoadCredentials reads the token file at path (ReadTokenFile).
@@ -31,14 +33,16 @@ func LoadCredentials(path string) (*Credentials, error) {
 	return &Credentials{Path: path, tf: tf}, nil
 }
 
-// EnvCredentials is a token handed over in the environment, for the server at
-// base (CheckLocal): read-only, never renewed.
+// EnvCredentials is a fixed token for the server at base (CheckLocal), never
+// renewed. 🔴 FOR TESTS AND THE BROWSER SUITE'S FAKE HOST ONLY: the daemon
+// takes its token from the token file alone, because a token it cannot renew
+// stops working, silently, 30 days on.
 func EnvCredentials(base, token string) (*Credentials, error) {
 	if err := CheckLocal(base); err != nil {
 		return nil, err
 	}
 	if _, ok := Expiry(token); !ok {
-		return nil, errors.New("the opencode token in the environment is not a pair token")
+		return nil, errors.New("not an opencode pair token")
 	}
 	return &Credentials{tf: TokenFile{URL: base, Token: token}}, nil
 }
@@ -67,9 +71,9 @@ func (c *Credentials) Expires() time.Time {
 // current token at each request.
 func (c *Credentials) Client() (*Client, error) { return NewClient(c.URL(), c.Token) }
 
-// ErrNotRenewable: a token from the environment has no file to keep a new one
-// in.
-var ErrNotRenewable = errors.New("an opencode token from the environment is not renewed: pair the host (muster-mirror opencode-pair) to get a token file")
+// ErrNotRenewable: a fixed token (EnvCredentials) has no file to keep a new
+// one in.
+var ErrNotRenewable = errors.New("this opencode token has no token file, so it is not renewed: pair the host (muster-mirror opencode-pair)")
 
 // Renew replaces the token when it expires within RenewBefore of now: it
 // mints a new one with the current token, checks it outlives the old one,
@@ -81,6 +85,15 @@ var ErrNotRenewable = errors.New("an opencode token from the environment is not 
 // already replaced. Both tokens stay valid until their own expiry (tokens are
 // stateless upstream), so the order costs nothing.
 func (c *Credentials) Renew(ctx context.Context, now time.Time) (renewed bool, err error) {
+	defer func() {
+		c.mu.Lock()
+		if renewed {
+			c.renewErr = nil
+		} else if err != nil {
+			c.renewErr = err
+		}
+		c.mu.Unlock()
+	}()
 	old := c.Token()
 	exp, _ := Expiry(old)
 	if exp.Sub(now) > RenewBefore {
@@ -146,4 +159,49 @@ func KeepRenewed(ctx context.Context, c *Credentials, logger *log.Logger, every 
 		case <-t.C:
 		}
 	}
+}
+
+// WarnBefore is how close to its expiry a token is reported to the person
+// (Health) even while no renewal has failed: renewal starts at RenewBefore,
+// so a token this close has not been renewed for a week.
+const WarnBefore = 3 * 24 * time.Hour
+
+// Health is what the person must be told about the token at now, "" when
+// nothing: that it EXPIRED; that it expires soon while renewal is FAILING (and
+// why); or that it expires within WarnBefore. 🔴 THE ONE SPELLING: the
+// rendered view of an opencode window shows it, and `-list -opencode` prints
+// it, so a renewal that keeps failing is seen in muster, not only in a log.
+func (c *Credentials) Health(now time.Time) string {
+	c.mu.Lock()
+	renewErr := c.renewErr
+	c.mu.Unlock()
+	exp := c.Expires()
+	left := exp.Sub(now)
+	switch {
+	case left <= 0:
+		return "the opencode token expired " + exp.UTC().Format(time.RFC3339) + ": pair this host again with `muster-mirror opencode-pair`"
+	case renewErr != nil:
+		return "opencode token expires in " + approx(left) + " — renewal failing: " + renewErr.Error()
+	case left <= WarnBefore:
+		return "opencode token expires in " + approx(left) + " and has not been renewed"
+	}
+	return ""
+}
+
+// approx is d as a person reads it: whole days, else whole hours, else
+// minutes.
+func approx(d time.Duration) string {
+	plural := func(n int64, unit string) string {
+		if n == 1 {
+			return "1 " + unit
+		}
+		return fmt.Sprintf("%d %ss", n, unit)
+	}
+	switch {
+	case d >= 24*time.Hour:
+		return plural(int64(d/(24*time.Hour)), "day")
+	case d >= time.Hour:
+		return plural(int64(d/time.Hour), "hour")
+	}
+	return plural(max(int64(d/time.Minute), 1), "minute")
 }
