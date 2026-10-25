@@ -233,6 +233,9 @@ export const suggestFakePort = port + 198;
 // sits in the back/forward cache).
 export const bfcacheRestorePort = port + 150;
 export const bfcacheBuildPort = port + 151;
+// …and a static page of its own on another origin, to leave a page for when
+// the muster page left behind must not answer anything meanwhile.
+export const bfcacheAwayPort = port + 152;
 export const baseURL = `http://localhost:${port}`;
 export const versionA = 'e2e-a';
 export const versionB = 'e2e-b';

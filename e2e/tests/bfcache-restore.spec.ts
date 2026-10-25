@@ -1,7 +1,8 @@
 import fs from 'node:fs';
+import http from 'node:http';
 import { Browser, BrowserContext, Page } from '@playwright/test';
 import { test, expect } from '../lib/fixtures';
-import { authState, baseURL, bfcacheBuildPort, bfcacheRestorePort, password, versionA, versionB } from '../lib/env';
+import { authState, baseURL, bfcacheAwayPort, bfcacheBuildPort, bfcacheRestorePort, password, versionA, versionB } from '../lib/env';
 import { launchWithBfcache } from '../lib/bfcache';
 import { clsInit, readCls, settle } from '../lib/cls';
 import { cc, mkchat, MirrorRig } from '../lib/mirrorhost';
@@ -49,11 +50,21 @@ const shows = (page: Page): Promise<Show[]> => page.evaluate(() => JSON.parse(se
 const docOf = (page: Page): Promise<string> => page.evaluate(() => (window as any).__e2eDoc);
 
 let browser: Browser;
+// away: a static page on another origin. Left for it, a muster page is in the
+// cache and NO muster page is open — so when the session ends, nothing else
+// of muster's notices first (a muster page left open would see its own next
+// request refused, reload itself to the sign-in, and Back would then lead
+// somewhere else).
+const away = `http://127.0.0.1:${bfcacheAwayPort}/away`;
+let awayServer: http.Server;
 test.beforeAll(async ({ playwright }) => {
   browser = await launchWithBfcache(playwright.chromium);
+  awayServer = http.createServer((_req, res) => res.writeHead(200, { 'Content-Type': 'text/html' }).end('<!doctype html><title>away</title><p>away</p>'));
+  await new Promise<void>((r) => awayServer.listen(bfcacheAwayPort, '127.0.0.1', r));
 });
 test.afterAll(async () => {
   await browser?.close();
+  await new Promise<void>((r) => awayServer.close(() => r()));
 });
 
 // notRestored is, per page, why the browser did NOT restore it (CDP
@@ -104,10 +115,21 @@ async function settled(page: Page): Promise<void> {
 // back/forward cache), changes a cookie there, runs during(), and goes Back.
 async function awayAndBack(page: Page, path: string, during: () => Promise<void> = async () => {}): Promise<void> {
   await page.goto(path);
-  await page.evaluate(() => (document.cookie = 'e2e-away=' + Date.now() + '; path=/'));
+  if (path !== away) await page.evaluate(() => (document.cookie = 'e2e-away=' + Date.now() + '; path=/'));
   await during();
-  // 'commit': a restore fires no load event.
-  await page.goBack({ waitUntil: 'commit' });
+  await back(page);
+}
+
+// back is Back. 'commit': a restore fires no load event. 🔴 A restore that
+// reloads at once (a refused page re-requesting itself is answered within a
+// few ms here) supersedes the history navigation before Playwright sees it
+// commit: goBack then rejects with ERR_ABORTED, or never resolves. Neither is
+// the page's failure — what Back showed is asserted from the page's own
+// record (backShow) — so those two are let through.
+async function back(page: Page): Promise<void> {
+  await page.goBack({ waitUntil: 'commit', timeout: 10_000 }).catch((e: Error) => {
+    if (!/ERR_ABORTED|frame was detached|Timeout/.test(e.message)) throw e;
+  });
 }
 
 // backShow is the pageshow Back landed on: the first one recorded after `since`
@@ -119,7 +141,11 @@ async function backShow(page: Page, path: string, since: number): Promise<Show> 
       got = (await shows(page).catch(() => [])).find((s) => s.path === path && s.at >= since);
       return !!got;
     }, { message: 'Back showed the page' })
-    .toBe(true);
+    .toBe(true)
+    .catch((e) => {
+      // A Back that loaded something else entirely: name why it was no restore.
+      throw new Error(`${e.message}\nnot restored because: ${(notRestored.get(page) || []).join(' ')}; shown: ${page.url()}`);
+    });
   return got!;
 }
 
@@ -488,7 +514,7 @@ test('after a sign-out, Back never shows the agent page again', async () => {
     ]);
     // Back, twice: past /tasks, to the agent page's entry.
     for (let i = 0; i < 2; i++) {
-      await page.goBack({ waitUntil: 'commit' });
+      await back(page);
       await expect(page.locator('#muster-password'), `Back #${i + 1} shows the sign-in`).toBeVisible();
     }
     const after = (await shows(page)).filter((s) => s.at >= t0);
@@ -511,7 +537,7 @@ test('a page restored after its session ended reloads to the sign-in', async () 
     // The session ends with no sign-out page seen (it expired, or ended on
     // another tab): no Clear-Site-Data reached this browser, so the page IS
     // restored — and must not stay.
-    await awayAndBack(page, '/tasks', async () => {
+    await awayAndBack(page, away, async () => {
       await ctx.clearCookies();
     });
     await expectRestored(page, await backShow(page, new URL(url, baseURL).pathname, t0), doc);
@@ -572,7 +598,7 @@ test('a Back answered from the HTTP cache after a deploy reloads into the new bu
     await server.stop();
     server = await startServer(versionB, bfcacheBuildPort);
     const t0 = Date.now();
-    await page.goBack({ waitUntil: 'commit' });
+    await back(page);
     const path = new URL(url, origin).pathname;
     // The instrument: Back ran the build-A document again, from the cache.
     await expect.poll(async () => (await shows(page).catch(() => [])).filter((s) => s.path === path && s.at >= t0).length).toBeGreaterThan(0);
@@ -724,7 +750,7 @@ test.describe('mirrored', () => {
         }),
       ]);
       for (let i = 0; i < 2; i++) {
-        await page.goBack({ waitUntil: 'commit' });
+        await back(page);
         await expect(page.locator('#muster-password'), `Back #${i + 1} shows the sign-in`).toBeVisible();
       }
       const after = (await shows(page)).filter((s) => s.at >= t0);
@@ -742,7 +768,7 @@ test.describe('mirrored', () => {
       await expect(page.locator('.xterm-rows')).toContainText('FAKE-MIRROR', { timeout: 15_000 });
       const doc = await docOf(page);
       const t0 = Date.now();
-      await awayAndBack(page, rig.origin + '/tasks', async () => {
+      await awayAndBack(page, away, async () => {
         await ctx.clearCookies();
       });
       await expectRestored(page, await backShow(page, '/mirror/terminal', t0), doc);
