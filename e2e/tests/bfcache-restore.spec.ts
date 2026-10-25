@@ -265,6 +265,30 @@ test('a restored Agents list shows an agent created while it was away', async ()
   }
 });
 
+test('an agent page restored after its agent was deleted reloads', async () => {
+  const gone = 'e2e-bfc-gone-' + Date.now().toString(36);
+  mkchat(gone, [{ role: 'user', content: 'An agent deleted while its page was away.' }]);
+  const { ctx, page } = await newContext();
+  try {
+    const r = await page.request.get('/agents/' + gone, { maxRedirects: 0 });
+    const url = r.headers()['location'];
+    await page.goto(url);
+    await expect(page.locator('#chat-log [data-msg-id]').first()).toBeVisible();
+    const doc = await docOf(page);
+    const t0 = Date.now();
+    await awayAndBack(page, '/tasks', async () => mkchat(gone, null));
+    const path = new URL(url, baseURL).pathname;
+    await expectRestored(page, await backShow(page, path, t0), doc);
+    await expect.poll(async () => (await shows(page).catch(() => [])).filter((s) => s.at >= t0 && s.doc !== doc).length, {
+      message: 'and then reloaded: the page says what is there now',
+    }).toBeGreaterThan(0);
+    await expect(page.locator('#chat-log [data-msg-id]')).toHaveCount(0);
+  } finally {
+    await ctx.close();
+    mkchat(gone, null);
+  }
+});
+
 test('a restore after more than ten minutes away reloads', async () => {
   const { ctx, page } = await newContext();
   try {
@@ -440,6 +464,9 @@ async function signIn(page: Page, origin = baseURL): Promise<void> {
   await Promise.all([page.waitForURL((u) => !u.pathname.startsWith('/login')), page.click('button[type=submit]')]);
 }
 
+// ⚠ ON AN AGENT PAGE THIS HOLDS EVEN WITHOUT Clear-Site-Data: the sign-in
+// page's snapshot purge evicts it first (see the terminal's case below, which
+// is the one that tests the header). It is kept as the agent page's own check.
 test('after a sign-out, Back never shows the agent page again', async () => {
   const { ctx, page } = await newContext({ signedIn: false });
   try {
@@ -670,6 +697,60 @@ test.describe('mirrored', () => {
     }
   });
 
+
+  // 🔴 ON THE TERMINAL, BECAUSE IT HOLDS NO STORAGE CONNECTION. Measured with
+  // Clear-Site-Data removed: an agent page (or the list) is evicted at the
+  // sign-out anyway — the sign-in page's snapshot purge deletes the database
+  // its open connection holds (CDP: IgnoreEventAndEvict) — so a sign-out test
+  // on those pages stays green without the header and proves nothing about it.
+  // A terminal page has no such connection: only the header (and, behind it,
+  // the restore's own refusal check) keeps it from being shown again.
+  test('after a sign-out, Back never shows a terminal again', async () => {
+    const { ctx, page } = await mirrorPage();
+    try {
+      await page.goto(rig.origin + term());
+      await expect(page.locator('.xterm-rows')).toContainText('FAKE-MIRROR', { timeout: 15_000 });
+      const doc = await docOf(page);
+      await page.goto(rig.origin + '/tasks');
+      const t0 = Date.now();
+      await Promise.all([
+        page.waitForURL((u) => u.pathname === '/login'),
+        page.evaluate(() => {
+          const f = document.createElement('form');
+          f.method = 'POST';
+          f.action = '/logout';
+          document.body.appendChild(f);
+          f.submit();
+        }),
+      ]);
+      for (let i = 0; i < 2; i++) {
+        await page.goBack({ waitUntil: 'commit' });
+        await expect(page.locator('#muster-password'), `Back #${i + 1} shows the sign-in`).toBeVisible();
+      }
+      const after = (await shows(page)).filter((s) => s.at >= t0);
+      expect(after.filter((s) => s.persisted), `nothing was restored after the sign-out: ${JSON.stringify(after)}`).toEqual([]);
+      expect(after.some((s) => s.doc === doc), 'the terminal\'s document was never shown again').toBe(false);
+    } finally {
+      await ctx.close();
+    }
+  });
+
+  test('a terminal restored after its session ended reloads to the sign-in', async () => {
+    const { ctx, page } = await mirrorPage();
+    try {
+      await page.goto(rig.origin + term());
+      await expect(page.locator('.xterm-rows')).toContainText('FAKE-MIRROR', { timeout: 15_000 });
+      const doc = await docOf(page);
+      const t0 = Date.now();
+      await awayAndBack(page, rig.origin + '/tasks', async () => {
+        await ctx.clearCookies();
+      });
+      await expectRestored(page, await backShow(page, '/mirror/terminal', t0), doc);
+      await expect(page.locator('#muster-password'), 'the restored terminal went to the sign-in').toBeVisible({ timeout: 10_000 });
+    } finally {
+      await ctx.close();
+    }
+  });
 
   test('back to a terminal restores it and attaches again', async () => {
     const { ctx, page } = await mirrorPage(390, [streamLog]);

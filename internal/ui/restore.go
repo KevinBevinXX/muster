@@ -33,7 +33,9 @@ import (
 //     reload would have: the server records the visit and marks the session
 //     read, the switcher's Pins and Recent are redrawn from the answer, and an
 //     answer that is a refusal — 401, or a redirect to the sign-in — reloads
-//     the page, so a page restored after its session ended shows the sign-in;
+//     the page, so a page restored after its session ended shows the sign-in
+//     (as does one whose agent or window is gone, or that another user's
+//     sign-in now answers);
 //   - "Updating…" shows in the page's reserved chip only if all of that takes
 //     longer than RestoreChipDelayMs, so a fast catch-up shows nothing.
 //
@@ -173,9 +175,19 @@ func restoreJS(feat Features) string {
             var path = '';
             try { path = new URL(r.url).pathname; } catch (e) {}
             if (r.status === 401 || r.status === 403 || path === '/login' || path.indexOf('/login/') === 0) { reload('refused'); return; }
+            // Gone (an agent deleted, a window closed) or now somewhere else
+            // (a redirect): what the page shows is not what is there. A
+            // reload shows what is. Any other failure (a 5xx mid-deploy, the
+            // network) keeps the page; its streams retry on their own.
+            if (r.status === 404 || r.status === 410 || r.redirected) { reload('changed'); return; }
             if (!r.ok) return;
             return r.text().then(function (html) {
               var doc = new DOMParser().parseFromString(html, 'text/html');
+              // Another person's page now (one device, a sign-in in between
+              // that this browser did not purge for): never redraw theirs
+              // into this one — load it.
+              var mine = document.querySelector('script[data-snap-user]'), now = doc.querySelector('script[data-snap-user]');
+              if (mine && now && mine.getAttribute('data-snap-user') !== now.getAttribute('data-snap-user')) { reload('user'); return; }
               document.querySelectorAll('[` + RestoreRefreshAttr + `]').forEach(function (el) {
                 var k = el.getAttribute('` + RestoreRefreshAttr + `');
                 var fresh = doc.querySelector('[` + RestoreRefreshAttr + `="' + (window.CSS && CSS.escape ? CSS.escape(k) : k) + '"]');
