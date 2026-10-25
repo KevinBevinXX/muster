@@ -423,9 +423,19 @@ A notification action has no browser session, so none of this applies as is.
   **for `/api/device/*` only** (server change 29); the shared tokens stay
   refused there. In password mode there is one listener and nothing changes.
 - **Minted from a signed-in session.** A page in the WebView calls
-  `POST /account/devices/pair` with its session cookie. That route needs a
-  sign-in from the last five minutes, the rule for adding a passkey, because
-  the key it enrols outlives the session. It returns a one-time pairing code
+  `POST /account/devices/pair` with its session cookie. Any valid signed-in
+  session may call it, however long ago it signed in. **Operator decision:**
+  there is no recent-sign-in window for pairing. Pairing used to ask for a
+  sign-in from the last five minutes, the rule for adding a passkey; the
+  operator removed it as an arbitrary requirement. What still gates the route
+  is a real browser session; a machine token, the hook token or a device
+  credential never reaches it. In gotrue mode expired, signed-out and cut-off
+  sessions are refused, and the session's sign-in time is stored as the
+  phone's `paired_signin_at`, so Sign out everywhere and the session cutoff
+  still cut the phone off. In password mode the session is a stateless 30-day
+  cookie with no Sign out everywhere: Sign out clears only that browser's
+  cookie, so a copied cookie can still pair a phone until it expires, and such
+  a phone is cut off only by Remove on Account → Devices. It returns a one-time pairing code
   (single use, 60 s, stored as a hash). The page hands the code to the app over
   the bridge, and the app redeems it at `POST /api/device/pair` for the
   credential.
@@ -696,8 +706,9 @@ free ones when each phase lands.
 
 **Routes, session tier (browser listener, same origin)**
 
-9. `POST /account/devices/pair`: a sign-in from the last five minutes; returns
-   a pairing code.
+9. `POST /account/devices/pair`: any valid signed-in session, however old its
+   sign-in (an operator decision: no recent-sign-in window); returns a pairing
+   code.
 10. `POST /account/devices/{id}/remove`, and the Account → Devices section on
     `/account`.
 

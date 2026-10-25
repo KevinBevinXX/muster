@@ -8,8 +8,8 @@ import { baseURL, password } from '../lib/env';
 // device credential; the phone is listed; Remove signs it out on its next
 // request. Outside the shell the pairing buttons are not drawn.
 //
-// A FRESH sign-in in the test, not the suite's stored session: pairing needs a
-// sign-in from the last five minutes.
+// The test signs in itself rather than using the suite's stored session, so it
+// owns the session it pairs with. Pairing has no recent-sign-in window.
 
 test.use({ viewport: { width: 412, height: 915 }, storageState: { cookies: [], origins: [] } });
 
