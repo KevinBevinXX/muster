@@ -462,17 +462,29 @@ something it drew changes. The busy marker comes from the server's event
 stream (`session.status`). While that stream is down the status is unknown, and
 unknown fails closed.
 
-The composer is disabled, saying why: muster sends nothing to opencode, and the
-paste guard above still refuses its panes. Permission requests and the
+When the token needs the person — a renewal is failing, it is within 3 days
+of expiry — the view's first row says so, in the same words `-list -opencode`
+prints (and the card's note, below).
+
+The composer is disabled, saying sending to opencode isn't supported yet:
+muster sends nothing to opencode, and the paste guard above still refuses its
+panes. Permission requests and the
 question tool's forms are answered in the terminal; muster's attention queue
 does not see them yet.
 
 A window has no view, and an unknown status, when the host has no token, the
 server refuses the token (it expired, or the server's password was rotated),
 the title matches no root session or several, or the TUI is on another server.
-`muster-mirror -list -opencode` says which:
+The window's **card** says which, in one line ("opencode is not paired on this
+host: run muster-mirror opencode-pair", "… ambiguous, so none is shown", …);
+an open view that loses its session closes with the same line. The host sends
+the line with the window (`Window.AgentNote`: at most 200 bytes, on at most 8
+windows of a list). `muster-mirror -list -opencode` says it too, with the
+detail:
 
 - `token`: the token file, its fingerprint and expiry, or `none` and why;
+  `token-health`: the token's line, when it has one (failing renewal, close to
+  expiry, expired);
 - `server`: `ok` and the server's version, `REFUSED the token`, or
   `unreachable`;
 - per opencode window: its pane, TUI process, session (`-` for none), status

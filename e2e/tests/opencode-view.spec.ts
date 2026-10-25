@@ -107,6 +107,9 @@ test('an opencode window opens a read-only rendered view of the session its titl
   await expect(card(page, '@2').locator('a[href*="/mirror/view?"]'), `the matched card (mirror log:\n${rig.log})`).toHaveCount(1, { timeout: 20_000 });
   await expect(card(page, '@3').locator('a[href*="/mirror/terminal?"]')).toHaveCount(1);
   for (const w of ['@2', '@3']) await expect(card(page, w).locator('[data-mirror-kind]')).toContainText('opencode');
+  // The ambiguous one says why it has no view; the matched one has no note.
+  await expect(card(page, '@3').locator('[data-mirror-note]')).toHaveText('2 opencode sessions match the title "New session": ambiguous, so none is shown');
+  await expect(card(page, '@2').locator('[data-mirror-note]')).toHaveCount(0);
 
   await page.goto(rig.origin + viewOf('@2'));
   await expect(page).toHaveURL(/\/mirror\/view\?/);
@@ -122,7 +125,7 @@ test('an opencode window opens a read-only rendered view of the session its titl
 
   // 🔴 Read-only on an interactive host: disabled, saying why, no queue.
   await expect(page.locator('#mv-input')).toBeDisabled();
-  await expect(page.locator('#mv-readonly')).toContainText('muster shows this opencode session read-only');
+  await expect(page.locator('#mv-readonly')).toContainText("Sending to opencode isn't supported yet");
   await expect(page.locator('#mv-queue, #mv-queue-send')).toHaveCount(0);
 
   // A turn arrives without a reload: the prompt, busy while it streams, the
@@ -216,5 +219,9 @@ test('a refused token leaves the opencode window with no view', async ({ page })
       { message: `the view after the token is refused (mirror log:\n${rig.log})`, timeout: 30_000 },
     )
     .toBe('/mirror/terminal');
+  // The card says why, and what fixes it.
+  await page.goto(rig.origin + '/agents');
+  await expect(card(page, '@2').locator('[data-mirror-note]')).toContainText("refused muster-mirror's token", { timeout: 20_000 });
+  await expect(card(page, '@2').locator('[data-mirror-note]')).toContainText('muster-mirror opencode-pair');
   await expect.poll(() => rig.log, { message: 'the host logs the refusal' }).toContain("refused muster-mirror's token");
 });

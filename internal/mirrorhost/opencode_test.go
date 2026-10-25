@@ -6,6 +6,7 @@ import (
 	"log"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ZacxDev/muster/internal/cctranscript"
 	"github.com/ZacxDev/muster/internal/mirror"
@@ -118,13 +119,17 @@ func TestAnOpenCodePaneShowsTheOneSessionItsTitleNames(t *testing.T) {
 		if ap.Gen != "" || ap.Status != "" || ap.Source != SourceProcess || ap.OpenCode == nil || !strings.Contains(ap.OpenCode.NoView, why) {
 			t.Fatalf("%s: %+v (%+v), want no view saying %q", name, ap, ap.OpenCode, why)
 		}
+		// The card says the same (mirror.Window.AgentNote).
+		if ap.Note != ap.OpenCode.NoView {
+			t.Fatalf("%s: the note %q is not the reason %q", name, ap.Note, ap.OpenCode.NoView)
+		}
 	}
 	noView("ambiguous", openCodeRuntime{proc: root, src: src, title: titled("OC | New session")}, procs, children, "ambiguous, so none is shown")
 	noView("no such title", openCodeRuntime{proc: root, src: src, title: titled("OC | Something else")}, procs, children, "no opencode session is titled")
 	sp, sc, sroot := ocPaneTable(t, "opencode", "--standalone")
 	noView("standalone", openCodeRuntime{proc: sroot, src: src, title: titled("OC | Fix the flaky fixture")}, sp, sc, "its own server")
 	none := NewOpenCodeSource(context.Background(), nil, "no opencode token at the fixture path", log.New(io.Discard, "", 0))
-	noView("no token", openCodeRuntime{proc: root, src: none, title: titled("OC | Fix the flaky fixture")}, procs, children, "no opencode token")
+	noView("no token", openCodeRuntime{proc: root, src: none, title: titled("OC | Fix the flaky fixture")}, procs, children, "opencode is not paired on this host: run muster-mirror opencode-pair")
 
 	// No source at all: still an opencode window, nothing resolved.
 	if ap := (openCodeRuntime{proc: root}).LocatePanes(ocPane, procs, children)["%1"]; ap.Runtime != mirror.RuntimeOpenCode || ap.Gen != "" || ap.OpenCode != nil {
@@ -147,9 +152,103 @@ func TestARefusedTokenLeavesNoViewAndSaysSo(t *testing.T) {
 	srv.Rotate("rotated-fixture-password")
 	waitUntil(t, "the refusal", func() bool { return strings.Contains(src.state(), "refused") })
 	ap := rt.LocatePanes(ocPane, procs, children)["%1"]
-	if ap.Gen != "" || ap.Status != "" || ap.OpenCode == nil || !strings.Contains(ap.OpenCode.NoView, "opencode-pair") {
+	if ap.Gen != "" || ap.Status != "" || ap.OpenCode == nil || !strings.Contains(ap.OpenCode.NoView, "opencode-pair") || ap.Note != ap.OpenCode.NoView {
 		t.Fatalf("after: %+v (%+v)", ap, ap.OpenCode)
 	}
+}
+
+// TestTheViewAndTheCardSayWhatTheTokenNeeds: each token state the person
+// must act on reaches both places they look. A token within 3 days of expiry,
+// and one whose renewal is failing (with why), leave the view in place: the
+// card's note and the view's FIRST row say it. An expired token is refused:
+// no view, and the card says it expired and how to pair again. A fresh token
+// says nothing.
+func TestTheViewAndTheCardSayWhatTheTokenNeeds(t *testing.T) {
+	const sid = "ses_fixtureA"
+	procs, children, root := ocPaneTable(t, "opencode")
+	newServer := func(t *testing.T) *opencodetest.Server {
+		srv := opencodetest.New(ocFixturePassword)
+		t.Cleanup(srv.Close)
+		srv.PutSession(sid, "Fix the flaky fixture", "")
+		srv.PutMessage(sid, ocUser("msg_01", 1700000000001, "a prompt"))
+		return srv
+	}
+	source := func(t *testing.T, creds *opencodehost.Credentials) *OpenCodeSource {
+		ctx, cancel := context.WithCancel(context.Background())
+		t.Cleanup(cancel)
+		return NewOpenCodeSource(ctx, creds, "", log.New(io.Discard, "", 0))
+	}
+	firstRow := func(t *testing.T, src *OpenCodeSource) cctranscript.Event {
+		t.Helper()
+		wb := &windowsBackend{windows: []WindowInfo{ocWindowInfo(src, "OC | Fix the flaky fixture")}}
+		d := newDrivenMuster(t)
+		d.run(t, NoShrink(ocBackend{wb, src}), nil, true)
+		d.send(t, mirror.Msg{Type: mirror.TypeWatch, ID: 9, Session: "o", Window: "@7"})
+		waitUntil(t, "the backfill", func() bool { evs, _, _ := watchEvents(d, 9); return len(evs) >= 2 })
+		evs, _, _ := watchEvents(d, 9)
+		return evs[0]
+	}
+	locate := func(src *OpenCodeSource) AgentPane {
+		return openCodeRuntime{proc: root, src: src, title: titled("OC | Fix the flaky fixture")}.LocatePanes(ocPane, procs, children)["%1"]
+	}
+
+	t.Run("fresh: nothing", func(t *testing.T) {
+		srv := newServer(t)
+		creds, _ := opencodehost.EnvCredentials(srv.URL, srv.Issue())
+		src := source(t, creds)
+		if ap := locate(src); ap.Gen != sid || ap.Note != "" {
+			t.Fatalf("%+v", ap)
+		}
+		if e := firstRow(t, src); !strings.HasPrefix(e.Text, "matched by title") {
+			t.Fatalf("the first row: %+v", e)
+		}
+	})
+	t.Run("expires within 3 days", func(t *testing.T) {
+		srv := newServer(t)
+		creds, _ := opencodehost.EnvCredentials(srv.URL, srv.IssueAt(time.Now().Add(2*24*time.Hour+time.Hour)))
+		src := source(t, creds)
+		want := "opencode token expires in 2 days and has not been renewed"
+		if ap := locate(src); ap.Gen != sid || ap.Note != want {
+			t.Fatalf("%+v", ap)
+		}
+		if e := firstRow(t, src); e.Kind != cctranscript.KindNotice || e.Text != want {
+			t.Fatalf("the first row: %+v", e)
+		}
+	})
+	t.Run("renewal failing", func(t *testing.T) {
+		srv := newServer(t)
+		file := t.TempDir() + "/opencode-token"
+		if err := opencodehost.WriteTokenFile(file, opencodehost.TokenFile{URL: srv.URL, Token: srv.IssueAt(time.Now().Add(6 * 24 * time.Hour))}); err != nil {
+			t.Fatal(err)
+		}
+		creds, err := opencodehost.LoadCredentials(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		srv.RefuseRedeem(true) // the token still reads; minting its successor fails
+		if _, err := creds.Renew(context.Background(), time.Now()); err == nil {
+			t.Fatal("instrument check: the renewal did not fail")
+		}
+		src := source(t, creds)
+		want := "opencode token expires in 5 days — renewal failing: renew the opencode token: opencode refused to redeem the pairing code it had just issued"
+		if ap := locate(src); ap.Gen != sid || ap.Note != want {
+			t.Fatalf("note %q, want %q (%+v)", ap.Note, want, ap)
+		}
+		if e := firstRow(t, src); e.Text != want {
+			t.Fatalf("the first row: %+v", e)
+		}
+	})
+	t.Run("expired", func(t *testing.T) {
+		srv := newServer(t)
+		exp := time.Now().Add(-time.Hour).Truncate(time.Second)
+		creds, _ := opencodehost.EnvCredentials(srv.URL, srv.IssueAt(exp))
+		src := source(t, creds)
+		ap := locate(src)
+		want := "the opencode token expired " + exp.UTC().Format(time.RFC3339) + ": pair this host again with `muster-mirror opencode-pair`"
+		if ap.Gen != "" || ap.Note != want {
+			t.Fatalf("note %q, want %q (%+v)", ap.Note, want, ap)
+		}
+	})
 }
 
 // TestAnOpenCodeStatusIsUnknownWhileTheEventStreamIsDown: the session's
@@ -361,5 +460,15 @@ func TestAnOpenCodeWindowStreamsItsSessionReadOnly(t *testing.T) {
 		if r.Method != "GET" {
 			t.Fatalf("the host sent %s %s", r.Method, r.Path)
 		}
+	}
+}
+
+// TestTheHostSendsAnOpenCodeWindowsNote: the pane's note travels with the
+// window (mirror.Window.AgentNote), which is how the card shows it.
+func TestTheHostSendsAnOpenCodeWindowsNote(t *testing.T) {
+	ap := AgentPane{Runtime: mirror.RuntimeOpenCode, Pane: "%7", PID: 70, Source: SourceProcess, Note: notPairedWhy}
+	got := WireWindows([]WindowInfo{{Session: "o", ID: "@7", Pane: "%7", PanePID: 69, Command: "opencode", Agent: &ap}}, nil, true, time.Now())
+	if len(got) != 1 || got[0].AgentNote != "opencode is not paired on this host: run muster-mirror opencode-pair" || got[0].Runtime != mirror.RuntimeOpenCode {
+		t.Fatalf("%+v", got)
 	}
 }

@@ -2,6 +2,7 @@ package api
 
 import (
 	"html"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -45,7 +46,7 @@ func TestAnOpenCodeWindowsCardOpensItsReadOnlyRenderedView(t *testing.T) {
 	}
 	for _, want := range []string{`id="mv-log"`, `data-ws="` + amp(view.ViewWSPath()) + `"`, "opencode is working…",
 		// The note, pinned literally (ui.MirrorViewOnlyNote spells it).
-		html.EscapeString("muster shows this opencode session read-only: it found the session by the pane's title, and it does not send to opencode yet. Type in the terminal.")} {
+		html.EscapeString("Sending to opencode isn't supported yet: muster shows this session read-only. Type in the terminal.")} {
 		if !strings.Contains(page, want) {
 			t.Errorf("the opencode view lacks %q", want)
 		}
@@ -63,5 +64,35 @@ func TestAnOpenCodeWindowsCardOpensItsReadOnlyRenderedView(t *testing.T) {
 	resp, _ = mirrorGet(t, s, ts, none.ViewPath())
 	if resp.StatusCode != 303 || resp.Header.Get("Location") != none.TerminalPath() {
 		t.Fatalf("the unmatched opencode window's view = %d → %q", resp.StatusCode, resp.Header.Get("Location"))
+	}
+}
+
+// TestAnOpenCodeWindowsCardSaysWhyItHasNoView: the host's reason for each
+// state the person must act on (mirror.Window.AgentNote, spelled by
+// internal/mirrorhost) is drawn on the window's card, as it was sent.
+func TestAnOpenCodeWindowsCardSaysWhyItHasNoView(t *testing.T) {
+	reasons := []string{
+		"opencode is not paired on this host: run muster-mirror opencode-pair",
+		"the opencode server refused muster-mirror's token (it expired, or the server's password was rotated): pair the host again with `muster-mirror opencode-pair`",
+		`2 opencode sessions match the title "New session": ambiguous, so none is shown`,
+		`no opencode session is titled "Something else"`,
+		"this opencode runs on its own server (--standalone or --server), not the host's",
+		"opencode token expires in 2 days — renewal failing: renew the opencode token: the opencode server refused the credential (401)",
+	}
+	var windows []mirror.Window
+	for i, r := range reasons {
+		windows = append(windows, mirror.Window{Session: "main", ID: "@" + strconv.Itoa(i+1), Index: i, Command: "opencode",
+			Runtime: mirror.RuntimeOpenCode, AgentNote: r})
+	}
+	fm := &fakeMirror{online: true, interactive: true, v2: &fakeMirrorV2{}, windows: windows, statusReport: true}
+	s, ts := viewServer(t, fm)
+	_, list := mirrorGet(t, s, ts, "/ui/agents")
+	if n := strings.Count(list, "data-mirror-note"); n != len(reasons) {
+		t.Errorf("%d notes drawn, want %d", n, len(reasons))
+	}
+	for _, r := range reasons {
+		if !strings.Contains(list, html.EscapeString(r)) {
+			t.Errorf("the card does not say %q", r)
+		}
 	}
 }

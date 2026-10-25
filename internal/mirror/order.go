@@ -51,6 +51,10 @@ type SessionView struct {
 	// the window has no rendered view.
 	Runtime      string
 	AgentSession string
+	// AgentNote is the host's line for the person about the window
+	// (Window.AgentNote): why it has no rendered view, or what its credential
+	// needs. Shown on its card.
+	AgentNote string
 	// Qualifier is what the entry's Title needs beside it to be told apart from
 	// every OTHER entry listed with it ("" = its Title is already unique). Set
 	// by Ordered (qualify) and only there; a SessionView from HostView.Entries
@@ -287,7 +291,7 @@ func (h HostView) Entries() []SessionView {
 			// else tmux's window activity — the one number the list orders by,
 			// prints and decides the Idle section by.
 			e.Label, e.Command, e.Activity, e.Claude, e.ClaudeSession = w.Label, w.Command, w.CardActivity(), w.Claude, w.ClaudeSession
-			e.Runtime, e.AgentSession = w.Runtime, w.AgentSession
+			e.Runtime, e.AgentSession, e.AgentNote = w.Runtime, w.AgentSession, w.AgentNote
 			e.Repo = h.Repos[w.ID]
 			e.Work, e.Color = h.Work[w.ID], h.Colors[w.ID]
 			out = append(out, e)

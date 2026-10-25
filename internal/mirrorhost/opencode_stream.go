@@ -80,6 +80,22 @@ func (h *hostSide) openCodeWindow(ctx context.Context, m mirror.Msg) (AgentPane,
 	return *w.Agent, true
 }
 
+// openCodeGone is why the window m names has no view now: the host's reason
+// for the person (AgentPane.Note) when it is still an opencode window, else
+// errNoOpenCodeViewNow.
+func (h *hostSide) openCodeGone(ctx context.Context, m mirror.Msg) error {
+	if w, err := h.window(ctx, m.Session, m.Window); err == nil && w.Agent != nil && w.Agent.Runtime == mirror.RuntimeOpenCode && w.Agent.Note != "" {
+		return errors.New(w.Agent.Note)
+	}
+	return errNoOpenCodeViewNow
+}
+
+// openCodeTokenNotice is the view's row for what the token needs.
+func openCodeTokenNotice(health string) cctranscript.Event {
+	return cctranscript.Event{Kind: cctranscript.KindNotice, Notice: cctranscript.NoticeOpenCode, Status: "failed",
+		Text: cctranscript.Cap(health, cctranscript.MaxTarget*4), Output: health}
+}
+
 // openCodeMatchedNotice is the first line of every opencode view: how the
 // session was found, which the person must be able to see.
 func openCodeMatchedNotice(p AgentPane) cctranscript.Event {
@@ -98,7 +114,7 @@ func openCodeMatchedNotice(p AgentPane) cctranscript.Event {
 func (h *hostSide) openCodeTail(ctx context.Context, src *OpenCodeSource, m mirror.Msg) error {
 	p, ok := h.openCodeWindow(ctx, m)
 	if !ok {
-		return errNoOpenCodeViewNow
+		return h.openCodeGone(ctx, m)
 	}
 	var (
 		id     = p.Gen
@@ -111,6 +127,8 @@ func (h *hostSide) openCodeTail(ctx context.Context, src *OpenCodeSource, m mirr
 		pos   map[string]int
 		seen  uint64
 		polls int
+		// health is the token line the view shows now (src.tokenHealth).
+		health string
 	)
 	send := h.viewSend(m, func() string { return id })
 	read := func(limit int) ([]opencodehost.Message, error) {
@@ -152,7 +170,13 @@ func (h *hostSide) openCodeTail(ctx context.Context, src *OpenCodeSource, m mirr
 			return err
 		}
 		drawn, order, pos, offset = map[string]map[string]string{}, nil, map[string]int{}, 0
-		lines := []cctranscript.Line{line([]cctranscript.Event{openCodeMatchedNotice(p)})}
+		var lines []cctranscript.Line
+		// What the token needs comes first (Credentials.Health): a failing
+		// renewal must be seen where the person reads the session.
+		if health = src.tokenHealth(); health != "" {
+			lines = append(lines, line([]cctranscript.Event{openCodeTokenNotice(health)}))
+		}
+		lines = append(lines, line([]cctranscript.Event{openCodeMatchedNotice(p)}))
 		var refs []cctranscript.PromptRef
 		for _, msg := range msgs {
 			ks := opencodehost.Render(msg)
@@ -194,7 +218,7 @@ func (h *hostSide) openCodeTail(ctx context.Context, src *OpenCodeSource, m mirr
 		reresolve: func(ctx context.Context) (bool, error) {
 			np, ok := h.openCodeWindow(ctx, m)
 			if !ok {
-				return false, errNoOpenCodeViewNow
+				return false, h.openCodeGone(ctx, m)
 			}
 			if np.Gen != id {
 				// The pane's title names another session now.
@@ -207,6 +231,9 @@ func (h *hostSide) openCodeTail(ctx context.Context, src *OpenCodeSource, m mirr
 		},
 		poll: func() error {
 			polls++
+			if src.tokenHealth() != health {
+				return start() // the token's line appeared, changed or cleared
+			}
 			st, _ := src.status(id)
 			if c := src.changed(id); c == seen && polls%openCodeRecheck != 0 {
 				return sendBusy(&busy, st == mirror.StatusBusy, offset, send)

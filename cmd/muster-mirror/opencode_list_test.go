@@ -7,6 +7,7 @@ import (
 	"log"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ZacxDev/muster/internal/mirrorhost"
 	"github.com/ZacxDev/muster/internal/opencodehost"
@@ -79,6 +80,13 @@ func TestListOpenCodeSaysWhatEachWindowShowsAndWhy(t *testing.T) {
 	}
 	if got := out.String(); !strings.Contains(got, "REFUSED the token") || !strings.Contains(got, "session=-") || !strings.Contains(got, "opencode-pair") {
 		t.Fatalf("a refused token:\n%s", got)
+	}
+	// A token within 3 days of expiry: the same line the view shows.
+	out.Reset()
+	soon, _ := opencodehost.EnvCredentials(srv.URL, srv.IssueAt(time.Now().Add(2*24*time.Hour+time.Hour)))
+	if rc := printOpenCode(ctx, ocListBackend{}, soon, "", &out, &errb); rc != 0 ||
+		!strings.Contains(out.String(), "token-health\topencode token expires in 2 days and has not been renewed\n") {
+		t.Fatalf("a token about to expire: %q", out.String())
 	}
 	// No token at all.
 	out.Reset()

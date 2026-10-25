@@ -143,6 +143,9 @@ type ClaudePane struct {
 	// has no rendered view): what -list -opencode prints. nil for the other
 	// runtimes, and for a host with no OpenCodeSource.
 	OpenCode *OpenCodePane
+	// Note is the line the person reads about the pane (mirror.Window.
+	// AgentNote): for opencode, why it has no view, or what its token needs.
+	Note string
 }
 
 // How a ClaudePane's transcript was resolved, most to least authoritative.

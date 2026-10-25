@@ -3,7 +3,6 @@ package mirrorhost
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log"
 	"os"
 	"os/exec"
@@ -414,6 +413,14 @@ func (s *OpenCodeSource) client() (*opencodehost.Client, error) {
 func (s *OpenCodeSource) resolve(ap *AgentPane, shared bool, title func(string) (string, bool)) {
 	oc := &OpenCodePane{}
 	ap.OpenCode = oc
+	// The person reads the same reason on the window's card (AgentNote): why
+	// it has no view, else what the token needs (Credentials.Health).
+	defer func() {
+		ap.Note = oc.NoView
+		if ap.Note == "" {
+			ap.Note = s.tokenHealth()
+		}
+	}()
 	if !shared {
 		oc.NoView = "this opencode runs on its own server (--standalone or --server), not the host's"
 		return
@@ -421,8 +428,12 @@ func (s *OpenCodeSource) resolve(ap *AgentPane, shared bool, title func(string) 
 	// A server that refuses the token, or no token at all, is no view. A
 	// stream that is merely down is a view with an UNKNOWN status (status()):
 	// the REST reads still work, and the view re-reads on its own cadence.
-	if oc.Server = s.state(); s.creds == nil || oc.Server == unauthorizedWhy {
-		oc.NoView = oc.Server
+	if oc.Server = s.state(); s.creds == nil {
+		oc.NoView = notPairedWhy
+		return
+	}
+	if oc.Server == unauthorizedWhy {
+		oc.NoView = s.refusedWhy()
 		return
 	}
 	t, ok := title(ap.Pane)
@@ -434,10 +445,10 @@ func (s *OpenCodeSource) resolve(ap *AgentPane, shared bool, title func(string) 
 	sessions, err := s.rootSessions()
 	if err != nil {
 		oc.Server = "the opencode server cannot be read: " + err.Error()
-		if errors.Is(err, opencodehost.ErrUnauthorized) {
-			oc.Server = unauthorizedWhy
-		}
 		oc.NoView = oc.Server
+		if errors.Is(err, opencodehost.ErrUnauthorized) {
+			oc.Server, oc.NoView = unauthorizedWhy, s.refusedWhy()
+		}
 		return
 	}
 	oc.Match = opencodehost.MatchTitle(t, sessions)
@@ -450,6 +461,27 @@ func (s *OpenCodeSource) resolve(ap *AgentPane, shared bool, title func(string) 
 	ap.Busy = ap.Status == mirror.StatusBusy
 }
 
+// notPairedWhy is a window's reason when the host has no opencode token.
+const notPairedWhy = "opencode is not paired on this host: run muster-mirror opencode-pair"
+
+// tokenHealth is what the token needs the person to know now
+// (Credentials.Health), "" for nothing or no token.
+func (s *OpenCodeSource) tokenHealth() string {
+	if s.creds == nil {
+		return ""
+	}
+	return s.creds.Health(s.now())
+}
+
+// refusedWhy is a refused token's reason: the token's own health when it says
+// more (it expired), else that the server refused it.
+func (s *OpenCodeSource) refusedWhy() string {
+	if h := s.tokenHealth(); strings.Contains(h, "expired") {
+		return h
+	}
+	return unauthorizedWhy
+}
+
 // ResolveOpenCodePane is the AgentPane of an opencode TUI (pid) in pane whose
 // title is title, resolved against s exactly as the tmux backend resolves one
 // (a client of the shared server). For a backend that knows its panes' titles
@@ -460,15 +492,4 @@ func ResolveOpenCodePane(s *OpenCodeSource, pane string, pid int, title string) 
 		s.resolve(&ap, true, func(string) (string, bool) { return title, true })
 	}
 	return ap
-}
-
-// String is a one-line summary for logs.
-func (o *OpenCodePane) String() string {
-	if o == nil {
-		return "-"
-	}
-	if o.NoView != "" {
-		return fmt.Sprintf("no view: %s", o.NoView)
-	}
-	return fmt.Sprintf("matched by title %q", o.Match.Title)
 }

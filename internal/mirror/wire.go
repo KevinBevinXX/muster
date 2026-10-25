@@ -560,6 +560,14 @@ type Window struct {
 	// window at most). SessionKey is the runtime-qualified key it is stored by.
 	// Backward-compatible both ways, like ClaudeSession.
 	AgentSession string `json:"agentSession,omitempty"`
+	// AgentNote is a line for the person about a window of a runtime on the
+	// wire (opencode): why it has NO rendered view ("opencode is not paired on
+	// this host…", an ambiguous title, a refused token), or what its view's
+	// credential needs (a token about to expire, a failing renewal). "" for
+	// none. Bounded (MaxAgentNote bytes, on at most MaxAgentNoteWindows windows
+	// of a list) and stripped of control characters by NormalizeWindows.
+	// Backward-compatible both ways, like AgentSession.
+	AgentNote string `json:"agentNote,omitempty"`
 	// LastMessage is when the Claude Code conversation in the window last had
 	// a MESSAGE — the newest timestamp of a user or assistant row in its
 	// transcript that is not meta (mirrorhost's lastMessageReader) — Unix
@@ -654,6 +662,30 @@ func ValidAgentSession(id string) bool { return agentSessionPattern.MatchString(
 
 // ValidSessionKey reports whether key is a session key muster stores.
 func ValidSessionKey(key string) bool { return sessionKeyPattern.MatchString(key) }
+
+// The AgentNote bounds: a note's bytes, and how many windows of one list
+// carry one (the frame budget: TestTheLargestWindowListWithHermesWindowsFitsOneFrame).
+const (
+	MaxAgentNote        = 200
+	MaxAgentNoteWindows = 8
+)
+
+// cleanNote is a note as the wire carries it: control characters made
+// spaces, trimmed, cut to MaxAgentNote bytes on a rune boundary.
+func cleanNote(s string) string {
+	s = strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return ' '
+		}
+		return r
+	}, s)
+	s = strings.TrimSpace(s)
+	for len(s) > MaxAgentNote {
+		_, size := utf8.DecodeLastRuneInString(s)
+		s = s[:len(s)-size]
+	}
+	return s
+}
 
 // The OtherClaude bounds.
 const (
@@ -998,6 +1030,9 @@ func NormalizeWindows(in []Window, now int64) []Window {
 		if !onWire || r.KeyPrefix == "" || !ValidAgentSession(w.AgentSession) {
 			w.AgentSession = ""
 		}
+		if w.AgentNote = cleanNote(w.AgentNote); !onWire {
+			w.AgentNote = ""
+		}
 		// A status describes an agent's pane; a window without one has none.
 		if w.Status = NormalizeStatus(w.Status); w.AgentRuntime() == "" {
 			w.Status = ""
@@ -1040,6 +1075,16 @@ func NormalizeWindows(in []Window, now int64) []Window {
 	})
 	if len(out) > MaxWindows {
 		out = out[:MaxWindows]
+	}
+	// The list-wide AgentNote bound, after the sort, likewise.
+	notes := 0
+	for i := range out {
+		if out[i].AgentNote == "" {
+			continue
+		}
+		if notes++; notes > MaxAgentNoteWindows {
+			out[i].AgentNote = ""
+		}
 	}
 	// The list-wide OtherClaude bound, after the sort, so which windows keep
 	// theirs does not depend on the host's order.

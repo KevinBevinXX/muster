@@ -123,7 +123,7 @@ const MirrorHermesNoSendNote = "This host does not send to Hermes: its muster-mi
 // MirrorViewOnlyNote is the disabled composer of a window of kind, a runtime
 // muster only views (opencode, docs/design/opencode.md).
 func MirrorViewOnlyNote(kind string) string {
-	return "muster shows this " + kind + " session read-only: it found the session by the pane's title, and it does not send to " + kind + " yet. Type in the terminal."
+	return "Sending to " + kind + " isn't supported yet: muster shows this session read-only. Type in the terminal."
 }
 
 // MirrorViewPage is the rendered view's document.

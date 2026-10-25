@@ -220,6 +220,7 @@ func TestEveryPlaceThatNamesARuntimeIsListed(t *testing.T) {
 		"internal/mirrorhost/hermes_stream.go hostSide.hermesWindow ×1",
 		"internal/mirrorhost/opencode.go ResolveOpenCodePane ×1",
 		"internal/mirrorhost/opencode.go openCodeRuntime.LocatePanes ×1",
+		"internal/mirrorhost/opencode_stream.go hostSide.openCodeGone ×1",
 		"internal/mirrorhost/opencode_stream.go hostSide.openCodeWindow ×1",
 		"internal/mirrorhost/runtime.go Tmux.hermesRuntime ×1",
 		"internal/mirrorhost/runtime.go claudeRuntime.Name ×1",

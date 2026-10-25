@@ -211,7 +211,7 @@ func largestAgentList(t *testing.T, rt string) {
 			} else {
 				id := itoa(i) + "h"
 				w.Agent = &AgentPane{Runtime: rt, Status: mirror.StatusWaiting, StatusSince: math.MaxInt64,
-					Gen: id + strings.Repeat("a", 128-len(id))}
+					Gen: id + strings.Repeat("a", 128-len(id)), Note: strings.Repeat("&", mirror.MaxAgentNote)}
 			}
 			out = append(out, w)
 		}
@@ -230,8 +230,11 @@ func largestAgentList(t *testing.T, rt string) {
 		if !ok {
 			t.Fatal("the read failed")
 		}
-		hermes := 0
+		hermes, notes := 0, 0
 		for _, w := range l.windows {
+			if w.AgentNote != "" {
+				notes++
+			}
 			if w.Runtime == rt {
 				if len(w.AgentSession) != 128 || w.Status != mirror.StatusWaiting || w.StatusSince != math.MaxInt64 || w.Label == "" {
 					t.Fatalf("instrument check: a worst-case %s field was dropped by normalisation: %+v", rt, w)
@@ -245,6 +248,9 @@ func largestAgentList(t *testing.T, rt string) {
 		want := mirror.MaxWindows - mirror.MaxPendingWindows
 		if n > mirror.MaxWindows {
 			want = mirror.MaxWindows
+		}
+		if notes != mirror.MaxAgentNoteWindows {
+			t.Fatalf("instrument check: %d windows carry a note, want the bound %d", notes, mirror.MaxAgentNoteWindows)
 		}
 		if hermes != want || len(l.windows) != min(n, mirror.MaxWindows) {
 			t.Fatalf("instrument check: %d %s windows of %d on the wire, want %d", hermes, rt, len(l.windows), want)

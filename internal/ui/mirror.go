@@ -41,6 +41,9 @@ type MirrorCardView struct {
 	// "opencode", "shell", or a command); "" = unknown. Shown as a chip and
 	// searched; Claude decides where the card opens.
 	Kind string
+	// Note is the host's line about the window (mirror.SessionView.AgentNote):
+	// why it has no rendered view, or what its credential needs. "" for none.
+	Note string
 	// Online: the host is connected and still lists the session.
 	Online bool
 	// Interactive: the host ANNOUNCED -interactive, so its terminal page offers
@@ -252,6 +255,9 @@ func mirrorCard(m MirrorCardView) g.Node {
 					chip("state", "offline"),
 				)),
 			),
+			// The host's line about the window: why it has no rendered view, or
+			// what its credential needs (an opencode token about to expire).
+			g.If(m.Note != "", P(g.Attr("data-mirror-note", ""), Class("mt-1 text-xs text-muted break-words"), g.Text(m.Note))),
 		),
 		// The host is in the body (hostChip), not here.
 		cardFooter(

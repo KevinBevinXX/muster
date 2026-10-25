@@ -104,5 +104,10 @@ Issuing a token takes two HTTP calls. This is what `opencode pair` does
   input, or its output.
 - **Status**: `session.status` on `GET /api/event`, seeded on each connect
   from `GET /api/session/active`; unknown while the stream is down.
+- **What the person sees when there is no view**: the window's card carries
+  the host's reason (`Window.AgentNote`): not paired, a refused or expired
+  token, an ambiguous or unmatched title, a TUI on its own server. The token's
+  health line (above) is the first row of a view that has one, and the card's
+  note.
 - **One stream per host**, opened on the first opencode pane, reconnecting
   (1 s doubling to 30 s; a refused token waits a minute).
