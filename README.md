@@ -62,6 +62,14 @@ out from each of your machines, so muster never needs an inbound route to them.
 You need Go (the version in `go.mod`), Docker and, to mirror a session, tmux.
 The [Nix flake](flake.nix) provides the toolchain (`nix develop`).
 
+**No Docker, no Nix, no root?** `./scripts/kbx-quickstart.sh setup && ./scripts/kbx-quickstart.sh start`
+brings the whole thing up on a plain machine: it fetches a relocatable Postgres
+that runs as an ordinary user, builds the binaries, migrates, mints a mirror
+token, and starts the server and the host agent. Everything lands in one
+directory you can delete (`~/.local/share/muster`). Mirroring a Claude Code
+session needs it to run inside **tmux**; answering Claude Code's pickers from
+the phone additionally needs **tmux 3.7+** (`paste-buffer -S`).
+
 ```sh
 git clone https://github.com/ZacxDev/muster && cd muster
 make test-db                       # a throwaway Postgres on 127.0.0.1:55432
