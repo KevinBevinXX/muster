@@ -330,7 +330,7 @@ func TestActorLabelMatchesTheWireRule(t *testing.T) {
 	// Behavioural companion: the properties the pattern exists to enforce.
 	refuse := []string{"", "Upper", "-leading", ".leading", "has space", "has/slash",
 		actorPre0035Unattributed, strings.Repeat("a", 65)}
-	accept := []string{"a", "chief", "zesty-stoat", "svc.muster", "a_b", strings.Repeat("a", 64)}
+	accept := []string{"a", "agent", "zesty-stoat", "svc.muster", "a_b", strings.Repeat("a", 64)}
 	for _, s := range refuse {
 		if ValidActor(s) {
 			t.Errorf("ValidActor(%q) = true, want false", s)

@@ -21,7 +21,7 @@ import (
 // 🔴 TestNothingTheCLIKeepsDrivesTheTurnAPI is the seam between agentspec (what
 // ccd's container is handed), ccd's own scrub (what it passes on) and ccd's
 // turn API (what it accepts). ccd's environment is set from the claude-code
-// chief's spec exactly as muster builds it; ccd takes its turn credentials as
+// agent's spec exactly as muster builds it; ccd takes its turn credentials as
 // serve does; then EVERY value the CLI is started with — ccd's environment
 // after the take, plus the hook channel ccd adds — and the hooks-sha256
 // derivation of each, is presented on every authenticated ccd route and is

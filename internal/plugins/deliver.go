@@ -27,8 +27,8 @@ type Gateway interface {
 // 🔴 IT IS THE ORDINARY CHAT TURN, WITH THE AGENT'S TOOLS, AND NOT A TOOLLESS
 // SEND. internal/api wires its chatTurn here: the agent's instructions, the tool
 // definitions THAT agent is offered and the in-process dispatch for them. A
-// delivered message is the turn on which the chief acts on it (files a gated
-// task, drafts a reply), so a toolless send would leave a gateway-kind chief
+// delivered message is the turn on which the target agent acts on it (files a
+// gated task, drafts a reply), so a toolless send would leave a gateway-kind one
 // unable to call a single tool on exactly the turn the tools exist for. This
 // package cannot import internal/api (it imports this one), hence a function.
 type TurnFunc func(ctx context.Context, a agents.Agent, sessionKey, message string, emit agents.StreamEmit) (string, error)
@@ -37,12 +37,12 @@ type TurnFunc func(ctx context.Context, a agents.Agent, sessionKey, message stri
 type Outcome string
 
 const (
-	// OutcomeDelivered: the chief's turn completed; the message is `delivered`.
+	// OutcomeDelivered: the target's turn completed; the message is `delivered`.
 	OutcomeDelivered Outcome = "delivered"
 	// OutcomeUnconfirmed: the send failed after the text may have been pasted;
 	// the message is `unconfirmed` and is never sent again.
 	OutcomeUnconfirmed Outcome = "unconfirmed"
-	// OutcomePending: nothing was pasted (no chief, chief not running, the
+	// OutcomePending: nothing was pasted (no target picked, target not running, the
 	// session claim held, a typed refusal, a dial error…); the message stays
 	// `queued` for a later attempt.
 	OutcomePending Outcome = "pending"
@@ -83,9 +83,9 @@ type DelivererConfig struct {
 	Hints HintFunc
 }
 
-// Deliverer hands one stored message to the owner's chief as a fenced turn: the
+// Deliverer hands one stored message to the plugin's target agent as a fenced turn: the
 // memo relay's shape (render → the agent's session claim → the turn → outcome),
-// except that the turn is the chief's ordinary chat turn, tools included (TurnFunc).
+// except that the turn is that agent's ordinary chat turn, tools included (TurnFunc).
 //
 // 🔴 IT IS CALLED, NOT A LOOP. The message route calls [Deliverer.Deliver] right
 // after it stores a NEW message. A message left `queued` by a pending attempt is
@@ -132,9 +132,10 @@ func NewDeliverer(cfg DelivererConfig) (*Deliverer, error) {
 
 func pending(reason string) Result { return Result{Outcome: OutcomePending, Reason: reason} }
 
-// Deliver attempts message messageID of plugin pluginID to chief. ctx carries the
+// Deliver attempts message messageID of plugin pluginID to target, the agent the
+// plugin names (internal/api resolves it from plugins.target_agent_id). ctx carries the
 // plugin OWNER's principal: row-level security then shows only that owner's
-// rows, and the owner checks below refuse a chief that is not theirs anyway (a
+// rows, and the owner checks below refuse an agent that is not theirs anyway (a
 // store without row-level security — every fake — must still be refused).
 //
 // The order is memorelay's: everything that can fail without contacting the
@@ -142,9 +143,9 @@ func pending(reason string) Result { return Result{Outcome: OutcomePending, Reas
 // pasted nothing (agentgateway.Unsent) leaves it queued too; anything else —
 // success, or a failure after the text may have been pasted — settles it, and it
 // is never sent again.
-func (d *Deliverer) Deliver(parent context.Context, pluginID, messageID int64, chief agents.Agent) Result {
+func (d *Deliverer) Deliver(parent context.Context, pluginID, messageID int64, target agents.Agent) Result {
 	turn := d.turn
-	if k := agents.KindTurnTimeout(chief.Kind); k > 0 && k+kindSlack > turn {
+	if k := agents.KindTurnTimeout(target.Kind); k > 0 && k+kindSlack > turn {
 		turn = k + kindSlack
 	}
 	ctx, cancel := context.WithTimeout(parent, turn)
@@ -155,26 +156,26 @@ func (d *Deliverer) Deliver(parent context.Context, pluginID, messageID int64, c
 		return pending("plugin_unreadable")
 	}
 	if p.RevokedAt != nil {
-		// A revoked plugin's messages never reach the chief: Submit refuses new
+		// A revoked plugin's messages never reach the target: Submit refuses new
 		// ones and QueuedForOwner skips queued ones, and THIS is the check for a
 		// caller that names one directly (a retry requeued just before the
 		// revoke). It stays queued, uncounted, as QueuedForOwner leaves it.
 		return pending("plugin_revoked")
 	}
-	if chief.ID == 0 {
-		return d.attempted(parent, messageID, "no_chief")
+	if target.ID == 0 {
+		return d.attempted(parent, messageID, "no_target")
 	}
-	if chief.OwnerID != p.OwnerID {
+	if target.OwnerID != p.OwnerID {
 		// Never another owner's agent, whatever the caller resolved.
-		return d.attempted(parent, messageID, "not_owners_chief")
+		return d.attempted(parent, messageID, "not_owners_agent")
 	}
 
-	// 🔴 THE CHIEF'S SESSION CLAIM, THE ONE A FIRST TURN AND A MEMO TURN HOLD
+	// 🔴 THE TARGET'S SESSION CLAIM, THE ONE A FIRST TURN AND A MEMO TURN HOLD
 	// (agents.Store.ClaimKickoff). It keeps a plugin turn from taking the session
 	// from a first turn still being handed over, and it makes "one message per
 	// turn" hold across processes: two deliveries cannot be inside this section for
-	// one chief, and the winner re-reads the message below.
-	won, err := d.agents.ClaimKickoff(ctx, chief.ID, d.owner, turn+claimMargin)
+	// one target agent, and the winner re-reads the message below.
+	won, err := d.agents.ClaimKickoff(ctx, target.ID, d.owner, turn+claimMargin)
 	if err != nil {
 		return d.attempted(parent, messageID, "claim_failed")
 	}
@@ -184,26 +185,26 @@ func (d *Deliverer) Deliver(parent context.Context, pluginID, messageID int64, c
 	defer func() {
 		rctx, rcancel := context.WithTimeout(context.WithoutCancel(parent), bookkeepingTimeout)
 		defer rcancel()
-		if err := d.agents.ReleaseKickoffClaim(rctx, chief.ID, d.owner); err != nil {
-			d.log.Printf("plugins: agent %d: release the session claim: %v", chief.ID, err)
+		if err := d.agents.ReleaseKickoffClaim(rctx, target.ID, d.owner); err != nil {
+			d.log.Printf("plugins: agent %d: release the session claim: %v", target.ID, err)
 		}
 	}()
 
 	// 🔴 CRASH RECOVERY, AND THE CLAIM IS WHAT MAKES IT SAFE. A delivery holds this
-	// chief's session claim for its whole turn and settles its `delivering` row
-	// before releasing it, so a row still `delivering` to this chief while WE hold
+	// target's session claim for its whole turn and settles its `delivering` row
+	// before releasing it, so a row still `delivering` to this agent while WE hold
 	// the claim was left by a process that died mid-turn (its claim has expired).
 	// It may have been pasted: it settles unconfirmed and is never sent again.
-	// ⚠ A row delivering to a chief that is never delivered to again (deleted,
+	// ⚠ A row delivering to an agent that is never delivered to again (deleted,
 	// re-provisioned as a new row) stays `delivering` — still never resent.
-	if n, err := d.store.RecoverDeliveries(ctx, chief.ID); err != nil {
-		d.log.Printf("plugins: agent %d: settle deliveries a dead process left: %v", chief.ID, err)
+	if n, err := d.store.RecoverDeliveries(ctx, target.ID); err != nil {
+		d.log.Printf("plugins: agent %d: settle deliveries a dead process left: %v", target.ID, err)
 	} else if n > 0 {
-		d.log.Printf("plugins: agent %d: %d delivery(ies) left mid-turn by a dead process settled unconfirmed", chief.ID, n)
+		d.log.Printf("plugins: agent %d: %d delivery(ies) left mid-turn by a dead process settled unconfirmed", target.ID, n)
 	}
 
 	// 🔴 RE-READ UNDER THE CLAIM: another attempt may have settled the message, and
-	// the chief may have stopped or been handed a first turn meanwhile.
+	// the target may have stopped or been handed a first turn meanwhile.
 	m, err := d.store.Message(ctx, messageID)
 	if err != nil {
 		return pending("message_unreadable")
@@ -217,15 +218,15 @@ func (d *Deliverer) Deliver(parent context.Context, pluginID, messageID int64, c
 	if err != nil {
 		return pending("message_unreadable")
 	}
-	fresh, err := d.agents.Get(ctx, chief.ID)
+	fresh, err := d.agents.Get(ctx, target.ID)
 	if err != nil {
-		return d.attempted(parent, messageID, "chief_unreadable")
+		return d.attempted(parent, messageID, "target_unreadable")
 	}
 	switch {
 	case fresh.OwnerID != p.OwnerID:
-		return d.attempted(parent, messageID, "not_owners_chief")
+		return d.attempted(parent, messageID, "not_owners_agent")
 	case fresh.Status != agents.StatusRunning:
-		return d.attempted(parent, messageID, "chief_not_running")
+		return d.attempted(parent, messageID, "target_not_running")
 	case agents.KickoffOwed(fresh):
 		return d.attempted(parent, messageID, "kickoff_owed")
 	case fresh.HooksToken == "":
@@ -239,7 +240,7 @@ func (d *Deliverer) Deliver(parent context.Context, pluginID, messageID int64, c
 		return d.attempted(parent, messageID, "no_session")
 	}
 
-	// 🔴 `delivering` TO THIS CHIEF, WRITTEN BEFORE THE TURN: the chief's tools
+	// 🔴 `delivering` TO THIS AGENT, WRITTEN BEFORE THE TURN: its tools
 	// (task_create_gated, reply_draft) accept only a message delivered to it, and
 	// THIS turn is the one on which it learns of the message and acts on it. Until
 	// this write it could cite nothing. It also counts the attempt.
@@ -258,7 +259,7 @@ func (d *Deliverer) Deliver(parent context.Context, pluginID, messageID int64, c
 	bctx, bcancel := context.WithTimeout(context.WithoutCancel(parent), bookkeepingTimeout)
 	defer bcancel()
 	if reason := agentgateway.Unsent(err); reason != "" {
-		// Provably nothing pasted: back to queued, the chief no longer named. If
+		// Provably nothing pasted: back to queued, the agent no longer named. If
 		// this write fails the row stays `delivering` and is recovered as
 		// unconfirmed — the direction that never sends it twice.
 		if aerr := d.store.AbandonDelivery(bctx, messageID, fresh.ID); aerr != nil {
@@ -277,7 +278,7 @@ func (d *Deliverer) Deliver(parent context.Context, pluginID, messageID int64, c
 	}
 	_, _ = d.agents.AddChatMessage(bctx, agents.ChatMessage{AgentID: fresh.ID, SessionID: sess.ID, Role: "user", Content: message})
 	// The reply's ORDERED parts — text and tool calls interleaved — as an
-	// ordinary chat turn stores them, so the session shows what the chief did.
+	// ordinary chat turn stores them, so the session shows what the agent did.
 	parts := pc.Parts()
 	if len(parts) == 0 && reply != "" {
 		parts = []agents.TurnPart{{Kind: "text", Content: reply}}
@@ -301,46 +302,46 @@ func (d *Deliverer) attempted(parent context.Context, messageID int64, reason st
 	return pending(reason)
 }
 
-// session is the chief chat session p's messages are delivered into.
+// session is the chat session p's messages are delivered into, on p's target agent.
 //
-// 🔴 IT IS THE CHIEF'S DEFAULT SESSION (agents.SessionRuntimeStore, migration
-// 0030) — one conversation for every plugin and for `chief ask`, on whatever
-// runtime the owner made the default. It is recorded as p's chief session too,
-// because a routed message handed back to the chief goes to the session p
+// 🔴 IT IS THE TARGET'S DEFAULT SESSION (agents.SessionRuntimeStore, migration
+// 0030) — one conversation for every plugin pointed at that agent, on whatever
+// runtime the owner made the default. It is recorded as p's delivery session too,
+// because a routed message handed back to the agent goes to the session p
 // records (session_routes.go), and that must be the one its delivery went to.
 //
-// ⚠ NOT GATED ON MUSTER_CHIEF_SESSION_RUNTIMES. That flag draws the runtime
+// ⚠ NOT GATED ON MUSTER_AGENT_SESSION_RUNTIMES. That flag draws the runtime
 // picker; this routing applies on every store with the 0030 half, flag or no
 // flag (the operator's "one pinned default session" decision).
 //
 // A store without the 0030 half keeps the earlier rule: a session dedicated to
-// p — the recorded one while it still belongs to this chief, else a new one
+// p — the recorded one while it still belongs to this agent, else a new one
 // (recorded for next time), titled by the first turn's first line, which begins
 // with p's label.
-func (d *Deliverer) session(ctx context.Context, p Plugin, chief agents.Agent) (agents.ChatSession, error) {
+func (d *Deliverer) session(ctx context.Context, p Plugin, target agents.Agent) (agents.ChatSession, error) {
 	if st, ok := d.agents.(agents.SessionRuntimeStore); ok {
-		s, err := st.DefaultSession(ctx, chief.ID, chief.Name)
+		s, err := st.DefaultSession(ctx, target.ID, target.Name)
 		if err != nil {
 			return agents.ChatSession{}, err
 		}
-		if p.ChiefAgentID == nil || *p.ChiefAgentID != chief.ID || p.ChiefSessionID == nil || *p.ChiefSessionID != s.ID {
-			if err := d.store.SetChiefSession(ctx, p.ID, chief.ID, s.ID); err != nil {
-				d.log.Printf("plugins: plugin %d: record its chief session: %v", p.ID, err)
+		if p.SessionAgentID == nil || *p.SessionAgentID != target.ID || p.SessionID == nil || *p.SessionID != s.ID {
+			if err := d.store.SetDeliverySession(ctx, p.ID, target.ID, s.ID); err != nil {
+				d.log.Printf("plugins: plugin %d: record its delivery session: %v", p.ID, err)
 			}
 		}
 		return s, nil
 	}
-	if p.ChiefAgentID != nil && *p.ChiefAgentID == chief.ID && p.ChiefSessionID != nil {
-		if s, err := d.agents.GetSession(ctx, *p.ChiefSessionID); err == nil && s.AgentID == chief.ID {
+	if p.SessionAgentID != nil && *p.SessionAgentID == target.ID && p.SessionID != nil {
+		if s, err := d.agents.GetSession(ctx, *p.SessionID); err == nil && s.AgentID == target.ID {
 			return s, nil
 		}
 	}
-	s, err := d.agents.CreateSession(ctx, chief.ID, chief.Name)
+	s, err := d.agents.CreateSession(ctx, target.ID, target.Name)
 	if err != nil {
 		return agents.ChatSession{}, err
 	}
-	if err := d.store.SetChiefSession(ctx, p.ID, chief.ID, s.ID); err != nil {
-		d.log.Printf("plugins: plugin %d: record its chief session: %v", p.ID, err)
+	if err := d.store.SetDeliverySession(ctx, p.ID, target.ID, s.ID); err != nil {
+		d.log.Printf("plugins: plugin %d: record its delivery session: %v", p.ID, err)
 	}
 	return s, nil
 }

@@ -139,7 +139,7 @@ func TestASidecarRunsBesideTheInstanceWithOnlyItsOwnSecretsAndFiles(t *testing.T
 
 // TestTheSidecarMovesTheFingerprintOnlyWhenDeclared: a spec without one keeps
 // its fingerprint (the sidecar is written only when present), and adding one
-// or changing it moves it — so Start re-applying a chief's spec rolls its pod.
+// or changing it moves it — so Start re-applying an agent's spec rolls its pod.
 func TestTheSidecarMovesTheFingerprintOnlyWhenDeclared(t *testing.T) {
 	spec := sidecarSpec("fp")
 	with := provision.Fingerprint(spec)

@@ -23,7 +23,7 @@ import (
 
 // Audit round 2 of task routing: the REAL turn path stores a forward once, a
 // forward made before an agent's first turn rides that turn, a mention with no
-// chief is still asked (by muster), the chief is the owner's even with RLS off,
+// agent is still asked (by muster), the agent is the owner's even with RLS off,
 // and a mention route is reserved atomically and spends the task-event
 // allowance.
 
@@ -123,7 +123,7 @@ func TestAForwardToARunningAgentIsStoredOnceOnTheRealTurnPath(t *testing.T) {
 	// the gate (a deferred leave), so the gate is waited on, with a deadline,
 	// rather than read once: it must reach 0, and a gate never left still fails.
 	waitUntil(t, "the turn to leave the gate (count 0)", func() bool { return f.running(a.ID) == 0 })
-	if text := f.call(f.chief, taskForwardTool, map[string]any{"task_id": taskID, "note": "heads up"}); !strings.Contains(text, `"turn_started":true`) {
+	if text := f.call(f.agent, taskForwardTool, map[string]any{"task_id": taskID, "note": "heads up"}); !strings.Contains(text, `"turn_started":true`) {
 		t.Fatalf("task_forward: %s", text)
 	}
 	waitUntil(t, "the forward's reply", func() bool { return f.rows(t, a, "assistant") == 2 })
@@ -238,18 +238,18 @@ func (f *taskRouteFixture) asksAbout(t *testing.T, id int64) []attention.Ask {
 }
 
 // TestAMentionWithNoChiefIsAskedByMuster (operator decision, round 2): with no
-// chief, a mention on an in-progress task is still an ask — raised by muster
+// agent, a mention on an in-progress task is still an ask — raised by muster
 // itself, no agent.
 func TestAMentionWithNoChiefIsAskedByMuster(t *testing.T) {
 	f := newTaskRouteFixture(t, false, false)
-	if _, err := f.pool.Exec(f.asOwner, `UPDATE agents SET display_name = 'not the chief' WHERE id = $1`, f.chief.ID); err != nil {
+	if _, err := f.pool.Exec(f.asOwner, `UPDATE agents SET display_name = 'not the agent' WHERE id = $1`, f.agent.ID); err != nil {
 		t.Fatal(err)
 	}
 	tok, _ := f.plugin(t)
 	key := "tracker:nc" + strconv.FormatInt(time.Now().UnixNano(), 36)
 	id := f.inProgressTask(t, tok, key)
 	if out := f.notice(t, tok, key, noticeMentioned, "m1: in progress", false); out["routed"] != routedAttention {
-		t.Fatalf("a mention with no chief: %v; want routed attention", out)
+		t.Fatalf("a mention with no agent: %v; want routed attention", out)
 	}
 	got := f.asksAbout(t, id)
 	if len(got) != 1 || !got[0].Asker.System || got[0].Asker.AgentID != 0 || askerLabel(got[0]) != attention.SystemAskerLabel {
@@ -257,20 +257,34 @@ func TestAMentionWithNoChiefIsAskedByMuster(t *testing.T) {
 	}
 }
 
-// TestAMentionsChiefIsTheOwnersWithRLSOff: with row-level security rolled
-// back the agent list holds every owner's agents, and another owner's chief
-// must never be the one that raises this owner's mention ask; with no chief of
-// its own, the asker is muster. (The whole hand-off is not driven here: with
-// RLS rolled back, db.RLSOff resets plugin_messages.owner_id's default to 1,
-// so any plugin row a non-first owner writes fails its owner foreign key —
-// the rollback's own property, not this path's.)
-func TestAMentionsChiefIsTheOwnersWithRLSOff(t *testing.T) {
+// TestAMentionsAskerIsMusterWhateverAgentsExist: a mention's ask is raised by
+// muster itself, and NO agent can become its asker — not another owner's (the
+// hazard this test was written for), and not the owner's own.
+//
+// 🔴 THE HAZARD IT GUARDED IS NOW STRUCTURALLY IMPOSSIBLE, AND THE TEST IS KEPT
+// FOR THAT REASON. The asker used to be the owner's agent, resolved by scanning
+// the agent list for the `agent` display name — so with row-level security
+// rolled back (when the list holds EVERY owner's agents) another owner's
+// labelled agent could have raised this owner's ask. mentionAsker reads no agent
+// list at all now, so the RLS-off arrangement below can no longer reach it. The
+// instrument check still proves the list really does hold the other owner's
+// agent, so a green result means "unreachable", not "not exercised".
+//
+// ⚠ THE CONTROL IS INVERTED FROM WHAT IT WAS. It asserted that the owner's own
+// agent became the asker once it was labelled again; the same arrangement must
+// now still answer muster.
+//
+// (The whole hand-off is not driven here: with RLS rolled back, db.RLSOff resets
+// plugin_messages.owner_id's default to 1, so any plugin row a non-first owner
+// writes fails its owner foreign key — the rollback's own property, not this
+// path's.)
+func TestAMentionsAskerIsMusterWhateverAgentsExist(t *testing.T) {
 	f := newTaskRouteFixture(t, false, false)
-	if _, err := f.pool.Exec(f.asOwner, `UPDATE agents SET display_name = 'not the chief' WHERE id = $1`, f.chief.ID); err != nil {
+	if _, err := f.pool.Exec(f.asOwner, `UPDATE agents SET display_name = 'not the agent' WHERE id = $1`, f.agent.ID); err != nil {
 		t.Fatal(err)
 	}
 	other := f.newMember(t)
-	theirs := f.newAgent(t, other, "trtheirs-"+strconv.FormatInt(other, 10), "chief", "tok-theirs-"+strconv.FormatInt(other, 10))
+	theirs := f.newAgent(t, other, "trtheirs-"+strconv.FormatInt(other, 10), "agent", "tok-theirs-"+strconv.FormatInt(other, 10))
 	if err := db.RLSOff(context.Background(), f.pool); err != nil {
 		t.Fatal(err)
 	}
@@ -288,17 +302,18 @@ func TestAMentionsChiefIsTheOwnersWithRLSOff(t *testing.T) {
 		sawTheirs = sawTheirs || a.ID == theirs.ID
 	}
 	if !sawTheirs {
-		t.Fatal("instrument check FAILED: with RLS off the owner's agent list should hold the other owner's chief")
+		t.Fatal("instrument check FAILED: with RLS off the owner's agent list should hold the other owner's agent")
 	}
-	if got := f.srv.mentionAsker(f.asOwner, f.owner); got.AgentID == theirs.ID || !got.System {
-		t.Fatalf("the mention's asker with RLS off: %+v; want muster, never another owner's chief (agent %d)", got, theirs.ID)
+	if got := f.srv.mentionAsker(f.asOwner, f.owner); got.AgentID != 0 || !got.System {
+		t.Fatalf("the mention's asker with RLS off: %+v; want muster, never an agent (another owner's is %d)", got, theirs.ID)
 	}
-	// CONTROL: the owner's own chief, once it has one again, is the asker.
-	if _, err := f.pool.Exec(f.asOwner, `UPDATE agents SET display_name = 'chief' WHERE id = $1`, f.chief.ID); err != nil {
+	// CONTROL: labelling the owner's OWN agent `agent` changes nothing — the
+	// label carries no behaviour, which is the whole point of its removal.
+	if _, err := f.pool.Exec(f.asOwner, `UPDATE agents SET display_name = 'agent' WHERE id = $1`, f.agent.ID); err != nil {
 		t.Fatal(err)
 	}
-	if got := f.srv.mentionAsker(f.asOwner, f.owner); got.AgentID != f.chief.ID {
-		t.Fatalf("with its own chief: asker %+v; want agent %d", got, f.chief.ID)
+	if got := f.srv.mentionAsker(f.asOwner, f.owner); got.AgentID != 0 || !got.System {
+		t.Fatalf("with its own agent labelled agent: asker %+v; want muster", got)
 	}
 }
 
@@ -360,7 +375,7 @@ func TestConcurrentIdenticalMentionsForwardOnce(t *testing.T) {
 	if got := turns(); got != 1 {
 		t.Fatalf("eight identical mentions started %d turn(s); want 1", got)
 	}
-	// The reservation is not a chief event: nothing to route.
+	// The reservation is not an agent event: nothing to route.
 	if items := f.taskItems(t); len(items) != 0 {
 		t.Fatalf("a routed mention is listed as a task to route: %+v", items)
 	}
@@ -377,7 +392,7 @@ func TestAFailedMentionDeliveryIsReleasedForTheResend(t *testing.T) {
 	id := f.inProgressTask(t, tok, key)
 	var filler []attention.Ask
 	for i := 0; i < attention.MaxOpenPerOwner; i++ {
-		ask, err := f.srv.ext.Attention.Create(f.asOwner, attention.New{Asker: callerOfAgent(f.chief).asker, Question: "filler " + strconv.Itoa(i)})
+		ask, err := f.srv.ext.Attention.Create(f.asOwner, attention.New{Asker: callerOfAgent(f.agent).asker, Question: "filler " + strconv.Itoa(i)})
 		if err != nil {
 			t.Fatal(err)
 		}

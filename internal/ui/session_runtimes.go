@@ -7,11 +7,17 @@ import (
 	. "maragu.dev/gomponents/html"
 )
 
-// THE CHIEF'S SESSIONS ON MORE THAN ONE RUNTIME (internal/api/session_runtime.go):
-// the panel's thread list gains a "New session" picker — a runtime and a model,
-// fixed for the session's life — each thread row names its runtime and model,
-// and one thread is marked the DEFAULT (where plugin messages and `chief ask`
-// go), with a control on every other row to make it so.
+// AN AGENT'S SESSIONS ON MORE THAN ONE RUNTIME (internal/api/session_runtime.go):
+// the session drawer gains a "New session" picker — a runtime and a model, fixed
+// for the session's life — each thread row names its runtime and model, and one
+// thread is marked the DEFAULT (where a plugin pointed at this agent delivers),
+// with a control on every other row to make it so.
+//
+// 🔴 THESE CONTROLS USED TO LIVE IN THE AGENT SLIDE-OUT AND NOW LIVE ON THE
+// AGENT'S OWN PAGE. muster has no privileged agent, so there is no one panel to
+// swap into: every form here posts and takes the handler's HX-Redirect to the
+// new (or newly default) session, which is what the page's own newChatButton
+// already does. That is why nothing below names a swap target.
 
 const (
 	// sessionPickerAttr marks the picker; newSessionAttr each of its forms,
@@ -25,10 +31,10 @@ const (
 	sessionDefaultAttr = "data-session-default"
 	makeDefaultAttr    = "data-make-default"
 	// sessionModelInputID / sessionModelListID are the OpenRouter model
-	// combobox's own ids: the agent page's header has one of its own
-	// (modelFieldForDisplay's "model-input"), and the panel can be open on it.
-	sessionModelInputID = "chief-session-model-input"
-	sessionModelListID  = "chief-session-model-list"
+	// combobox's own ids, kept distinct from the agent header's own
+	// (modelFieldForDisplay's "model-input") so the two can be on screen at once.
+	sessionModelInputID = "session-runtime-model-input"
+	sessionModelListID  = "session-runtime-model-list"
 )
 
 // SessionRuntimeView names a runtime the picker offers.
@@ -38,7 +44,7 @@ type SessionRuntimeView struct {
 }
 
 // sessionRuntimeLine is a thread row's runtime and model, for an explicit
-// session; nothing for a session on the chief's own runtime.
+// session; nothing for a session on the agent's own runtime.
 func sessionRuntimeLine(sess SessionView) g.Node {
 	if sess.Runtime == "" {
 		return nil
@@ -61,37 +67,37 @@ func sessionDefaultBadge(sess SessionView) g.Node {
 	}
 	return Span(
 		g.Attr(sessionDefaultAttr, ""),
-		g.Attr("title", "Plugin messages and chief ask go to this thread"),
+		g.Attr("title", "Plugin messages delivered to this agent go to this thread"),
 		Class("shrink-0 rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-accent ring-1 ring-inset ring-accent/50"),
 		g.Text("Default"),
 	)
 }
 
-// makeDefaultControl makes a thread the default, re-rendering the panel on it.
+// makeDefaultControl makes a thread the default. The handler answers
+// HX-Redirect to that session, so there is nothing to swap.
 // Nothing for the default thread itself, or where defaults are not offered.
 func makeDefaultControl(sess SessionView) g.Node {
 	if sess.IsDefault || sess.DefaultPath == "" {
 		return nil
 	}
 	return Form(
-		hx("hx-post", sess.DefaultPath+"?"+ChatSurfaceQueryParam+"="+string(ChatSurfaceChiefPanel)),
-		hx("hx-target", "#"+chiefPanelBodyID),
-		hx("hx-swap", "innerHTML"),
+		hx("hx-post", sess.DefaultPath),
+		hx("hx-swap", "none"),
 		Class("contents"),
 		Button(
 			Type("submit"),
 			g.Attr(makeDefaultAttr, ""),
-			g.Attr("title", "Send plugin messages and chief ask to this thread"),
+			g.Attr("title", "Deliver this agent's plugin messages to this thread"),
 			Class("press shrink-0 rounded-lg px-2 text-[11px] text-muted ring-1 ring-inset ring-line transition hover:bg-s2 hover:text-fg"),
 			g.Text("Make default"),
 		),
 	)
 }
 
-// chiefNewSessionPicker opens a session on a runtime and a model: one compact
-// form per offered runtime, each posting runtime + model to the session-create
-// route, whose panel answer re-renders the panel on the new session.
-func chiefNewSessionPicker(agentID int64, runtimes []SessionRuntimeView, claudeModels []string) g.Node {
+// newSessionPicker opens a session on a runtime and a model: one compact form
+// per offered runtime, each posting runtime + model to the session-create route,
+// which answers HX-Redirect to the new session.
+func newSessionPicker(agentID int64, runtimes []SessionRuntimeView, claudeModels []string) g.Node {
 	if len(runtimes) == 0 {
 		return nil
 	}
@@ -115,9 +121,8 @@ func chiefNewSessionPicker(agentID int64, runtimes []SessionRuntimeView, claudeM
 		}
 		forms = append(forms, Form(
 			g.Attr(newSessionAttr, rt.Runtime),
-			hx("hx-post", agentSessionsPath(agentID)+"?"+ChatSurfaceQueryParam+"="+string(ChatSurfaceChiefPanel)),
-			hx("hx-target", "#"+chiefPanelBodyID),
-			hx("hx-swap", "innerHTML"),
+			hx("hx-post", agentSessionsPath(agentID)),
+			hx("hx-swap", "none"),
 			Class("flex items-center gap-2"),
 			Input(Type("hidden"), Name("runtime"), Value(rt.Runtime)),
 			Span(Class("w-20 shrink-0 text-xs text-fg2"), g.Text(rt.Label)),

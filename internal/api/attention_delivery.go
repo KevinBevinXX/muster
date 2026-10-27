@@ -22,11 +22,11 @@ import (
 // docs/attention.md#delivery).
 //
 // Until this, an agent's ask was answered PULL-ONLY: only attention_wait
-// returned the answer, so an agent that asked and ended its turn — the chief
+// returned the answer, so an agent that asked and ended its turn — the agent
 // routing a task to its owner, then "I'm not waiting on an answer" — never saw
 // it. Now, when the operator answers an AGENT's ask on /attention, muster pushes
 // the answer into that agent's DEFAULT chat session (0030's is_default: the
-// chief's pinned session, any other agent's default) as a turn of its own, so
+// agent's pinned session, any other agent's default) as a turn of its own, so
 // the agent acts on it without polling.
 //
 // 🔴 THE TURN IS THE ORDINARY CHAT TURN, UNDER THE SAME LOCKS. It runs through

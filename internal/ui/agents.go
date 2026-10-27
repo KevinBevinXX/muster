@@ -86,11 +86,6 @@ type AgentCardView struct {
 	// the order and the label on screen are one number. Composed in internal/api's
 	// cardViewIndexed; a zero value (a minimal test view) falls back to UpdatedAt.
 	LastActiveAt time.Time
-	// IsChief marks the fleet's chief agent; its ⋯ menu offers no Delete. It is
-	// the answer of internal/api's ONE chief predicate (isChiefAmong), composed in
-	// cardViewIndexed and never re-derived here — the server refuses the delete
-	// regardless, so this only keeps the UI from offering what it would refuse.
-	IsChief bool
 	// Pinned: the viewing user pinned this agent (internal/pins). The list draws
 	// a pinned agent first, as a label-only CHIP instead of its card
 	// (pinned_chips.go: unpinned, renamed and started/stopped from the chip's
@@ -565,7 +560,8 @@ func agentRenameButton(ids string) g.Node {
 // agentMenu is the ⋯ context menu: a trigger button plus a FLOATING menu
 // holding Start/Stop and Delete. Start/Stop occupy one slot (the agent's
 // current lifecycle action); Delete uses a two-step in-menu confirm (no native
-// confirm()) and is ABSENT for the chief agent (AgentCardView.IsChief), which
+// confirm()). It is offered for EVERY agent: there is no privileged agent and
+// no agent the server would refuse to delete, so there is nothing to hide (what
 // the server refuses to delete anyway.
 //
 // 🔴 THE MENU IS A NATIVE POPOVER, NOT AN ABSOLUTE DROPDOWN, AND THE CARD IS WHY.
@@ -612,8 +608,8 @@ func agentMenu(a AgentCardView) g.Node {
 			Class("invisible hidden [&:popover-open]:flex m-0 w-44 flex-col gap-1 rounded-xl border border-line bg-s1 p-1.5 text-fg shadow-2xl ring-1 ring-black/20"),
 			lifecycle,
 			g.If(!a.Pinned, agentPinMenuItem(a)),
-			g.If(!a.IsChief, Div(Class("my-0.5 border-t border-line"))),
-			g.If(!a.IsChief, agentDeleteConfirm(ids)),
+			Div(Class("my-0.5 border-t border-line")),
+			agentDeleteConfirm(ids),
 		),
 	}
 }

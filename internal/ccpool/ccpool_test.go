@@ -368,7 +368,7 @@ func TestSelectChoosesOnlyAmongTheOwnersOwnAccounts(t *testing.T) {
 	}
 }
 
-// TestAuthFailureNamesADeadAccountAndOnlyForItsCurrentToken: the chief
+// TestAuthFailureNamesADeadAccountAndOnlyForItsCurrentToken: the agent
 // replacement's pre-flight. A mark against the CURRENT token's fingerprint is
 // a reason; a mark against a rotated-away token, a rate limit, or no mark is
 // not; an account the owner lacks is ErrUnknownAccount.

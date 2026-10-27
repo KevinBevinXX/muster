@@ -42,12 +42,12 @@ func TestExitCodeMapping(t *testing.T) {
 		},
 		{
 			// The fail-closed route's refusal, keyed on the MARKER rather than on
-			// the status or the route.
+			// the status or the route. `plugins retry` is the remaining write
+			// surface gated on requireArmedHookToken (agents.go).
 			name: "503 carrying the unarmed marker -> exit 9",
-			args: []string{"chief", "ask", "--text", "hi"},
+			args: []string{"plugins", "retry", "6"},
 			set: func(h *harness) {
-				h.json("GET /api/agents", http.StatusOK, `[{"id":1,"name":"chief"}]`)
-				h.json("POST /api/agents/chief/messages", http.StatusServiceUnavailable,
+				h.json("POST /api/plugins/messages/6/retry", http.StatusServiceUnavailable,
 					`{"error":"this route requires a configured hook token","unarmed":true}`)
 			},
 			want: exitUnarmed,
@@ -56,10 +56,9 @@ func TestExitCodeMapping(t *testing.T) {
 			// And the SAME route with `unarmed:false` must NOT be read as unarmed —
 			// the *bool distinction, exercised rather than asserted about.
 			name: "503 with unarmed:false -> server error",
-			args: []string{"chief", "ask", "--text", "hi"},
+			args: []string{"plugins", "retry", "6"},
 			set: func(h *harness) {
-				h.json("GET /api/agents", http.StatusOK, `[{"id":1,"name":"chief"}]`)
-				h.json("POST /api/agents/chief/messages", http.StatusServiceUnavailable,
+				h.json("POST /api/plugins/messages/6/retry", http.StatusServiceUnavailable,
 					`{"error":"backend down","unarmed":false}`)
 			},
 			want: exitServerError,
@@ -302,15 +301,12 @@ func TestUnknownFieldsArePassedThrough(t *testing.T) {
 
 // TestTheSkewProbeIsUnauthenticatedAndHappensOnce: /health is open, so the CLI
 // must not send the token there, and the probe must fire at most once per
-// process however many requests a verb makes.
+// process. `agent messages` makes one API call per invocation.
 func TestTheSkewProbeIsUnauthenticatedAndHappensOnce(t *testing.T) {
 	h := newHarness(t)
-	// `chief ask` makes TWO API calls (resolve, then post), so a per-call probe
-	// would show up as two /health hits.
-	h.json("GET /api/agents", http.StatusOK, `[{"id":1,"name":"chief"}]`)
-	h.json("POST /api/agents/chief/messages", http.StatusOK, `{"reply":"ok"}`)
+	h.json("GET /api/agents/agent/messages", http.StatusOK, `{"messages":[],"count":0}`)
 
-	got := h.runCLI("chief", "ask", "--text", "hi")
+	got := h.runCLI("agent", "messages", "agent")
 	if got.code != exitOK {
 		t.Fatalf("exit = %d, stderr=%q", got.code, got.stderr)
 	}
@@ -325,12 +321,12 @@ func TestTheSkewProbeIsUnauthenticatedAndHappensOnce(t *testing.T) {
 		}
 	}
 	if health != 1 {
-		t.Fatalf("the skew probe fired %d times across a two-request verb, want exactly 1", health)
+		t.Fatalf("the skew probe fired %d times for a single-request verb, want exactly 1", health)
 	}
-	// Positive control: the two API calls DID happen, so "exactly one probe" is
+	// Positive control: the one API call DID happen, so "exactly one probe" is
 	// not passing because nothing ran.
-	if n := len(h.nonHealthRequests()); n != 2 {
-		t.Fatalf("saw %d API requests, want 2 — the fixture did not exercise a multi-call verb", n)
+	if n := len(h.nonHealthRequests()); n != 1 {
+		t.Fatalf("saw %d API requests, want 1 — the fixture did not exercise the verb", n)
 	}
 }
 

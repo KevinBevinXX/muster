@@ -6,7 +6,7 @@ import (
 )
 
 // THE COMPOSERS GROW WITH WHAT IS TYPED — every message box in the app: the
-// agent chat's #chat-input (and the chief panel, which renders the same pane)
+// agent chat's #chat-input (and the agent panel, which renders the same pane)
 // and the mirrored views' #mv-input (Rendered and Terminal). Both wear
 // composerInputClass, which carries composerFitClass, so this is ONE
 // implementation reached by both, not two copies.
@@ -29,7 +29,7 @@ import (
 //
 // 🔴 A VALUE SET BY SCRIPT FIRES NO `input` EVENT, so the fallback cannot see a
 // send clear the box. The two senders (agentChatScript, mirrorComposerScript)
-// call window.musterComposerFit(input) after emptying it; the chief panel's
+// call window.musterComposerFit(input) after emptying it; the agent panel's
 // quick actions and dictation dispatch an `input` event instead, which the
 // delegated listener here hears. With `field-sizing` none of that is needed —
 // the box re-measures on any value change — which is why the e2e spec runs the
@@ -49,7 +49,7 @@ const (
 
 // composerFitScript is the composers' shared sizing: the cap variable and the
 // fallback. Each composer ships it beside itself, because the documents they
-// render into differ (the agent page, the chief panel's swapped body, the
+// render into differ (the agent page, the agent panel's swapped body, the
 // mirrored views). It binds once per document (a window flag), with
 // document-level listeners, so a composer swapped in later is covered without
 // binding again and every copy after the first is a no-op.

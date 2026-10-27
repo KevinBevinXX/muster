@@ -17,26 +17,26 @@ import (
 	"github.com/ZacxDev/muster/internal/dbtest"
 )
 
-// draftWorld is user 2's plugin and chief with one message delivered to it.
+// draftWorld is user 2's plugin and target with one message delivered to it.
 type draftWorld struct {
-	s     *PGStore
-	dsn   string
-	p     Plugin
-	chief agents.Agent
-	m     Message
+	s      *PGStore
+	dsn    string
+	p      Plugin
+	target agents.Agent
+	m      Message
 }
 
 func newDraftWorld(t *testing.T) draftWorld {
 	t.Helper()
 	s, _, dsn := pgStore(t)
 	_, p := mustCreate(t, s, 2, "example-inbox")
-	w := draftWorld{s: s, dsn: dsn, p: p, chief: mustAgent(t, dsn, 2, "plg-chief")}
+	w := draftWorld{s: s, dsn: dsn, p: p, target: mustAgent(t, dsn, 2, "plg-target")}
 	w.m = w.delivered(t, "m-1", false)
 	return w
 }
 
 // delivered stores a message for the world's plugin and settles it as delivered
-// to the chief.
+// to the target.
 func (w draftWorld) delivered(t *testing.T, ext string, noReply bool) Message {
 	t.Helper()
 	in := msg(ext)
@@ -45,10 +45,10 @@ func (w draftWorld) delivered(t *testing.T, ext string, noReply bool) Message {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ok, err := w.s.BeginDelivery(plugin(2), m.ID, w.chief.ID); err != nil || !ok {
+	if ok, err := w.s.BeginDelivery(plugin(2), m.ID, w.target.ID); err != nil || !ok {
 		t.Fatalf("begin delivery %s: %v %v", ext, ok, err)
 	}
-	if ok, err := w.s.RecordDelivery(plugin(2), m.ID, w.chief.ID, StatusDelivered); err != nil || !ok {
+	if ok, err := w.s.RecordDelivery(plugin(2), m.ID, w.target.ID, StatusDelivered); err != nil || !ok {
 		t.Fatalf("deliver %s: %v %v", ext, ok, err)
 	}
 	m, _ = w.s.Message(plugin(2), m.ID)
@@ -57,7 +57,7 @@ func (w draftWorld) delivered(t *testing.T, ext string, noReply bool) Message {
 
 func (w draftWorld) file(t *testing.T, m Message, body string) Draft {
 	t.Helper()
-	d, _, err := w.s.FileDraft(session(2), w.chief.ID, 2, w.chief.Name, m.ID, body)
+	d, _, err := w.s.FileDraft(session(2), w.target.ID, 2, w.target.Name, m.ID, body)
 	if err != nil {
 		t.Fatalf("file a draft for %d: %v", m.ID, err)
 	}
@@ -73,14 +73,14 @@ func (w draftWorld) approve(t *testing.T, d Draft) Draft {
 	return got
 }
 
-// TestADraftIsOnlyForAMessageDeliveredToThatAgent: the chief's draft for its own
+// TestADraftIsOnlyForAMessageDeliveredToThatAgent: the target's draft for its own
 // delivered message lands pending; a worker of the same owner, another owner's
 // agent, a queued message and a missing one are each refused ErrNotFound and
 // nothing is stored.
 func TestADraftIsOnlyForAMessageDeliveredToThatAgent(t *testing.T) {
 	w := newDraftWorld(t)
 	d := w.file(t, w.m, "Thanks, noon works.")
-	if d.Status != DraftPending || d.MessageID != w.m.ID || d.AgentID == nil || *d.AgentID != w.chief.ID ||
+	if d.Status != DraftPending || d.MessageID != w.m.ID || d.AgentID == nil || *d.AgentID != w.target.ID ||
 		d.Body != "Thanks, noon works." || d.ExpiresAt.Sub(d.CreatedAt) != DraftTTL {
 		t.Fatalf("filed draft = %+v", d)
 	}
@@ -101,11 +101,11 @@ func TestADraftIsOnlyForAMessageDeliveredToThatAgent(t *testing.T) {
 			return err
 		},
 		"a queued message": func() error {
-			_, _, err := w.s.FileDraft(session(2), w.chief.ID, 2, w.chief.Name, queued.ID, "x")
+			_, _, err := w.s.FileDraft(session(2), w.target.ID, 2, w.target.Name, queued.ID, "x")
 			return err
 		},
 		"no such message": func() error {
-			_, _, err := w.s.FileDraft(session(2), w.chief.ID, 2, w.chief.Name, 9_000_000, "x")
+			_, _, err := w.s.FileDraft(session(2), w.target.ID, 2, w.target.Name, 9_000_000, "x")
 			return err
 		},
 	} {
@@ -115,7 +115,7 @@ func TestADraftIsOnlyForAMessageDeliveredToThatAgent(t *testing.T) {
 	}
 	cards, err := w.s.DraftCards(session(2), 50)
 	if err != nil || len(cards) != 1 || cards[0].Draft.ID != d.ID {
-		t.Fatalf("drafts after the refusals = %d (%v); want only the chief's one", len(cards), err)
+		t.Fatalf("drafts after the refusals = %d (%v); want only the target's one", len(cards), err)
 	}
 }
 
@@ -130,17 +130,17 @@ func TestANoReplyMessageCannotBeAnswered(t *testing.T) {
 	if !nr.NoReply {
 		t.Fatalf("the stored message lost its no_reply mark: %+v", nr)
 	}
-	if _, _, err := w.s.FileDraft(session(2), w.chief.ID, 2, w.chief.Name, nr.ID, "hello"); !errors.Is(err, ErrNoReply) {
+	if _, _, err := w.s.FileDraft(session(2), w.target.ID, 2, w.target.Name, nr.ID, "hello"); !errors.Is(err, ErrNoReply) {
 		t.Fatalf("a draft for a no_reply message: %v; want ErrNoReply", err)
 	}
 	insert := `INSERT INTO plugin_reply_drafts (owner_id, message_id, agent_id, agent_name, body, expires_at)
 		VALUES (2, $1, $2, 'x', 'direct', now() + interval '1 day')`
-	err := ownerExecErr(t, w.dsn, insert, nr.ID, w.chief.ID)
+	err := ownerExecErr(t, w.dsn, insert, nr.ID, w.target.ID)
 	var pg *pgconn.PgError
 	if !errors.As(err, &pg) || pg.Code != "23514" || !strings.Contains(pg.Message, "no_reply") {
 		t.Fatalf("a direct insert for a no_reply message: %v; want the 0016 trigger's check_violation", err)
 	}
-	if err := ownerExecErr(t, w.dsn, insert, w.m.ID, w.chief.ID); err != nil {
+	if err := ownerExecErr(t, w.dsn, insert, w.m.ID, w.target.ID); err != nil {
 		t.Fatalf("CONTROL: the same direct insert for a replyable message: %v", err)
 	}
 	err = ownerExecErr(t, w.dsn, `UPDATE plugin_messages SET no_reply = false WHERE id = $1`, nr.ID)
@@ -168,7 +168,7 @@ func ownerExecErr(t *testing.T, dsn, sql string, args ...any) error {
 func TestANewDraftSupersedesThePendingOneAndTheCapIsTwenty(t *testing.T) {
 	w := newDraftWorld(t)
 	first := w.file(t, w.m, "first")
-	second, sup, err := w.s.FileDraft(session(2), w.chief.ID, 2, w.chief.Name, w.m.ID, "second")
+	second, sup, err := w.s.FileDraft(session(2), w.target.ID, 2, w.target.Name, w.m.ID, "second")
 	if err != nil || sup != 1 {
 		t.Fatalf("the second draft: superseded=%d %v; want 1", sup, err)
 	}
@@ -182,11 +182,11 @@ func TestANewDraftSupersedesThePendingOneAndTheCapIsTwenty(t *testing.T) {
 		w.file(t, w.delivered(t, "cap-"+strconv.Itoa(i), false), "reply "+strconv.Itoa(i))
 	}
 	// 20 pending now. Replacing one is not a new pending draft.
-	if _, sup, err := w.s.FileDraft(session(2), w.chief.ID, 2, w.chief.Name, w.m.ID, "third"); err != nil || sup != 1 {
+	if _, sup, err := w.s.FileDraft(session(2), w.target.ID, 2, w.target.Name, w.m.ID, "third"); err != nil || sup != 1 {
 		t.Fatalf("replacing a draft at the cap: superseded=%d %v; want allowed", sup, err)
 	}
 	extra := w.delivered(t, "cap-extra", false)
-	if _, _, err := w.s.FileDraft(session(2), w.chief.ID, 2, w.chief.Name, extra.ID, "21st"); !errors.Is(err, ErrTooManyPendingDrafts) {
+	if _, _, err := w.s.FileDraft(session(2), w.target.ID, 2, w.target.Name, extra.ID, "21st"); !errors.Is(err, ErrTooManyPendingDrafts) {
 		t.Fatalf("the 21st pending draft: %v; want ErrTooManyPendingDrafts", err)
 	}
 }
@@ -202,7 +202,7 @@ func TestConcurrentDraftsForOneMessageLeaveOnePending(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			_, _, err := w.s.FileDraft(session(2), w.chief.ID, 2, w.chief.Name, w.m.ID, "race "+strconv.Itoa(i))
+			_, _, err := w.s.FileDraft(session(2), w.target.ID, 2, w.target.Name, w.m.ID, "race "+strconv.Itoa(i))
 			errs <- err
 		}(i)
 	}
@@ -239,7 +239,7 @@ func TestTheScreenRefusesWhatTheOwnerCouldNotSeeOrShouldNotSend(t *testing.T) {
 		"over the cap":           strings.Repeat("a", MaxDraftBytes+1),
 		"NUL":                    "a\x00b",
 	} {
-		if _, _, err := w.s.FileDraft(session(2), w.chief.ID, 2, w.chief.Name, w.m.ID, body); !errors.Is(err, ErrInvalid) {
+		if _, _, err := w.s.FileDraft(session(2), w.target.ID, 2, w.target.Name, w.m.ID, body); !errors.Is(err, ErrInvalid) {
 			t.Errorf("%s: %v; want ErrInvalid", name, err)
 		}
 	}
@@ -481,7 +481,7 @@ func TestAnApprovalCanBeWithdrawnUntilItIsClaimed(t *testing.T) {
 func TestOneReplyPerMessageIsInFlight(t *testing.T) {
 	w := newDraftWorld(t)
 	d1 := w.approve(t, w.file(t, w.m, "first"))
-	if _, _, err := w.s.FileDraft(session(2), w.chief.ID, 2, w.chief.Name, w.m.ID, "second"); !errors.Is(err, ErrReplyInFlight) {
+	if _, _, err := w.s.FileDraft(session(2), w.target.ID, 2, w.target.Name, w.m.ID, "second"); !errors.Is(err, ErrReplyInFlight) {
 		t.Fatalf("filing while a reply is approved: %v; want ErrReplyInFlight", err)
 	}
 	// Another message's draft is unaffected.
@@ -506,7 +506,7 @@ func TestOneReplyPerMessageIsInFlight(t *testing.T) {
 	d3 := w.file(t, race, "three")
 	dbtest.OwnerExec(t, w.dsn, `INSERT INTO plugin_reply_drafts (owner_id, message_id, agent_id, agent_name, body, expires_at,
 		status, decided_at, approved_at) VALUES (2, $1, $2, 'x', 'already approved', now() + interval '1 day', 'approved', now(), now())`,
-		race.ID, w.chief.ID)
+		race.ID, w.target.ID)
 	if _, err := w.s.DecideDraft(session(2), d3.ID, true); !errors.Is(err, ErrReplyInFlight) {
 		t.Fatalf("approving while another reply is in flight: %v; want ErrReplyInFlight", err)
 	}
@@ -624,7 +624,7 @@ func TestAResultTakesTheMessageLockFirst(t *testing.T) {
 }
 
 // TestALateSentCancelsEveryOtherReplyToTheMessage is the hole round 0 found: draft
-// 1 is claimed and its lease lapses (unconfirmed); the chief files draft 2 for the
+// 1 is claimed and its lease lapses (unconfirmed); the target files draft 2 for the
 // same message and the owner approves it; THEN the plugin reports draft 1 sent.
 // The sender has the reply, so draft 2 — approved, unclaimed — must not go too:
 // it is superseded in the same transaction, audited, and never handed out. A
@@ -724,7 +724,7 @@ func TestTheDraftTriggersHoldUnderTheScopeAllPrincipal(t *testing.T) {
 	}
 	var draft int64
 	if err := w.s.pool.QueryRow(sys, `INSERT INTO plugin_reply_drafts (owner_id, message_id, agent_id, agent_name, body, expires_at)
-		VALUES (2, $1, $2, 'chief', 'reply', now() + interval '7 days') RETURNING id`, w.m.ID, w.chief.ID).Scan(&draft); err != nil {
+		VALUES (2, $1, $2, 'target', 'reply', now() + interval '7 days') RETURNING id`, w.m.ID, w.target.ID).Scan(&draft); err != nil {
 		t.Fatalf("a draft by the owner's own agent: %v", err)
 	}
 	check("draft body", `UPDATE plugin_reply_drafts SET body = 'swapped' WHERE id = $1`, draft)
@@ -741,7 +741,7 @@ func TestTheDraftTriggersHoldUnderTheScopeAllPrincipal(t *testing.T) {
 	if _, err := w.s.pool.Exec(sys, `UPDATE plugin_reply_drafts SET status = 'superseded' WHERE id = $1`, draft); err != nil {
 		t.Fatalf("superseding an approved draft, keeping its approval time: %v", err)
 	}
-	if _, err := w.s.pool.Exec(sys, `DELETE FROM agents WHERE id = $1`, w.chief.ID); err != nil {
+	if _, err := w.s.pool.Exec(sys, `DELETE FROM agents WHERE id = $1`, w.target.ID); err != nil {
 		t.Fatalf("deleting the agent a draft names: %v", err)
 	}
 	var stillThere int

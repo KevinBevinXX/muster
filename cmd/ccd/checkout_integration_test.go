@@ -120,7 +120,7 @@ func TestTmuxARepoThatCannotBeClonedKeepsTheCLIStoppedAndSaysWhy(t *testing.T) {
 }
 
 // TestTmuxAnAgentWithNoRepoReportsNoCheckout: no CCD_REPO — today's shape (the
-// live chief): no `repo` in /healthz, the CLI in the plain workspace.
+// live agent): no `repo` in /healthz, the CLI in the plain workspace.
 func TestTmuxAnAgentWithNoRepoReportsNoCheckout(t *testing.T) {
 	r := startServe(t)
 	h := r.waitHealth(t, "first start", primaryReady)

@@ -24,10 +24,6 @@ func (listedAgents) LatestSessionIDs(context.Context, []int64) (map[int64]int64,
 	return map[int64]int64{}, nil
 }
 
-func (*chiefFixtureAgents) LatestSessionIDs(context.Context, []int64) (map[int64]int64, error) {
-	return map[int64]int64{}, nil
-}
-
 func (*modelStore) LatestSessionIDs(context.Context, []int64) (map[int64]int64, error) {
 	return map[int64]int64{}, nil
 }
@@ -37,10 +33,6 @@ func (*owedStore) LatestSessionIDs(context.Context, []int64) (map[int64]int64, e
 }
 
 func (relayAgents) LatestSessionIDs(context.Context, []int64) (map[int64]int64, error) {
-	return map[int64]int64{}, nil
-}
-
-func (tokenAgentsStore) LatestSessionIDs(context.Context, []int64) (map[int64]int64, error) {
 	return map[int64]int64{}, nil
 }
 

@@ -90,16 +90,16 @@ func (c *claimTTLAgents) ClaimKickoff(_ context.Context, _ int64, _ string, ttl 
 }
 func (c *claimTTLAgents) ReleaseKickoffClaim(context.Context, int64, string) error { return nil }
 
-// TestARouteHandBackIsBudgetedByTheChiefsKindAndItsClaimOutlastsIt: a hand-back
-// to a claude-code chief runs on 37m, and the session claim it holds is longer
+// TestARouteHandBackIsBudgetedByTheAgentsKindAndItsClaimOutlastsIt: a hand-back
+// to a claude-code agent runs on 37m, and the session claim it holds is longer
 // than that turn, so the claim cannot lapse mid-turn.
-func TestARouteHandBackIsBudgetedByTheChiefsKindAndItsClaimOutlastsIt(t *testing.T) {
+func TestARouteHandBackIsBudgetedByTheAgentsKindAndItsClaimOutlastsIt(t *testing.T) {
 	store := &claimTTLAgents{sendAgents: newSendAgents()}
 	gw := &deadlineGateway{left: map[string]time.Duration{}}
 	s, _ := sendServer(t, store.sendAgents, gw)
 	s.ext.Agents = store
-	chief := agents.Agent{ID: 7, Name: "keen-wren", Kind: agents.KindClaudeCode, CCAccount: "alpha", Status: agents.StatusRunning}
-	if !s.startClaimedChiefTurn(asUser(1), chief, agents.ChatSession{ID: 41, AgentID: 7, SessionKey: "key-41"}, "rt_x", "hand back") {
+	agent := agents.Agent{ID: 7, Name: "keen-wren", Kind: agents.KindClaudeCode, CCAccount: "alpha", Status: agents.StatusRunning}
+	if !s.startClaimedAgentTurn(asUser(1), agent, agents.ChatSession{ID: 41, AgentID: 7, SessionKey: "key-41"}, "rt_x", "hand back") {
 		t.Fatal("the hand-back did not start")
 	}
 	eventuallyAPI(t, "the hand-back turn", func() bool { _, ok := gw.leftFor("keen-wren"); return ok })

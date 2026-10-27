@@ -22,14 +22,14 @@ import (
 )
 
 // gatedFixture is the connector fixture (real Postgres, real /mcp door) with the
-// task store and the plugin store wired, and a FRESH member owning a chief and a
-// worker — fresh so no other test's agent labelled "chief" can outrank this one
+// task store and the plugin store wired, and a FRESH member owning an agent and a
+// worker — fresh so no other test's agent labelled "agent" can outrank this one
 // in chiefPredicate's lowest-id rule.
 type gatedFixture struct {
 	*connFixture
 	owner     int64
 	asOwner   context.Context
-	chief     agents.Agent
+	agent     agents.Agent
 	worker    agents.Agent
 	chiefTok  string
 	workerTok string
@@ -63,8 +63,8 @@ func newGatedFixtureWith(t *testing.T, extra func(g *gatedFixture, ext *Extensio
 	g.owner = g.newMember(t)
 	g.asOwner = g.as(g.owner)
 	suffix := strconv.FormatInt(time.Now().UnixNano(), 36)
-	g.chiefTok, g.workerTok = "gated-chief-token-"+suffix, "gated-worker-token-"+suffix
-	g.chief = g.newAgent(t, g.owner, "gtchief-"+suffix, "chief", g.chiefTok)
+	g.chiefTok, g.workerTok = "gated-agent-token-"+suffix, "gated-worker-token-"+suffix
+	g.agent = g.newAgent(t, g.owner, "gtchief-"+suffix, "agent", g.chiefTok)
 	g.worker = g.newAgent(t, g.owner, "gtworker-"+suffix, "", g.workerTok)
 	return g
 }
@@ -169,20 +169,20 @@ func (g *gatedFixture) ownerTasks(t *testing.T) []notes.Note {
 	return list
 }
 
-// TestTheChiefFilesAGatedTaskOverMCP: the chief's own token, through the real
+// TestTheChiefFilesAGatedTaskOverMCP: the agent's own token, through the real
 // /mcp door and the real stores, files a task that is stored GATED with the
-// server's gate tag, owned by the chief's owner, citing the plugin message in a
+// server's gate tag, owned by the agent's owner, citing the plugin message in a
 // server-written body line — and the reservation is audited.
 func TestTheChiefFilesAGatedTaskOverMCP(t *testing.T) {
 	g := newGatedFixture(t)
-	m := g.deliveredMessage(t, g.owner, g.chief.ID, "ext-1")
+	m := g.deliveredMessage(t, g.owner, g.agent.ID, "ext-1")
 
 	text, isErr, rpcErr := g.callGated(t, g.chiefTok, map[string]any{
 		"title": "Answer the inbox", "body": "Summarised request.", "gate_reason": "Needs Owner OK!",
 		"message_id": m.ID, "tags": []string{"Inbox"},
 	})
 	if rpcErr != nil || isErr {
-		t.Fatalf("the chief's call failed: rpc=%+v text=%s", rpcErr, text)
+		t.Fatalf("the agent's call failed: rpc=%+v text=%s", rpcErr, text)
 	}
 	var out struct {
 		ID int64 `json:"id"`
@@ -205,18 +205,23 @@ func TestTheChiefFilesAGatedTaskOverMCP(t *testing.T) {
 	}
 	var audited int
 	if err := g.pool.QueryRow(g.asOwner, `SELECT count(*) FROM audit_log WHERE action = $1 AND object = $2
-		AND (detail->>'message_id')::bigint = $3`, plugins.ActionGatedTask, plugins.AgentObject(g.chief.ID), m.ID).Scan(&audited); err != nil {
+		AND (detail->>'message_id')::bigint = $3`, plugins.ActionGatedTask, plugins.AgentObject(g.agent.ID), m.ID).Scan(&audited); err != nil {
 		t.Fatal(err)
 	}
 	if audited != 1 {
-		t.Errorf("%d %s audit rows for the chief citing the message, want 1", audited, plugins.ActionGatedTask)
+		t.Errorf("%d %s audit rows for the agent citing the message, want 1", audited, plugins.ActionGatedTask)
 	}
 }
 
-// TestAWorkerIsNeitherOfferedNorAbleToCallTheGatedTool over the real /mcp door:
-// the tool is not in the worker's tools/list, a tools/call for it is an unknown
-// tool (-32602), and no task appears.
-func TestAWorkerIsNeitherOfferedNorAbleToCallTheGatedTool(t *testing.T) {
+// TestAWorkerIsOfferedAndServedTheGatedTool over the real /mcp door: the tool
+// appears in a worker's tools/list and a tools/call files a task its owner must
+// approve, exactly as for any other agent.
+//
+// 🔴 IT USED TO ASSERT THE OPPOSITE — not listed, -32602 on call, no task — and
+// that was the agent-only filter. The task it files is still GATED (the owner
+// approves it before it becomes real), which is the protection that was always
+// doing the work; rank was never what made a filed task safe.
+func TestAWorkerIsOfferedAndServedTheGatedTool(t *testing.T) {
 	g := newGatedFixture(t)
 	listed := func(token string) bool {
 		r, _ := g.mcp(t, token, `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`, nil)
@@ -225,19 +230,17 @@ func TestAWorkerIsNeitherOfferedNorAbleToCallTheGatedTool(t *testing.T) {
 		}
 		return strings.Contains(string(r.Result), `"name":"`+gatedTaskToolName+`"`)
 	}
-	// Positive control: the chief IS offered it, so the absence below is a filter.
-	if !listed(g.chiefTok) {
-		t.Fatal("positive control: the chief's tools/list does not offer the gated tool")
+	for who, tok := range map[string]string{"fleet agent": g.chiefTok, "worker": g.workerTok} {
+		if !listed(tok) {
+			t.Errorf("the %s's tools/list does not offer the gated tool", who)
+		}
 	}
-	if listed(g.workerTok) {
-		t.Error("a worker's tools/list offers the chief-only gated tool")
+	text, isErr, rpcErr := g.callGated(t, g.workerTok, map[string]any{"title": "x", "body": "y", "gate_reason": "z"})
+	if rpcErr != nil || isErr {
+		t.Errorf("a worker's tools/call: %+v %s, want it served", rpcErr, text)
 	}
-	_, _, rpcErr := g.callGated(t, g.workerTok, map[string]any{"title": "x", "body": "y", "gate_reason": "z"})
-	if rpcErr == nil || rpcErr.Code != -32602 {
-		t.Errorf("a worker's tools/call: %+v, want -32602 unknown tool", rpcErr)
-	}
-	if got := g.ownerTasks(t); len(got) != 0 {
-		t.Errorf("a worker's call created %d task(s)", len(got))
+	if got := g.ownerTasks(t); len(got) != 1 {
+		t.Errorf("a worker's call created %d task(s), want 1", len(got))
 	}
 }
 
@@ -278,7 +281,7 @@ func TestConcurrentReservationsCannotOvershootTheBudget(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			err := g.plugins.ReserveGatedTask(g.asOwner, g.chief.ID, nil)
+			err := g.plugins.ReserveGatedTask(g.asOwner, g.agent.ID, nil)
 			mu.Lock()
 			defer mu.Unlock()
 			switch {
@@ -298,11 +301,11 @@ func TestConcurrentReservationsCannotOvershootTheBudget(t *testing.T) {
 }
 
 // TestAGatedTaskCitesOnlyAMessageDeliveredToThisChief: message_id must name a
-// plugin message delivered — or BEING delivered — to THIS chief. A queued one
+// plugin message delivered — or BEING delivered — to THIS agent. A queued one
 // (not being delivered to anyone), one being delivered or delivered to another
 // of the owner's agents, another owner's (row-level security hides it), and a
 // made-up id are each refused with nothing created and no budget spent. A message
-// being delivered to this chief — the state during the turn that tells the chief
+// being delivered to this agent — the state during the turn that tells the agent
 // about it (audit round 1) — and one already delivered to it are accepted.
 func TestAGatedTaskCitesOnlyAMessageDeliveredToThisChief(t *testing.T) {
 	g := newGatedFixture(t)
@@ -310,10 +313,10 @@ func TestAGatedTaskCitesOnlyAMessageDeliveredToThisChief(t *testing.T) {
 	toWorker := g.deliveredMessage(t, g.owner, g.worker.ID, "w-1")
 	deliveringToWorker := g.deliveringMessage(t, g.owner, g.worker.ID, "dw-1")
 	other := g.newMember(t)
-	otherChief := g.newAgent(t, other, "gtother-"+strconv.FormatInt(time.Now().UnixNano(), 36), "chief", "gated-other-token-0123456789")
+	otherChief := g.newAgent(t, other, "gtother-"+strconv.FormatInt(time.Now().UnixNano(), 36), "agent", "gated-other-token-0123456789")
 	foreign := g.deliveringMessage(t, other, otherChief.ID, "f-1")
-	delivering := g.deliveringMessage(t, g.owner, g.chief.ID, "d-1")
-	mine := g.deliveredMessage(t, g.owner, g.chief.ID, "m-1")
+	delivering := g.deliveringMessage(t, g.owner, g.agent.ID, "d-1")
+	mine := g.deliveredMessage(t, g.owner, g.agent.ID, "m-1")
 
 	for name, id := range map[string]int64{"queued": queued.ID, "delivered to the worker": toWorker.ID,
 		"being delivered to the worker": deliveringToWorker.ID, "another owner's": foreign.ID, "made up": 999999999} {
@@ -323,7 +326,7 @@ func TestAGatedTaskCitesOnlyAMessageDeliveredToThisChief(t *testing.T) {
 		}
 	}
 	if got := len(g.ownerTasks(t)); got != 0 {
-		t.Fatalf("%d task(s) created citing messages that were not delivered to this chief", got)
+		t.Fatalf("%d task(s) created citing messages that were not delivered to this agent", got)
 	}
 	var spent int
 	if err := g.pool.QueryRow(g.asOwner, `SELECT count(*) FROM audit_log WHERE action = $1`, plugins.ActionGatedTask).Scan(&spent); err != nil {
@@ -332,7 +335,7 @@ func TestAGatedTaskCitesOnlyAMessageDeliveredToThisChief(t *testing.T) {
 	if spent != 0 {
 		t.Errorf("refused citations spent %d unit(s) of the budget", spent)
 	}
-	for name, id := range map[string]int64{"being delivered to this chief": delivering.ID, "delivered to this chief": mine.ID} {
+	for name, id := range map[string]int64{"being delivered to this agent": delivering.ID, "delivered to this agent": mine.ID} {
 		if text, isErr, _ := g.callGated(t, g.chiefTok, map[string]any{"title": "t", "body": "b", "gate_reason": "r", "message_id": id}); isErr {
 			t.Errorf("citing a message %s was refused: %s", name, text)
 		}

@@ -69,19 +69,34 @@ type ChatSurface string
 
 const (
 	// ChatSurfacePage is a standalone document — AgentDetailPage or OperatorPage.
+	//
+	// 🔴 IT IS THE ONLY SURFACE LEFT. There was a second, "agent-panel": a
+	// slide-out in the home shell wired to whichever agent carried the `agent`
+	// label. muster has no privileged agent, so the panel had no subject and was
+	// removed with it; every agent is reached through its own detail page. The
+	// type is kept because every construction site already sets it and a future
+	// surface belongs here rather than in a bool.
 	ChatSurfacePage ChatSurface = ""
-	// ChatSurfaceChiefPanel is the chief slide-out inside the home shell.
-	ChatSurfaceChiefPanel ChatSurface = "chief-panel"
 )
 
 // AgentDetailView is the data the agent detail page renders.
 type AgentDetailView struct {
-	ID          int64
-	Name        string
-	DisplayName string
-	Status      string
-	Repo        string
-	Model       string // OpenRouter slug; "" = cluster default
+	// SessionRuntimes / ClaudeModels drive the session drawer's "New session"
+	// picker (session_runtimes.go). Empty on a deployment that offers no
+	// per-session runtime, which draws no picker.
+	//
+	// 🔴 THEY ARE ON THIS VIEW BECAUSE THE PICKER MOVED HERE. They were fields of
+	// the agent slide-out's view, which went with the privileged agent; the
+	// capability is every agent's now, so the data travels with the agent's own
+	// page.
+	SessionRuntimes []SessionRuntimeView
+	ClaudeModels    []string
+	ID              int64
+	Name            string
+	DisplayName     string
+	Status          string
+	Repo            string
+	Model           string // OpenRouter slug; "" = cluster default
 	// Kind is the agent's kind. A claude-code agent shows its kind and account
 	// instead of the model picker: it has no per-agent model (the server refuses
 	// one), so a picker there would be a control that can only fail.
@@ -145,7 +160,7 @@ type SessionView struct {
 	//
 	// 🔴 AN EMPTY TITLE RENDERS DIFFERENTLY ON THE TWO SURFACES THAT DRAW THESE ROWS,
 	// AND THAT IS DELIBERATE RATHER THAN DRIFT: sessionDrawer (the agent-detail and
-	// operator pages) renders "New chat"; chiefThreadRows (the chief slide-out)
+	// operator pages) renders "New chat"; chiefThreadRows (the agent slide-out)
 	// renders "New thread". Each matches the noun its own surface uses everywhere else
 	// — the page's control is "New chat", the panel's is "New thread" and its list is
 	// headed "Threads" — so making them agree would leave one of the two surfaces
@@ -742,13 +757,12 @@ func agentChatPane(v AgentDetailView) g.Node {
 		Class("flex flex-1 flex-col gap-2 min-h-0"+classIf(withSwitcher, " relative")),
 		// 🔴 THE DRAWER IS OMITTED ON THE PANEL SURFACE AND THAT IS NOT A TIDY-UP.
 		// sessionDrawer is `fixed inset-y-0 right-0`, and ChiefPanel's
-		// `translate-x-full` makes the panel the containing block for every fixed
-		// descendant — so inside the panel the drawer renders at the PANEL's right
-		// edge and, when the panel is shut, is translated off-screen and inert with
-		// it. The panel renders chiefThreadList instead: an absolutely-positioned
-		// sub-view of the panel's OWN column, which needs no viewport-relative
-		// positioning at all. See ChatSurface.
-		g.If(v.Surface != ChatSurfaceChiefPanel, sessionDrawer(v)),
+		// The session drawer is `position: fixed` against the VIEWPORT, which is
+		// correct on the only surface there is now (the standalone page). It used to
+		// be suppressed on the agent slide-out, whose `translate-x-full` made it the
+		// containing block for every fixed descendant; that panel is gone with the
+		// privileged agent it talked to. See ChatSurface.
+		sessionDrawer(v),
 		g.If(v.Surface == ChatSurfacePage && v.AsksSrc != "", AskerAsksBlock(v.Asks, v.AsksSrc, true)),
 		Div(
 			ID("chat-log"),
@@ -775,7 +789,7 @@ func agentChatPane(v AgentDetailView) g.Node {
 			// the task's new status live; sse:chat.reply covers the agent-finished
 			// reveal (a just-finished task surfaces its banner without a reload).
 			// 🔴 THE SURFACE TRAVELS WITH THE REFETCH URL. This partial re-renders
-			// #chat-log's children, and one of those children is the chief intro —
+			// #chat-log's children, and one of those children is the agent intro —
 			// which must be absent the moment the thread HAS content. A refetch that
 			// dropped the surface would render the intro on a surface that never shows
 			// it (harmless) or, worse, keep rendering it in the panel after the first
@@ -803,8 +817,8 @@ func agentChatPane(v AgentDetailView) g.Node {
 			// 🔴 AND THE RESPONSE LANDS WHEREVER THE NEAREST hx-target SAYS. On the
 			// agent-detail and operator PAGES no ancestor declares one, so a boosted send
 			// re-swapped the whole body with the same page — invisible, and the reason
-			// this survived for as long as it did. Inside the chief slide-out,
-			// #chief-panel-body declares hx-target="this" + hx-swap="innerHTML", and htmx
+			// this survived for as long as it did. Inside the agent slide-out,
+			// #agent-panel-body declares hx-target="this" + hx-swap="innerHTML", and htmx
 			// resolves an INHERITED "this" to the element that declared it — so pressing
 			// Send fetched /tmux and swapped the ENTIRE PAGE into the panel body,
 			// destroying #chat-form and #chat-input outright. The operator's message was
@@ -813,10 +827,10 @@ func agentChatPane(v AgentDetailView) g.Node {
 			// MEASURED in Chromium via a probe on the real click path, pinned to a
 			// COMMIT rather than a day because that is the reproducible form:
 			// htmx:configRequest on #chat-form with path=<the page url>, then
-			// beforeSwap/afterSwap targeting #chief-panel-body, then no #chat-input in the
+			// beforeSwap/afterSwap targeting #agent-panel-body, then no #chat-input in the
 			// document — 4 of 4 runs at 6a7904957 and 2 of 2 at dcc080998, i.e. it predates
 			// the commit CI first caught it on. The nearest hx-target ancestor was read
-			// back as `chief-panel-body`, which is the half a reader would not guess.
+			// back as `agent-panel-body`, which is the half a reader would not guess.
 			//
 			// ⚠ IT IS ON THE FORM RATHER THAN ON THE PANEL BODY BECAUSE THE FORM IS WHAT
 			// IS TRUE EVERYWHERE. One attribute fixes both surfaces and says the actual
@@ -897,7 +911,7 @@ func agentChatPane(v AgentDetailView) g.Node {
 			// window.__cgLayoutLog in agentChatScript): the form's LAST child, so
 			// a frame the parser yields after this long script paints a whole
 			// form, and nothing between the log and it is a script the parser
-			// could yield after. The page surface only: the chief panel's body
+			// could yield after. The page surface only: the agent panel's body
 			// arrives by an htmx swap, whose afterSwap hook lays it out in the
 			// same task.
 			g.If(v.Surface == ChatSurfacePage, Script(g.Raw(`window.__cgLayoutLog && window.__cgLayoutLog();`))),
@@ -906,22 +920,22 @@ func agentChatPane(v AgentDetailView) g.Node {
 		// and the form anyway.
 		g.If(v.Surface == ChatSurfacePage, NoScript(StyleEl(g.Raw(`#chat-form, #chat-log > * { visibility: visible !important; }`)))),
 		// The box grows with its text (composer_fit.go), the same one script as
-		// the mirrored composer's — it travels with the pane for the chief panel.
+		// the mirrored composer's — it travels with the pane for the agent panel.
 		// First after the form, with the draft's (composer_draft.go), so a
 		// restored draft is in the box, sized, before the pane is painted.
 		composerFitScript(),
 		composerDraftScript(),
 		// The session switcher, below the input (switcher.go): the page's
-		// only — the chief panel is a pane inside another page. After the
+		// only — the agent panel is a pane inside another page. After the
 		// draft's script, which must size a restored draft before anything
 		// below the form is parsed.
 		g.If(withSwitcher, switcherBar(v.Switcher, false)),
-		// The microphone's script travels WITH the pane, so the chief panel —
+		// The microphone's script travels WITH the pane, so the agent panel —
 		// which renders this pane into another page — gets it too. It is built
 		// to run again on every swap (dictate.go).
 		dictateScript(v.Dictate),
 		// The live stream's tool-call grouping (tool_groups.go): with the pane, so
-		// the chief panel's copy of it groups too.
+		// the agent panel's copy of it groups too.
 		toolGroupScript(),
 	)
 }
@@ -1071,6 +1085,11 @@ func sessionDrawer(v AgentDetailView) g.Node {
 		))
 	}
 
+	// The picker sits above the thread list, as it did in the panel this moved
+	// from: starting a session is the drawer's one write, and the list below it is
+	// the read.
+	picker := newSessionPicker(v.ID, v.SessionRuntimes, v.ClaudeModels)
+
 	return Div(
 		// The checkbox + backdrop + panel live under this common parent so the
 		// peer-checked:* utilities on the siblings select off the checkbox.
@@ -1132,8 +1151,10 @@ func sessionDrawer(v AgentDetailView) g.Node {
 			),
 			Div(
 				Class("flex flex-1 flex-col gap-2 overflow-y-auto p-4"),
-				// New chat is the header's ＋ button now (newChatButton); the drawer
-				// just lists existing sessions.
+				// New chat on the agent's OWN runtime is the header's ＋ button
+				// (newChatButton). The picker is for a session on ANOTHER runtime and
+				// model, and is absent unless the deployment offers one.
+				picker,
 				g.Group(links),
 			),
 		),
@@ -1205,7 +1226,7 @@ func chatLogInner(v AgentDetailView) g.Node {
 	}
 	msgs := groupToolRuns(items)
 	return g.Group{
-		// 🔴 THE CHIEF INTRO IS INSIDE #chat-log AND NOT IN chiefPanelBody, AND THAT
+		// 🔴 THE AGENT INTRO IS INSIDE #chat-log AND NOT IN chiefPanelBody, AND THAT
 		// PLACEMENT IS WHAT MAKES IT DISAPPEAR. The panel body is fetched on OPEN
 		// only; #chat-log re-fetches this very partial on every `sse:chat.reply`. An
 		// intro rendered one level up would therefore sit above a growing conversation
@@ -1242,27 +1263,20 @@ func chatLogInner(v AgentDetailView) g.Node {
 		// packages is how it was derived and is how to re-derive it; a fourth writer will
 		// not announce itself here.
 		//
-		// 🔴 DO NOT BUILD FOR IT — BUT A WRITER THAT PERSISTS AN ASSISTANT TURN FIRST
-		// BREAKS THE ARGUMENT, NOT MERELY THE COUNT. If you add one, the fix is to
-		// condition on what this function will actually RENDER rather than on
-		// len(v.Messages), and to say so here: the failure is silent and reads as a
-		// broken panel rather than as a bug in the new writer.
-		g.If(v.Surface == ChatSurfaceChiefPanel && len(v.Messages) == 0, chiefIntro()),
 		// Empty state for the PAGE surface. #chat-log is a flex-1 box filling the
 		// whole viewport height, so a thread with nothing in it rendered as a tall
 		// blank panel — the only thing inside it was the `hidden` working indicator,
 		// which says nothing to a reader.
 		//
-		// 🔴 IT COUNTS RENDERED BUBBLES, NOT ROWS, which is what the chief-intro
+		// 🔴 IT COUNTS RENDERED BUBBLES, NOT ROWS, which is what the agent-intro
 		// branch above says to do when a second condition is added here: the loop
 		// DROPS assistant sentinels, so a `len(v.Messages) == 0` test would leave a
 		// sentinel-only thread with no affordance at all — the very gap that branch
 		// records as unreachable-but-open. len(msgs) cannot disagree with the screen.
 		//
-		// The chief panel keeps chiefIntro() (its own, richer copy) and the
-		// provisioning row below owns the still-coming-up case, so neither is
-		// doubled up.
-		g.If(v.Surface != ChatSurfaceChiefPanel && len(msgs) == 0 && !chatIsProvisioning(v.Status),
+		// The provisioning row below owns the still-coming-up case, so the two are
+		// never doubled up.
+		g.If(len(msgs) == 0 && !chatIsProvisioning(v.Status),
 			chatEmptyState()),
 		g.Group(msgs),
 		// Completion banner (Task 6): rendered inside #chat-log so the existing

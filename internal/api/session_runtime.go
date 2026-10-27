@@ -14,16 +14,16 @@ import (
 	"github.com/ZacxDev/muster/internal/ui"
 )
 
-// THE CHIEF'S SESSIONS ON MORE THAN ONE RUNTIME (migration 0030,
+// THE AGENT'S SESSIONS ON MORE THAN ONE RUNTIME (migration 0030,
 // internal/agents/session_runtime.go).
 //
-// A chief chat session is started on a runtime and a model, fixed for its life;
+// An agent chat session is started on a runtime and a model, fixed for its life;
 // muster routes each of its turns by them (sessionRoute). One session per agent
-// is the DEFAULT: plugin deliveries and `chief ask` go to it (defaultSession).
+// is the DEFAULT: plugin deliveries and `agent ask` go to it (defaultSession).
 //
 // 🔴 EVERY SESSION THAT EXISTED BEFORE 0030 IS LEGACY AND ROUTES EXACTLY AS IT
-// DID. Its turns carry no route header, so a claude-code chief's ccd puts them
-// in the one CLI it has always run — which is what keeps the live chief's
+// DID. Its turns carry no route header, so a claude-code agent's ccd puts them
+// in the one CLI it has always run — which is what keeps the live agent's
 // conversation where it is through the upgrade.
 
 // sessionRuntimeStore is the store's 0030 half, when it has one.
@@ -93,14 +93,13 @@ func withSessionRoute(ctx context.Context, a agents.Agent, sess agents.ChatSessi
 }
 
 // sessionRuntimesFor is the explicit runtimes a NEW session of a may be started
-// on: the deployment's (MUSTER_CHIEF_SESSION_RUNTIMES), for the chief only, and
-// claude-code only for a claude-code chief (ccd is what runs it). Empty: no
-// picker.
+// on: the deployment's (MUSTER_AGENT_SESSION_RUNTIMES), and claude-code only
+// for a claude-code agent (ccd is what runs it). Empty: no picker.
 func (s *Server) sessionRuntimesFor(ctx context.Context, a agents.Agent) []string {
 	if len(s.ext.SessionRuntimes) == 0 {
 		return nil
 	}
-	if _, ok := s.sessionRuntimeStore(); !ok || !s.isChiefAgent(ctx, a) {
+	if _, ok := s.sessionRuntimeStore(); !ok {
 		return nil
 	}
 	var out []string
@@ -131,11 +130,11 @@ func (s *Server) createRuntimeSession(ctx context.Context, a agents.Agent, runti
 }
 
 var errRuntimeNotOffered = errors.New("that runtime is not offered for this agent's sessions " +
-	"(only the chief's, and only those MUSTER_CHIEF_SESSION_RUNTIMES names)")
+	"(only the agent's, and only those MUSTER_AGENT_SESSION_RUNTIMES names)")
 
 // handleAgentSessionDefault handles POST /agents/{id}/sessions/{sid}/default:
 // make session sid agent id's default, then answer like the session-create
-// door (the chief panel body when it came from the panel, else a redirect).
+// door (the agent panel body when it came from the panel, else a redirect).
 func (s *Server) handleAgentSessionDefault(w http.ResponseWriter, r *http.Request) {
 	id, err1 := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	sid, err2 := strconv.ParseInt(r.PathValue("sid"), 10, 64)
@@ -171,23 +170,19 @@ func (s *Server) handleAgentSessionDefault(w http.ResponseWriter, r *http.Reques
 		http.Error(w, "could not set the default session", http.StatusInternalServerError)
 		return
 	}
-	if chatSurfaceFromRequest(r) == ui.ChatSurfaceChiefPanel {
-		s.writeChiefPanelBodyFor(ctx, w, a, strconv.FormatInt(sess.ID, 10))
-		return
-	}
 	w.Header().Set("HX-Redirect", ui.AgentSessionHref(a.Name, sess.ID))
 	w.WriteHeader(http.StatusOK)
 }
 
 // turnInstructions is a turn's instructions: the agent's own (AgentInstructions)
-// — EXCEPT for a claude-code chief's session on the gateway runtime beside ccd.
-// That runtime has no standing file of the chief's (its prose is ccd's managed
-// CLAUDE.md, which only the Claude Code CLI reads), so the chief's prose,
+// — EXCEPT for a claude-code agent's session on the gateway runtime beside ccd.
+// That runtime has no standing file of the agent's (its prose is ccd's managed
+// CLAUDE.md, which only the Claude Code CLI reads), so the agent's prose,
 // written for function tools, travels with each turn
-// (agentspec.ChiefInstructionsFunctionTools).
+// (agentspec.SupervisorInstructionsFunctionTools).
 func (s *Server) turnInstructions(ctx context.Context, a agents.Agent) string {
 	if sidecarTurn(ctx, a) {
-		return agentspec.ChiefInstructionsFunctionTools(s.ext.Plugins != nil)
+		return agentspec.SupervisorInstructionsFunctionTools(s.ext.Plugins != nil)
 	}
 	return s.AgentInstructions(a)
 }
@@ -200,14 +195,14 @@ func sidecarTurn(ctx context.Context, a agents.Agent) bool {
 	return ok && r.Runtime == agents.SessionRuntimeGateway && agents.ResolveKind(a.Kind) == agents.KindClaudeCode
 }
 
-// askTurn is the tool-less turn `chief ask` (POST /api/agents/{name}/messages)
+// askTurn is the tool-less turn `agent ask` (POST /api/agents/{name}/messages)
 // runs, on ctx carrying the session's route.
 //
 // 🔴 A TURN FOR THE GATEWAY RUNTIME BESIDE ccd CARRIES turnInstructions.
 // Gateway.Chat sends no instructions, which is parity everywhere else: the agent's
-// own runtime reads its standing files. The sidecar has none of the chief's, so a
-// `chief ask` to a gateway DEFAULT session reached a model that had never been
-// told it was the chief. Such a turn goes over ChatWithTools with no tools (the
+// own runtime reads its standing files. The sidecar has none of the agent's, so a
+// `agent ask` to a gateway DEFAULT session reached a model that had never been
+// told it was the agent. Such a turn goes over ChatWithTools with no tools (the
 // route stays tool-less, as it has always been) and the instructions chatTurn
 // sends, falling back to Chat exactly where chatTurn does.
 func (s *Server) askTurn(ctx context.Context, a agents.Agent, sessionKey, message string) (string, error) {
@@ -227,16 +222,15 @@ func noTools(string, string) string {
 }
 
 // sessionViews renders a's sessions for a switcher: active marks the open one,
-// and on the CHIEF each session carries its runtime and model, the default mark
-// and the "make default" route — the one place a SessionView gets them, for the
-// panel's first paint and both of its search answers.
+// and each session carries its runtime and model, the default mark and the
+// "make default" route — the one place a SessionView gets them, for the detail
+// page's first paint and both of its search answers.
 func (s *Server) sessionViews(ctx context.Context, a agents.Agent, sessions []agents.ChatSession, activeID int64) []ui.SessionView {
 	_, defaults := s.sessionRuntimeStore()
-	chief := defaults && s.isChiefAgent(ctx, a)
 	views := make([]ui.SessionView, 0, len(sessions))
 	for _, sess := range sessions {
 		v := ui.SessionView{ID: sess.ID, Title: sess.Title, Active: sess.ID == activeID, LastActive: sess.UpdatedAt}
-		if chief {
+		if defaults {
 			v.Runtime, v.Model, v.IsDefault = sess.Runtime, sess.Model, sess.IsDefault
 			if sess.Runtime != "" {
 				v.RuntimeLabel = agents.SessionRuntimeLabel(sess.Runtime)

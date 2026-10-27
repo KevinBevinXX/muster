@@ -15,7 +15,7 @@ import { writeFileAtomic } from '../lib/atomic';
 // LAYOUT SHIFT UNDER 0.01 ON EVERY PAGE, at a phone (390×844, touch) and a
 // desktop (1280×800): each page is loaded, its async htmx loads are let land
 // (lib/cls.ts settle), and every layout-shift entry not caused by the reader's
-// own input is summed. The chief panel's open state is measured too.
+// own input is summed.
 //
 // 🔴 THE PAGE LIST IS THE ROUTE TABLE'S, NOT A LIST SOMEONE REMEMBERED. Every
 // GET route in internal/api/testdata/routes.golden — the golden the Go suite
@@ -149,19 +149,6 @@ async function measureWithDraft(page: Page, url: string, box: string): Promise<C
   return r;
 }
 
-// A chief agent with threads, so the panel's open state is a real one (intro,
-// thread list), not the "no chief" notice. Its own agent, removed afterwards.
-const chiefName = 'e2e-cls-chief-' + Date.now().toString(36);
-function mkchief(del: boolean) {
-  execFileSync('go', ['run', './e2e/mkchat'], {
-    cwd: repoRoot,
-    env: { ...process.env, DATABASE_URL: dsn, MUSTER_E2E_AGENT: chiefName, MUSTER_E2E_DISPLAY_NAME: 'chief', MUSTER_E2E_THREADS: '1', ...(del ? { MUSTER_E2E_DELETE: '1' } : {}) },
-    input: del ? '' : JSON.stringify([
-      { title: 'Release checklist', hoursAgo: 3, messages: [{ role: 'user', content: 'what is left for the release?' }, { role: 'assistant', content: 'Two items.' }] },
-      { title: 'Flaky test triage', hoursAgo: 1, messages: [{ role: 'user', content: 'which tests flaked?' }] },
-    ]),
-  });
-}
 
 for (const vp of viewports) {
   test.describe(vp.name, () => {
@@ -346,40 +333,6 @@ for (const vp of viewports) {
       expect(bad).toEqual([]);
     });
 
-    test(`the chief panel, opened and restored open, shifts less than ${BAR}`, async ({ page }) => {
-      test.setTimeout(120_000);
-      mkchief(true);
-      mkchief(false);
-      try {
-        // Opened: not a tap (a tap's shifts are excluded as input) but a click
-        // dispatched by script on a launcher — ChiefPanelToggle's markup, whose
-        // handler is delegated on document — so whatever the panel's loading
-        // moves is counted.
-        await measure(page, '/tasks');
-        await resetCls(page);
-        await page.evaluate(() => {
-          const b = document.createElement('button');
-          b.setAttribute('data-chief-panel-toggle', '');
-          b.style.cssText = 'position:fixed;left:-9999px;top:0';
-          document.body.appendChild(b);
-          b.click();
-        });
-        await expect(page.locator('#chief-panel')).toHaveAttribute('data-chief-panel-open', '1');
-        await expect(page.locator('#chief-panel-body [data-chief-thread], #chief-panel-body #chat-form').first()).toBeAttached({ timeout: 15_000 });
-        await settle(page);
-        const opened = await readCls(page);
-        // Restored open: the next page load comes up with the panel open and
-        // loads its body itself.
-        const restored = await measure(page, '/agents');
-        await expect(page.locator('#chief-panel')).toHaveAttribute('data-chief-panel-open', '1');
-        console.log(`[cls ${vp.name}] chief panel opened ${opened.total}, restored ${restored.total}`);
-        expect(opened.total, report('chief panel opened', opened)).toBeLessThan(BAR);
-        expect(restored.total, report('chief panel restored open on /agents', restored)).toBeLessThan(BAR);
-      } finally {
-        await page.evaluate(() => { try { localStorage.removeItem('muster.chief.v1.open.chief-panel'); } catch (e) {} });
-        mkchief(true);
-      }
-    });
   });
 }
 

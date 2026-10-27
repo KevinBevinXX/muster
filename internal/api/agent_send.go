@@ -146,10 +146,10 @@ func (s *Server) handleAgentSend(w http.ResponseWriter, r *http.Request) {
 		sent()
 		return
 	}
-	// 🔴 THE TURN GATE FIRST, THEN THE ASKS (chief replacement × #134): a
+	// 🔴 THE TURN GATE FIRST, THEN THE ASKS (agent replacement × #134): a
 	// message refused because the agent is being replaced starts no turn, so it
 	// answers none of the agent's asks, and the nonce is released (finish(false))
-	// so the same text can be sent again to the new chief.
+	// so the same text can be sent again to the new agent.
 	if !s.turns.enter(a.ID) {
 		finish(false)
 		refuse(http.StatusConflict, ErrAgentBeingReplaced.Error(), noticeNotRunning)

@@ -57,7 +57,7 @@ func (s *Server) registerAgentRoutes(mux Mux) {
 	// machine credential could read an agent's messages at all: the chat-log route
 	// two dozen lines below is requireSession (the operator's browser), and the only
 	// machine GETs in the whole server were the roster, the tmux snapshot and the
-	// transcripts. So `muster chief ask` could post a message and print one
+	// transcripts. So `muster agent ask` could post a message and print one
 	// reply, and nothing could read the conversation afterwards.
 	//
 	// 🔴 THE SHARED SECRET ONLY — requireHookToken, EXACTLY LIKE THE ROSTER ABOVE,
@@ -65,7 +65,7 @@ func (s *Server) registerAgentRoutes(mux Mux) {
 	// It shipped on requireHookOrAgentToken (the wrapper Phase 0 step 5 replaced with
 	// requireHookOrServiceToken) carrying the sentence "unarmed, which
 	// is production, that half admits nobody". Measured against the live cluster at
-	// commit 70d689337, every clause of that was false: the chief credential IS
+	// commit 70d689337, every clause of that was false: the agent credential IS
 	// wired into the deployment (it was armed the day BEFORE this route was
 	// written), an agent pod holding a matching row
 	// token is Running, and that pod's credential had already been observed
@@ -89,11 +89,11 @@ func (s *Server) registerAgentRoutes(mux Mux) {
 	// same reason: it is a pure DB read and never touches k8s, so it works on a
 	// provisioner-less deployment.
 	mux.HandleFunc("GET /api/agents/{name}/messages", s.requireHookToken(s.handleAPIAgentMessages))
-	// 🔴 THE MACHINE WRITE HALF, AND THE ROUTE `muster chief ask` NOW POSTS TO
+	// 🔴 THE MACHINE WRITE HALF, AND THE ROUTE `muster agent ask` NOW POSTS TO
 	// (task #633 criterion 1). It used to post to POST /operator/agents/{id}/message
 	// behind requireOperatorToken — a gate that resolved the bearer to an agent ROW
 	// and required that row to be the RESERVED OPERATOR. So the only machine path to
-	// talk to chief was a dependency on a second privileged AGENT existing, and
+	// talk to agent was a dependency on a second privileged AGENT existing, and
 	// deleting that agent broke the CLI. Nothing about "message an agent" needs the
 	// operator's identity. ⚠ BOTH THE ROUTE AND THE GATE ARE DELETED as of task #653
 	// phase two, so the comparison below is with history, not with a live surface.
@@ -117,7 +117,7 @@ func (s *Server) registerAgentRoutes(mux Mux) {
 	//     requireOperatorToken, which demanded a bearer UNCONDITIONALLY and resolved it
 	//     to one specific agent row. Measured on one server with no bearer, BEFORE task
 	//     #653 phase two deleted that route (it answers 404 now):
-	//     POST /api/agents/chief/messages -> 200, POST /operator/agents/1/message ->
+	//     POST /api/agents/agent/messages -> 200, POST /operator/agents/1/message ->
 	//     401. Inheriting the enforce-when-set convention would have turned an
 	//     agent-steering WRITE from fail-closed into fail-open as a side effect of
 	//     moving it. Back-compat is a debt to callers that already exist; this route
@@ -154,9 +154,9 @@ func (s *Server) registerAgentRoutes(mux Mux) {
 	mux.HandleFunc("POST /agents/{id}/stop", s.requireSession(s.requireLifecycleProvisioner(s.handleAgentStop)))
 	mux.HandleFunc("POST /agents/{id}/name", s.requireSession(s.handleAgentName))
 	mux.HandleFunc("POST /agents/{id}/model", s.requireSession(s.handleAgentModel))
-	// Same-origin, like every other form that changes where the chief's turns
+	// Same-origin, like every other form that changes where the agent's turns
 	// go (requireOperatorWrite): a cross-site POST could otherwise open sessions
-	// or move the default session plugin deliveries and `chief ask` land in.
+	// or move the default session plugin deliveries and `agent ask` land in.
 	mux.HandleFunc("POST /agents/{id}/sessions", s.requireOperatorWrite(s.handleAgentSessionCreate))
 	mux.HandleFunc("POST /agents/{id}/sessions/{sid}/default", s.requireOperatorWrite(s.handleAgentSessionDefault))
 	mux.HandleFunc("DELETE /agents/{id}", s.requireSession(s.requireLifecycleProvisioner(s.handleAgentDelete)))
@@ -251,7 +251,6 @@ func (s *Server) agentsListCardsLive(ctx context.Context, instancesWithin time.D
 	// activity; the order above decides ties among agents).
 	pinned := s.pinSet(ctx)
 	cards := make([]ui.AgentCardView, 0, len(list))
-	isChief := chiefPredicate(list)
 	// The viewer's session focus (internal/focus), read once for every card.
 	focused := s.focusIndex(ctx)
 	// Each agent's latest session, read once for every card (ui.AgentSessionHref).
@@ -261,7 +260,7 @@ func (s *Server) agentsListCardsLive(ctx context.Context, instancesWithin time.D
 	}
 	latest := s.latestSessionIDs(ctx, ids)
 	for _, a := range list {
-		cards = append(cards, s.cardViewIndexed(a, instIdx, lastMsg[a.ID], latest[a.ID], isChief, pinned, focused))
+		cards = append(cards, s.cardViewIndexed(a, instIdx, lastMsg[a.ID], latest[a.ID], pinned, focused))
 	}
 	// The viewer's mirrored sessions (internal/mirror), from the plugin's
 	// in-memory hub, scoped to this request's principal. The list interleaves
@@ -590,7 +589,7 @@ func (s *Server) handleSessionRead(w http.ResponseWriter, r *http.Request) {
 // The status is reconciled against live instances through liveStatusIndexed, so
 // callers in a loop pass an index they fetched once; cardViewFor is the
 // single-agent spelling.
-func (s *Server) cardViewIndexed(a agents.Agent, idx map[string]*provision.Instance, lastMsg time.Time, sessionID int64, isChief func(agents.Agent) bool, pinned pins.Set, focused focusIndex) ui.AgentCardView {
+func (s *Server) cardViewIndexed(a agents.Agent, idx map[string]*provision.Instance, lastMsg time.Time, sessionID int64, pinned pins.Set, focused focusIndex) ui.AgentCardView {
 	status := liveStatusIndexed(a, idx)
 	return ui.AgentCardView{
 		// SessionID: the latest session, read once per render by the caller — what
@@ -616,9 +615,8 @@ func (s *Server) cardViewIndexed(a agents.Agent, idx map[string]*provision.Insta
 		Namespace:            a.Namespace,
 		NoteID:               a.NoteID, CreatedAt: a.CreatedAt, UpdatedAt: a.UpdatedAt,
 		LastActiveAt: agents.LastActivity(a, lastMsg),
-		// The ONE chief predicate's answer (chief_agent.go), so the menu never
+		// The ONE agent predicate's answer (chief_agent.go), so the menu never
 		// offers a Delete the server would refuse.
-		IsChief: isChief(a),
 		// The viewer's pin (internal/pins), read once per render by the caller.
 		Pinned: pinned.Agent(a.ID),
 		// The agent's focus (internal/focus), read once per render by the caller.
@@ -636,17 +634,12 @@ func (s *Server) cardViewIndexed(a agents.Agent, idx map[string]*provision.Insta
 // instance index itself. Used by the inline-rename re-render and the cancel/card
 // re-fetch. Do NOT use it in a loop — see liveStatus.
 //
-// The chief answer needs the whole list (the chief is resolved across it). A
-// failed read degrades to the reserved-slug half of the predicate only — the
-// card then may offer a Delete the server still refuses, which is the safe
-// direction to be wrong in.
+// ⚠ IT NEEDS NO AGENT LIST. It used to read the whole table, because the card's
+// Delete was hidden for whichever agent resolved as the agent and that answer
+// was only computable across every row. Nothing about a card depends on the
+// other agents now.
 func (s *Server) cardViewFor(ctx context.Context, a agents.Agent) ui.AgentCardView {
-	list, err := s.ext.Agents.List(ctx)
-	if err != nil {
-		s.logger.Printf("agents: card %d: list for chief check: %v", a.ID, err)
-		list = nil
-	}
-	v := s.cardViewIndexed(a, s.instanceIndex(ctx), s.lastMessageByAgents(ctx, []agents.Agent{a})[a.ID], s.latestSessionIDs(ctx, []int64{a.ID})[a.ID], chiefPredicate(list), s.pinSet(ctx), s.focusIndex(ctx))
+	v := s.cardViewIndexed(a, s.instanceIndex(ctx), s.lastMessageByAgents(ctx, []agents.Agent{a})[a.ID], s.latestSessionIDs(ctx, []int64{a.ID})[a.ID], s.pinSet(ctx), s.focusIndex(ctx))
 	// The same badge the list draws, so a re-rendered card keeps it.
 	one := []ui.AgentCardView{v}
 	s.withCardAttention(ctx, one, nil)
@@ -970,7 +963,7 @@ var ErrDispatchRefused = errors.New("dispatch refused")
 
 // resolveKind is resolveKindAccount's kind half: the kind a dispatch names,
 // resolved, known, enabled on this deployment and usable by the caller — or the
-// refusal. The chief's task_dispatch asks it BEFORE it spends a reservation, so
+// refusal. The agent's task_dispatch asks it BEFORE it spends a reservation, so
 // a kind it can never start is refused without one; createAndDispatchAgent asks
 // it again, through resolveKindAccount.
 func (s *Server) resolveKind(ctx context.Context, want string) (string, error) {
@@ -1069,7 +1062,7 @@ const dispatchTitleMaxRunes = 300
 
 // createAndDispatchAgent inserts an agent record and provisions it in the
 // background (kickoff sends the note as the first message). Shared by the human
-// dispatch form and the chief provision.
+// dispatch form and the agent provision.
 func (s *Server) createAndDispatchAgent(ctx context.Context, p dispatchParams) (agents.Agent, error) {
 	kind, account, err := s.resolveKindAccount(ctx, p)
 	if err != nil {
@@ -1288,28 +1281,22 @@ func (s *Server) handleAgentModel(w http.ResponseWriter, r *http.Request) {
 // handleAgentDelete tears down the agent (release + namespace + record) in the
 // background and removes its card.
 //
-// 🔴 THE CHIEF IS REFUSED WITH 409, BEFORE ANYTHING IS STARTED. The teardown is
-// asynchronous, so a check inside it could only log; the refusal has to happen
-// here, while there is still a response to put it in. A failed read of the
-// agent table refuses too (500) — see agentIsChief on failing closed.
+// 🔴 NO AGENT IS REFUSED. muster used to protect one — whichever carried the
+// `agent` label — with a 409 here, which meant the operator could not delete it
+// by the ordinary route at all. There is no privileged agent now, so every agent
+// is deletable and this route has one success path.
 func (s *Server) handleAgentDelete(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
 		http.Error(w, "bad id", http.StatusBadRequest)
 		return
 	}
-	var chief errDestroyChief
 	// The provisioner is called HERE, in this route's own closure: the route is
 	// behind requireLifecycleProvisioner, which is its nil barrier.
 	destroy := func(ctx context.Context, id int64) error { return s.ext.Provisioner.Destroy(ctx, id) }
-	switch _, err := s.destroyAgent(r.Context(), id, destroy, destroyHooks{}); {
-	case err == nil:
-	case errors.As(err, &chief):
-		http.Error(w, chief.Error(), http.StatusConflict)
-		return
-	default:
+	if _, err := s.destroyAgent(r.Context(), id, destroy, destroyHooks{}); err != nil {
 		s.logger.Printf("agents: delete %d: %v", id, err)
-		http.Error(w, "could not check whether this is the chief agent; nothing was deleted", http.StatusInternalServerError)
+		http.Error(w, "the agent could not be deleted; nothing was deleted", http.StatusInternalServerError)
 		return
 	}
 	// Empty 200: htmx removes the targeted #agent-<id> card.
@@ -1317,19 +1304,13 @@ func (s *Server) handleAgentDelete(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
-// errDestroyChief is destroyAgent's refusal of the chief; its text is
-// chiefRefusal's.
-type errDestroyChief struct{ a agents.Agent }
-
-func (e errDestroyChief) Error() string { return chiefRefusal(e.a) }
-
 // errDestroyNotClaimed is destroyAgent's answer when the caller's claim hook
 // lost: nothing was started.
 var errDestroyNotClaimed = errors.New("the agent no longer qualifies, or another process claimed it")
 
 // destroyHooks are what a destroyAgent caller adds around the shared teardown.
 type destroyHooks struct {
-	// claim runs AFTER the chief check and BEFORE anything is started, on the
+	// claim runs AFTER the agent check and BEFORE anything is started, on the
 	// caller's context. false (or an error) and nothing is torn down:
 	// destroyAgent answers errDestroyNotClaimed (or the error). nil: no claim.
 	// The stopped-agent reaper's conditional claim is the one user
@@ -1344,9 +1325,9 @@ type destroyHooks struct {
 // destroyAgent is THE agent teardown both doors take — the browser's DELETE
 // /agents/{id} (handleAgentDelete) and a mirrored session's agent_destroy
 // (agent_destroy_tool.go) — and the stopped-agent reaper's (agent_reap.go),
-// which adds a claim: the chief check, then the provisioner's Destroy in
+// which adds a claim: the agent check, then the provisioner's Destroy in
 // the background (instance, then the row; see agentprovision.Adapter.Destroy),
-// exactly as the browser always did. It returns the agent row the chief check
+// exactly as the browser always did. It returns the agent row the agent check
 // read (zero when the id names no agent the caller can see — the browser's
 // path still starts the teardown then, as it always has, and Destroy's own
 // row read fails and is logged).
@@ -1355,20 +1336,20 @@ type destroyHooks struct {
 // here, so that each door's own body is where the provisioner is reached and
 // nil-checked (provisioner_seam_test.go's walk is function-granular: the
 // browser's route is wrapped in requireLifecycleProvisioner, the MCP tool checks
-// in its body). TestEveryDestroyCallSiteIsChiefGuarded accepts a door that
-// routes through this function as chief-guarded, and pins that this one asks
-// agentIsChief.
+// in its body).
 //
-// 🔴 THE CHIEF IS REFUSED HERE, BEFORE ANYTHING IS STARTED (errDestroyChief),
-// and a failed read of the agent table refuses too (agentIsChief fails closed).
-// The teardown is asynchronous, so a check inside it could only log.
+// 🔴 IT GUARDS NO AGENT, AND THAT IS DELIBERATE. Every destroy path used to ask
+// agentIsChief first and refuse the labelled agent. muster has no privileged
+// agent, so there is nothing to guard and the agent row is simply read for the
+// hooks and the return value.
 func (s *Server) destroyAgent(ctx context.Context, id int64, destroy func(context.Context, int64) error, h destroyHooks) (agents.Agent, error) {
-	a, chief, err := s.agentIsChief(ctx, id)
-	if err != nil {
-		return agents.Agent{}, fmt.Errorf("chief check: %w", err)
-	}
-	if chief {
-		return a, errDestroyChief{a}
+	var a agents.Agent
+	if s.ext.Agents != nil {
+		got, err := s.ext.Agents.Get(ctx, id)
+		if err != nil {
+			return agents.Agent{}, fmt.Errorf("read the agent: %w", err)
+		}
+		a = got
 	}
 	if h.claim != nil {
 		won, err := h.claim(ctx)
@@ -1388,11 +1369,11 @@ func (s *Server) destroyAgent(ctx context.Context, id int64, destroy func(contex
 			return
 		}
 		// After a SUCCESSFUL teardown, on both doors: the owner's destroy frees
-		// the chief's one start on the agent's task when the chief's start made
+		// the agent's one start on the agent's task when the agent's start made
 		// this agent (operator decision), and the owner's open tabs re-fetch —
 		// the Agents views (agent.changed) and the attention queue, which lost
 		// the agent's asks with its row (attention_queue.changed).
-		s.releaseChiefStart(opCtx, a)
+		s.releaseDispatchStart(opCtx, a)
 		if a.ID != 0 {
 			s.broadcastTo(a.OwnerID, EventAgentChanged, a.Name)
 			s.attentionChanged(a.OwnerID, "agent-destroyed-"+strconv.FormatInt(a.ID, 10))
@@ -1466,6 +1447,16 @@ func (s *Server) handleAgentDetail(w http.ResponseWriter, r *http.Request) {
 		Dictate: s.dictatePath(),
 		// The agent's focus history (focus_history.go); "" without a store.
 		FocusHistory: s.focusHistoryPath(focus.AgentSubject(a.ID)),
+		// The session drawer's "New session" picker (ui/session_runtimes.go):
+		// the runtimes this deployment offers for THIS agent, and the Claude
+		// models a claude-code session may name. Both empty — so no picker — on a
+		// deployment that offers no per-session runtime.
+		//
+		// 🔴 THIS IS WHERE THE AGENT SLIDE-OUT'S PICKER LANDED. It was the
+		// privileged agent's alone; the capability is every agent's now, so it is
+		// populated on every agent's page from the same pickerRuntimes.
+		SessionRuntimes: s.pickerRuntimes(ctx, a),
+		ClaudeModels:    agents.ClaudeCodeModels,
 	}
 	view.SendNotice, view.SendNoticeOK = composerNotice(r)
 	// The agent's open attention asks, answerable here (attention_asker.go).
@@ -1529,8 +1520,8 @@ func (s *Server) handleAgentChatLog(w http.ResponseWriter, r *http.Request) {
 	body, version, err := ui.ChatLogBody(ui.AgentDetailView{
 		Name: a.Name, Status: status, Messages: lines, ActiveSessionID: active.ID,
 		NoteID: noteID, TaskStatus: taskStatus,
-		// The surface the refetch is FOR. #chat-log inside the chief panel asks with
-		// ?surface=chief-panel, and that is what decides whether the zero-message
+		// The surface the refetch is FOR. #chat-log inside the agent panel asks with
+		// ?surface=agent-panel, and that is what decides whether the zero-message
 		// intro is part of this partial — which is what makes the intro disappear the
 		// moment the thread has content, on the server's own count. An unknown or
 		// absent value is the page surface, i.e. every existing caller is unchanged.
@@ -1560,13 +1551,13 @@ func (s *Server) handleAgentChatLog(w http.ResponseWriter, r *http.Request) {
 // session-switcher view list (most-recently-active first). The active session is
 // the ?session=<id> one when it's valid AND belongs to this agent; otherwise the
 // agent's latest session (created if it has none). Shared by the agent-detail and
-// operator pages and by the chief panel, so all three get the same switcher
+// operator pages and by the agent panel, so all three get the same switcher
 // behaviour.
 //
 // 🔴 THE THIRD RETURN VALUE IS THE SESSION-LIST READ'S OWN FAILURE, AND IT EXISTS
 // BECAUSE DISCARDING IT SHIPPED A LIE. `list, _ := ListSessions(...)` left every
 // caller holding an EMPTY slice on a failed read, with no way to tell that from an
-// agent that genuinely has no threads — so the chief panel's first paint rendered
+// agent that genuinely has no threads — so the agent panel's first paint rendered
 // "No threads yet." when one database read had failed, i.e. told the operator their
 // entire thread history was gone. The rows and this error are one answer, so they
 // are returned together; a renderer that draws the rows must be able to say which
@@ -1583,7 +1574,7 @@ func (s *Server) handleAgentChatLog(w http.ResponseWriter, r *http.Request) {
 // read as an agent with no threads, AND they draw a TRUNCATED read — the `out,
 // rows.Err()` shape, rows beside an error — as a COMPLETE list: sessionDrawer gets the
 // rows and never learns the read broke, so a partial thread history is presented on
-// those pages as the whole of it, which is the same lie the chief panel was fixed for.
+// those pages as the whole of it, which is the same lie the agent panel was fixed for.
 // Both are DECLARED and out of scope here, not unknown; the "UNCHANGED" cases of
 // api.TestAFailedThreadListReadIsNEVERRenderedAsAnEmptyHistory pin their behaviour so
 // a fix for the panel cannot silently reach them.
@@ -1630,68 +1621,20 @@ func (s *Server) handleAgentSessionCreate(w http.ResponseWriter, r *http.Request
 		http.Error(w, "could not load agent", http.StatusInternalServerError)
 		return
 	}
-	// 🔴 THE PANEL BRANCH IS CHIEF-SCOPED, AND THE SUBJECT IS RESOLVED *BEFORE* THE
-	// WRITE. chiefNewThreadButton bakes the chief's row id into its hx-post when the
-	// panel BODY is rendered, and the chief is resolved by mutable DISPLAY NAME with a
-	// lowest-id tie-break — so the id in this path is a snapshot that a SetDisplayName
-	// (or a re-provision) invalidates while the panel sits open. Taking it on trust
-	// created the thread on the OLD chief and then rendered the NEW chief's panel
-	// (writeChiefPanelBody resolves the chief itself and ignored `a` entirely):
-	// resolveSessions rejects the just-created id because its AgentID does not match,
-	// so the operator silently got somebody else's latest thread and a stray empty
-	// chat_sessions row was left behind, with nothing anywhere saying so.
-	//
-	// 🔴 SO THE MISMATCH RETARGETS THE WRITE RATHER THAN BEING REFUSED, AND THE ORDER
-	// IS THE FIX. Refusing at the old branch point was too late — the session had
-	// already been created — and refusing at all leaves the operator's tap doing
-	// nothing on a control that looks live. `?surface=chief-panel` says "this is the
-	// chief slide-out's New thread", the panel is the chief's by construction (its
-	// search route, its thread rows and its transcript are all chief-scoped), so the
-	// authoritative subject is the chief resolved NOW, not the id a stale button
-	// carries. Both harms close together: nothing is written to the wrong agent, and
-	// the body this answers with re-renders the launcher slot with the CURRENT id, so
-	// the button heals itself.
-	//
-	// ⚠ AND A CHIEF THAT CANNOT BE RESOLVED WRITES NOTHING *HERE*. writeChiefPanelBody
-	// renders the honest statement for that case — the configuration one for ErrNoChief,
-	// "could not read the agent list" for a failed read — and creating a thread on
-	// whatever `{id}` named would be the same wrong-agent write by another route.
-	//
-	// ⚠ "NOTHING AT ALL" WOULD BE TOO STRONG, AND THE DIFFERENCE IS A TRANSIENT ERROR.
-	// This branch treats every chiefAgent failure as "do not write here", but it then
-	// delegates to a renderer that resolves the chief AGAIN — and resolveSessions ends
-	// in LatestOrCreateSession. So a read that fails here and SUCCEEDS there does create
-	// a session: on the chief that second read named, which is the agent the operator is
-	// then looking at, so it is benign rather than the wrong-agent write above. Closing
-	// even that would mean a panel-body renderer that cannot create a session, i.e. a
-	// second renderer of this partial — which is the multiplication
-	// writeChiefPanelBodyFor's header exists to prevent. Left as is, deliberately.
-	if chatSurfaceFromRequest(r) == ui.ChatSurfaceChiefPanel {
-		chief, cerr := s.chiefAgent(ctx)
-		if cerr != nil {
-			// 🔴 ErrNoChief AND A BROKEN READ ARE NOT THE SAME EVENT, AND ONE LINE FOR BOTH
-			// MISLABELS AN OUTAGE AS A CONFIGURATION STATE. "no chief" sends whoever reads
-			// this log to check display names; a failed agents-table read is a database
-			// problem and clears on its own.
-			if errors.Is(cerr, ErrNoChief) {
-				s.logger.Printf("agents: panel new thread on %d: no agent carries the chief display name", id)
-			} else {
-				s.logger.Printf("agents: panel new thread on %d: could not resolve the chief: %v", id, cerr)
-			}
-			s.writeChiefPanelBody(ctx, w, "")
-			return
-		}
-		if chief.ID != a.ID {
-			s.logger.Printf("agents: panel new thread asked for agent %d but the chief is now %d "+
-				"(%s); the thread goes to the chief and NOT to the stale id", a.ID, chief.ID, chief.Name)
-			a = chief
-		}
-	}
+	// ⚠ THERE WAS A SECOND, AGENT-SCOPED BRANCH HERE AND ITS WHOLE HAZARD IS GONE
+	// WITH THE PRIVILEGED AGENT. The agent slide-out baked the agent's row id into
+	// its "New thread" control, and the agent was resolved by MUTABLE DISPLAY NAME
+	// with a lowest-id tie-break — so a relabel while the panel sat open made that
+	// id a stale snapshot, the thread was created on the OLD agent, and the panel
+	// then rendered the NEW one, leaving a stray empty chat_sessions row and the
+	// operator looking at somebody else's thread. The branch resolved the agent
+	// again here to retarget the write. There is no label to resolve now: `{id}`
+	// names the agent, which is the only subject this route has ever needed.
 
 	// Reuse the latest session if it's empty; otherwise open a fresh one.
 	// 🔴 THE TWO LOGS BELOW NAME `a.ID`, NOT THE PATH's `id`, AND THAT MATTERS ON
 	// EXACTLY THE INCIDENT THE BRANCH ABOVE EXISTS FOR. The panel branch RETARGETS the
-	// write when the chief has moved, so `id` is the stale button's snapshot while the
+	// write when the agent has moved, so `id` is the stale button's snapshot while the
 	// write goes to `a.ID`. Logging `id` attributed a failure to the agent that was
 	// never touched — and the retarget already logged both ids, so `a.ID` alone is
 	// unambiguous here.
@@ -1736,21 +1679,11 @@ func (s *Server) answerSessionOpened(ctx context.Context, w http.ResponseWriter,
 	// LOAD-BEARING. HX-Redirect makes htmx navigate; on /agents/{name} (and, before
 	// task #633 deleted it, /operator) that is exactly right and is an existing
 	// contract with its own tests. On /tmux
-	// it would throw the grid, the chief panel, its live WebSocket and the
+	// it would throw the grid, the agent panel, its live WebSocket and the
 	// operator's place in the fleet away in order to open a thread in a slide-out
 	// they were already looking at. So a request that says it came from the panel is
 	// answered with the panel body, re-rendered on the NEW session — no redirect
 	// header at all, because a response carrying both would navigate as well as swap.
-	//
-	// 🔴 AND IT RENDERS FOR THE AGENT THIS HANDLER JUST WROTE TO, not for a chief
-	// resolved a second time. `a` is the chief here — the branch above made it so
-	// before any write — so the write and the render cannot disagree about which agent
-	// the operator is looking at. writeChiefPanelBody (the ctx-resolving front door)
-	// would re-read the agent list and could answer about a different one.
-	if chatSurfaceFromRequest(r) == ui.ChatSurfaceChiefPanel {
-		s.writeChiefPanelBodyFor(ctx, w, a, strconv.FormatInt(sess.ID, 10))
-		return
-	}
 	// Every agent lives at /agents/{name}. htmx follows HX-Redirect with a
 	// navigation.
 	//
@@ -1766,15 +1699,14 @@ func (s *Server) answerSessionOpened(ctx context.Context, w http.ResponseWriter,
 
 // chatSurfaceFromRequest reads the rendering surface off the query string.
 //
-// 🔴 IT FAILS TO THE PAGE SURFACE, AND THAT DIRECTION IS THE SAFE ONE. An
-// unrecognised value must not select the panel branch: a page render that answered
-// with a panel partial would replace an agent-detail document with a fragment, and
-// the redirect contract the page surfaces depend on would be gone. An enumerated
-// match rather than a non-empty test, so a typo is the page and not a third state.
-func chatSurfaceFromRequest(r *http.Request) ui.ChatSurface {
-	if r.URL.Query().Get(ui.ChatSurfaceQueryParam) == string(ui.ChatSurfaceChiefPanel) {
-		return ui.ChatSurfaceChiefPanel
-	}
+// 🔴 THERE IS ONLY THE PAGE SURFACE NOW, SO THIS ALWAYS ANSWERS IT. The second
+// surface was the agent slide-out, which went with the privileged agent it
+// talked to. Kept as a function rather than inlined because every caller reads a
+// surface from the request and a future surface belongs here — and because
+// failing to the PAGE is the safe direction either way: answering a page render
+// with a fragment would replace an agent-detail document with a partial and
+// lose the redirect contract the page depends on.
+func chatSurfaceFromRequest(*http.Request) ui.ChatSurface {
 	return ui.ChatSurfacePage
 }
 
@@ -1884,7 +1816,7 @@ func (s *Server) handleAgentWS(w http.ResponseWriter, r *http.Request) {
 		if err := json.Unmarshal(data, &in); err != nil || in.Type != "message" || strings.TrimSpace(in.Text) == "" {
 			continue
 		}
-		// 🔴 THE TURN GATE FIRST, THEN THE ASKS (chief replacement × #134): a
+		// 🔴 THE TURN GATE FIRST, THEN THE ASKS (agent replacement × #134): a
 		// message the gate refuses (the agent is being replaced) starts no turn,
 		// so it must not answer the agent's asks either.
 		if !s.turns.enter(a.ID) {
@@ -1920,7 +1852,7 @@ func (s *Server) handleAgentWS(w http.ResponseWriter, r *http.Request) {
 // them down). Two copies would be two transcripts' worth of disagreement about
 // what is stored.
 func (s *Server) runUserTurn(ctx context.Context, a agents.Agent, session agents.ChatSession, text string, emit agents.StreamEmit) ([]agents.TurnPart, error) {
-	// Counted so the chief replacement can refuse while a turn is in flight, and
+	// Counted so the agent replacement can refuse while a turn is in flight, and
 	// refused BEFORE the message is stored when the agent is being replaced
 	// (turn_gate.go).
 	if !s.turns.enter(a.ID) {

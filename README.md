@@ -38,8 +38,9 @@ out from each of your machines, so muster never needs an inbound route to them.
   short-lived link signed by muster, and the transcript shows a thumbnail, not
   the link. Needs an S3-compatible store. → [docs/uploads.md](docs/uploads.md)
 - **Agent dispatch.** muster can provision agents on Kubernetes. It is opt-in
-  and off by default. One of these agents can be a "chief" that reports on the
-  rest of the fleet. → [docs/provisioner.md](docs/provisioner.md)
+  and off by default. An agent holding no task and no repository works on the
+  fleet itself: it is given the supervisor instructions and reports on the rest.
+  No agent is privileged — every muster tool is offered to all of them. → [docs/provisioner.md](docs/provisioner.md)
 - **Accounts.** One shared password, or per-user accounts through GoTrue with
   passkeys, invites, roles and personal API tokens. Row-level security keeps each
   user's data separate. → [docs/auth.md](docs/auth.md)

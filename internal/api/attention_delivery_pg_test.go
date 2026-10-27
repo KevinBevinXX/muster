@@ -27,12 +27,12 @@ import (
 // turn is pushed.
 
 // deliveryFixture is the attention fixture with a turn-recording gateway, no
-// delivery grace, and a chief of the operator's whose default session is NOT
+// delivery grace, and an agent of the operator's whose default session is NOT
 // its latest one.
 type deliveryFixture struct {
 	*attnFixture
 	gw          *turnGateway
-	chief       agents.Agent
+	agent       agents.Agent
 	chiefTok    string
 	def, newer  agents.ChatSession
 	agentsStore *agents.PGStore
@@ -47,24 +47,24 @@ func newDeliveryFixture(t *testing.T) *deliveryFixture {
 	f.srv.attention.graceOverride = &noGrace
 	suffix := strconv.FormatInt(time.Now().UnixNano(), 36)
 	f.chiefTok = "attn-opchief-token-" + suffix
-	f.chief = f.agentFor(t, 1, "attnopchief-"+suffix, "chief", f.chiefTok)
+	f.agent = f.agentFor(t, 1, "attnopchief-"+suffix, "agent", f.chiefTok)
 	f.agentsStore = agents.NewPG(f.pool)
 	var err error
-	if f.def, err = f.agentsStore.CreateSession(asUser(1), f.chief.ID, f.chief.Name); err != nil {
+	if f.def, err = f.agentsStore.CreateSession(asUser(1), f.agent.ID, f.agent.Name); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.agentsStore.SetDefaultSession(asUser(1), f.chief.ID, f.def.ID); err != nil {
+	if err := f.agentsStore.SetDefaultSession(asUser(1), f.agent.ID, f.def.ID); err != nil {
 		t.Fatal(err)
 	}
 	time.Sleep(5 * time.Millisecond)
-	if f.newer, err = f.agentsStore.CreateSession(asUser(1), f.chief.ID, f.chief.Name); err != nil {
+	if f.newer, err = f.agentsStore.CreateSession(asUser(1), f.agent.ID, f.agent.Name); err != nil {
 		t.Fatal(err)
 	}
-	if latest, err := f.agentsStore.LatestOrCreateSession(asUser(1), f.chief.ID, f.chief.Name); err != nil || latest.ID != f.newer.ID {
+	if latest, err := f.agentsStore.LatestOrCreateSession(asUser(1), f.agent.ID, f.agent.Name); err != nil || latest.ID != f.newer.ID {
 		t.Fatalf("control: the newer session is not the latest (%d, %v): the default-vs-latest case would not be tested", latest.ID, err)
 	}
 	t.Cleanup(func() {
-		_, _ = f.pool.Exec(authz.System(context.Background()), `DELETE FROM attention_asks WHERE agent_id = $1`, f.chief.ID)
+		_, _ = f.pool.Exec(authz.System(context.Background()), `DELETE FROM attention_asks WHERE agent_id = $1`, f.agent.ID)
 	})
 	return f
 }
@@ -78,11 +78,11 @@ func (f *deliveryFixture) answerForm(t *testing.T, id int64, answer string) {
 	}
 }
 
-// turnsInto is the turns the gateway saw for the chief, in session sess.
+// turnsInto is the turns the gateway saw for the agent, in session sess.
 func (f *deliveryFixture) turnsInto(sess agents.ChatSession) []string {
 	var out []string
 	for _, tn := range f.gw.seen() {
-		if strings.HasPrefix(tn, f.chief.Name+" "+sess.SessionKey+" ") {
+		if strings.HasPrefix(tn, f.agent.Name+" "+sess.SessionKey+" ") {
 			out = append(out, tn)
 		}
 	}
@@ -109,7 +109,7 @@ func answeredItem(html string, id int64) string {
 }
 
 // TestAnAnswerToTheChiefIsPushedOnceIntoItsDefaultSession is the bug: the
-// chief asks and does NOT wait; the operator answers on /attention; the chief's
+// agent asks and does NOT wait; the operator answers on /attention; the agent's
 // DEFAULT session (not its latest) gets exactly one turn carrying the question
 // and the answer, fenced, stored in that session; the item says where it went;
 // later sweeps and a direct second delivery push nothing more.
@@ -151,7 +151,7 @@ func TestAnAnswerToTheChiefIsPushedOnceIntoItsDefaultSession(t *testing.T) {
 		t.Fatalf("the default session holds %d delivered answer(s) and %d reply part(s); want 1 and some: %+v", user, reply, msgs)
 	}
 	item := answeredItem(f.page(t, "/attention"), id)
-	if !strings.Contains(item, `data-delivery="delivered"`) || !strings.Contains(item, "Delivered to chief") {
+	if !strings.Contains(item, `data-delivery="delivered"`) || !strings.Contains(item, "Delivered to agent") {
 		t.Fatalf("the Answered item does not say where the answer went:\n%s", item)
 	}
 	// Exactly once: two more sweeps, from this process and a "restarted" one,
@@ -177,12 +177,12 @@ func (f *attnFixture) restarted() *Server {
 }
 
 // TestAWaitingAgentGetsTheAnswerInItsWaitAndNoTurn: blocked in attention_wait,
-// the chief gets the answer there; no turn is pushed, even by later sweeps,
+// the agent gets the answer there; no turn is pushed, even by later sweeps,
 // and the item says it was read.
 func TestAWaitingAgentGetsTheAnswerInItsWaitAndNoTurn(t *testing.T) {
 	f := newDeliveryFixture(t)
 	id := f.ask(t, f.chiefTok, "Ship it tonight?")
-	got := f.waitAs(attention.Asker{AgentID: f.chief.ID}, id)
+	got := f.waitAs(attention.Asker{AgentID: f.agent.ID}, id)
 	eventuallyAPI(t, "the wait to be in flight", func() bool { return f.srv.waitingOn(id) })
 	f.answerForm(t, id, "yes, ship it")
 	if res := recv(t, got); !strings.Contains(res, `"status":"answered"`) || !strings.Contains(res, "yes, ship it") {
@@ -209,7 +209,7 @@ func TestAWaitingAgentGetsTheAnswerInItsWaitAndNoTurn(t *testing.T) {
 func TestAWaitStillInFlightIsNotPushedOver(t *testing.T) {
 	f := newDeliveryFixture(t)
 	id := f.ask(t, f.chiefTok, "Restart the node?")
-	got := f.waitAs(attention.Asker{AgentID: f.chief.ID}, id)
+	got := f.waitAs(attention.Asker{AgentID: f.agent.ID}, id)
 	eventuallyAPI(t, "the wait to be in flight", func() bool { return f.srv.waitingOn(id) })
 	if _, err := f.attn.Answer(asUser(1), id, "not today"); err != nil { // no askSettled: nothing wakes the waiter
 		t.Fatal(err)
@@ -303,28 +303,28 @@ func TestARestartMidDeliveryDeliversOnce(t *testing.T) {
 func TestABusyOrStoppedAgentKeepsTheAnswerQueuedSayingWhy(t *testing.T) {
 	f := newDeliveryFixture(t)
 	id := f.ask(t, f.chiefTok, "Rotate the key now?")
-	if !f.srv.turns.enter(f.chief.ID) {
+	if !f.srv.turns.enter(f.agent.ID) {
 		t.Fatal("control: the gate is closed")
 	}
 	f.answerForm(t, id, "yes")
 	if a := f.delivery(t, id); a.Delivery != attention.DeliveryQueued || a.DeliveryDetail != "the agent is in the middle of a turn" {
-		t.Fatalf("while the chief is mid-turn: %q %q", a.Delivery, a.DeliveryDetail)
+		t.Fatalf("while the agent is mid-turn: %q %q", a.Delivery, a.DeliveryDetail)
 	}
 	if item := answeredItem(f.page(t, "/attention"), id); !strings.Contains(item, "waiting: the agent is in the middle of a turn") {
 		t.Fatalf("the queued item does not say why: %s", item)
 	}
-	f.srv.turns.leave(f.chief.ID)
-	if _, err := f.pool.Exec(authz.System(context.Background()), `UPDATE agents SET status = 'stopped' WHERE id = $1`, f.chief.ID); err != nil {
+	f.srv.turns.leave(f.agent.ID)
+	if _, err := f.pool.Exec(authz.System(context.Background()), `UPDATE agents SET status = 'stopped' WHERE id = $1`, f.agent.ID); err != nil {
 		t.Fatal(err)
 	}
 	f.srv.deliverDueAnswers(context.Background())
 	if a := f.delivery(t, id); a.Delivery != attention.DeliveryQueued || a.DeliveryDetail != "the agent is not running (stopped)" {
-		t.Fatalf("while the chief is stopped: %q %q", a.Delivery, a.DeliveryDetail)
+		t.Fatalf("while the agent is stopped: %q %q", a.Delivery, a.DeliveryDetail)
 	}
 	if n := len(f.gw.seen()); n != 0 {
 		t.Fatalf("%d turns to a busy or stopped agent", n)
 	}
-	if _, err := f.pool.Exec(authz.System(context.Background()), `UPDATE agents SET status = 'running' WHERE id = $1`, f.chief.ID); err != nil {
+	if _, err := f.pool.Exec(authz.System(context.Background()), `UPDATE agents SET status = 'running' WHERE id = $1`, f.agent.ID); err != nil {
 		t.Fatal(err)
 	}
 	f.srv.deliverDueAnswers(context.Background())
@@ -406,7 +406,7 @@ func TestAMirroredOrSystemAsksAnswerIsNotPushed(t *testing.T) {
 
 // TestAnotherOwnerCannotAnswerSeeOrRetryAnAnswer: a member cannot answer the
 // operator's agent's ask, see its answer, or retry its delivery; the member's
-// own chief's answer is delivered into the member's chief's session, as the
+// own agent's answer is delivered into the member's agent's session, as the
 // member.
 func TestAnotherOwnerCannotAnswerSeeOrRetryAnAnswer(t *testing.T) {
 	f := newDeliveryFixture(t)
@@ -449,7 +449,7 @@ func TestAnotherOwnerCannotAnswerSeeOrRetryAnAnswer(t *testing.T) {
 		t.Fatal("control: the owner does not see their own answer")
 	}
 
-	// The member's own chief, answered by the member: delivered as the member.
+	// The member's own agent, answered by the member: delivered as the member.
 	mid := f.ask(t, f.attnFixture.chiefTok, "Which repo?")
 	rd, hdr = form(url.Values{"answer": {"the docs one"}})
 	if w := f.call(t, http.MethodPost, "/attention/asks/"+strconv.FormatInt(mid, 10)+"/answer", rd, merge(member, hdr)); w.Code != http.StatusSeeOther {
@@ -459,11 +459,11 @@ func TestAnotherOwnerCannotAnswerSeeOrRetryAnAnswer(t *testing.T) {
 	var got attention.Ask
 	got, err := f.attn.Get(asUser(f.member), mid)
 	if err != nil || got.Delivery != attention.DeliveryDelivered {
-		t.Fatalf("the member's chief's answer: %q %q %v", got.Delivery, got.DeliveryDetail, err)
+		t.Fatalf("the member's agent's answer: %q %q %v", got.Delivery, got.DeliveryDetail, err)
 	}
 	sess, err := f.agentsStore.GetSession(asUser(f.member), got.DeliveredSession)
-	if err != nil || sess.AgentID != f.attnFixture.chief.ID {
-		t.Fatalf("delivered into session %d of agent %d (%v); want the member's chief %d", got.DeliveredSession, sess.AgentID, err, f.attnFixture.chief.ID)
+	if err != nil || sess.AgentID != f.attnFixture.agent.ID {
+		t.Fatalf("delivered into session %d of agent %d (%v); want the member's agent %d", got.DeliveredSession, sess.AgentID, err, f.attnFixture.agent.ID)
 	}
 }
 
@@ -474,7 +474,7 @@ func TestAnotherOwnerCannotAnswerSeeOrRetryAnAnswer(t *testing.T) {
 func TestAnAnswerAStoppedAgentNeverTakesEndsUnconfirmed(t *testing.T) {
 	f := newDeliveryFixture(t)
 	id := f.ask(t, f.chiefTok, "Rotate the backups?")
-	if _, err := f.pool.Exec(authz.System(context.Background()), `UPDATE agents SET status = 'stopped' WHERE id = $1`, f.chief.ID); err != nil {
+	if _, err := f.pool.Exec(authz.System(context.Background()), `UPDATE agents SET status = 'stopped' WHERE id = $1`, f.agent.ID); err != nil {
 		t.Fatal(err)
 	}
 	f.answerForm(t, id, "yes")
@@ -508,7 +508,7 @@ func TestAnAnswerAStoppedAgentNeverTakesEndsUnconfirmed(t *testing.T) {
 	if a := f.delivery(t, id); a.Delivery != attention.DeliveryQueued {
 		t.Fatalf("a retried answer to a still-stopped agent: %q %q; want queued for a new day", a.Delivery, a.DeliveryDetail)
 	}
-	if _, err := f.pool.Exec(authz.System(context.Background()), `UPDATE agents SET status = 'running' WHERE id = $1`, f.chief.ID); err != nil {
+	if _, err := f.pool.Exec(authz.System(context.Background()), `UPDATE agents SET status = 'running' WHERE id = $1`, f.agent.ID); err != nil {
 		t.Fatal(err)
 	}
 	f.srv.deliverDueAnswers(context.Background())

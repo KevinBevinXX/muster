@@ -218,14 +218,22 @@ func (f *reapAPIFixture) destroyedOnly(t *testing.T, watch []int64, want ...int6
 	}
 }
 
-// TestTheReaperDestroysOnlyAnAgentStoppedPastTheWindow: user 1's agents, each
+// TestTheReaperDestroysEveryAgentStoppedPastTheWindow: user 1's agents, each
 // with a stopped_at 15 days old unless noted — a stopped one on a task (due), a
 // stopped one 13 days old, a running one and an errored one (stopped, aged,
-// then moved on, so status is the only difference), user 1's own chief (its
-// reserved slug) and the member's chief by label, both stopped. One pass:
-// Destroy runs for the due agent only, its row is gone, its task is kept, and
-// the log names the reap. A second pass destroys nothing more.
-func TestTheReaperDestroysOnlyAnAgentStoppedPastTheWindow(t *testing.T) {
+// then moved on, so status is the only difference), and two STANDING agents
+// (user 1's own, and the member's agent labelled `agent`), both stopped and
+// aged. One pass: Destroy runs for every aged, stopped agent — the two standing
+// ones included — the due agent's task is kept, and the log names its reap. A
+// second pass destroys nothing more.
+//
+// 🔴 THE TWO STANDING AGENTS USED TO BE THE EXEMPTIONS THIS TEST PINNED, and
+// their inversion is the point. The reaper skipped whichever agent held the
+// reserved `agent` slug or carried the `agent` display name, silently and on
+// every pass. muster has no privileged agent, so STOPPED AND AGED is the whole
+// rule: what keeps an agent is being young, running or errored, never what it
+// is called.
+func TestTheReaperDestroysEveryAgentStoppedPastTheWindow(t *testing.T) {
 	f := newReapAPIFixture(t)
 	n := f.task(t, "long stopped", notes.StatusInProgress)
 	due := f.agentOn(t, 1, "rpdue", &n.ID)
@@ -238,19 +246,23 @@ func TestTheReaperDestroysOnlyAnAgentStoppedPastTheWindow(t *testing.T) {
 		f.stopAged(t, id, 15)
 		f.setAgentStatus(t, id, st)
 	}
-	ownChiefStatus := f.ownChief.Status
-	t.Cleanup(func() { f.setAgentStatus(t, f.ownChief.ID, ownChiefStatus) })
-	f.stopAged(t, f.ownChief.ID, 15)
-	f.stopAged(t, f.chief.ID, 15)
-	watch := []int64{due.ID, young.ID, running.ID, errored.ID, f.ownChief.ID, f.chief.ID}
+	// No status is restored afterwards: these two are reaped by this pass, and
+	// the fixture re-creates the standing agent by name when a later test needs it.
+	f.stopAged(t, f.ownFleetAgent.ID, 15)
+	f.stopAged(t, f.agent.ID, 15)
+	watch := []int64{due.ID, young.ID, running.ID, errored.ID, f.ownFleetAgent.ID, f.agent.ID}
 
-	if got := f.reap(t); got < 1 {
-		t.Fatalf("the pass started %d teardown(s); want the due agent's", got)
+	if got := f.reap(t); got < 3 {
+		t.Fatalf("the pass started %d teardown(s); want the due agent's and both standing agents'", got)
 	}
-	f.mustBeGone(t, due.ID)
-	f.destroyedOnly(t, watch, due.ID)
-	for name, id := range map[string]int64{"13 days stopped": young.ID, "running": running.ID, "error": errored.ID,
-		"the reserved-slug chief": f.ownChief.ID, "the labelled chief": f.chief.ID} {
+	for name, id := range map[string]int64{"the due": due.ID, "the owner's standing": f.ownFleetAgent.ID, "the labelled": f.agent.ID} {
+		f.mustBeGone(t, id)
+		if f.exists(t, id) {
+			t.Errorf("%s agent %d survived the reaper", name, id)
+		}
+	}
+	f.destroyedOnly(t, watch, due.ID, f.ownFleetAgent.ID, f.agent.ID)
+	for name, id := range map[string]int64{"13 days stopped": young.ID, "running": running.ID, "error": errored.ID} {
 		if !f.exists(t, id) {
 			t.Errorf("%s agent %d is gone", name, id)
 		}
@@ -264,7 +276,7 @@ func TestTheReaperDestroysOnlyAnAgentStoppedPastTheWindow(t *testing.T) {
 	}
 
 	f.reap(t)
-	f.destroyedOnly(t, watch, due.ID)
+	f.destroyedOnly(t, watch, due.ID, f.ownFleetAgent.ID, f.agent.ID)
 }
 
 // TestANeverStartedAgentIsNotReaped: an agent saved for later and never
@@ -406,15 +418,15 @@ func TestTwoPassesAtOnceDestroyAnAgentOnce(t *testing.T) {
 	f.destroyedOnly(t, []int64{a.ID}, a.ID)
 }
 
-// TestReapingTheChiefsAgentReleasesItsStart: the chief's task_dispatch starts
+// TestReapingTheChiefsAgentReleasesItsStart: the agent's task_dispatch starts
 // an agent on task n; the agent is stopped (as the provisioner's Stop writes
 // it) and aged past the window, and the task is set open. Before the reap the
-// chief's start is spent;
+// agent's start is spent;
 // the reap records one release AS THE OWNER (a System principal cannot write
-// it), and the chief may start one new agent on n.
+// it), and the agent may start one new agent on n.
 func TestReapingTheChiefsAgentReleasesItsStart(t *testing.T) {
 	f := newReapAPIFixture(t)
-	n := f.task(t, "chief started, long stopped", notes.StatusOpen)
+	n := f.task(t, "agent started, long stopped", notes.StatusOpen)
 	started := f.mustStart(t, n.ID)
 	f.stopAged(t, started, 15)
 	f.setStatus(t, n.ID, notes.StatusOpen)

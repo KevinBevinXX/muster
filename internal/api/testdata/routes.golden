@@ -77,10 +77,10 @@ GET /api/whoami
 GET /apple-touch-icon-precomposed.png
 GET /apple-touch-icon.png
 GET /attention
+GET /attention/asker
 GET /attention/badge
 GET /attention/drafts
 GET /attention/items
-GET /attention/asker
 GET /attention/open/{key}
 GET /auth/claim
 GET /auth/reset
@@ -126,8 +126,6 @@ GET /ui/agents/{id}/rename
 GET /ui/agents/{id}/status
 GET /ui/agents/{name}/chat-log
 GET /ui/agents/{name}/task
-GET /ui/chief/panel
-GET /ui/chief/threads/search
 GET /ui/connector-requests
 GET /ui/connectors
 GET /ui/connectors/new
@@ -186,7 +184,6 @@ POST /agents/{id}/start
 POST /agents/{id}/stop
 POST /agents/{name}/send
 POST /api/agents/{name}/messages
-POST /api/chief/replace
 POST /api/device/pair
 POST /api/flows/jobs
 POST /api/flows/jobs/{id}/cancel
@@ -208,7 +205,6 @@ POST /auth/confirm/passkey/verify
 POST /auth/passkey/options
 POST /auth/passkey/verify
 POST /auth/reset
-POST /chief/provision
 POST /connectors
 POST /connectors/{name}/rotate
 POST /flows/jobs
@@ -240,6 +236,7 @@ POST /plugins/drafts/{id}/approve
 POST /plugins/drafts/{id}/reject
 POST /plugins/messages/{id}/retry
 POST /plugins/{id}/revoke
+POST /plugins/{id}/target
 POST /runner/flows/claim
 POST /runner/flows/{id}/heartbeat
 POST /runner/flows/{id}/result

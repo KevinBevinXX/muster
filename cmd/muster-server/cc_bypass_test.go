@@ -141,7 +141,7 @@ func TestTheGitHubGrantVetoIsWiredFromTheConnectorStore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	row := agents.Agent{ID: 7301, Name: "review-worker-4", Kind: agents.KindClaudeCode, CCAccount: "work", WorkerPool: "pr-review"}
+	row := agents.Agent{ID: 7301, Name: "review-worker-4", Kind: agents.KindClaudeCode, CCAccount: "work", WorkerPool: "pr-review", Repo: "org/review-repo"}
 	decide := func(cfg config, conns connectors.Store) (bool, string, error) {
 		prov, _, err := buildAgentPlaneWith(cfg, stubStore{}, pool, nil, logger)
 		if err != nil {

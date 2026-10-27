@@ -43,7 +43,7 @@ import (
 //	DELETE /agents/{id}               200; htmx removed the card, the row was still there
 //	GET  /agents/{name}/logs/stream   200 + `: connected`, then EOF — reads as "no logs"
 //	GET  /agents/{name}/ws            the same shape, through chatTurn
-//	POST /chief/provision             200, then SIGSEGV — its goroutine was BARE
+//	POST /agent/provision             200, then SIGSEGV — its goroutine was BARE
 //	POST /runbooks/{id}/dispatch      200
 //	POST /api/agents/{name}/messages  200
 //
@@ -136,8 +136,6 @@ var provisionerDeps = []provisionerDep{
 			"POST /agents",
 			"POST /agents/{id}/start",
 			"POST /agents/{id}/stop",
-			"POST /api/chief/replace",
-			"POST /chief/provision",
 		},
 		callers: []string{
 			"(*Server).createAndDispatchAgent", // Dispatch; reached from handleAgentCreate, handleChiefProvision
@@ -147,8 +145,6 @@ var provisionerDeps = []provisionerDep{
 			"(*Server).handleAgentStart",       // Start
 			"(*Server).handleAgentStop",        // Stop
 			"(*Server).handleAgentTerminalWS",  // AttachTerminal
-			"(*Server).handleChiefProvision",   // Start
-			"(*Server).replaceChief",           // Destroy + Start; reached from handleChiefReplace
 		},
 	},
 	{
@@ -286,7 +282,7 @@ func TestWiringOneDependencyDoesNotSilenceTheOther(t *testing.T) {
 				mustRefuse := dep.field == tc.refuses
 				for _, route := range dep.routes {
 					method, pattern, _ := strings.Cut(route, " ")
-					path := strings.NewReplacer("{id}", "1", "{name}", "chief").Replace(pattern)
+					path := strings.NewReplacer("{id}", "1", "{name}", "harbour-kestrel").Replace(pattern)
 					req := httptest.NewRequest(method, path, strings.NewReader("{}"))
 					admit(s, req)
 					rec := httptest.NewRecorder()
@@ -374,7 +370,7 @@ func TestEveryProvisionerRouteRefusesWhenItIsUnwired(t *testing.T) {
 			}
 			// Substitute concrete values for the wildcards so the request
 			// actually matches the registered pattern.
-			path := strings.NewReplacer("{id}", "1", "{name}", "chief").Replace(pattern)
+			path := strings.NewReplacer("{id}", "1", "{name}", "harbour-kestrel").Replace(pattern)
 
 			req := httptest.NewRequest(method, path, nil)
 			// Past whichever auth door this route sits behind, so what is
@@ -424,7 +420,7 @@ func TestTheProvisionerRefusalIsBehindItsOwnAuthDoor(t *testing.T) {
 	for _, route := range allProvisionerRoutes() {
 		t.Run(route, func(t *testing.T) {
 			method, pattern, _ := strings.Cut(route, " ")
-			path := strings.NewReplacer("{id}", "1", "{name}", "chief").Replace(pattern)
+			path := strings.NewReplacer("{id}", "1", "{name}", "harbour-kestrel").Replace(pattern)
 			rec := httptest.NewRecorder()
 			// No session cookie, no hook token: an anonymous caller.
 			h.ServeHTTP(rec, httptest.NewRequest(method, path, nil))

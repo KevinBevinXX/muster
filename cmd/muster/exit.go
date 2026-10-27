@@ -114,7 +114,7 @@ const exitCodeHelp = `Exit codes:
   7  route absent (404 from the router: this client is newer than the server it called)
   8  non-JSON response where JSON was expected (an auth portal or a proxy error page)
   9  a SERVER-side surface is not armed — not an outage, and not your credential,
-     which was not even checked. The write half of ` + "`chief ask`" + ` is fail-CLOSED
+     which was not even checked. The write half of ` + "`agent ask`" + ` is fail-CLOSED
      (it answers 503 carrying ` + "`\"unarmed\": true`" + `), so a server with no hook token
      configured lands here. Arm the server; do not rotate your token
  10  THIS CLIENT gave up waiting (its --timeout, or a cancelled context) — the request

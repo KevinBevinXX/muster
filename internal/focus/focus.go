@@ -4,7 +4,7 @@
 //
 // Focus has ONE writer: muster's own SERVER-SIDE refresh (Refresher), which
 // tails the session's transcript and asks a Summarizer (SourceSummarizer). The
-// chief READS it — focus_search, fleet_list — and never spends a token
+// agent READS it — focus_search, fleet_list — and never spends a token
 // computing it. A refresh that fails keeps the focus and records WHY, as a short
 // non-secret reason (Reason) the card and fleet_list show.
 //
@@ -204,7 +204,7 @@ func Reason(err error) string {
 	return ReasonFailed
 }
 
-// Hit is one focus_search result: what the chief needs to pick a session, and
+// Hit is one focus_search result: what the agent needs to pick a session, and
 // nothing more.
 type Hit struct {
 	Subject Subject

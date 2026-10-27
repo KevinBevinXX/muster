@@ -105,9 +105,8 @@ func TestErrorsNeverTouchStdout(t *testing.T) {
 		}},
 		{name: "unknown flag", args: []string{"agent", "ls", "--nope"}, set: func(h *harness) {}},
 		{name: "missing body on create", args: []string{"task", "create"}, set: func(h *harness) {}},
-		{name: "unarmed write surface", args: []string{"chief", "ask", "--text", "hi"}, set: func(h *harness) {
-			h.json("GET /api/agents", http.StatusOK, `[{"id":1,"name":"chief"}]`)
-			h.json("POST /api/agents/chief/messages", http.StatusServiceUnavailable, `{"error":"nope","unarmed":true}`)
+		{name: "unarmed write surface", args: []string{"plugins", "retry", "6"}, set: func(h *harness) {
+			h.json("POST /api/plugins/messages/6/retry", http.StatusServiceUnavailable, `{"error":"nope","unarmed":true}`)
 		}},
 	}
 	for _, tc := range cases {
@@ -159,9 +158,8 @@ func TestStdoutIsIndentedJSONForEveryVerb(t *testing.T) {
 		t.Run(w.name, func(t *testing.T) {
 			h := newHarness(t)
 			h.json("GET /api/agents", http.StatusOK,
-				`[{"id":11,"name":"clever-fox","nested":{"a":1}},{"id":12,"name":"chief","nested":{"a":1}}]`)
-			h.json("GET /api/agents/chief/messages", http.StatusOK, `{"messages":[],"count":0}`)
-			h.json("POST /api/agents/chief/messages", http.StatusOK, `{"reply":"ok","nested":{"a":1}}`)
+				`[{"id":11,"name":"clever-fox","nested":{"a":1}},{"id":12,"name":"agent","nested":{"a":1}}]`)
+			h.json("GET /api/agents/agent/messages", http.StatusOK, `{"messages":[],"count":0}`)
 			h.json("GET /api/tasks", http.StatusOK, `[{"id":1,"nested":{"a":1}}]`)
 			h.json("GET /api/tasks/5", http.StatusOK, `{"id":5,"nested":{"a":1}}`)
 			h.json("POST /api/tasks", http.StatusOK, `{"id":5}`)
@@ -179,7 +177,6 @@ func TestStdoutIsIndentedJSONForEveryVerb(t *testing.T) {
 			h.json("POST /api/flows/jobs/9/cancel", http.StatusOK, `{"id":9,"nested":{"a":1}}`)
 			h.json("POST /api/routes/rt_0123456789abcdef01234567/reply", http.StatusOK, `{"route_id":"rt_0123456789abcdef01234567","state":"relayed","nested":{"a":1}}`)
 			h.json("POST /api/plugins/messages/6/retry", http.StatusAccepted, `{"id":6,"status":"queued","nested":{"a":1}}`)
-			h.json("POST /api/chief/replace", http.StatusOK, `{"deleted":null,"created":true,"nested":{"a":1}}`)
 
 			got := h.runCLI(w.args...)
 			if got.code != exitOK {

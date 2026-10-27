@@ -66,7 +66,7 @@ const (
 	noticeCancelledAnswered = "cancelled-answered"
 	noticeNotRetried        = "not-retried"
 	// noticeRoutedNotRetried: a ROUTED message is not retried as the
-	// person's own; its failed route went back to the chief.
+	// person's own; its failed route went back to the agent.
 	noticeRoutedNotRetried = "routed-not-retried"
 	// A finished message's Delete (send_queue.go).
 	noticeDeleted    = "deleted"
@@ -189,7 +189,7 @@ var composerNotices = map[string]struct {
 	noticeNotCancelled:      {"Not cancelled: that message is already being sent, or has been.", false},
 	noticeCancelledAnswered: {SendQueueCancelledAnsweredText(""), false},
 	noticeNotRetried:        {"Not queued again: only a message that failed can be retried, and only once.", false},
-	noticeRoutedNotRetried:  {"Not queued again: your chief routed that message, and a failed route goes back to the chief rather than being retried here.", false},
+	noticeRoutedNotRetried:  {"Not queued again: the target agent routed that message, and a failed route goes back to the agent rather than being retried here.", false},
 	noticeDeleted:           {"Deleted.", true},
 	noticeNotDeleted:        {SendQueueNotDeleted, false},
 	noticeNotQueuedNow:      {SendQueueNotQueuedNow, false},

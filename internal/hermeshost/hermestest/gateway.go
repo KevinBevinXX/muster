@@ -96,6 +96,13 @@ func NewGateway(t testing.TB, dir string) *Gateway {
 		if err != nil {
 			t.Fatal(err)
 		}
+		// The socket's safety check (home.go's ownedPrivate) refuses a directory
+		// another user could use; os.MkdirTemp's mode follows the process umask,
+		// which in a root-ish container yields 0775. Force 0700: only the owner
+		// may traverse, which is what the check demands of the socket's parent.
+		if err := os.Chmod(short, 0o700); err != nil {
+			t.Fatal(err)
+		}
 		t.Cleanup(func() { _ = os.RemoveAll(short) })
 		sum := sha256.Sum256([]byte(resolved))
 		d := filepath.Join(short, "hermes-gw-"+hex.EncodeToString(sum[:])[:16])

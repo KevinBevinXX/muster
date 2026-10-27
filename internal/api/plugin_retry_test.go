@@ -23,8 +23,8 @@ func TestTheRetryCopyDoesNotPromiseEveryReplyWaits(t *testing.T) {
 		t.Fatalf("no explanation paragraph after the heading:\n%s", page)
 	}
 	got := strings.Join(strings.Fields(html.UnescapeString(p[1])), " ")
-	const want = "Your chief's turn on each of these was cut off, so it may or may not have acted on it. " +
-		"Retry hands it to your chief again, which handles it like any message: a reply it drafts waits for your " +
+	const want = "The target agent's turn on each of these was cut off, so it may or may not have acted on it. " +
+		"Retry hands it to the plugin's target again, which handles it like any message: a reply it drafts waits for your " +
 		"approval, except an answer it routes through one of your sessions to a verified sender you allowlisted " +
 		"for this plugin, which is sent without it."
 	if got != want {

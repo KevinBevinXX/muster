@@ -43,6 +43,12 @@ type Home struct {
 func New(t testing.TB) *Home {
 	t.Helper()
 	dir := t.TempDir()
+	// The socket's safety check (home.go's ownedPrivate) refuses a home another
+	// user could use, and t.TempDir()'s mode follows the process umask — in a
+	// root-ish container that yields 0775. Force 0700 so the check always holds.
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
 	db, err := Create(dir)
 	if err != nil {
 		t.Fatal(err)

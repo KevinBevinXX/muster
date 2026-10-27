@@ -163,6 +163,6 @@ document inline, which today it does not.
 
 ## Not done
 
-- The agent chat page's own message form (and the chief panel's) has no
+- The agent chat page's own message form (and the agent panel's) has no
   paperclip; attach from the agent's Terminal view.
 - Thumbnails are the original image scaled by the browser, not a resized copy.

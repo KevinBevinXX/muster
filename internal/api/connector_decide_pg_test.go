@@ -19,8 +19,8 @@ import (
 // connector request through one of their own MIRRORED Claude Code sessions
 // (POST /mirror/mcp) — the same decision path the Connectors tab's request card
 // takes, with where it came from recorded and shown — and nobody else can: not a
-// dispatched agent (the requester included), not the chief, not a hook, agent or
-// chief token on the mirror door, not another owner's host.
+// dispatched agent (the requester included), not the agent, not a hook, agent or
+// agent token on the mirror door, not another owner's host.
 //
 // ⚠ THESE TESTS NAME ONLY IDENTIFIERS THAT EXIST BEFORE THE FEATURE (the tool
 // names and refusals are string literals; provenance is read with SQL), so the
@@ -29,7 +29,7 @@ import (
 
 // decideFixture is answerFixture (user 1's host "ws" listing focusSID and
 // secondSID, user 1's "laptop", a member's host also named "ws"; user 1's
-// agents op and op2 and chief; the member's worker) plus a stored connector
+// agents op and op2 and agent; the member's worker) plus a stored connector
 // "svc" of user 1's and an SSE bus, so a decision's nudge can be observed.
 type decideFixture struct {
 	*answerFixture
@@ -331,18 +331,18 @@ func TestConnectorRequestDecideRefusesDecidedForeignMissingAndBadRequests(t *tes
 }
 
 // TestOnlyAMirroredSessionDecidesAConnectorRequest: no dispatched agent — the
-// requester itself, another of the owner's, the owner's chief — can list or
+// requester itself, another of the owner's, the owner's agent — can list or
 // decide a request: not through the gateway dispatcher (which runs ANY name a
 // runtime hands it), not over POST /mcp (unlisted, so unknown), and neither tool
-// is offered on either list; the hook token, an agent's and the chief's token
+// is offered on either list; the hook token, an agent's and the agent's token
 // are 401 on the mirror door. The request stays pending. CONTROL: the mirrored
 // session approves it.
 func TestOnlyAMirroredSessionDecidesAConnectorRequest(t *testing.T) {
 	f := newDecideFixture(t)
 	id := f.request(t, f.opTok, "svc", "let me in")
 	args := `{"id":` + strconv.FormatInt(id, 10) + `,"decision":"approve"}`
-	for name, a := range map[string]struct{ tok string }{"the requester": {f.opTok}, "another worker": {f.op2Tok}, "the chief": {f.chiefTok}} {
-		ag := f.chief
+	for name, a := range map[string]struct{ tok string }{"the requester": {f.opTok}, "another worker": {f.op2Tok}, "the agent": {f.chiefTok}} {
+		ag := f.agent
 		switch a.tok {
 		case f.opTok:
 			ag = f.op
@@ -369,7 +369,7 @@ func TestOnlyAMirroredSessionDecidesAConnectorRequest(t *testing.T) {
 			}
 		}
 	}
-	for name, tok := range map[string]string{"the hook token": connTestHookToken, "the chief's token": f.chiefTok, "an agent's token": f.opTok} {
+	for name, tok := range map[string]string{"the hook token": connTestHookToken, "the agent's token": f.chiefTok, "an agent's token": f.opTok} {
 		if code, _, body := f.mirrorRPC(t, mirrorAs(tok, focusSID), mcpToolCall("connector_request_decide", map[string]any{"id": id, "decision": "approve"})); code != http.StatusUnauthorized {
 			t.Errorf("%s on /mirror/mcp: %d %s, want 401", name, code, body)
 		}

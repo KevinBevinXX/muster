@@ -103,7 +103,7 @@ func fullyWiredServer(t *testing.T) *Server {
 		Routing:         &Routing{},
 		// NON-ZERO on purpose: the zero TaskRouting offers no task_dispatch.
 		TaskRouting:     &TaskRouting{DispatchOwners: map[int64]bool{1: true}},
-		ChiefDispatch:   stubChiefDispatch{},
+		TaskDispatch:    stubTaskDispatch{},
 		SessionRuntimes: []string{"claude-code", "gateway"},
 		SendQueue:       stubSendQueue{},
 		// NON-ZERO on purpose: the zero value is the default.
@@ -145,7 +145,7 @@ type stubSummarizer struct{ focus.Summarizer }
 
 // stubRoutes satisfies plugins.RouteStore for registration only; any method call panics.
 type stubRoutes struct{ plugins.RouteStore }
-type stubChiefDispatch struct{ plugins.DispatchStore }
+type stubTaskDispatch struct{ plugins.DispatchStore }
 type stubAttention struct{ attention.Store }
 type stubMirrorTokens struct{ MirrorTokenAuth }
 

@@ -9,12 +9,13 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/plugins"
 )
 
 // THE PLUGIN INTERFACE (internal/plugins): out-of-process connectors that bring
-// inbound messages to their owner's chief agent. OFF unless MUSTER_PLUGINS=1
+// inbound messages to AN AGENT THEIR OWNER PICKS (plugin_target.go). OFF unless MUSTER_PLUGINS=1
 // (Extensions.Plugins nil): then every route below answers 404 — before any
 // credential is looked at — and /plugins is not drawn.
 //
@@ -54,6 +55,10 @@ func (s *Server) registerPluginRoutes(mux Mux) {
 	mux.HandleFunc("GET "+pluginsPath, s.requirePluginsOn(s.requireSession(s.handlePluginsPage)))
 	mux.HandleFunc("POST "+pluginsPath, s.requirePluginsOn(s.requireOperatorWrite(s.handlePluginCreate)))
 	mux.HandleFunc("POST "+pluginsPath+"/{id}/revoke", s.requirePluginsOn(s.requireOperatorWrite(s.handlePluginRevoke)))
+	// The plugin's TARGET AGENT (plugin_target.go): which agent its messages are
+	// delivered to. requireOperatorWrite, like revoke — it decides where an
+	// untrusted inbound message is injected, so no machine credential may set it.
+	mux.HandleFunc("POST "+pluginsPath+"/{id}/target", s.requirePluginsOn(s.requireOperatorWrite(s.handlePluginTarget)))
 
 	// Reply drafts (plugin_drafts.go): the owner decides; Approve also needs a
 	// fresh sign-in, checked in the handler. Reject (and withdrawing an approval,
@@ -61,7 +66,7 @@ func (s *Server) registerPluginRoutes(mux Mux) {
 	mux.HandleFunc("POST "+pluginsPath+"/drafts/{id}/approve", s.requirePluginsOn(s.requireOperatorWrite(s.handleDraftApprove)))
 	mux.HandleFunc("POST "+pluginsPath+"/drafts/{id}/reject", s.requirePluginsOn(s.requireOperatorWrite(s.handleDraftReject)))
 
-	// Retrying a message the chief never confirmed (plugin_retry.go).
+	// Retrying a message the agent never confirmed (plugin_retry.go).
 	s.registerPluginRetryRoutes(mux)
 
 	mux.HandleFunc("POST "+pluginAPIPrefix+"/messages", s.requirePluginToken(s.handlePluginMessage))
@@ -69,7 +74,7 @@ func (s *Server) registerPluginRoutes(mux Mux) {
 	mux.HandleFunc("POST "+pluginAPIPrefix+"/drafts/{id}/result", s.requirePluginToken(s.handlePluginDraftResult))
 	// Deterministic upstream notices → one task per external key (plugin_tasks.go).
 	mux.HandleFunc("POST "+pluginTasksPath, s.requirePluginToken(s.handlePluginTask))
-	// Session routing (session_routes.go): a MIRRORED session's reply_to_chief,
+	// Session routing (session_routes.go): a MIRRORED session's route_reply,
 	// with its host's own muster credential acting as the owner (a personal
 	// token, or the armed hook token). 404 with routing off. Fail-closed on an
 	// unarmed hook tier: it steers what an outside party is sent.
@@ -151,7 +156,7 @@ func (s *Server) refusePluginTokenElsewhere(w http.ResponseWriter, r *http.Reque
 // handlePluginMessage is POST /plugin/v1/messages: store one inbound message
 // (202 {id, status:"queued"}), or answer a repeat of its external_id with the
 // stored row (200 {id, status}). A NEW message is then handed to the owner's
-// chief in the background; the response does not wait for the turn.
+// agent in the background; the response does not wait for the turn.
 func (s *Server) handlePluginMessage(w http.ResponseWriter, r *http.Request) {
 	var in plugins.MessageIn
 	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, plugins.MaxRequestBytes))
@@ -189,7 +194,7 @@ func (s *Server) handlePluginMessage(w http.ResponseWriter, r *http.Request) {
 }
 
 // deliverPluginMessage starts the delivery of a just-stored message to the
-// owner's chief, detached from the request (the turn can take minutes) but
+// agent p names, detached from the request (the turn can take minutes) but
 // keeping its principal, and ended by EndStreams on shutdown so a cut-off turn
 // is recorded (unconfirmed) rather than lost. WaitForPluginDeliveries waits for it.
 //
@@ -206,11 +211,15 @@ func (s *Server) deliverPluginMessage(r *http.Request, p plugins.Plugin, m plugi
 	safeGo(s.logger, "plugin delivery", func() {
 		defer s.pluginInFlight.Done()
 		defer cancel()
-		chief, err := s.chiefAgent(ctx)
-		if err != nil && !errors.Is(err, ErrNoChief) {
-			s.logger.Printf("plugins: plugin %d message %d: resolve the chief: %v", p.ID, m.ID, err)
+		// 🔴 THE TARGET IS THE PLUGIN'S OWN (plugin_target.go), not an agent
+		// resolved by label across the owner's fleet. No target is a configuration
+		// state: Deliver is still called, with a zero agent, so the message is
+		// recorded as queued (`no_target`) rather than silently dropped.
+		target, err := s.pluginTargetAgent(ctx, p)
+		if err != nil && !errors.Is(err, ErrNoPluginTarget) {
+			s.logger.Printf("plugins: plugin %d message %d: resolve the target agent: %v", p.ID, m.ID, err)
 		}
-		s.pluginDeliverer.Deliver(ctx, p.ID, m.ID, chief)
+		s.pluginDeliverer.Deliver(ctx, p.ID, m.ID, target)
 	})
 }
 
@@ -275,11 +284,26 @@ func (s *Server) renderPluginsPage(w http.ResponseWriter, r *http.Request, code 
 		s.logger.Printf("plugins: page retryable: %v", err)
 		problem = "The unconfirmed messages could not be read."
 	}
+	// The owner's agents, for each plugin's target picker. Read through the
+	// caller's own context, so row-level security offers only their own agents.
+	// A failed read draws the picker disabled rather than an empty choice that
+	// would look like "you have no agents".
+	var mine []agents.Agent
+	agentsUnreadable := false
+	if s.ext.Agents != nil {
+		got, aerr := s.ext.Agents.List(r.Context())
+		if aerr != nil {
+			s.logger.Printf("plugins: page agents: %v", aerr)
+			agentsUnreadable = true
+		} else {
+			mine = got
+		}
+	}
 	esc := html.EscapeString
 	var b strings.Builder
 	b.WriteString(`<section class="flex flex-col gap-4 rounded-2xl border border-line bg-s1/70 px-5 py-6 ring-1 ring-line" data-testid="plugins-page">
 <h1 class="text-balance text-base font-semibold text-fg">Plugins</h1>
-<p class="text-sm text-fg2">A plugin is a separate process that brings messages from another system to your chief agent. It holds a plugin token, which can post messages here and do nothing else. Each message reaches your chief once, marked as untrusted data.</p>
+<p class="text-sm text-fg2">A plugin is a separate process that brings messages from another system to an agent you pick. It holds a plugin token, which can post messages here and do nothing else. Each message reaches that agent once, marked as untrusted data. A plugin with no target keeps its messages queued until you pick one.</p>
 `)
 	b.WriteString(problemNode(problem))
 	if minted != "" {
@@ -293,9 +317,9 @@ func (s *Server) renderPluginsPage(w http.ResponseWriter, r *http.Request, code 
 	b.WriteString(`<form method="POST" action="` + pluginsPath + `" class="flex flex-col gap-2" data-testid="plugin-create">
 <label for="plugin-name" class="text-sm font-medium text-fg">Name <span class="text-xs text-fg2">lower-case letters, digits and hyphens</span></label>
 <input id="plugin-name" name="name" maxlength="40" placeholder="example-inbox" class="` + flowsInputClass + `">
-<label for="plugin-label" class="text-sm font-medium text-fg">Label <span class="text-xs text-fg2">what your chief's conversation for it is called</span></label>
+<label for="plugin-label" class="text-sm font-medium text-fg">Label <span class="text-xs text-fg2">what the agent's conversation for it is called</span></label>
 <input id="plugin-label" name="label" maxlength="` + strconv.Itoa(plugins.MaxLabelRunes) + `" placeholder="Example inbox" class="` + flowsInputClass + `">
-<label for="plugin-scope" class="text-sm font-medium text-fg">Data scope <span class="text-xs text-fg2">where your chief is told to record anything durable from these messages</span></label>
+<label for="plugin-scope" class="text-sm font-medium text-fg">Data scope <span class="text-xs text-fg2">where the agent is told to record anything durable from these messages</span></label>
 <input id="plugin-scope" name="data_scope" maxlength="64" placeholder="example-inbox" class="` + flowsInputClass + `">
 <button type="submit" class="` + flowsButtonClass + `">Create plugin token</button>
 </form>
@@ -319,13 +343,14 @@ func (s *Server) renderPluginsPage(w http.ResponseWriter, r *http.Request, code 
 		if p.RevokedAt != nil {
 			b.WriteString(`<span class="text-xs font-semibold text-fg2">revoked</span>`)
 		} else {
+			b.WriteString(pluginTargetFormHTML(p, mine, agentsUnreadable))
 			b.WriteString(`<form method="POST" action="` + pluginsPath + `/` + id + `/revoke">
 <button type="submit" class="` + flowsQuietButton + `">Revoke</button></form>`)
 		}
 		b.WriteString("</li>\n")
 	}
 	b.WriteString("</ul>\n")
-	b.WriteString(retryableSectionHTML(retryable, s.retryHasNoChief(r.Context(), retryable)))
+	b.WriteString(retryableSectionHTML(retryable, s.retryHasNoTarget(r.Context(), retryable)))
 	// Reply drafts moved to the Asks page (asks_drafts.go). A link to one of
 	// them as it was (/plugins#draft-<id>, on a phone's older notification)
 	// follows it there — REMOVABLE one DraftTTL (7 days) after the deploy
@@ -348,9 +373,9 @@ func (s *Server) renderPluginsPage(w http.ResponseWriter, r *http.Request, code 
 func queuedText(n int) string {
 	switch n {
 	case 0:
-		return "nothing waiting for your chief"
+		return "nothing waiting for the target agent"
 	case 1:
-		return "1 message waiting for your chief"
+		return "1 message waiting for the target agent"
 	}
-	return strconv.Itoa(n) + " messages waiting for your chief"
+	return strconv.Itoa(n) + " messages waiting for the target agent"
 }

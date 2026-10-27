@@ -168,7 +168,7 @@ func TestValidDataRefusesEveryLineTerminatorAndAcceptsOrdinaryPayloads(t *testin
 	// ACCEPT. The fixtures are the shapes real producers emit.
 	for _, ok := range []string{
 		`{"id":"abc"}`,
-		`{"agent":"chief","kind":"text","text":"a reply with \n escaped, which is two characters"}`,
+		`{"agent":"agent","kind":"text","text":"a reply with \n escaped, which is two characters"}`,
 		"{}",
 		"",
 		`{"nested":{"a":[1,2,3]}}`,

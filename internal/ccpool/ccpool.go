@@ -351,8 +351,8 @@ func (p *Pool) Select(ctx context.Context, owner int64, pin string) (string, err
 //
 // ⚠ Select's PIN PATH DELIBERATELY DOES NOT CALL THIS: a pin is the operator's
 // override (TestSelectHonoursAPinOverEverySelectionRule). A caller that must not
-// spend an irreversible step on a dead account — the chief replacement, which
-// deletes the old chief first — asks here itself.
+// spend an irreversible step on a dead account — the agent replacement, which
+// deletes the old agent first — asks here itself.
 func (p *Pool) AuthFailure(ctx context.Context, owner int64, account string) (string, error) {
 	tokens, _, err := p.accounts(ctx, owner)
 	if err != nil {

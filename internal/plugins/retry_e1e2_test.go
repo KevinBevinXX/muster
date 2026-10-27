@@ -5,14 +5,14 @@ import (
 )
 
 // TestRetryReOffersAnEventTheChiefNeverActedOn (audit round 5): two events
-// queued on one task. The chief's turn on E1 routes the task; E2's own turn is
+// queued on one task. The target's turn on E1 routes the task; E2's own turn is
 // then cut off (unconfirmed). That action came BEFORE E2 was delivered, so it
-// is not an action on E2: Retry lists E2 and requeues it. An event the chief
+// is not an action on E2: Retry lists E2 and requeues it. An event the target
 // acted on during or after its OWN delivery (E3) is still refused.
 func TestRetryReOffersAnEventTheChiefNeverActedOn(t *testing.T) {
 	s, pool, dsn := pgStore(t)
 	_, p := mustCreate(t, s, 2, "example-tracker")
-	chief := mustAgent(t, dsn, 2, "plg-e1e2-chief")
+	target := mustAgent(t, dsn, 2, "plg-e1e2-target")
 	task := pgTask(t, pool, 2)
 	e1, _, err := s.SubmitTaskEvent(plugin(2), p.ID, task, taskEventIn(t, task, "e1"))
 	if err != nil {
@@ -24,13 +24,13 @@ func TestRetryReOffersAnEventTheChiefNeverActedOn(t *testing.T) {
 	}
 	settle := func(id int64, outcome Status, during func()) {
 		t.Helper()
-		if ok, err := s.BeginDelivery(plugin(2), id, chief.ID); err != nil || !ok {
+		if ok, err := s.BeginDelivery(plugin(2), id, target.ID); err != nil || !ok {
 			t.Fatalf("begin %d: %v %v", id, ok, err)
 		}
 		if during != nil {
 			during()
 		}
-		if ok, err := s.RecordDelivery(plugin(2), id, chief.ID, outcome); err != nil || !ok {
+		if ok, err := s.RecordDelivery(plugin(2), id, target.ID, outcome); err != nil || !ok {
 			t.Fatalf("settle %d: %v %v", id, ok, err)
 		}
 	}
@@ -40,7 +40,7 @@ func TestRetryReOffersAnEventTheChiefNeverActedOn(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	settle(e1.ID, StatusDelivered, route) // the chief forwards on E1's turn
+	settle(e1.ID, StatusDelivered, route) // the target forwards on E1's turn
 	settle(e2.ID, StatusUnconfirmed, nil) // E2's turn is cut off
 	listed := func(id int64) bool {
 		t.Helper()
@@ -56,12 +56,12 @@ func TestRetryReOffersAnEventTheChiefNeverActedOn(t *testing.T) {
 		return false
 	}
 	if !listed(e2.ID) {
-		t.Fatal("E2, whose turn was cut off before the chief saw it, is not retryable")
+		t.Fatal("E2, whose turn was cut off before the target saw it, is not retryable")
 	}
 	if _, err := s.Requeue(session(2), e2.ID); err != nil {
 		t.Fatalf("requeue E2: %v; want requeued", err)
 	}
-	// E3: the chief acts during E3's own turn, which is then cut off.
+	// E3: the target acts during E3's own turn, which is then cut off.
 	e3, _, err := s.SubmitTaskEvent(plugin(2), p.ID, task, taskEventIn(t, task, "e3"))
 	if err != nil {
 		t.Fatal(err)
@@ -79,7 +79,7 @@ func TestRetryReOffersAnEventTheChiefNeverActedOn(t *testing.T) {
 func TestTaskToRouteListsAnEventTheChiefNeverActedOn(t *testing.T) {
 	s, pool, dsn := pgStore(t)
 	_, p := mustCreate(t, s, 2, "example-tracker")
-	chief := mustAgent(t, dsn, 2, "plg-ttr-chief")
+	target := mustAgent(t, dsn, 2, "plg-ttr-target")
 	task := pgTask(t, pool, 2)
 	e1, _, err := s.SubmitTaskEvent(plugin(2), p.ID, task, taskEventIn(t, task, "e1"))
 	if err != nil {
@@ -90,7 +90,7 @@ func TestTaskToRouteListsAnEventTheChiefNeverActedOn(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, id := range []int64{e1.ID, e2.ID} {
-		if ok, err := s.BeginDelivery(plugin(2), id, chief.ID); err != nil || !ok {
+		if ok, err := s.BeginDelivery(plugin(2), id, target.ID); err != nil || !ok {
 			t.Fatalf("begin %d: %v %v", id, ok, err)
 		}
 		if id == e1.ID {
@@ -98,7 +98,7 @@ func TestTaskToRouteListsAnEventTheChiefNeverActedOn(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		if ok, err := s.RecordDelivery(plugin(2), id, chief.ID, StatusDelivered); err != nil || !ok {
+		if ok, err := s.RecordDelivery(plugin(2), id, target.ID, StatusDelivered); err != nil || !ok {
 			t.Fatalf("settle %d: %v %v", id, ok, err)
 		}
 	}

@@ -57,7 +57,7 @@ func TestTheTerminalPageWiresDragScrollOnlyWhereTheHostCanScroll(t *testing.T) {
 		if got != tc.want {
 			t.Errorf("%s: #term wires drag-to-scroll = %v, want %v: %s", name, got, tc.want, term)
 		}
-		if tc.want && !strings.Contains(term, `data-scroll-form="host=ws&amp;session=chief"`) {
+		if tc.want && !strings.Contains(term, `data-scroll-form="host=ws&amp;session=agent"`) {
 			t.Errorf("%s: the scroll's address: %s", name, term)
 		}
 		if !tc.want && strings.Contains(term, "data-scroll-form") {
@@ -110,11 +110,11 @@ func TestAScrollNeedsNoStepUpAndIsClamped(t *testing.T) {
 	for _, c := range []struct {
 		cookie, lines string
 	}{{sessionCookieFor(s), "7"}, {staleCookieFor(s), "-3"}, {sessionCookieFor(s), "100000"}, {sessionCookieFor(s), "-100000"}} {
-		if code, body, _ := postSend(t, ts.URL, termScrollPath, c.cookie, "", scrollForm("chief", c.lines)); code != http.StatusNoContent {
+		if code, body, _ := postSend(t, ts.URL, termScrollPath, c.cookie, "", scrollForm("agent", c.lines)); code != http.StatusNoContent {
 			t.Fatalf("a scroll of %s: %d %q, want 204", c.lines, code, body)
 		}
 	}
-	want := []string{"1 ws/chief/ 7", "1 ws/chief/ -3", "1 ws/chief/ 200", "1 ws/chief/ -200"}
+	want := []string{"1 ws/agent/ 7", "1 ws/agent/ -3", "1 ws/agent/ 200", "1 ws/agent/ -200"}
 	if got := fm.scrolled(); !slices.Equal(got, want) {
 		t.Fatalf("the plugin was asked %q, want %q", got, want)
 	}
@@ -141,18 +141,18 @@ func TestAScrollIsRefusedBeforeThePluginIsAsked(t *testing.T) {
 		return &fakeMirror{online: true, interactive: true, scroll: true, v2: &fakeMirrorV2{}}
 	}
 	for _, c := range []tc{
-		{"no session", can(), false, "", "ws", "chief", "3", http.StatusUnauthorized, ""},
-		{"another origin", can(), true, "https://evil.example", "ws", "chief", "3", http.StatusForbidden, ""},
-		{"zero lines", can(), true, "", "ws", "chief", "0", http.StatusBadRequest, ""},
-		{"not a number", can(), true, "", "ws", "chief", "3.5", http.StatusBadRequest, ""},
-		{"no lines", can(), true, "", "ws", "chief", "", http.StatusBadRequest, ""},
+		{"no session", can(), false, "", "ws", "agent", "3", http.StatusUnauthorized, ""},
+		{"another origin", can(), true, "https://evil.example", "ws", "agent", "3", http.StatusForbidden, ""},
+		{"zero lines", can(), true, "", "ws", "agent", "0", http.StatusBadRequest, ""},
+		{"not a number", can(), true, "", "ws", "agent", "3.5", http.StatusBadRequest, ""},
+		{"no lines", can(), true, "", "ws", "agent", "", http.StatusBadRequest, ""},
 		{"not a session name", can(), true, "", "ws", "a\x01b", "3", http.StatusBadRequest, ""},
-		{"a host not connected now (or another owner's)", can(), true, "", "nope", "chief", "3", http.StatusServiceUnavailable, "offline"},
-		{"an offline host", &fakeMirror{online: false, interactive: true, scroll: true, v2: &fakeMirrorV2{}}, true, "", "ws", "chief", "3", http.StatusServiceUnavailable, "offline"},
+		{"a host not connected now (or another owner's)", can(), true, "", "nope", "agent", "3", http.StatusServiceUnavailable, "offline"},
+		{"an offline host", &fakeMirror{online: false, interactive: true, scroll: true, v2: &fakeMirrorV2{}}, true, "", "ws", "agent", "3", http.StatusServiceUnavailable, "offline"},
 		{"an unlisted session", can(), true, "", "ws", "gone", "3", http.StatusNotFound, "gone"},
-		{"an older muster-mirror", &fakeMirror{online: true, interactive: true, v2: &fakeMirrorV2{}}, true, "", "ws", "chief", "3", http.StatusConflict, "unsupported"},
-		{"a read-only host", &fakeMirror{online: true, interactive: false, scroll: true, v2: &fakeMirrorV2{}}, true, "", "ws", "chief", "3", http.StatusConflict, "unsupported"},
-		{"control", can(), true, "", "ws", "chief", "3", http.StatusNoContent, ""},
+		{"an older muster-mirror", &fakeMirror{online: true, interactive: true, v2: &fakeMirrorV2{}}, true, "", "ws", "agent", "3", http.StatusConflict, "unsupported"},
+		{"a read-only host", &fakeMirror{online: true, interactive: false, scroll: true, v2: &fakeMirrorV2{}}, true, "", "ws", "agent", "3", http.StatusConflict, "unsupported"},
+		{"control", can(), true, "", "ws", "agent", "3", http.StatusNoContent, ""},
 	} {
 		s, ts := viewServer(t, c.fm)
 		cookie := ""
@@ -191,7 +191,7 @@ func TestTheHostsAnswerIsMappedToAStatus(t *testing.T) {
 	} {
 		fm := &fakeMirror{online: true, interactive: true, scroll: true, v2: &fakeMirrorV2{}, scrollErr: c.err}
 		s, ts := viewServer(t, fm)
-		code, body, hdr := postSend(t, ts.URL, termScrollPath, sessionCookieFor(s), "", scrollForm("chief", "2"))
+		code, body, hdr := postSend(t, ts.URL, termScrollPath, sessionCookieFor(s), "", scrollForm("agent", "2"))
 		if code != c.status || hdr.Get(scrollRefusalHeader) != c.code {
 			t.Errorf("%v: %d %q (refusal %q), want %d (refusal %q)", c.err, code, body, hdr.Get(scrollRefusalHeader), c.status, c.code)
 		}
@@ -206,7 +206,7 @@ func TestScrollIsRateLimitedPerUser(t *testing.T) {
 	cookie := sessionCookieFor(s)
 	limited, hdr := 0, http.Header{}
 	for i := 0; i < scrollRateBurst+10; i++ {
-		code, _, h := postSend(t, ts.URL, termScrollPath, cookie, "", scrollForm("chief", "1"))
+		code, _, h := postSend(t, ts.URL, termScrollPath, cookie, "", scrollForm("agent", "1"))
 		if code == http.StatusTooManyRequests {
 			limited++
 			hdr = h
@@ -263,7 +263,7 @@ func TestASecondOfAFullSpeedPageIsNeverRefusedThroughTheRoute(t *testing.T) {
 	s, ts := viewServer(t, fm)
 	cookie := sessionCookieFor(s)
 	for i := 0; i < 120; i++ {
-		if code, body, _ := postSend(t, ts.URL, termScrollPath, cookie, "", scrollForm("chief", "1")); code != http.StatusNoContent {
+		if code, body, _ := postSend(t, ts.URL, termScrollPath, cookie, "", scrollForm("agent", "1")); code != http.StatusNoContent {
 			t.Fatalf("scroll %d of a full-speed page: %d %q, want 204", i+1, code, body)
 		}
 	}

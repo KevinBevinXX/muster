@@ -129,7 +129,7 @@ const minServiceTokenLen = 32
 //
 // ⚠ TWO REFUSALS FROM THE UPSTREAM SHAPE ARE GONE BECAUSE THE CREDENTIALS THEY
 // NAMED ARE GONE, NOT BECAUSE THE HAZARD WAS RE-JUDGED. They compared this
-// token against the terminal and chief secrets, neither of which muster holds
+// token against the terminal and agent secrets, neither of which muster holds
 // (see AuthConfig). If either credential is ever added here, its distinctness
 // case has to come back with it — a field added without its refusal is a door
 // that can silently collapse into another.
@@ -730,7 +730,7 @@ func (s *Server) admitAttributedService(w http.ResponseWriter, r *http.Request, 
 // consumer needs to tell the two tiers apart, give it its own constant then.
 //
 // There is NO fallback to any other token: presenting a valid hook, terminal or
-// chief credential here is a 401.
+// agent credential here is a 401.
 func (s *Server) requireServiceToken(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if s.refuseSharedTokenOnBrowserListener(w, r) {
@@ -795,8 +795,8 @@ func (s *Server) requireServiceToken(next http.HandlerFunc) http.HandlerFunc {
 // actual requirement — that muster be ABLE to call these routes — which the service
 // branch already satisfies. Deleting it in the same change is a privilege
 // REMOVAL nobody asked for, and it was not hypothetical upstream: when that
-// analysis was done the server's chief credential and the `agents` row named
-// `chief` held the same value, and that pod was Running. Cutting
+// analysis was done the server's agent credential and the `agents` row named
+// `agent` held the same value, and that pod was Running. Cutting
 // this branch removes six capabilities from a pod that is running right now, while
 // the agent's own instruction text still tells that pod it has them — and that
 // text exists because "an agent that does not know this retries a refused route
@@ -810,7 +810,7 @@ func (s *Server) requireServiceToken(next http.HandlerFunc) http.HandlerFunc {
 // inside this repository alone.
 //
 // 🔴 AND THE STATED RE-GRANT PATH ARGUES AGAINST THE NEW DOOR'S OWN DESIGN. "Issue
-// chief MUSTER_SERVICE_TOKEN" is the substitute §4.4 offers, but
+// agent MUSTER_SERVICE_TOKEN" is the substitute §4.4 offers, but
 // ServiceWriteRefusal's third refusal rejects the HOOK token here precisely because
 // a widely-held secret "would let any of them assert any name". Putting the
 // asserted-identity credential inside an LLM-driven pod with a repo checkout is that
@@ -827,10 +827,10 @@ func (s *Server) requireServiceToken(next http.HandlerFunc) http.HandlerFunc {
 // recreated on purpose, and the point of saying so HERE is that a reader of this
 // file cannot discharge the condition from this repository.
 //
-// 🔴 THE ORDER IS CHEAP-FIRST, AND THE CHIEF NARROWING IS DELIBERATELY LAST. The two
+// 🔴 THE ORDER IS CHEAP-FIRST, AND THE AGENT NARROWING IS DELIBERATELY LAST. The two
 // constant-time comparisons cost no I/O and are tried before the DB lookup, so an
 // unauthenticated caller on the LAN NodePort cannot cause a SELECT with a value that
-// was going to be admitted anyway. Within the row branch the chief checks sit AFTER
+// was going to be admitted anyway. Within the row branch the agent checks sit AFTER
 // the row lookup, and that ordering is load-bearing: comparing against ChiefToken
 // first would be cheaper and would make the wrong-agent refusal UNREACHABLE for the
 // case it exists to refuse — a valid, resolvable credential belonging to the WRONG

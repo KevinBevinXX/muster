@@ -9,9 +9,9 @@ import (
 	"net/url"
 )
 
-// THE GATEWAY RUNTIME BESIDE ccd (muster's agentspec/chief_sidecar.go).
+// THE GATEWAY RUNTIME BESIDE ccd (muster's agentspec/gateway_sidecar.go).
 //
-// A claude-code chief's pod also runs the model-gateway runtime, on LOOPBACK
+// A claude-code agent's pod also runs the model-gateway runtime, on LOOPBACK
 // only. muster sends a turn for a chat session on that runtime to ccd's port —
 // the only port the pod's network policy lets muster reach — with
 // X-Muster-Runtime: gateway, and ccd hands the request, unread, to the runtime
@@ -23,7 +23,7 @@ import (
 // can reach 127.0.0.1:18789. So muster's request is checked against ccd's bearer
 // (the server's credential), and the Authorization it carried is REPLACED with
 // the runtime's own (CCD_GATEWAY_UPSTREAM_BEARER, which muster derives
-// separately; agentspec/chief_sidecar.go). ccd's bearer never reaches the
+// separately; agentspec/gateway_sidecar.go). ccd's bearer never reaches the
 // runtime, and the runtime's credential is refused on every ccd route.
 //
 // A pod whose spec predates this hands ccd no runtime credential; ccd then

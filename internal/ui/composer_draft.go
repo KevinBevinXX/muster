@@ -18,7 +18,7 @@ import (
 //
 //   - a mirrored window's Rendered view (#mv-input): MirrorDraftKey(user, "view", …)
 //   - a mirrored window's Terminal view (#mv-input): MirrorDraftKey(user, "terminal", …)
-//   - a dispatched agent's chat, and the chief panel that draws the same pane
+//   - a dispatched agent's chat, and the agent panel that draws the same pane
 //     (#chat-input): AgentChatDraftKey(user, agent, chat session)
 //   - a dispatched agent's Terminal view (#mv-input): AgentTerminalDraftKey(user, agent)
 //
@@ -103,7 +103,7 @@ func draftAttrs(key, note string) g.Node {
 }
 
 // composerDraftScript keeps the drafts. Like composerFitScript it ships beside
-// each box (the chief panel swaps the chat pane into another page) and defines
+// each box (the agent panel swaps the chat pane into another page) and defines
 // window.musterDraft once; every copy then binds the boxes it finds that are
 // not bound yet, so a box swapped in later is covered.
 //

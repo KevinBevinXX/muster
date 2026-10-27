@@ -275,27 +275,26 @@ const agentSystemPrompt = `You are a muster worker agent. You have native tools 
 // OPERATOR DECISION: "all agents" ask their owner (attention_ask/wait/cancel)
 // and work their OWN tasks — the dispatched one and the ones they created
 // (tasks_list, task_get, task_comment, task_set_status; never into or out of
-// `complete`) — and the chief alone lists the queue (read-only: only the
-// operator answers) and reads any session's transcript, and works the whole
-// board. That deliberately widens what a claude-code pod reaches on the connect
+// `complete`) — and any agent lists the queue (read-only: only the operator
+// answers) and reads a session's transcript, and works the whole board of its
+// OWN OWNER. That deliberately widens what a claude-code pod reaches on the connect
 // listener from its connectors to its own task and its questions; the bound
 // task's agent_* tools above stay gateway-only as they were.
 //
-// 🔴 chiefOnly IS A SECOND, ORTHOGONAL AXIS: WHO, NOT WHICH TRANSPORT. A
-// chief-only tool is offered (on both transports) to the owner's CHIEF agent and
-// to no other — the predicate is chiefPredicate's, the one every chief decision in
-// this package uses. It is enforced twice: the listing ([Server.AgentToolDefsFor],
-// [Server.MCPToolDefsFor]) leaves it out for anyone else, and dispatchAgentTool
-// refuses it for anyone else, because a gateway runtime can name a tool it was
-// never offered and the dispatch closure is the trust boundary.
-// TestTheChiefOnlyToolsAreLedgered pins the set.
+// 🔴 THERE IS NO "WHO" AXIS. muster has no privileged agent. Every tool the
+// registry holds is offered to every one of the owner's agents, on both
+// transports. The fleet tools that were once one labelled agent's alone
+// (task_create_gated, reply_draft, the focus tools, sessions_overview,
+// route_to_session, the task-routing tools, attention_list, session_transcript)
+// are ordinary tools now. What keeps them safe is OWNERSHIP, not rank: every
+// handler reads on the request's own context, so row-level security shows an
+// agent only its own owner's fleet. TestNoToolIsRestrictedToAParticularAgent
+// pins that there is no such axis to reintroduce by accident.
 type agentTool struct {
 	def agents.ToolDef
 	// mcp: also served over POST /mcp to claude-code agents. See above before
 	// setting it.
 	mcp bool
-	// chiefOnly: offered to, and callable by, the chief agent alone. See above.
-	chiefOnly bool
 }
 
 // agentTools is the registry. The connector tools are present only when the
@@ -329,46 +328,48 @@ func (s *Server) agentTools() []agentTool {
 			tools = append(tools, agentTool{def: d, mcp: true})
 		}
 	}
-	// The plugin interface (gated_task_tool.go): the chief may FILE a task its
-	// owner must approve. MCP too, so a claude-code chief reaches it; chief-only,
-	// because the chief is the one agent plugin messages are delivered to.
+	// The plugin interface (gated_task_tool.go): an agent may FILE a task its
+	// owner must approve. MCP too, so a claude-code agent reaches it. Offered to
+	// every agent: a plugin names the agent its messages go to, and any of them
+	// may act on what it was handed.
 	if s.ext.Plugins != nil {
-		tools = append(tools, agentTool{def: gatedTaskToolDef(), mcp: true, chiefOnly: true})
-		// reply_draft (reply_draft_tool.go): the chief may DRAFT a reply its
-		// owner must approve before the plugin sends it. MCP and chief-only for
+		tools = append(tools, agentTool{def: gatedTaskToolDef(), mcp: true})
+		// reply_draft (reply_draft_tool.go): an agent may DRAFT a reply its
+		// owner must approve before the plugin sends it. MCP, for
 		// task_create_gated's reasons.
-		tools = append(tools, agentTool{def: replyDraftToolDef(), mcp: true, chiefOnly: true})
+		tools = append(tools, agentTool{def: replyDraftToolDef(), mcp: true})
 	}
-	// Session focus (focus_tools.go): the chief lists, searches and refreshes
-	// its owner's sessions' focus. MCP too, so a claude-code chief reaches them.
-	// All three are chief-only: they reach the owner's whole fleet.
+	// Session focus (focus_tools.go): an agent lists, searches and refreshes its
+	// OWN OWNER's sessions' focus. MCP too, so a claude-code agent reaches them.
+	// They reach that owner's whole fleet, and row-level security is what stops
+	// them reaching anyone else's.
 	if s.ext.Focus != nil {
 		for _, d := range focusToolDefs() {
-			tools = append(tools, agentTool{def: d, mcp: true, chiefOnly: true})
+			tools = append(tools, agentTool{def: d, mcp: true})
 		}
 		// sessions_overview (sessions_overview.go): what every live session is
-		// doing now, transcripts included. Chief-only and on MCP for the focus
-		// tools' reasons; it reads the owner's whole fleet.
-		tools = append(tools, agentTool{def: sessionsOverviewToolDef(), mcp: true, chiefOnly: true})
+		// doing now, transcripts included. On MCP for the focus tools' reasons;
+		// it reads the owner's whole fleet.
+		tools = append(tools, agentTool{def: sessionsOverviewToolDef(), mcp: true})
 	}
 	// Session routing (session_routes.go), only with MUSTER_SESSION_ROUTING on:
-	// the chief hands a plugin message to a mirrored session (chief-only, like
-	// reply_draft). The session answers through POST /api/routes/{id}/reply.
+	// an agent hands a plugin message to one of its owner's mirrored sessions.
+	// The session answers through POST /api/routes/{id}/reply.
 	if routingOn(s.ext) {
-		tools = append(tools, agentTool{def: routeToolDef(), mcp: true, chiefOnly: true})
+		tools = append(tools, agentTool{def: routeToolDef(), mcp: true})
 	}
-	// Task routing (task_routing.go), only with MUSTER_TASK_ROUTING on: the
-	// chief decides what happens to a task a plugin handed it — the attention
-	// queue, a forward, or (MUSTER_CHIEF_DISPATCH_OWNERS) a new agent. Chief-only and
-	// on MCP, like route_to_session.
+	// Task routing (task_routing.go), only with MUSTER_TASK_ROUTING on: an agent
+	// decides what happens to a task a plugin handed it — the attention queue, a
+	// forward, or (MUSTER_TASK_DISPATCH_OWNERS) a new agent. On MCP, like
+	// route_to_session.
 	if taskRoutingOn(s.ext) {
-		for _, d := range taskRoutingToolDefs(chiefDispatchOn(s.ext)) {
-			tools = append(tools, agentTool{def: d, mcp: true, chiefOnly: true})
+		for _, d := range taskRoutingToolDefs(taskDispatchOn(s.ext)) {
+			tools = append(tools, agentTool{def: d, mcp: true})
 		}
 	}
 	// The attention queue (attention_tools.go), present with its store: every
-	// agent may ask its owner and work the owner's tasks; the chief alone lists
-	// the queue (read-only) and reads a session's transcript. All on MCP too.
+	// agent may ask its owner and work the owner's tasks, list the queue
+	// (read-only) and read a session's transcript. All on MCP too.
 	// attention_answer is NOT here: it is the mirrored sessions' alone
 	// (mirror_mcp.go's mirrorTools), and its handler refuses any agent. Nor are
 	// connector_requests_list / connector_request_decide, for the same reason
@@ -380,67 +381,28 @@ func (s *Server) agentTools() []agentTool {
 		for _, d := range taskToolDefs() {
 			tools = append(tools, agentTool{def: d, mcp: true})
 		}
-		for _, d := range chiefAttentionToolDefs() {
-			tools = append(tools, agentTool{def: d, mcp: true, chiefOnly: true})
+		for _, d := range fleetAttentionToolDefs() {
+			tools = append(tools, agentTool{def: d, mcp: true})
 		}
 	}
 	return tools
 }
 
-// toolsFor is the registry as agent a may see it: every tool, minus the
-// chief-only ones unless a is its owner's chief. It reads the agent list only
-// when the registry HAS a chief-only tool, so a deployment without one pays
-// nothing per turn.
-//
-// 🔴 IT FAILS CLOSED: an agent list that cannot be read offers no chief-only
-// tool, the same direction agentIsChief's other callers take for the reverse
-// question.
-func (s *Server) toolsFor(ctx context.Context, a agents.Agent) []agentTool {
-	all := s.agentTools()
-	chief, decided := false, false
-	out := make([]agentTool, 0, len(all))
-	for _, t := range all {
-		if t.chiefOnly {
-			if !decided {
-				chief, decided = s.isChiefAgent(ctx, a), true
-			}
-			if !chief {
-				continue
-			}
-		}
-		out = append(out, t)
-	}
-	return out
-}
-
-// chiefOnlyTool reports whether the registry declares name chief-only. It reads
-// the registry rather than a second list, so the flag is the one place the
-// decision is written.
-func (s *Server) chiefOnlyTool(name string) bool {
-	for _, t := range s.agentTools() {
-		if t.def.Name == name {
-			return t.chiefOnly
-		}
-	}
-	return false
-}
-
-// isChiefAgent answers chiefPredicate for a's CURRENT row (a caller's copy of the
-// row may predate a relabel). A read error is "not the chief".
-func (s *Server) isChiefAgent(ctx context.Context, a agents.Agent) bool {
-	_, chief, err := s.agentIsChief(ctx, a.ID)
-	if err != nil {
-		s.logger.Printf("agent tools: agent %d: could not decide whether it is the chief: %v", a.ID, err)
-		return false
-	}
-	return chief
+// toolsFor is the registry as agent a may see it. Every agent sees all of it:
+// there is no privileged agent and no per-agent filter, so this is the registry
+// itself. It keeps the (ctx, agent) shape because every consumer names the
+// agent it is building a turn for, and a future per-agent decision would land
+// here rather than in each caller.
+func (s *Server) toolsFor(_ context.Context, _ agents.Agent) []agentTool {
+	return s.agentTools()
 }
 
 // AgentToolDefsFor returns the native function tools given to gateway agent a:
 // every tool in the registry a may see (toolsFor).
 //
-// 🔴 THERE IS NO AGENT-LESS VARIANT, ON PURPOSE. An unfiltered listing is how a
-// chief-only tool would reach a worker; every consumer names the agent.
+// 🔴 EVERY CONSUMER STILL NAMES THE AGENT, though the listing no longer depends
+// on which agent it is: the turn is built FOR an agent, and that identity is
+// what each handler scopes by.
 func (s *Server) AgentToolDefsFor(ctx context.Context, a agents.Agent) []agents.ToolDef {
 	tools := s.toolsFor(ctx, a)
 	defs := make([]agents.ToolDef, 0, len(tools))
@@ -550,16 +512,12 @@ func (s *Server) AgentToolDispatch(ctx context.Context, a agents.Agent) agents.T
 
 func (s *Server) dispatchAgentTool(ctx context.Context, a agents.Agent, name, arguments string) string {
 	arg := func(v any) error { return json.Unmarshal([]byte(orEmptyJSON(arguments)), v) }
-	// A retired name runs as the tool it became — BEFORE the chief-only check, so
-	// the alias cannot step around it (tool_names.go).
+	// A retired name runs as the tool it became (tool_names.go).
 	name = canonicalToolName(name)
-	// 🔴 THE CHIEF-ONLY RE-CHECK. The listing already leaves a chief-only tool out
-	// for any other agent, but a gateway runtime can call a name it was not
-	// offered, and this closure runs whatever it is handed — so the decision is
-	// made again here, against the agent's current row.
-	if s.chiefOnlyTool(name) && !s.isChiefAgent(ctx, a) {
-		return toolErr("%s is available to your owner's chief agent only", name)
-	}
+	// 🔴 THERE IS NO RANK CHECK HERE ANY MORE, AND NOTHING IS MISSING. Every tool
+	// is offered to every agent, so a gateway runtime naming a tool it was not
+	// offered reaches a tool it was entitled to anyway. Each handler below still
+	// scopes its read and write to the caller's owner.
 	switch name {
 	case "agent_get_task":
 		if a.NoteID == nil {

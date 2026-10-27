@@ -24,7 +24,7 @@ import (
 // runs in. That page shows the asker's OPEN asks with the queue's own answer
 // form — attentionItemsHTMLTo, the SAME function /attention draws its items
 // with, never a copy — so the ask is answered where the tap lands: its options
-// (the chief's task actions included: they are the ask's options), free text,
+// (the agent's task actions included: they are the ask's options), free text,
 // Dismiss. The form posts to the queue's answer route with `return` naming
 // this page, and the route sends the browser back here (attentionReturn).
 //

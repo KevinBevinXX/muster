@@ -39,8 +39,10 @@ func htmlRegion(page, open, close string) string {
 	return page[i : i+j]
 }
 
-func askList(page string) string     { return htmlRegion(page, `<ul id="attention-items"`, "</ul>") }
-func pendingList(page string) string { return htmlRegion(page, `<ul id="asks-drafts-pending"`, "</ul>") }
+func askList(page string) string { return htmlRegion(page, `<ul id="attention-items"`, "</ul>") }
+func pendingList(page string) string {
+	return htmlRegion(page, `<ul id="asks-drafts-pending"`, "</ul>")
+}
 func archivedList(page string) string {
 	return htmlRegion(page, `<ul id="asks-drafts-archived"`, "</ul>")
 }
@@ -199,19 +201,21 @@ func TestAsksWithPluginsOffHasNoDraftsTab(t *testing.T) {
 func TestADecidedDraftMovesToArchivedWithItsLiveStatus(t *testing.T) {
 	d := newDraftSeam(t)
 	tok := d.mint(d.a)
-	chief := d.chief(d.a, "askchief")
-	d.rt.expect(chief)
+	agent := d.agent(d.a, "askchief")
+	d.rt.expect(agent)
 	file := func(ext, body string) (int64, int64) {
 		t.Helper()
 		m := d.post(tok, ext+"-"+d.suffix, "")
-		id, out := d.replyDraft(chief, m, body)
+		id, out := d.replyDraft(agent, m, body)
 		if id == 0 {
 			t.Fatalf("draft %s: %s", ext, out)
 		}
 		return m, id
 	}
 	path := func(id int64, how string) string { return "/plugins/drafts/" + strconv.FormatInt(id, 10) + "/" + how }
-	page := func() string { return d.do("GET", "/attention?tab=archived", "", d.session(d.a, false, true)).Body.String() }
+	page := func() string {
+		return d.do("GET", "/attention?tab=archived", "", d.session(d.a, false, true)).Body.String()
+	}
 	archivedCard := func(id int64) string {
 		t.Helper()
 		p := page()
@@ -317,7 +321,7 @@ func TestADecidedDraftMovesToArchivedWithItsLiveStatus(t *testing.T) {
 
 	// Superseded: a newer draft for the same message replaces a pending one.
 	m5, d5 := file("a5", "Fifth.")
-	d6, out := d.replyDraft(chief, m5, "Fifth, revised.")
+	d6, out := d.replyDraft(agent, m5, "Fifth, revised.")
 	if d6 == 0 {
 		t.Fatalf("the newer draft: %s", out)
 	}
@@ -353,10 +357,10 @@ func TestADecidedDraftMovesToArchivedWithItsLiveStatus(t *testing.T) {
 func TestAStaleApprovalOnTheAsksPageIsRefusedWithTheConfirm(t *testing.T) {
 	d := newDraftSeam(t)
 	tok := d.mint(d.a)
-	chief := d.chief(d.a, "stalechief")
-	d.rt.expect(chief)
+	agent := d.agent(d.a, "stalechief")
+	d.rt.expect(agent)
 	m := d.post(tok, "stale-"+d.suffix, "")
-	id, out := d.replyDraft(chief, m, "Yes.")
+	id, out := d.replyDraft(agent, m, "Yes.")
 	if id == 0 {
 		t.Fatalf("draft: %s", out)
 	}
@@ -397,12 +401,12 @@ func TestTheDraftsFragmentAndThePluginsMovesAreLive(t *testing.T) {
 	_, aCh := bus.Subscribe(d.a)
 	_, bCh := bus.Subscribe(d.b)
 	tok := d.mint(d.a)
-	chief := d.chief(d.a, "livechief")
-	d.rt.expect(chief)
+	agent := d.agent(d.a, "livechief")
+	d.rt.expect(agent)
 	m1 := d.post(tok, "live1-"+d.suffix, "")
 	m2 := d.post(tok, "live2-"+d.suffix, "")
-	pend, _ := d.replyDraft(chief, m1, "Pending one.")
-	done, _ := d.replyDraft(chief, m2, "Approved one.")
+	pend, _ := d.replyDraft(agent, m1, "Pending one.")
+	done, _ := d.replyDraft(agent, m2, "Approved one.")
 	if pend == 0 || done == 0 {
 		t.Fatal("drafts were not filed")
 	}
@@ -477,10 +481,10 @@ func TestTheDraftsFragmentAndThePluginsMovesAreLive(t *testing.T) {
 func TestTheAskTabWithOnlyDraftsWaitingSaysNothingIsWaitingThere(t *testing.T) {
 	d := newDraftSeam(t)
 	tok := d.mint(d.a)
-	chief := d.chief(d.a, "onlychief")
-	d.rt.expect(chief)
+	agent := d.agent(d.a, "onlychief")
+	d.rt.expect(agent)
 	m := d.post(tok, "only-"+d.suffix, "")
-	id, out := d.replyDraft(chief, m, "Only this.")
+	id, out := d.replyDraft(agent, m, "Only this.")
 	if id == 0 {
 		t.Fatalf("draft: %s", out)
 	}
@@ -502,16 +506,16 @@ func TestTheAskTabWithOnlyDraftsWaitingSaysNothingIsWaitingThere(t *testing.T) {
 func TestADecisionLandsOnItsCardBeyondTheArchivedCut(t *testing.T) {
 	d := newDraftSeam(t)
 	tok := d.mint(d.a)
-	chief := d.chief(d.a, "cutchief")
-	d.rt.expect(chief)
+	agent := d.agent(d.a, "cutchief")
+	d.rt.expect(agent)
 	m := d.post(tok, "cut-"+d.suffix, "")
-	old, out := d.replyDraft(chief, m, "The old one.")
+	old, out := d.replyDraft(agent, m, "The old one.")
 	if old == 0 {
 		t.Fatalf("draft: %s", out)
 	}
 	m2 := d.post(tok, "cut2-"+d.suffix, "")
 	dbtest.OwnerExec(t, d.dsn, `INSERT INTO plugin_reply_drafts (owner_id, message_id, agent_id, agent_name, body, expires_at, status, decided_at)
-		SELECT $1, $2, $3, 'x', 'filler ' || g, now() + interval '1 day', 'rejected', now() FROM generate_series(1, 55) g`, d.a, m2, chief.ID)
+		SELECT $1, $2, $3, 'x', 'filler ' || g, now() + interval '1 day', 'rejected', now() FROM generate_series(1, 55) g`, d.a, m2, agent.ID)
 	rec := d.do("POST", "/plugins/drafts/"+strconv.FormatInt(old, 10)+"/reject", "", d.session(d.a, false, true))
 	loc := rec.Header().Get("Location")
 	if want := "/attention?tab=archived&draft=" + strconv.FormatInt(old, 10) + "#draft-" + strconv.FormatInt(old, 10); rec.Code != http.StatusSeeOther || loc != want {
@@ -544,16 +548,16 @@ func TestADecisionLandsOnItsCardBeyondTheArchivedCut(t *testing.T) {
 func TestAPendingListCarriesItsIdentity(t *testing.T) {
 	d := newDraftSeam(t)
 	tok := d.mint(d.a)
-	chief := d.chief(d.a, "idchief")
-	d.rt.expect(chief)
+	agent := d.agent(d.a, "idchief")
+	d.rt.expect(agent)
 	m := d.post(tok, "ids-"+d.suffix, "")
-	a, _ := d.replyDraft(chief, m, "A.")
+	a, _ := d.replyDraft(agent, m, "A.")
 	page := d.do("GET", "/attention?tab=drafts", "", d.session(d.a, false, true)).Body.String()
 	if !strings.Contains(page, `data-testid="drafts-pending" data-draft-ids="`+strconv.FormatInt(a, 10)+`"`) ||
 		!strings.Contains(page, `id="asks-drafts-changed"`) {
 		t.Fatal("the pending list does not carry its ids, or the page has no changed line")
 	}
-	b, _ := d.replyDraft(chief, m, "B, revised.")
+	b, _ := d.replyDraft(agent, m, "B, revised.")
 	f := d.do("GET", "/attention/drafts", "", d.session(d.a, false, false)).Body.String()
 	if !strings.Contains(f, `"pending_ids":"`+strconv.FormatInt(b, 10)+`"`) {
 		t.Fatalf("the fragment's pending_ids after the supersede: %s", f)

@@ -20,15 +20,15 @@ import (
 	"github.com/ZacxDev/muster/internal/plugins"
 )
 
-// A task becoming `complete` stops the agent the chief started for it
-// (task_complete_stop.go), over a real Postgres and the real chief-dispatch
-// ledger: the chief's live count drops so a start refused at the cap succeeds;
+// A task becoming `complete` stops the agent the agent started for it
+// (task_complete_stop.go), over a real Postgres and the real agent-dispatch
+// ledger: the agent's live count drops so a start refused at the cap succeeds;
 // `ready_for_review` stops nothing; an agent the owner started by hand is left
 // alone; an agent already stopped is a no-op; the task's one start stays spent;
 // and every writer that can set `complete` reaches it.
 //
 // ⚠ The refusal and answer texts asserted here are the tools' own constants
-// (chiefDispatchLiveCap, already_dispatched), which exist before this change,
+// (taskDispatchLiveCap, already_dispatched), which exist before this change,
 // so the behaviour tests are red on the pre-change tree for a behavioural
 // reason: no Stop is ever called.
 
@@ -93,15 +93,15 @@ func newCompleteStopFixture(t *testing.T) *completeStopFixture {
 	return f
 }
 
-// dispatch has the chief start an agent on n (task_dispatch) and returns it.
+// dispatch has the agent start an agent on n (task_dispatch) and returns it.
 func (f *completeStopFixture) dispatch(t *testing.T, n notes.Note) agents.Agent {
 	t.Helper()
-	text := f.call(f.chief, taskDispatchTool, map[string]any{"task_id": n.ID})
+	text := f.call(f.agent, taskDispatchTool, map[string]any{"task_id": n.ID})
 	var out struct {
 		AgentID int64 `json:"agent_id"`
 	}
 	if err := json.Unmarshal([]byte(text), &out); err != nil || out.AgentID <= 0 || strings.Contains(text, `"error"`) {
-		t.Fatalf("the chief's start on task %d: %s", n.ID, text)
+		t.Fatalf("the agent's start on task %d: %s", n.ID, text)
 	}
 	a, err := agents.NewPG(f.pool).Get(f.asOwner, out.AgentID)
 	if err != nil {
@@ -189,14 +189,14 @@ func (f *completeStopFixture) mustNotStop(t *testing.T, id int64, why string) {
 }
 
 // TestCompletingATaskStopsTheChiefsAgentAndFreesItsSlot (cases 1 and 5): the
-// chief at its live cap is refused a start; completing one of its tasks stops
+// agent at its live cap is refused a start; completing one of its tasks stops
 // the agent it started there (and only that one), the refused start then
 // succeeds, and the completed task's start stays spent.
 func TestCompletingATaskStopsTheChiefsAgentAndFreesItsSlot(t *testing.T) {
 	f := newCompleteStopFixture(t)
 	var tasks []notes.Note
 	var started []agents.Agent
-	for i := 0; i < plugins.MaxChiefLiveAgents; i++ {
+	for i := 0; i < plugins.MaxLiveDispatchedAgents; i++ {
 		n := f.task(t, "cap "+strconv.Itoa(i))
 		tasks = append(tasks, n)
 		started = append(started, f.dispatch(t, n))
@@ -204,7 +204,7 @@ func TestCompletingATaskStopsTheChiefsAgentAndFreesItsSlot(t *testing.T) {
 	waiting := f.task(t, "approved but refused")
 	// (mustRefuse's "no Dispatch at all" check does not fit here: the five
 	// starts above each made one.)
-	if text := f.call(f.chief, taskDispatchTool, map[string]any{"task_id": waiting.ID}); !strings.Contains(text, chiefDispatchLiveCap) {
+	if text := f.call(f.agent, taskDispatchTool, map[string]any{"task_id": waiting.ID}); !strings.Contains(text, taskDispatchLiveCap) {
 		t.Fatalf("at the cap, a start answered %s; want the live cap's refusal", text)
 	}
 	if len(f.agentsOn(t, waiting.ID)) != 0 || f.reservations(t, waiting.ID) != 0 {
@@ -213,7 +213,7 @@ func TestCompletingATaskStopsTheChiefsAgentAndFreesItsSlot(t *testing.T) {
 
 	f.humanPatch(t, tasks[0].ID, notes.StatusComplete)
 	if n := f.sp.stops(started[0].ID, 1); n != 1 {
-		t.Fatalf("completing task %d stopped its chief-started agent %d %d time(s), want 1", tasks[0].ID, started[0].ID, n)
+		t.Fatalf("completing task %d stopped its agent-started agent %d %d time(s), want 1", tasks[0].ID, started[0].ID, n)
 	}
 	if got := f.agentStatus(t, started[0].ID); got != agents.StatusStopped {
 		t.Fatalf("agent %d status %q after the stop, want stopped", started[0].ID, got)
@@ -225,13 +225,13 @@ func TestCompletingATaskStopsTheChiefsAgentAndFreesItsSlot(t *testing.T) {
 	}
 
 	// The slot is free: the start refused at the cap now succeeds.
-	text := f.call(f.chief, taskDispatchTool, map[string]any{"task_id": waiting.ID})
+	text := f.call(f.agent, taskDispatchTool, map[string]any{"task_id": waiting.ID})
 	if strings.Contains(text, `"error"`) || !strings.Contains(text, `"agent_id"`) {
 		t.Fatalf("after the stop, the refused start is still refused: %s", text)
 	}
 
 	// Case 5: the completed task's one start is still spent.
-	again := f.call(f.chief, taskDispatchTool, map[string]any{"task_id": tasks[0].ID})
+	again := f.call(f.agent, taskDispatchTool, map[string]any{"task_id": tasks[0].ID})
 	if !strings.Contains(again, `"already_dispatched":true`) ||
 		!strings.Contains(again, `"agent_id":`+strconv.FormatInt(started[0].ID, 10)) {
 		t.Fatalf("a repeat start on the completed task: %s; want already_dispatched naming agent %d", again, started[0].ID)
@@ -260,26 +260,26 @@ func TestReadyForReviewStopsNothing(t *testing.T) {
 	}
 }
 
-// TestAnAgentTheOwnerStartedByHandIsNotStopped (case 3): on a task the chief
+// TestAnAgentTheOwnerStartedByHandIsNotStopped (case 3): on a task the agent
 // started an agent for, and on one it never did.
 func TestAnAgentTheOwnerStartedByHandIsNotStopped(t *testing.T) {
 	f := newCompleteStopFixture(t)
 
-	// Alongside the chief's own: only the chief's is stopped.
+	// Alongside one the owner started by hand: only the DISPATCHED one is stopped.
 	shared := f.task(t, "both")
-	chiefs := f.dispatch(t, shared)
+	dispatched := f.dispatch(t, shared)
 	mine := f.byHand(t, shared, "cshand")
 	f.markComplete(t, shared.ID)
-	if got := f.sp.stops(chiefs.ID, 1); got != 1 {
-		t.Fatalf("positive control: the chief's agent %d was stopped %d time(s), want 1", chiefs.ID, got)
+	if got := f.sp.stops(dispatched.ID, 1); got != 1 {
+		t.Fatalf("positive control: the dispatched agent %d was stopped %d time(s), want 1", dispatched.ID, got)
 	}
-	f.mustNotStop(t, mine.ID, "the owner's own agent beside the chief's")
+	f.mustNotStop(t, mine.ID, "the agent the owner started by hand, beside the dispatched one")
 
-	// A task the chief never started anything on.
+	// A task the agent never started anything on.
 	solo := f.task(t, "owner only")
 	only := f.byHand(t, solo, "csonly")
 	f.markComplete(t, solo.ID)
-	f.mustNotStop(t, only.ID, "the owner's own agent on a task with no chief start")
+	f.mustNotStop(t, only.ID, "the owner's own agent on a task with no agent start")
 	if got := f.agentStatus(t, only.ID); got != agents.StatusRunning {
 		t.Errorf("the owner's agent reads %q, want running", got)
 	}
@@ -299,7 +299,7 @@ func TestAnAlreadyStoppedChiefAgentIsANoOp(t *testing.T) {
 	if cur, err := f.notes.Get(f.asOwner, n.ID); err != nil || cur.Status != notes.StatusComplete {
 		t.Fatalf("task status %q (%v), want complete", cur.Status, err)
 	}
-	// Positive control in the same fixture: a live chief agent IS stopped.
+	// Positive control in the same fixture: a live dispatched agent IS stopped.
 	m := f.task(t, "live one")
 	b := f.dispatch(t, m)
 	f.machinePatch(t, m.ID, notes.StatusComplete)
@@ -321,7 +321,7 @@ func TestEveryCompleteWriterStopsTheChiefsAgent(t *testing.T) {
 		"handleNoteComplete":  func(t *testing.T, n notes.Note) { f.markComplete(t, n.ID) },
 		"handleAPITaskStatus": func(t *testing.T, n notes.Note) { f.machinePatch(t, n.ID, notes.StatusComplete) },
 		"handleTaskMerge": func(t *testing.T, n notes.Note) {
-			// A merge refuses an in_progress loser; the chief's start moved n there.
+			// A merge refuses an in_progress loser; the agent's start moved n there.
 			f.humanPatch(t, n.ID, notes.StatusReadyForReview)
 			f.merge(t, f.task(t, "merge winner").ID, n.ID)
 		},
@@ -335,14 +335,14 @@ func TestEveryCompleteWriterStopsTheChiefsAgent(t *testing.T) {
 				t.Fatalf("task status %q (%v) after %s, want complete", cur.Status, err, writer)
 			}
 			if got := f.sp.stops(a.ID, 1); got != 1 {
-				t.Fatalf("%s set task %d complete and stopped the chief's agent %d %d time(s), want 1", writer, n.ID, a.ID, got)
+				t.Fatalf("%s set task %d complete and stopped the dispatched agent %d %d time(s), want 1", writer, n.ID, a.ID, got)
 			}
 		})
 	}
 }
 
 // TestALedgerAgentNoLongerOnTheTaskIsNotStopped: the ledger names the agent the
-// chief's start made, but the stop also requires the agent ROW to still be
+// agent's start made, but the stop also requires the agent ROW to still be
 // bound to the completed task. No muster path rebinds an agent today, so the
 // disagreement is made out of band here; the guard keeps a completion from
 // stopping an agent that is now working something else.
@@ -367,7 +367,7 @@ func TestALedgerAgentNoLongerOnTheTaskIsNotStopped(t *testing.T) {
 
 // TestOnlyATransitionIntoCompleteStops: the stop fires when a task BECOMES
 // complete, not on every write that lands as complete. The owner Starts the
-// chief's agent again on a completed task; saving `complete` again (the card,
+// dispatched agent again on a completed task; saving `complete` again (the card,
 // the machine route) must not stop it a second time.
 func TestOnlyATransitionIntoCompleteStops(t *testing.T) {
 	f := newCompleteStopFixture(t)

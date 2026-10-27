@@ -62,15 +62,15 @@ func (f *scriptedRuntime) seen() []string {
 
 // pluginPlane is the real plane a delivered plugin message runs through: real
 // Postgres stores, the real deliverer and chatTurn, the real agentgateway.Gateway
-// — only the agent runtime (rt) is fake. The owner's chief is a gateway-kind
-// agent displayed "chief".
+// — only the agent runtime (rt) is fake. The owner's agent is a gateway-kind
+// agent displayed "agent".
 type pluginPlane struct {
 	srv     *Server
 	ps      *plugins.PGStore
 	as      agents.Store
 	ns      notes.Store
 	owner   context.Context
-	chief   agents.Agent
+	agent   agents.Agent
 	plugin  plugins.Plugin
 	ownerID int64
 	pool    *pgxpool.Pool
@@ -98,8 +98,8 @@ func newPluginPlane(t *testing.T, rt http.Handler) *pluginPlane {
 	})
 	owner := authz.WithPrincipal(ctx, authz.Principal{UserID: uid, Role: authz.RoleMember, Via: authz.ViaPlugin})
 	as := agents.NewPG(pool)
-	chief, err := as.Create(owner, agents.Agent{Name: "ppchief-" + suffix, Namespace: "devpod-ppchief-" + suffix,
-		DisplayName: "chief", Status: agents.StatusRunning, HooksToken: "pp-hooks-" + suffix})
+	agent, err := as.Create(owner, agents.Agent{Name: "ppchief-" + suffix, Namespace: "devpod-ppchief-" + suffix,
+		DisplayName: "agent", Status: agents.StatusRunning, HooksToken: "pp-hooks-" + suffix})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -119,13 +119,24 @@ func newPluginPlane(t *testing.T, rt http.Handler) *pluginPlane {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &pluginPlane{srv: srv, ps: ps, as: as, ns: ns, owner: owner, chief: chief, plugin: p, ownerID: uid, pool: pool}
+	// 🔴 THE PLUGIN MUST NAME ITS TARGET. Delivery once resolved the recipient
+	// from the `agent` display name above, so creating the agent was enough; it
+	// now reads plugins.target_agent_id, and a plugin with none leaves every
+	// message queued (`no_target`). Set here so every test on this plane
+	// delivers to the agent it already calls `agent`.
+	if err := ps.SetTargetAgent(owner, p.ID, agent.ID); err != nil {
+		t.Fatal(err)
+	}
+	if fresh, err := ps.Plugin(owner, p.ID); err == nil {
+		p = fresh
+	}
+	return &pluginPlane{srv: srv, ps: ps, as: as, ns: ns, owner: owner, agent: agent, plugin: p, ownerID: uid, pool: pool}
 }
 
 // TestTheChiefFilesAGatedTaskOnTheTurnThatDeliversTheMessage is finding 6 of
 // audit round 1, through the real plane: the runtime's FIRST response on the
 // delivery turn is a task_create_gated call citing the message being delivered —
-// the core flow, the chief acting on the turn that tells it about the message.
+// the core flow, the agent acting on the turn that tells it about the message.
 // The call goes through the real ChatWithTools → dispatch path; the task must be
 // created, gated, with the server's citation line, and the tool result must be a
 // success. Before the fix the message was still `queued` with no agent during the
@@ -143,7 +154,7 @@ func TestTheChiefFilesAGatedTaskOnTheTurnThatDeliversTheMessage(t *testing.T) {
 	rt.args = string(args)
 	rt.mu.Unlock()
 
-	if r := pp.srv.pluginDeliverer.Deliver(pp.owner, pp.plugin.ID, m.ID, pp.chief); r.Outcome != plugins.OutcomeDelivered {
+	if r := pp.srv.pluginDeliverer.Deliver(pp.owner, pp.plugin.ID, m.ID, pp.agent); r.Outcome != plugins.OutcomeDelivered {
 		t.Fatalf("delivery: %+v; want delivered", r)
 	}
 	sent := rt.seen()
@@ -155,7 +166,7 @@ func TestTheChiefFilesAGatedTaskOnTheTurnThatDeliversTheMessage(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(list) != 1 {
-		t.Fatalf("the owner has %d task(s) after the chief's call; want 1 — the tool answered: %s", len(list), sent[1])
+		t.Fatalf("the owner has %d task(s) after the agent's call; want 1 — the tool answered: %s", len(list), sent[1])
 	}
 	n := list[0]
 	cite := "It cites plugin message " + strconv.FormatInt(m.ID, 10) + " (Example inbox)"
@@ -171,7 +182,7 @@ func TestTheChiefFilesAGatedTaskOnTheTurnThatDeliversTheMessage(t *testing.T) {
 	if !gated {
 		t.Fatalf("the task's tags %v carry no gate", n.Tags)
 	}
-	parts, _ := pp.as.ListChatMessages(pp.owner, *mustPlugin(t, pp).ChiefSessionID)
+	parts, _ := pp.as.ListChatMessages(pp.owner, *mustPlugin(t, pp).SessionID)
 	ok := false
 	for _, part := range parts {
 		if part.Kind == "tool_result" && part.ToolName == gatedTaskToolName && part.ToolOK {
@@ -186,8 +197,8 @@ func TestTheChiefFilesAGatedTaskOnTheTurnThatDeliversTheMessage(t *testing.T) {
 func mustPlugin(t *testing.T, pp *pluginPlane) plugins.Plugin {
 	t.Helper()
 	p, err := pp.ps.Plugin(pp.owner, pp.plugin.ID)
-	if err != nil || p.ChiefSessionID == nil {
-		t.Fatalf("the plugin %+v (%v); want its chief session recorded", p, err)
+	if err != nil || p.SessionID == nil {
+		t.Fatalf("the plugin %+v (%v); want its agent session recorded", p, err)
 	}
 	return p
 }

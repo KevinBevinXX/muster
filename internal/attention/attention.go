@@ -61,7 +61,7 @@ const (
 
 // ByOperator is who answers an ask: the operator — on the attention view, or
 // (migration 0034) through one of their own mirrored Claude Code sessions'
-// attention_answer. No dispatched agent answers one — not even the chief.
+// attention_answer. No dispatched agent answers one — not even the agent.
 const ByOperator = "operator"
 
 // ViaMCP is answered_via for an answer given through attention_answer, from a
@@ -575,7 +575,7 @@ func (s *PGStore) settle(ctx context.Context, id int64, q string, args ...any) (
 // 🔴 NO MCP ANSWER TO AN ASK RAISED ON THE ANSWERING HOST, IN THE SAME
 // STATEMENT: the last condition refuses the row when the ask's mirror_host is
 // the answering host ($5) — whichever of that host's sessions asked
-// (ErrSameHost says why the host, not the session). An agent's, the chief's
+// (ErrSameHost says why the host, not the session). An agent's, the agent's
 // or a system ask has no mirror_host, so it is unaffected; an answer from
 // the view ($4 NULL) is unaffected. 0034's CHECK states the same rule again.
 const answerSQL = `UPDATE attention_asks SET status = 'answered', answer = $2, answered_by = $3, resolved_at = now(),

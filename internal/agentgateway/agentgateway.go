@@ -197,7 +197,7 @@ func (g *Gateway) Runtime() string { return g.runtime.Name() }
 // MODEL'S ENTIRE ANSWER. The measurement is recorded on agents.RunToollessTurn: the
 // same prompt to the same live agent produced zero content deltas over streaming
 // chat-completions — an HTTP 200 and `{"reply":""}` out of
-// POST /api/agents/{name}/messages, which is `chief ask`'s door — and the full text
+// POST /api/agents/{name}/messages, which is `agent ask`'s door — and the full text
 // over /v1/responses. Nothing in this package could have detected it: a 200 with no
 // deltas is indistinguishable here from a model that genuinely said nothing.
 //
@@ -307,7 +307,7 @@ func (g *Gateway) noteFailure(ctx context.Context, t Target, err error) error {
 	if err == nil || g.accounts == nil || t.account == "" {
 		return err
 	}
-	// A turn routed to the GATEWAY runtime in a claude-code pod (the chief's
+	// A turn routed to the GATEWAY runtime in a claude-code pod (the agent's
 	// sidecar, agents.TurnRoute) did not run on the Claude account at all: its
 	// failure is an OpenRouter one, and must not push that account to the back
 	// of the pool.

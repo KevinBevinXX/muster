@@ -42,7 +42,7 @@ type proc = struct {
 	exe  string
 }
 
-// The tree a chief pod has: tmux(10) -> primary CLI(20) -> its hook's sh(30) ->
+// The tree an agent pod has: tmux(10) -> primary CLI(20) -> its hook's sh(30) ->
 // `ccd hook`(31); and a nested CLI the primary's Bash tool started:
 // 20 -> bash(40) -> nested CLI(41) -> sh(50) -> `ccd hook`(51).
 var chiefTree = map[int]proc{

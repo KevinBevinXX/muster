@@ -15,8 +15,8 @@ import (
 )
 
 // The re-create-after-destroy case: an instance created under a name whose
-// previous namespace is still terminating (the chief replacement deletes `chief`
-// and creates `chief` at once).
+// previous namespace is still terminating (the agent replacement deletes `agent`
+// and creates `agent` at once).
 //
 // ⚠ THE FAKE CLIENTSET HAS NO NAMESPACE LIFECYCLE: it neither finalizes a
 // namespace nor refuses writes into a terminating one. So these tests build the
@@ -48,8 +48,8 @@ func shortTerminatingPoll(t *testing.T) {
 func TestCreateWaitsOutTheNamespaceAnEarlierDestroyLeftTerminating(t *testing.T) {
 	shortTerminatingPoll(t)
 	d, cs := perInstanceDriver(t)
-	const ns = "muster-agent-chief"
-	terminatingNamespace(t, cs, ns, "chief")
+	const ns = "muster-agent-agent"
+	terminatingNamespace(t, cs, ns, "agent")
 
 	gone := make(chan time.Time, 1)
 	go func() {
@@ -57,7 +57,7 @@ func TestCreateWaitsOutTheNamespaceAnEarlierDestroyLeftTerminating(t *testing.T)
 		_ = cs.CoreV1().Namespaces().Delete(context.Background(), ns, metav1.DeleteOptions{})
 		gone <- time.Now()
 	}()
-	if err := d.Create(context.Background(), internalSpec("chief")); err != nil {
+	if err := d.Create(context.Background(), internalSpec("agent")); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 	returned := time.Now()
@@ -80,11 +80,11 @@ func TestCreateWaitsOutTheNamespaceAnEarlierDestroyLeftTerminating(t *testing.T)
 func TestCreateGivesUpOnANamespaceThatNeverFinishesTerminating(t *testing.T) {
 	shortTerminatingPoll(t)
 	d, cs := perInstanceDriver(t)
-	terminatingNamespace(t, cs, "muster-agent-chief", "chief")
+	terminatingNamespace(t, cs, "muster-agent-agent", "agent")
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
-	err := d.Create(ctx, internalSpec("chief"))
-	if err == nil || !errors.Is(err, provision.ErrBlind) || !strings.Contains(err.Error(), `"muster-agent-chief" is still terminating`) {
+	err := d.Create(ctx, internalSpec("agent"))
+	if err == nil || !errors.Is(err, provision.ErrBlind) || !strings.Contains(err.Error(), `"muster-agent-agent" is still terminating`) {
 		t.Fatalf("Create = %v, want ErrBlind naming the terminating namespace", err)
 	}
 }
@@ -98,13 +98,13 @@ func TestALiveOwnedNamespaceIsStillAdoptedAtOnce(t *testing.T) {
 	t.Cleanup(func() { namespaceTerminatingPoll = old })
 	d, cs := perInstanceDriver(t)
 	if _, err := cs.CoreV1().Namespaces().Create(context.Background(), &corev1.Namespace{
-		ObjectMeta: metav1.ObjectMeta{Name: "muster-agent-chief", Labels: instanceLabels("chief")},
+		ObjectMeta: metav1.ObjectMeta{Name: "muster-agent-agent", Labels: instanceLabels("agent")},
 	}, metav1.CreateOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := d.Create(ctx, internalSpec("chief")); err != nil {
+	if err := d.Create(ctx, internalSpec("agent")); err != nil {
 		t.Fatalf("Create into a live owned namespace: %v", err)
 	}
 }

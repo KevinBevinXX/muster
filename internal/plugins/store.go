@@ -36,7 +36,7 @@ type Store interface {
 	// plugin retrying a POST it did not see answered is never refused for it.
 	Submit(ctx context.Context, pluginID int64, in MessageIn) (m Message, created bool, err error)
 	// SubmitTaskEvent stores muster's own message handing task taskID to the
-	// chief (task_events.go): no_reply, and the only writer of task_id.
+	// target agent (task_events.go): no_reply, and the only writer of task_id.
 	SubmitTaskEvent(ctx context.Context, pluginID, taskID int64, in MessageIn) (m Message, created bool, err error)
 	// Message reads one message.
 	Message(ctx context.Context, id int64) (Message, error)
@@ -44,16 +44,19 @@ type Store interface {
 	Plugin(ctx context.Context, id int64) (Plugin, error)
 	// Queued is a plugin's undelivered messages, oldest first, at most limit.
 	Queued(ctx context.Context, pluginID int64, limit int) ([]Message, error)
-	// SetChiefSession records the chief chat session a plugin's messages are
+	// SetDeliverySession records the agent and chat session a plugin's messages are
 	// delivered into.
-	SetChiefSession(ctx context.Context, pluginID, agentID, sessionID int64) error
+	SetDeliverySession(ctx context.Context, pluginID, agentID, sessionID int64) error
+	// SetTargetAgent records which agent a plugin's messages go to: the
+	// operator's choice, read by the deliverer. 0 clears it.
+	SetTargetAgent(ctx context.Context, pluginID, agentID int64) error
 	// Retries is how many times the principal retried a message (retry.go).
 	Retries(ctx context.Context, messageID int64) (int, error)
 	// RecordAttempt counts an attempt that provably delivered nothing; the
 	// message stays queued.
 	RecordAttempt(ctx context.Context, messageID int64) error
 	// BeginDelivery moves a queued message to `delivering` to agentID and counts
-	// the attempt, BEFORE the turn runs, so the chief can cite it on that turn. It
+	// the attempt, BEFORE the turn runs, so the agent can cite it on that turn. It
 	// reports false (and writes nothing) when the message was no longer queued.
 	BeginDelivery(ctx context.Context, messageID, agentID int64) (bool, error)
 	// AbandonDelivery returns a message `delivering` to agentID to `queued` and
@@ -73,9 +76,9 @@ type Store interface {
 	// DeliveringTo is the ids of the messages still `delivering` to agentID,
 	// oldest first. It writes nothing. Deleting an agent with such a row strands
 	// it: agent_id goes NULL (ON DELETE SET NULL) and RecoverDeliveries, keyed on
-	// the agent, can then never settle it — so the chief replacement, holding the
-	// chief's session claim, settles them (RecoverDeliveries) and reports these ids
-	// before it deletes.
+	// the agent, can then never settle it — so the next delivery to that agent,
+	// holding its session claim, settles them (RecoverDeliveries); this lists the
+	// ids a caller about to delete the agent should settle first.
 	DeliveringTo(ctx context.Context, agentID int64) ([]int64, error)
 	// Retryable is the principal's unconfirmed messages that may be retried
 	// (retry.go), newest first; Requeue puts one back in the queue, or refuses
@@ -124,12 +127,12 @@ func NewPG(pool *pgxpool.Pool) *PGStore { return &PGStore{pool: pool} }
 
 var _ Store = (*PGStore)(nil)
 
-const pluginCols = `id, owner_id, name, label, data_scope, created_at, last_seen_at, revoked_at, chief_agent_id, chief_session_id`
+const pluginCols = `id, owner_id, name, label, data_scope, created_at, last_seen_at, revoked_at, session_agent_id, session_id, target_agent_id`
 
 func scanPlugin(row pgx.Row) (Plugin, error) {
 	var p Plugin
 	err := row.Scan(&p.ID, &p.OwnerID, &p.Name, &p.Label, &p.DataScope, &p.CreatedAt, &p.LastSeenAt, &p.RevokedAt,
-		&p.ChiefAgentID, &p.ChiefSessionID)
+		&p.SessionAgentID, &p.SessionID, &p.TargetAgentID)
 	return p, err
 }
 
@@ -289,7 +292,7 @@ func (s *PGStore) Submit(ctx context.Context, pluginID int64, in MessageIn) (Mes
 // external_id idempotency, the rate caps and the field bounds.
 // submit stores in for pluginID (once per external_id) under the caps of its
 // bucket. taskID links a task (a task event, or a notice route); routedTo, set
-// only with taskID, stores the row already delivered, routed around the chief.
+// only with taskID, stores the row already delivered, routed around the target agent.
 func (s *PGStore) submit(ctx context.Context, pluginID int64, in MessageIn, taskID *int64, routedTo string) (Message, bool, error) {
 	if err := in.Validate(); err != nil {
 		return Message{}, false, err
@@ -316,10 +319,10 @@ func (s *PGStore) submit(ctx context.Context, pluginID int64, in MessageIn, task
 		if !errors.Is(err, pgx.ErrNoRows) {
 			return err
 		}
-		// 🔴 TWO ALLOWANCES, COUNTED APART: chief mail (task_id NULL) against
+		// 🔴 TWO ALLOWANCES, COUNTED APART: agent mail (task_id NULL) against
 		// MaxPerHour / MaxQueued, task events (task_id set) against
 		// MaxTaskEventsPerHour / MaxTaskEventsQueued. Counted together, a burst
-		// of task notices got the plugin's ordinary chief mail answered 429
+		// of task notices got the plugin's ordinary agent mail answered 429
 		// (audit round 1).
 		perHour, maxQueued := MaxPerHour, MaxQueued
 		if taskID != nil {
@@ -334,7 +337,7 @@ func (s *PGStore) submit(ctx context.Context, pluginID int64, in MessageIn, task
 			return err
 		}
 		// A notice route (routedTo) spends the task-event HOUR only: it is
-		// delivered from birth and never waits on the chief, so the chief's
+		// delivered from birth and never waits on the agent, so that agent's
 		// undelivered queue must not refuse it (audit round 3).
 		switch {
 		case lastHour >= perHour:
@@ -394,8 +397,28 @@ func (s *PGStore) Queued(ctx context.Context, pluginID int64, limit int) ([]Mess
 	return out, rows.Err()
 }
 
-func (s *PGStore) SetChiefSession(ctx context.Context, pluginID, agentID, sessionID int64) error {
-	tag, err := s.pool.Exec(ctx, `UPDATE plugins SET chief_agent_id = $2, chief_session_id = $3 WHERE id = $1`,
+// SetTargetAgent records the agent a plugin's messages are delivered to — the
+// operator's CHOICE, which nothing but this call changes. agentID 0 clears it,
+// which returns the plugin to leaving its messages queued (`no_target`).
+//
+// ⚠ IT IS NOT SetDeliverySession, AND THE TWO MUST NOT BE MERGED. That one is
+// bookkeeping the deliverer writes after a turn (which session the message
+// landed in); this one is the instruction the deliverer reads. A single column
+// for both would let a delivery overwrite the choice.
+func (s *PGStore) SetTargetAgent(ctx context.Context, pluginID, agentID int64) error {
+	var arg any
+	if agentID > 0 {
+		arg = agentID
+	}
+	tag, err := s.pool.Exec(ctx, `UPDATE plugins SET target_agent_id = $2 WHERE id = $1`, pluginID, arg)
+	if err == nil && tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return err
+}
+
+func (s *PGStore) SetDeliverySession(ctx context.Context, pluginID, agentID, sessionID int64) error {
+	tag, err := s.pool.Exec(ctx, `UPDATE plugins SET session_agent_id = $2, session_id = $3 WHERE id = $1`,
 		pluginID, agentID, sessionID)
 	if err == nil && tag.RowsAffected() == 0 {
 		return ErrNotFound

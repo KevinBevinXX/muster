@@ -11,7 +11,7 @@ import (
 // round 1, through the real plane (newPluginPlane: real Postgres stores, the real
 // deliverer and chatTurn, the real agentgateway.Gateway, a fake runtime): the
 // runtime's FIRST response on the delivery turn is a reply_draft call for the
-// message being delivered — the chief answering on the turn that tells it about
+// message being delivered — the agent answering on the turn that tells it about
 // the message. The call goes through the real ChatWithTools → dispatch path, and a
 // pending draft row for that message must be filed. Before the fix the message
 // was `queued` with no agent during the turn, and the draft was refused.
@@ -27,7 +27,7 @@ func TestTheChiefDraftsAReplyOnTheTurnThatDeliversTheMessage(t *testing.T) {
 	rt.args = string(args)
 	rt.mu.Unlock()
 
-	if r := pp.srv.pluginDeliverer.Deliver(pp.owner, pp.plugin.ID, m.ID, pp.chief); r.Outcome != plugins.OutcomeDelivered {
+	if r := pp.srv.pluginDeliverer.Deliver(pp.owner, pp.plugin.ID, m.ID, pp.agent); r.Outcome != plugins.OutcomeDelivered {
 		t.Fatalf("delivery: %+v; want delivered", r)
 	}
 	sent := rt.seen()
@@ -39,14 +39,14 @@ func TestTheChiefDraftsAReplyOnTheTurnThatDeliversTheMessage(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(cards) != 1 {
-		t.Fatalf("%d draft(s) after the chief's reply_draft call; want 1 — the tool answered: %s", len(cards), sent[1])
+		t.Fatalf("%d draft(s) after the agent's reply_draft call; want 1 — the tool answered: %s", len(cards), sent[1])
 	}
 	d := cards[0].Draft
 	if d.MessageID != m.ID || d.Body != "Yes, noon works." || d.Status != plugins.DraftPending ||
-		d.AgentID == nil || *d.AgentID != pp.chief.ID {
-		t.Fatalf("the filed draft %+v; want a pending reply to message %d by the chief", d, m.ID)
+		d.AgentID == nil || *d.AgentID != pp.agent.ID {
+		t.Fatalf("the filed draft %+v; want a pending reply to message %d by the agent", d, m.ID)
 	}
-	parts, _ := pp.as.ListChatMessages(pp.owner, *mustPlugin(t, pp).ChiefSessionID)
+	parts, _ := pp.as.ListChatMessages(pp.owner, *mustPlugin(t, pp).SessionID)
 	ok := false
 	for _, part := range parts {
 		if part.Kind == "tool_result" && part.ToolName == replyDraftToolName && part.ToolOK {

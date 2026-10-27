@@ -208,7 +208,7 @@ const manifestPath = "testdata/routes.partition.tsv"
 //	----
 //	  74   routeFloor
 //
-// ⚠ AND AGAIN WHEN THE CHIEF COULD BE REPLACED: POST /api/chief/replace is a
+// ⚠ AND AGAIN WHEN THE AGENT COULD BE REPLACED: POST /api/agent/replace is a
 // new muster row, so the projection is 84 (70 + 14), same margin:
 //
 //	  84   manifest projection (70 muster + 14 shared)

@@ -15,7 +15,7 @@ import (
 	"github.com/ZacxDev/muster/internal/plugins"
 )
 
-// THE CHIEF'S DISPATCH BUDGET AS DATA. The chief's conversation survives
+// THE AGENT'S DISPATCH BUDGET AS DATA. The agent's conversation survives
 // restarts, so a cap number in task_dispatch's description is a number it
 // remembers after the cap changed. These pin that the description states none,
 // that every task_dispatch answer and refusal past the opt-in carries the
@@ -54,16 +54,16 @@ func TestTaskDispatchDescriptionCarriesNoCapNumbers(t *testing.T) {
 		t.Errorf("task_dispatch's description\n got %q\nwant %q", norm(got), norm(want))
 	}
 	if m := regexp.MustCompile(`(?i)at most \d`).FindString(got); m != "" {
-		t.Errorf("task_dispatch's description states a cap number (%q): the chief would remember it past a change", m)
+		t.Errorf("task_dispatch's description states a cap number (%q): the agent would remember it past a change", m)
 	}
 }
 
-// liveChiefAgent creates a running agent on a fresh task as if the chief had
+// liveFleetAgent creates a running agent on a fresh task as if the agent had
 // started it (reservation + recorded agent), returning it.
-func (f *taskRouteFixture) liveChiefAgent(t *testing.T, label string) agents.Agent {
+func (f *taskRouteFixture) liveFleetAgent(t *testing.T, label string) agents.Agent {
 	t.Helper()
 	seed := f.task(t, label)
-	if _, err := f.plugins.ReserveChiefDispatch(f.asOwner, seed.ID, nil, nil); err != nil {
+	if _, err := f.plugins.ReserveTaskDispatch(f.asOwner, seed.ID, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	a, err := agents.NewPG(f.pool).Create(f.asOwner, agents.Agent{Name: "trbud-" + label + "-" + strconv.FormatInt(f.owner, 10),
@@ -71,28 +71,28 @@ func (f *taskRouteFixture) liveChiefAgent(t *testing.T, label string) agents.Age
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := f.plugins.RecordChiefDispatchAgent(f.asOwner, seed.ID, a.ID); err != nil {
+	if err := f.plugins.RecordTaskDispatchAgent(f.asOwner, seed.ID, a.ID); err != nil {
 		t.Fatal(err)
 	}
 	return a
 }
 
-// finishedStarts writes n chief starts on task ids from base whose agents are
+// finishedStarts writes n agent starts on task ids from base whose agents are
 // gone (agent 0 names no row): they count today, never live.
 func (f *taskRouteFixture) finishedStarts(t *testing.T, base int64, n int) {
 	t.Helper()
 	for i := int64(0); i < int64(n); i++ {
-		if _, err := f.plugins.ReserveChiefDispatch(f.asOwner, base+i, nil, nil); err != nil {
+		if _, err := f.plugins.ReserveTaskDispatch(f.asOwner, base+i, nil, nil); err != nil {
 			t.Fatalf("seed start %d: %v", base+i, err)
 		}
-		if err := f.plugins.RecordChiefDispatchAgent(f.asOwner, base+i, 0); err != nil {
+		if err := f.plugins.RecordTaskDispatchAgent(f.asOwner, base+i, 0); err != nil {
 			t.Fatal(err)
 		}
 	}
 }
 
 // answerBudget decodes text's `budget`, failing when it has none.
-func answerBudget(t *testing.T, text string) (map[string]json.RawMessage, plugins.ChiefBudget) {
+func answerBudget(t *testing.T, text string) (map[string]json.RawMessage, plugins.DispatchBudget) {
 	t.Helper()
 	var m map[string]json.RawMessage
 	if err := json.Unmarshal([]byte(text), &m); err != nil {
@@ -102,7 +102,7 @@ func answerBudget(t *testing.T, text string) (map[string]json.RawMessage, plugin
 	if !ok {
 		t.Fatalf("answer carries no budget: %s", text)
 	}
-	var b plugins.ChiefBudget
+	var b plugins.DispatchBudget
 	if err := json.Unmarshal(raw, &b); err != nil {
 		t.Fatalf("budget %s: %v", raw, err)
 	}
@@ -119,9 +119,9 @@ func str(v string) *string { return &v }
 // and name, then a start whose agent is not recorded with id and name null.
 func TestTaskDispatchStartedAndAlreadyDispatchedCarryTheBudget(t *testing.T) {
 	f := newTaskRouteFixture(t, true, true)
-	prior := f.liveChiefAgent(t, "prior") // live, today
+	prior := f.liveFleetAgent(t, "prior") // live, today
 	pendingTask := int64(900100)          // reserved, no agent yet: live, today
-	if _, err := f.plugins.ReserveChiefDispatch(f.asOwner, pendingTask, nil, nil); err != nil {
+	if _, err := f.plugins.ReserveTaskDispatch(f.asOwner, pendingTask, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	f.finishedStarts(t, 900200, 1) // today only
@@ -142,8 +142,8 @@ func TestTaskDispatchStartedAndAlreadyDispatchedCarryTheBudget(t *testing.T) {
 	if _, ok := m["error"]; ok {
 		t.Fatalf("a start answered with an error: %s", text)
 	}
-	want := plugins.ChiefBudget{Live: 3, LiveCap: plugins.MaxChiefLiveAgents, Today: 4, DailyCap: plugins.MaxChiefDispatchesPerDay,
-		LiveAgents: []plugins.ChiefLiveAgent{
+	want := plugins.DispatchBudget{Live: 3, LiveCap: plugins.MaxLiveDispatchedAgents, Today: 4, DailyCap: plugins.MaxDispatchesPerDay,
+		LiveAgents: []plugins.LiveDispatchedAgent{
 			{ID: i64(prior.ID), Name: str(prior.Name), Task: *prior.NoteID},
 			{ID: i64(started.AgentID), Name: str(started.Agent), Task: n.ID},
 			{Task: pendingTask},
@@ -172,8 +172,8 @@ func TestTaskDispatchCapRefusalsCarryTheBudget(t *testing.T) {
 		f := newTaskRouteFixture(t, true, true)
 		f.finishedStarts(t, 900300, 2) // first: once the live cap is full, no start passes
 		var live []agents.Agent
-		for i := 0; i < plugins.MaxChiefLiveAgents; i++ {
-			live = append(live, f.liveChiefAgent(t, "cap"+strconv.Itoa(i)))
+		for i := 0; i < plugins.MaxLiveDispatchedAgents; i++ {
+			live = append(live, f.liveFleetAgent(t, "cap"+strconv.Itoa(i)))
 		}
 		// live 5 (the cap), today 7.
 		n := f.task(t, "one too many")
@@ -184,11 +184,11 @@ func TestTaskDispatchCapRefusalsCarryTheBudget(t *testing.T) {
 		m, b := answerBudget(t, text)
 		var msg string
 		_ = json.Unmarshal(m["error"], &msg)
-		if msg != chiefDispatchLiveCap {
-			t.Fatalf("refusal %q; want the live cap's %q", msg, chiefDispatchLiveCap)
+		if msg != taskDispatchLiveCap {
+			t.Fatalf("refusal %q; want the live cap's %q", msg, taskDispatchLiveCap)
 		}
-		if b.Live != plugins.MaxChiefLiveAgents || b.Today != plugins.MaxChiefLiveAgents+2 || b.LiveCap != plugins.MaxChiefLiveAgents ||
-			b.DailyCap != plugins.MaxChiefDispatchesPerDay || len(b.LiveAgents) != len(live) {
+		if b.Live != plugins.MaxLiveDispatchedAgents || b.Today != plugins.MaxLiveDispatchedAgents+2 || b.LiveCap != plugins.MaxLiveDispatchedAgents ||
+			b.DailyCap != plugins.MaxDispatchesPerDay || len(b.LiveAgents) != len(live) {
 			t.Fatalf("live-cap budget %+v", b)
 		}
 		for i, a := range live {
@@ -202,8 +202,8 @@ func TestTaskDispatchCapRefusalsCarryTheBudget(t *testing.T) {
 	})
 	t.Run("daily-cap", func(t *testing.T) {
 		f := newTaskRouteFixture(t, true, true)
-		a := f.liveChiefAgent(t, "day")
-		f.finishedStarts(t, 900400, plugins.MaxChiefDispatchesPerDay-1)
+		a := f.liveFleetAgent(t, "day")
+		f.finishedStarts(t, 900400, plugins.MaxDispatchesPerDay-1)
 		// live 1, today 10 (the cap).
 		n := f.task(t, "eleventh")
 		text, isErr, rpcErr := f.mcpCall(t, f.chiefTok, taskDispatchTool, map[string]any{"task_id": n.ID})
@@ -213,11 +213,11 @@ func TestTaskDispatchCapRefusalsCarryTheBudget(t *testing.T) {
 		m, b := answerBudget(t, text)
 		var msg string
 		_ = json.Unmarshal(m["error"], &msg)
-		if msg != chiefDispatchDailyCap {
-			t.Fatalf("refusal %q; want the daily cap's %q", msg, chiefDispatchDailyCap)
+		if msg != taskDispatchDailyCap {
+			t.Fatalf("refusal %q; want the daily cap's %q", msg, taskDispatchDailyCap)
 		}
-		want := plugins.ChiefBudget{Live: 1, LiveCap: plugins.MaxChiefLiveAgents, Today: plugins.MaxChiefDispatchesPerDay,
-			DailyCap: plugins.MaxChiefDispatchesPerDay, LiveAgents: []plugins.ChiefLiveAgent{{ID: i64(a.ID), Name: str(a.Name), Task: *a.NoteID}}}
+		want := plugins.DispatchBudget{Live: 1, LiveCap: plugins.MaxLiveDispatchedAgents, Today: plugins.MaxDispatchesPerDay,
+			DailyCap: plugins.MaxDispatchesPerDay, LiveAgents: []plugins.LiveDispatchedAgent{{ID: i64(a.ID), Name: str(a.Name), Task: *a.NoteID}}}
 		if !reflect.DeepEqual(b, want) {
 			t.Fatalf("daily-cap budget\n got %+v\nwant %+v", b, want)
 		}
@@ -226,15 +226,15 @@ func TestTaskDispatchCapRefusalsCarryTheBudget(t *testing.T) {
 
 // TestTaskDispatchOtherRefusalsCarryTheBudgetPastTheOptIn: a refusal decided
 // after the opt-in (here a gated task) carries the budget; the opt-out refusal,
-// before any budget the chief could spend, carries none.
+// before any budget the agent could spend, carries none.
 func TestTaskDispatchOtherRefusalsCarryTheBudgetPastTheOptIn(t *testing.T) {
 	f := newTaskRouteFixture(t, true, true)
-	f.liveChiefAgent(t, "g1")
-	f.liveChiefAgent(t, "g2")
+	f.liveFleetAgent(t, "g1")
+	f.liveFleetAgent(t, "g2")
 	f.finishedStarts(t, 900500, 1)
 	n := f.task(t, "gated", "gate:needs-owner-ok")
-	text := f.call(f.chief, taskDispatchTool, map[string]any{"task_id": n.ID})
-	if !strings.Contains(text, chiefDispatchGatedText) {
+	text := f.call(f.agent, taskDispatchTool, map[string]any{"task_id": n.ID})
+	if !strings.Contains(text, taskDispatchGatedText) {
 		t.Fatalf("answer %s", text)
 	}
 	if _, b := answerBudget(t, text); b.Live != 2 || b.Today != 3 {
@@ -246,17 +246,17 @@ func TestTaskDispatchOtherRefusalsCarryTheBudgetPastTheOptIn(t *testing.T) {
 
 	out := newTaskRouteFixture(t, true, false)
 	m := out.task(t, "not opted in")
-	text = out.call(out.chief, taskDispatchTool, map[string]any{"task_id": m.ID})
-	if !strings.Contains(text, chiefDispatchOptOut) || strings.Contains(text, `"budget"`) {
+	text = out.call(out.agent, taskDispatchTool, map[string]any{"task_id": m.ID})
+	if !strings.Contains(text, taskDispatchOptOut) || strings.Contains(text, `"budget"`) {
 		t.Fatalf("opt-out refusal %s; want the opt-out sentence and no budget", text)
 	}
 }
 
-// budgetUnreadable is the plugin store with ChiefDispatchBudget failing.
+// budgetUnreadable is the plugin store with TaskDispatchBudget failing.
 type budgetUnreadable struct{ plugins.DispatchStore }
 
-func (budgetUnreadable) ChiefDispatchBudget(context.Context) (plugins.ChiefBudget, error) {
-	return plugins.ChiefBudget{}, errors.New("budget read failed (test)")
+func (budgetUnreadable) TaskDispatchBudget(context.Context) (plugins.DispatchBudget, error) {
+	return plugins.DispatchBudget{}, errors.New("budget read failed (test)")
 }
 
 // TestAnUnreadableBudgetNeverFailsTheCall: with the budget read failing, a
@@ -266,19 +266,19 @@ func (budgetUnreadable) ChiefDispatchBudget(context.Context) (plugins.ChiefBudge
 // (never "not enabled for you", which an opted-in owner is not).
 func TestAnUnreadableBudgetNeverFailsTheCall(t *testing.T) {
 	f := newTaskRouteFixture(t, true, true, func(ext *Extensions) {
-		ext.ChiefDispatch = budgetUnreadable{ext.ChiefDispatch}
+		ext.TaskDispatch = budgetUnreadable{ext.TaskDispatch}
 	})
 	n := f.task(t, "still starts")
-	text := f.call(f.chief, taskDispatchTool, map[string]any{"task_id": n.ID})
+	text := f.call(f.agent, taskDispatchTool, map[string]any{"task_id": n.ID})
 	if isToolErr(text) || !strings.Contains(text, `"agent_id"`) || strings.Contains(text, `"budget"`) {
 		t.Fatalf("start with the budget unreadable: %s; want a start with no budget", text)
 	}
 	g := f.task(t, "gated", "gate:needs-owner-ok")
-	if text := f.call(f.chief, taskDispatchTool, map[string]any{"task_id": g.ID}); !isToolErr(text) || !strings.Contains(text, chiefDispatchGatedText) {
+	if text := f.call(f.agent, taskDispatchTool, map[string]any{"task_id": g.ID}); !isToolErr(text) || !strings.Contains(text, taskDispatchGatedText) {
 		t.Fatalf("refusal with the budget unreadable: %s", text)
 	}
 	o := f.task(t, "ask anyway")
-	res := f.call(f.chief, taskRouteAttentionTool, map[string]any{"task_id": o.ID, "note": "?"})
+	res := f.call(f.agent, taskRouteAttentionTool, map[string]any{"task_id": o.ID, "note": "?"})
 	if isToolErr(res) || !strings.Contains(res, `"actions_offered"`) || strings.Contains(res, `"budget"`) {
 		t.Fatalf("task_route_attention with the budget unreadable: %s", res)
 	}
@@ -330,7 +330,7 @@ func TestAFullBudgetIsNotBlamedForATaskThatRefusesItself(t *testing.T) {
 		t.Run(bc.name, func(t *testing.T) {
 			f := newTaskRouteFixture(t, true, bc.optIn)
 			if bc.full {
-				f.finishedStarts(t, 900900, plugins.MaxChiefDispatchesPerDay) // the day is spent
+				f.finishedStarts(t, 900900, plugins.MaxDispatchesPerDay) // the day is spent
 			}
 			gated := f.task(t, "gated", "gate:needs-owner-ok")
 			moved := f.task(t, "moved on")
@@ -343,7 +343,7 @@ func TestAFullBudgetIsNotBlamedForATaskThatRefusesItself(t *testing.T) {
 				id   int64
 				line string
 			}{{"gated", gated.ID, bc.gated}, {"not-open", moved.ID, bc.moved}, {"open", open.ID, bc.open}} {
-				res := f.call(f.chief, taskRouteAttentionTool, map[string]any{"task_id": c.id, "note": "?"})
+				res := f.call(f.agent, taskRouteAttentionTool, map[string]any{"task_id": c.id, "note": "?"})
 				var out struct {
 					ID      int64    `json:"id"`
 					Offered []string `json:"actions_offered"`
@@ -379,7 +379,7 @@ func TestAFullBudgetIsNotBlamedForATaskThatRefusesItself(t *testing.T) {
 }
 
 // TestTheAskNamesTheDeploymentAndAStartingAgent: the two remaining reasons an
-// opted-in owner's chief cannot dispatch carry their own WHOLE line — a
+// opted-in owner's agent cannot dispatch carry their own WHOLE line — a
 // deployment that cannot start an agent now, and an agent on the task that is
 // still starting — never "not enabled for you".
 func TestTheAskNamesTheDeploymentAndAStartingAgent(t *testing.T) {
@@ -390,19 +390,19 @@ func TestTheAskNamesTheDeploymentAndAStartingAgent(t *testing.T) {
 	}{
 		{"deployment-cannot-start", func(f *taskRouteFixture, _ *testing.T, _ int64) {
 			f.prov.undeliverable = "the kickoff path is down (test)"
-		}, "Your chief cannot forward or dispatch this task now (no agent is working it, and this deployment cannot start an agent now): it is yours to handle."},
+		}, "The target agent cannot forward or dispatch this task now (no agent is working it, and this deployment cannot start an agent now): it is yours to handle."},
 		{"agent-still-starting", func(f *taskRouteFixture, t *testing.T, taskID int64) {
 			if _, err := agents.NewPG(f.pool).Create(f.asOwner, agents.Agent{Name: "trbud-starting-" + strconv.FormatInt(f.owner, 10),
 				Namespace: "ns-trbud", Status: agents.StatusPending, NoteID: &taskID}); err != nil {
 				t.Fatal(err)
 			}
-		}, "Your chief cannot forward or dispatch this task now (no agent is working it, and an agent on this task is still starting, so it cannot start another): it is yours to handle."},
+		}, "The target agent cannot forward or dispatch this task now (no agent is working it, and an agent on this task is still starting, so it cannot start another): it is yours to handle."},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			f := newTaskRouteFixture(t, true, true)
 			n := f.task(t, "why not")
 			c.setup(f, t, n.ID)
-			res := f.call(f.chief, taskRouteAttentionTool, map[string]any{"task_id": n.ID, "note": "?"})
+			res := f.call(f.agent, taskRouteAttentionTool, map[string]any{"task_id": n.ID, "note": "?"})
 			var out struct {
 				ID      int64    `json:"id"`
 				Offered []string `json:"actions_offered"`
@@ -440,26 +440,26 @@ func TestTaskRouteAttentionOffersDispatchOnlyWithinTheBudget(t *testing.T) {
 		offered     bool
 	}{
 		{"room", func(f *taskRouteFixture, t *testing.T) {
-			f.liveChiefAgent(t, "r1")
-			f.liveChiefAgent(t, "r2")
+			f.liveFleetAgent(t, "r1")
+			f.liveFleetAgent(t, "r2")
 			f.finishedStarts(t, 900600, 1)
 		}, 2, 3, true},
 		{"live-full", func(f *taskRouteFixture, t *testing.T) {
 			f.finishedStarts(t, 900700, 2) // first: once the live cap is full, no start passes
-			for i := 0; i < plugins.MaxChiefLiveAgents; i++ {
-				f.liveChiefAgent(t, "l"+strconv.Itoa(i))
+			for i := 0; i < plugins.MaxLiveDispatchedAgents; i++ {
+				f.liveFleetAgent(t, "l"+strconv.Itoa(i))
 			}
-		}, plugins.MaxChiefLiveAgents, plugins.MaxChiefLiveAgents + 2, false},
+		}, plugins.MaxLiveDispatchedAgents, plugins.MaxLiveDispatchedAgents + 2, false},
 		{"day-full", func(f *taskRouteFixture, t *testing.T) {
-			f.liveChiefAgent(t, "d")
-			f.finishedStarts(t, 900800, plugins.MaxChiefDispatchesPerDay-1)
-		}, 1, plugins.MaxChiefDispatchesPerDay, false},
+			f.liveFleetAgent(t, "d")
+			f.finishedStarts(t, 900800, plugins.MaxDispatchesPerDay-1)
+		}, 1, plugins.MaxDispatchesPerDay, false},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			f := newTaskRouteFixture(t, true, true)
 			c.seed(f, t)
 			n := f.task(t, "route me")
-			res := f.call(f.chief, taskRouteAttentionTool, map[string]any{"task_id": n.ID, "note": "Who takes it?"})
+			res := f.call(f.agent, taskRouteAttentionTool, map[string]any{"task_id": n.ID, "note": "Who takes it?"})
 			var out struct {
 				ID      int64    `json:"id"`
 				Offered []string `json:"actions_offered"`
@@ -485,7 +485,7 @@ func TestTaskRouteAttentionOffersDispatchOnlyWithinTheBudget(t *testing.T) {
 			if !c.offered && !strings.Contains(ask.Question, "used up its allowance for starting agents") {
 				t.Errorf("a full budget's ask does not say why nothing is offered: %q", ask.Question)
 			}
-			disp := f.call(f.chief, taskDispatchTool, map[string]any{"task_id": n.ID})
+			disp := f.call(f.agent, taskDispatchTool, map[string]any{"task_id": n.ID})
 			started := !isToolErr(disp) && strings.Contains(disp, `"agent_id"`)
 			if started != offered {
 				t.Errorf("task_dispatch offered=%v but the tool started an agent=%v: %s", offered, started, disp)
@@ -495,7 +495,7 @@ func TestTaskRouteAttentionOffersDispatchOnlyWithinTheBudget(t *testing.T) {
 	// Opted out: no budget at all on the result.
 	f := newTaskRouteFixture(t, true, false)
 	n := f.task(t, "not opted in")
-	if res := f.call(f.chief, taskRouteAttentionTool, map[string]any{"task_id": n.ID, "note": "?"}); strings.Contains(res, `"budget"`) {
+	if res := f.call(f.agent, taskRouteAttentionTool, map[string]any{"task_id": n.ID, "note": "?"}); strings.Contains(res, `"budget"`) {
 		t.Fatalf("an opted-out owner's task_route_attention carries a budget: %s", res)
 	}
 }

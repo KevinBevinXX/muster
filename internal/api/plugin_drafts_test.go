@@ -18,7 +18,7 @@ func TestADraftCardShowsExactlyWhatIsApproved(t *testing.T) {
 	at := time.Now().UTC()
 	agentID := int64(3)
 	c := plugins.DraftCard{
-		Draft: plugins.Draft{ID: 9, AgentID: &agentID, AgentName: "chief", Body: "café\nsee you", Status: plugins.DraftPending,
+		Draft: plugins.Draft{ID: 9, AgentID: &agentID, AgentName: "agent", Body: "café\nsee you", Status: plugins.DraftPending,
 			CreatedAt: at, ExpiresAt: at.Add(plugins.DraftTTL)},
 		Message:     plugins.Message{ID: 4, Sender: `Eve <eve@example.invalid>`, Subject: `<b>hi</b>`, Body: `</pre><script>x()</script>`},
 		PluginLabel: "Example inbox",

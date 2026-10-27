@@ -25,7 +25,7 @@
 //     picker (window.musterRank), and the model search's server-side cut
 //     (this package) — all of them, through the table;
 //   - the Agents list filter — window.musterRank over each card's titles;
-//   - NOT the chief thread search, which ranks in SQL (agents.PGStore
+//   - NOT the agent thread search, which ranks in SQL (agents.PGStore
 //     .SearchSessions: ILIKE and a regexp, case-insensitive by Postgres's own
 //     rules, with no Fold). It agrees with the table on ASCII; outside it the
 //     differences Fold exists for (accents, final sigma, compatibility forms)

@@ -6,7 +6,7 @@ import (
 )
 
 // A TURN'S ROUTE INSIDE THE POD: which runtime, and which model, one turn goes
-// to when an agent's pod runs more than one (the chief: ccd and the gateway
+// to when an agent's pod runs more than one (the agent: ccd and the gateway
 // runtime beside it — session_runtime.go).
 //
 // 🔴 THE ADDRESS DOES NOT CHANGE, ONLY THESE HEADERS DO. Every turn still goes to

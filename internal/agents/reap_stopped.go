@@ -48,9 +48,9 @@ type StoppedAgent struct {
 //   - stopped_at <= now() - window: stopped for at least the window.
 //   - no live claim: another pod is not already tearing it down.
 //
-// The chief is NOT excluded here: the chief rule is internal/api's
+// The agent is NOT excluded here: the agent rule is internal/api's
 // chiefPredicate, and the reaper reaches the teardown only through
-// destroyAgent, which refuses the chief before it claims anything.
+// destroyAgent, which refuses the agent before it claims anything.
 const reapableStopped = `status = 'stopped'
 	AND worker_pool = ''
 	AND first_started_at IS NOT NULL

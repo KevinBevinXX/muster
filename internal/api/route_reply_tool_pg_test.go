@@ -120,14 +120,14 @@ func TestRouteReplyFromTheTargetSessionIsTheCLIsAnswer(t *testing.T) {
 
 // TestRouteReplyIsRefusedToEveryCallerButTheTargetSession: another of the
 // owner's sessions on the SAME host, holding the route id, is refused with the
-// binding's own error; a dispatched agent and the chief are not offered the
+// binding's own error; a dispatched agent and the agent are not offered the
 // tool on either transport, and the handler refuses a non-mirrored caller even
 // if one reached it. None of them moves the route, and the target can still
 // answer afterwards.
 func TestRouteReplyIsRefusedToEveryCallerButTheTargetSession(t *testing.T) {
 	f := newRouteFixture(t)
 	tok := f.withRouteReply(t)
-	m := f.deliveredMessage(t, f.owner, f.chief.ID, "route-reply-binding")
+	m := f.deliveredMessage(t, f.owner, f.agent.ID, "route-reply-binding")
 	id := f.route(t, m)
 	args := map[string]any{"route_id": id, "body": "hijack"}
 
@@ -140,13 +140,13 @@ func TestRouteReplyIsRefusedToEveryCallerButTheTargetSession(t *testing.T) {
 	if text, isErr := f.routeReplyCall(t, tok, "5e55a1d0-0000-4000-8000-0000000dead0", args); !isErr || !strings.Contains(text, "lists no window running Claude session") {
 		t.Errorf("an unlisted session: %s", text)
 	}
-	// Dispatched agents, the chief included: not offered, on either transport.
+	// Dispatched agents, the agent included: not offered, on either transport.
 	rawArgs, _ := json.Marshal(args)
 	for _, a := range []struct {
 		name  string
 		tok   string
 		agent agents.Agent
-	}{{"worker", f.workerTok, f.worker}, {"chief", f.chiefTok, f.chief}} {
+	}{{"worker", f.workerTok, f.worker}, {"agent", f.chiefTok, f.agent}} {
 		got := f.surfaces(t, a.agent, a.tok, routeReplyToolName, string(rawArgs))
 		if got["gateway"] != toolErr("unknown tool %q", routeReplyToolName) {
 			t.Errorf("%s, gateway: %s", a.name, got["gateway"])
@@ -174,13 +174,13 @@ func TestRouteReplyIsRefusedToEveryCallerButTheTargetSession(t *testing.T) {
 
 // TestRouteReplyIsRefusedOnARouteThatIsNotWaiting: once a route is answered,
 // a second route_reply — the same body included — is refused naming the state;
-// a route that timed out back to the chief refuses a late answer; an id that
+// a route that timed out back to the agent refuses a late answer; an id that
 // names no route of this owner is "no such route".
 func TestRouteReplyIsRefusedOnARouteThatIsNotWaiting(t *testing.T) {
 	f := newRouteFixture(t)
 	tok := f.withRouteReply(t)
 
-	answered := f.route(t, f.deliveredMessage(t, f.owner, f.chief.ID, "route-reply-answered"))
+	answered := f.route(t, f.deliveredMessage(t, f.owner, f.agent.ID, "route-reply-answered"))
 	if text, isErr := f.routeReplyCall(t, tok, routeSID, map[string]any{"route_id": answered, "body": "Done."}); isErr {
 		t.Fatalf("first answer: %s", text)
 	}
@@ -193,13 +193,13 @@ func TestRouteReplyIsRefusedOnARouteThatIsNotWaiting(t *testing.T) {
 		}
 	}
 
-	timedOut := f.route(t, f.deliveredMessage(t, f.owner, f.chief.ID, "route-reply-late"))
+	timedOut := f.route(t, f.deliveredMessage(t, f.owner, f.agent.ID, "route-reply-late"))
 	dbtest.OwnerExec(t, dbtest.DSN(t), `UPDATE session_routes SET timeout_at = now() - interval '1 minute' WHERE route_id = '`+timedOut+`'`)
 	if n, err := f.srv.RouteTimeoutPass(context.Background()); err != nil || n < 1 {
 		t.Fatalf("the sweep timed out %d (%v)", n, err)
 	}
 	text, isErr := f.routeReplyCall(t, tok, routeSID, map[string]any{"route_id": timedOut, "body": "Late."})
-	if want := toolErr("route %s is no longer waiting for an answer (it is timed_out): its deadline passed and the message went back to the chief", timedOut); !isErr || text != want {
+	if want := toolErr("route %s is no longer waiting for an answer (it is timed_out): its deadline passed and the message went back to the agent", timedOut); !isErr || text != want {
 		t.Errorf("a late answer: %s; want %s", text, want)
 	}
 	if r, _ := f.plugins.Route(f.asOwner, timedOut); r.State != plugins.RouteTimedOut || r.ReplyBody != "" {
@@ -228,7 +228,7 @@ func TestRouteReplyAnswersAnotherOwnersRouteAsNoSuchRoute(t *testing.T) {
 	strangerTok := mirrorTok('s')
 	f.srv.ext.MirrorTokens.(fakeMirrorTokens)[strangerTok] = mirror.Token{ID: 10, OwnerID: stranger, Host: "tower"}
 
-	id := f.route(t, f.deliveredMessage(t, f.owner, f.chief.ID, "route-reply-stranger"))
+	id := f.route(t, f.deliveredMessage(t, f.owner, f.agent.ID, "route-reply-stranger"))
 	missing := "rt_0000000000000000000000ff"
 	gotReal, errReal := f.routeReplyCall(t, strangerTok, routeSID, map[string]any{"route_id": id, "body": "hijack"})
 	gotMissing, errMissing := f.routeReplyCall(t, strangerTok, routeSID, map[string]any{"route_id": missing, "body": "hijack"})

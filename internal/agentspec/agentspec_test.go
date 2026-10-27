@@ -39,7 +39,7 @@ import (
 
 // fixtureAgent is the agent row every test builds from unless it says otherwise.
 //
-// Note what is deliberately unusual about it: the name is not "chief", the
+// Note what is deliberately unusual about it: the name is not "agent", the
 // workspace is not the default, the repo is not muster's own, and no field
 // repeats another field's value. Each of those is a place a mutant could hide
 // behind a coincidence.

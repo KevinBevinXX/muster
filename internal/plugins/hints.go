@@ -10,9 +10,9 @@ import (
 )
 
 // THE SESSION HINT: which of the owner's live sessions may already be working
-// on what a plugin message is about, appended to the chief's turn for it.
+// on what a plugin message is about, appended to the agent's turn for it.
 //
-// 🔴 PUSHED, NOT LEFT TO THE CHIEF'S INITIATIVE. A chief handed a message about
+// 🔴 PUSHED, NOT LEFT TO THE AGENT'S INITIATIVE. An agent handed a message about
 // an ongoing job filed a gated task for it and said it had not identified the
 // session doing that job — having called no session tool at all — while a live
 // session had been on the job for hours. So muster looks, on every delivery,
@@ -65,7 +65,7 @@ type Hints struct {
 
 // SessionHint is one session that may already be on the message's subject.
 type SessionHint struct {
-	// ID is the session as the chief's tools name it ("mirror:<sid>", "agent:<id>").
+	// ID is the session as the agent's tools name it ("mirror:<sid>", "agent:<id>").
 	ID   string
 	Name string
 	// Host is a mirrored session's host ("" for an agent).
@@ -79,22 +79,22 @@ type HintTitle struct {
 	At    time.Time
 }
 
-// HintFunc finds the hint for message m delivered to chief, acting as ctx's
+// HintFunc finds the hint for message m delivered to agent, acting as ctx's
 // principal (the plugin owner's). It must not fail the delivery: no hint is
 // the zero Hints.
-type HintFunc func(ctx context.Context, chief agents.Agent, m Message) Hints
+type HintFunc func(ctx context.Context, agent agents.Agent, m Message) Hints
 
 // hintsFor is the hint for m, bounded by hintTimeout; the zero Hints without a
 // HintFunc.
 //
 // A task event gets none (RenderMessage says why): the HintFunc is not called.
-func (d *Deliverer) hintsFor(ctx context.Context, chief agents.Agent, m Message) Hints {
+func (d *Deliverer) hintsFor(ctx context.Context, agent agents.Agent, m Message) Hints {
 	if d.hints == nil || IsTaskEvent(m) {
 		return Hints{}
 	}
 	hctx, cancel := context.WithTimeout(ctx, hintTimeout)
 	defer cancel()
-	return d.hints(hctx, chief, m)
+	return d.hints(hctx, agent, m)
 }
 
 // hintPreface is the hint block's one line outside its fence: muster's words,

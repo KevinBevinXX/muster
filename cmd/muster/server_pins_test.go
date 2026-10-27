@@ -3,7 +3,6 @@ package main
 import (
 	"testing"
 
-	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/api"
 	"github.com/ZacxDev/muster/internal/taskstatus"
 )
@@ -85,15 +84,6 @@ func TestTheAgentMessageLimitsMatchTheServers(t *testing.T) {
 	if agentMessagesMaxLimit != api.AgentMessagesMaxLimit {
 		t.Errorf("🔴 `agent messages --help` advertises a ceiling of %d and the server clamps at %d",
 			agentMessagesMaxLimit, api.AgentMessagesMaxLimit)
-	}
-}
-
-func TestTheChiefDefaultNameMatchesTheServers(t *testing.T) {
-	if chiefDefaultName != agents.ChiefName {
-		t.Fatalf("🔴 `chief ask` defaults to agent %q and the server reserves %q.\n"+
-			"The default would resolve to nothing (exit 4) on every deployment, listing the whole "+
-			"roster at a caller who asked for the standing agent by not asking at all.",
-			chiefDefaultName, agents.ChiefName)
 	}
 }
 

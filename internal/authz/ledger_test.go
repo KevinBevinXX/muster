@@ -215,7 +215,7 @@ var (
 		// authz.ViaFocus, after focus.PGStore.Owners read the owner ids.
 		"internal/api.(*Server).focusPrincipal",
 		// Session routing's timeout sweep: each due route is timed out, its
-		// queued injection cancelled and its message handed back to the chief as
+		// queued injection cancelled and its message handed back to the agent as
 		// the route's owner, through authz.ViaRoute.
 		"internal/api.(*Server).routePrincipal",
 		// The attention queue: which of an owner's mirrored windows wait on the

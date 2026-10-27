@@ -64,8 +64,8 @@ func TestAWaitingSessionPushBodyIsPlain(t *testing.T) {
 	if got, want := attentionPushBody(it), "Waiting: Fix auth for C# @ host-b"; got != want {
 		t.Errorf("session body = %q, want %q", got, want)
 	}
-	ask := attentionItem{Kind: attentionKindAsk, Source: "`agent_7` **chief**"}
-	if got, want := attentionPushBody(ask), "agent_7 chief is asking"; got != want {
+	ask := attentionItem{Kind: attentionKindAsk, Source: "`agent_7` **agent**"}
+	if got, want := attentionPushBody(ask), "agent_7 agent is asking"; got != want {
 		t.Errorf("ask body = %q, want %q", got, want)
 	}
 }

@@ -18,21 +18,21 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// WHO IS ALREADY ON IT: the chief's sessions_overview tool, and the session
-// hint muster appends to every plugin message it delivers to the chief
+// WHO IS ALREADY ON IT: the agent's sessions_overview tool, and the session
+// hint muster appends to every plugin message it delivers to the agent
 // (internal/plugins/hints.go). Both read the SAME live-session set
 // (liveSessions) and the same focus-history window (focus.HistoryWindow).
 //
-// 🔴 WHY BOTH EXIST. A chief handed an outside message about an ongoing job
+// 🔴 WHY BOTH EXIST. An agent handed an outside message about an ongoing job
 // filed a gated task and reported that it had not found the session doing the
 // job: it called no session tool on that turn, and the session's CURRENT focus
 // was about another subtask by then, so even a focus_search would have missed
 // it. Its focus history over the preceding six hours named the job. So the hint
-// is computed by muster on delivery — not left to the chief's initiative — and
+// is computed by muster on delivery — not left to the agent's initiative — and
 // it searches a TIME window of history, never the current focus or the newest
 // N rows (internal/focus/history_search.go says why each misses).
 //
-// 🔴 sessions_overview IS CHIEF-ONLY, LIKE fleet_list: it reads every live
+// 🔴 sessions_overview IS AGENT-ONLY, LIKE fleet_list: it reads every live
 // session of the owner's, transcripts included. fleet_list stays compact; this
 // is the one call that says what each session is doing NOW, in its own words.
 //
@@ -94,7 +94,7 @@ func sessionsOverviewToolDef() agents.ToolDef {
 		})}
 }
 
-// liveSession is one session the chief may be pointed at: a RUNNING agent (its
+// liveSession is one session the agent may be pointed at: a RUNNING agent (its
 // live status) or a mirrored Claude Code session an online window shows,
 // active within overviewActiveWithin.
 type liveSession struct {
@@ -105,7 +105,7 @@ type liveSession struct {
 }
 
 // liveSessions is ctx's principal's live sessions, newest-active first, minus
-// agent exclude (the chief asking: it is not a session to hand its own work to).
+// agent exclude (the agent asking: it is not a session to hand its own work to).
 //
 // ⚠ A mirrored window whose host reports no activity time is kept: online is
 // the stronger signal, and a missing time is a host that does not report one,
@@ -165,16 +165,16 @@ func liveOf(sessions []liveSession) focus.Live {
 	return l
 }
 
-// pluginSessionHints is plugins.HintFunc: the live sessions (not the chief)
+// pluginSessionHints is plugins.HintFunc: the live sessions (not the agent)
 // whose focus history over the last focus.HistoryWindow shares at least
 // hintMinTerms words with message m's subject and body, best first. Any
 // failure is no hint — logged, never a failed delivery.
-func (s *Server) pluginSessionHints(ctx context.Context, chief agents.Agent, m plugins.Message) plugins.Hints {
+func (s *Server) pluginSessionHints(ctx context.Context, agent agents.Agent, m plugins.Message) plugins.Hints {
 	h := plugins.Hints{Window: focus.HistoryWindow}
 	if s.ext.Focus == nil {
 		return h
 	}
-	live := s.liveSessions(ctx, chief.ID)
+	live := s.liveSessions(ctx, agent.ID)
 	if len(live) == 0 {
 		return h
 	}

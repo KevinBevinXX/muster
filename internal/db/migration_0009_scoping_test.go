@@ -14,7 +14,7 @@ import (
 	"github.com/ZacxDev/muster/internal/github"
 )
 
-// Migration 0009 — per-user scoping (accounts PR 3b): one reserved chief per
+// Migration 0009 — per-user scoping (accounts PR 3b): one reserved agent per
 // owner, and row-level security on the user-keyed account tables.
 
 // wantUserKeyedPolicies is every policy on the user-keyed tables, in full:
@@ -137,7 +137,7 @@ func TestTheUserKeyedTablesAreScopedPerUser(t *testing.T) {
 }
 
 // TestAnOwnerHoldsOneReservedChief: the partial unique index refuses a second
-// reserved chief slug for the same owner, and lets two owners each have one.
+// reserved agent slug for the same owner, and lets two owners each have one.
 func TestAnOwnerHoldsOneReservedChief(t *testing.T) {
 	f := newRLSFixture(t, "ms_0009_chief")
 	ins := func(owner int64, name string) error {
@@ -145,19 +145,19 @@ func TestAnOwnerHoldsOneReservedChief(t *testing.T) {
 			owner, name, "ns-"+name)
 		return err
 	}
-	if err := ins(1, "chief"); err != nil {
-		t.Fatalf("the operator's chief: %v", err)
+	if err := ins(1, "agent"); err != nil {
+		t.Fatalf("the operator's agent: %v", err)
 	}
-	if err := ins(f.two, "chief-"+strconv.FormatInt(f.two, 10)); err != nil {
-		t.Fatalf("user 2's chief beside the operator's: %v", err)
+	if err := ins(f.two, "agent-"+strconv.FormatInt(f.two, 10)); err != nil {
+		t.Fatalf("user 2's agent beside the operator's: %v", err)
 	}
 	var pgErr *pgconn.PgError
-	if err := ins(1, "chief-99"); !errors.As(err, &pgErr) || pgErr.Code != "23505" {
-		t.Errorf("a second reserved chief for user 1: %v; want 23505", err)
+	if err := ins(1, "agent-99"); !errors.As(err, &pgErr) || pgErr.Code != "23505" {
+		t.Errorf("a second reserved agent for user 1: %v; want 23505", err)
 	}
 	// Control: an ordinary agent for the same owner is not caught by the index.
 	if err := ins(1, "brisk-otter"); err != nil {
-		t.Errorf("an ordinary agent beside the chief: %v", err)
+		t.Errorf("an ordinary agent beside the agent: %v", err)
 	}
 }
 

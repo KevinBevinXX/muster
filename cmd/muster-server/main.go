@@ -481,9 +481,9 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 	if gw != nil {
 		ext.Gateway = gw
 	}
-	// The runtimes a chief session may be started on (MUSTER_CHIEF_SESSION_RUNTIMES;
+	// The runtimes an agent session may be started on (MUSTER_AGENT_SESSION_RUNTIMES;
 	// internal/api/session_runtime.go). Empty: the picker is not drawn.
-	ext.SessionRuntimes = cfg.ChiefSessionRuntimes
+	ext.SessionRuntimes = cfg.AgentSessionRuntimes
 	ext.SessionLiveness = buildSessionLiveness(cfg, port, logger)
 	// 🔴 THE ZERO POLICY IS PRODUCTION'S. Only a binary built with the e2e tag
 	// sets this hook (e2econnect.go), so a deployable binary cannot be configured
@@ -505,7 +505,7 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		}
 	}
 	// The plugin interface: only with MUSTER_PLUGINS=1 AND a database (its
-	// tokens and messages are rows). A message is handed to the owner's chief
+	// tokens and messages are rows). A message is handed to the owner's agent
 	// through the agent gateway; with none, messages are stored and stay queued.
 	if cfg.pluginsEnabled() {
 		// A reply draft is screened with the browser-flow agent screen's list of
@@ -520,12 +520,12 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 			ext.Routing = sessionRouting(cfg)
 		}
 		// Task routing (MUSTER_TASK_ROUTING=1): a plugin may hand a task it files
-		// to the chief; a non-empty MUSTER_CHIEF_DISPATCH_OWNERS also lets the chief
+		// to the agent; a non-empty MUSTER_TASK_DISPATCH_OWNERS also lets the agent
 		// start an agent on one, for the listed owners only. The caps are counted
 		// from the same store's audit rows.
 		if cfg.TaskRouting {
-			ext.TaskRouting = &api.TaskRouting{DispatchOwners: cfg.ChiefDispatchOwners}
-			ext.ChiefDispatch = pluginStore
+			ext.TaskRouting = &api.TaskRouting{DispatchOwners: cfg.TaskDispatchOwners}
+			ext.TaskDispatch = pluginStore
 		}
 		// The namespaces POST /plugin/v1/tasks files tasks by; validated at boot
 		// (config.validate), so this cannot fail on a config that got here.
@@ -1217,55 +1217,55 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 	switch {
 	case ext.Plugins != nil && ext.PluginGateway != nil:
 		l.Printf("plugins: ENABLED (%s=1) — owners mint plugin tokens on /plugins; a plugin POSTs messages to "+
-			"/plugin/v1/messages and each is handed to its owner's chief as a fenced turn", envPlugins)
+			"/plugin/v1/messages and each is handed to its owner's agent as a fenced turn", envPlugins)
 	case ext.Plugins != nil:
 		l.Printf("WARNING — plugins: ENABLED (%s=1) but there is NO agent gateway (%s), so plugin messages are "+
-			"stored and stay queued: nothing is delivered to any chief", envPlugins, envAgentGateway)
+			"stored and stay queued: nothing is delivered to any agent", envPlugins, envAgentGateway)
 	default:
 		l.Printf("plugins: OFF — %s is unset (or there is no database), so every /plugin/* route and /plugins "+
 			"answer 404", envPlugins)
 	}
 	switch {
 	case ext.Routing != nil:
-		l.Printf("session routing: ON (%s=1) — the chief may hand a plugin message to one of its owner's sessions "+
+		l.Printf("session routing: ON (%s=1) — the agent may hand a plugin message to one of its owner's sessions "+
 			"(route_to_session); a mirrored window gets it through the send queue, its row marked and gated on its ROUTE "+
 			"instead of a sign-in (see internal/api/session_routes.go); %d owner(s) have plugin-bound senders whose verified "+
-			"answers relay without approval (%s); a route unanswered after %s goes back to the chief (%s)",
+			"answers relay without approval (%s); a route unanswered after %s goes back to the agent (%s)",
 			envSessionRouting, ext.Routing.Allow.Owners(), envRouteRelayAllow, ext.Routing.Timeout, envRouteTimeout)
 		if a.cfg.HookToken == "" {
 			l.Printf("WARNING — session routing: %s is unset, so a session answers a route (POST /api/routes/{id}/reply) "+
 				"ONLY with a personal API token; a host on the shared hook credential is refused (503) and its routes time "+
-				"out back to the chief", envHookToken)
+				"out back to the agent", envHookToken)
 		}
 	case a.cfg.SessionRouting:
 		l.Printf("session routing: INERT — %s=1 but the plugin interface is off, so nothing is routed", envSessionRouting)
 	default:
-		l.Printf("session routing: OFF — %s is unset, so the chief has no route_to_session and POST /api/routes/{id}/reply "+
+		l.Printf("session routing: OFF — %s is unset, so the agent has no route_to_session and POST /api/routes/{id}/reply "+
 			"answers 404 (%s and %s are not read)", envSessionRouting, envRouteRelayAllow, envRouteTimeout)
 	}
 	switch {
 	case ext.TaskRouting != nil && len(ext.TaskRouting.DispatchOwners) > 0:
-		l.Printf("task routing: ON with DISPATCH (%s=1) — a plugin may hand a task to the chief (route_to_chief); "+
-			"the chief may start an agent on an open, ungated task for %d opted-in owner(s) (%s), at most %d live and %d a day, once per task",
-			envTaskRouting, len(ext.TaskRouting.DispatchOwners), envChiefDispatchOwners,
-			plugins.MaxChiefLiveAgents, plugins.MaxChiefDispatchesPerDay)
+		l.Printf("task routing: ON with DISPATCH (%s=1) — a plugin may hand a task to the agent (route_to_chief); "+
+			"the agent may start an agent on an open, ungated task for %d opted-in owner(s) (%s), at most %d live and %d a day, once per task",
+			envTaskRouting, len(ext.TaskRouting.DispatchOwners), envTaskDispatchOwners,
+			plugins.MaxLiveDispatchedAgents, plugins.MaxDispatchesPerDay)
 	case ext.TaskRouting != nil:
-		l.Printf("task routing: ON (%s=1) — a plugin may hand a task to the chief (route_to_chief), which routes it with "+
-			"task_route_attention / task_forward; %s is empty, so the chief starts no agent", envTaskRouting, envChiefDispatchOwners)
+		l.Printf("task routing: ON (%s=1) — a plugin may hand a task to the agent (route_to_chief), which routes it with "+
+			"task_route_attention / task_forward; %s is empty, so the agent starts no agent", envTaskRouting, envTaskDispatchOwners)
 	case a.cfg.TaskRouting:
 		l.Printf("task routing: INERT — %s=1 but the plugin interface is off, so nothing is routed", envTaskRouting)
 	default:
-		l.Printf("task routing: OFF — %s is unset, so route_to_chief is ignored and the chief has no task-routing tools", envTaskRouting)
+		l.Printf("task routing: OFF — %s is unset, so route_to_chief is ignored and the agent has no task-routing tools", envTaskRouting)
 	}
-	if len(a.cfg.ChiefDispatchOwners) > 0 && (ext.TaskRouting == nil) {
-		l.Printf("chief dispatch: INERT — %s is set but task routing is off (%s)", envChiefDispatchOwners, envTaskRouting)
+	if len(a.cfg.TaskDispatchOwners) > 0 && (ext.TaskRouting == nil) {
+		l.Printf("task dispatch: INERT — %s is set but task routing is off (%s)", envTaskDispatchOwners, envTaskRouting)
 	}
 	if rts := ext.SessionRuntimes; len(rts) > 0 {
-		l.Printf("chief session runtimes: ON (%s=%s) — a chief chat session may be started on %s, with a model of its own",
-			envChiefSessionRuntimes, strings.Join(rts, ","), strings.Join(rts, " or "))
+		l.Printf("agent session runtimes: ON (%s=%s) — an agent chat session may be started on %s, with a model of its own",
+			envAgentSessionRuntimes, strings.Join(rts, ","), strings.Join(rts, " or "))
 	} else {
-		l.Printf("chief session runtimes: OFF — %s is unset, so every chief session is on the chief's own runtime and no picker is drawn",
-			envChiefSessionRuntimes)
+		l.Printf("agent session runtimes: OFF — %s is unset, so every agent session is on the agent's own runtime and no picker is drawn",
+			envAgentSessionRuntimes)
 	}
 	switch nss := a.cfg.PluginTaskNamespaces; {
 	case len(nss) > 0 && ext.Plugins != nil:
@@ -1301,7 +1301,7 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 		agentsSee := "the `github` connector is backed by it for ADMINS' agents: each approved agent's requests to " +
 			"its own repository carry a 1-hour installation token limited to that repository (contents + " +
 			"pull_requests write, checks + statuses read), other repositories go out anonymously, and an agent " +
-			"with NO repository (a chief) gets no github access"
+			"with NO repository (an agent) gets no github access"
 		if ext.Connectors == nil {
 			agentsSee = "NO connector store, so agents cannot use it"
 		}

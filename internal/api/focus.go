@@ -19,9 +19,9 @@ import (
 // two sources (the agents table and the mirror hub), its periodic job, and the
 // card's focus chip. The tools are in focus_tools.go.
 //
-// 🔴 THE REFRESH RUNS IN MUSTER, NOT IN THE CHIEF (operator decision). A pass
+// 🔴 THE REFRESH RUNS IN MUSTER, NOT IN THE AGENT (operator decision). A pass
 // (RunFocusRefresh) and the focus_refresh tool both run focus.Refresher here,
-// acting as each owner through focusPrincipal; the chief only ever READS focus.
+// acting as each owner through focusPrincipal; the agent only ever READS focus.
 //
 // 🔴 A MIRRORED SESSION'S TAIL IS READ THROUGH THE HOST'S OWN WATCH. muster
 // never holds a transcript path or file: it opens the same transcript stream

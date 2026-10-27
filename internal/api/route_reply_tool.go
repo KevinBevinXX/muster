@@ -12,7 +12,7 @@ import (
 
 // ---------------------------------------------------------------------------
 // route_reply: a ROUTED SESSION's answer over the mirrored sessions' MCP door
-// (mirror_mcp.go) — reply_to_chief without a shell. The routed block tells the
+// (mirror_mcp.go) — route_reply without a shell. The routed block tells the
 // session to call it (renderRoutedMessage); `muster route reply` (POST
 // /api/routes/{id}/reply) stays the fallback for a session with no muster MCP
 // server.
@@ -28,7 +28,7 @@ import (
 // (handleMirrorMCP's binding), so it answers only a route whose target is THAT
 // session ("mirror:<claude session id>") — another of the owner's sessions,
 // even on the same host and holding the route id, is refused, and so is every
-// caller that is not a mirrored session (a dispatched agent, the chief: the
+// caller that is not a mirrored session (a dispatched agent, the agent: the
 // tool is not on their lists, and the handler refuses them too).
 // ⚠ WHAT THE BINDING PROVES is this door's usual: the HOST, by its token; the
 // session is the one the caller's pane names (mirror_mcp.go, attention.md's
@@ -48,11 +48,11 @@ const routeReplyToolName = "route_reply"
 
 func routeReplyToolDef() agents.ToolDef {
 	return agents.ToolDef{Type: "function", Name: routeReplyToolName,
-		Description: "Answer a plugin message your owner's chief ROUTED to this session (the pasted block names its route_id). " +
+		Description: "Answer a plugin message your owner's agent ROUTED to this session (the pasted block names its route_id). " +
 			"body is your reply to the outside sender, exactly as it should be sent — it goes back as the message's reply: " +
 			"at once when your owner allowlisted the sender, otherwise after your owner approves it. Only the session the " +
 			"route was sent to may answer it, only once, and only while the route is still waiting (not after it timed out " +
-			"back to the chief). Never put credentials in it.",
+			"back to the agent). Never put credentials in it.",
 		Parameters: objSchema(map[string]any{
 			"route_id": strProp("The route_id from the routed block (rt_…)."),
 			"body":     strProp("Your answer, as it should reach the sender."),
@@ -109,9 +109,9 @@ func routeClosedHint(st plugins.RouteState) string {
 	case plugins.RouteAnswered, plugins.RouteRelayed, plugins.RouteFallback:
 		return ": it has already been answered"
 	case plugins.RouteTimedOut:
-		return ": its deadline passed and the message went back to the chief"
+		return ": its deadline passed and the message went back to the agent"
 	case plugins.RouteFailed:
-		return ": it failed and the message went back to the chief"
+		return ": it failed and the message went back to the agent"
 	}
 	return ""
 }

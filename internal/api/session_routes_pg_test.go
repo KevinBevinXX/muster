@@ -22,7 +22,7 @@ import (
 	"github.com/ZacxDev/muster/internal/sendqueue"
 )
 
-// SESSION ROUTING, through the real server against a real Postgres: the chief's
+// SESSION ROUTING, through the real server against a real Postgres: the agent's
 // route_to_session on the gateway and over /mcp, the injection into the
 // window's send queue, the refusals, the session's answer through POST
 // /api/routes/{id}/reply (the allowlist split, idempotency), and the deadline.
@@ -120,8 +120,8 @@ func newRouteFixture(t *testing.T) *routeFixture {
 	g.owner = g.newMember(t)
 	g.asOwner = g.as(g.owner)
 	suffix := strconv.FormatInt(time.Now().UnixNano(), 36)
-	g.chiefTok, g.workerTok = "route-chief-token-"+suffix, "route-worker-token-"+suffix
-	g.chief = g.newAgent(t, g.owner, "rtchief-"+suffix, "chief", g.chiefTok)
+	g.chiefTok, g.workerTok = "route-agent-token-"+suffix, "route-worker-token-"+suffix
+	g.agent = g.newAgent(t, g.owner, "rtchief-"+suffix, "agent", g.chiefTok)
 	g.worker = g.newAgent(t, g.owner, "rtworker-"+suffix, "", g.workerTok)
 	tok, _, err := apitokens.NewPG(g.pool).Create(g.asOwner, "route-reply", time.Now().Unix())
 	if err != nil {
@@ -154,7 +154,7 @@ func (f *routeFixture) queued(t *testing.T) []sendqueue.Item {
 
 // pluginMessage stores one message through the owner's plugin named name
 // (created on first use) from sender, marked verified or not, and settles it
-// as delivered to the chief.
+// as delivered to the agent.
 func (f *routeFixture) pluginMessage(t *testing.T, name, external, sender string, verified bool) (plugins.Plugin, plugins.Message) {
 	t.Helper()
 	ctx := f.as(f.owner)
@@ -178,10 +178,10 @@ func (f *routeFixture) pluginMessage(t *testing.T, name, external, sender string
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ok, err := f.plugins.BeginDelivery(ctx, m.ID, f.chief.ID); err != nil || !ok {
+	if ok, err := f.plugins.BeginDelivery(ctx, m.ID, f.agent.ID); err != nil || !ok {
 		t.Fatalf("begin delivery: %v %v", ok, err)
 	}
-	if ok, err := f.plugins.RecordDelivery(ctx, m.ID, f.chief.ID, plugins.StatusDelivered); err != nil || !ok {
+	if ok, err := f.plugins.RecordDelivery(ctx, m.ID, f.agent.ID, plugins.StatusDelivered); err != nil || !ok {
 		t.Fatalf("record delivery: %v %v", ok, err)
 	}
 	return p, m
@@ -214,10 +214,10 @@ func (f *routeFixture) reply(t *testing.T, token, routeID, body string) (int, ma
 func TestRouteToSessionInjectsTheStoredMessageOnBothSurfaces(t *testing.T) {
 	f := newRouteFixture(t)
 	for i, surface := range []string{"gateway", "mcp"} {
-		m := f.deliveredMessage(t, f.owner, f.chief.ID, "route-"+surface)
+		m := f.deliveredMessage(t, f.owner, f.agent.ID, "route-"+surface)
 		var text string
 		if surface == "gateway" {
-			text = f.srv.AgentToolDispatch(f.asOwner, f.chief)("route_to_session", routeArgs(m, "mirror:"+routeSID))
+			text = f.srv.AgentToolDispatch(f.asOwner, f.agent)("route_to_session", routeArgs(m, "mirror:"+routeSID))
 		} else {
 			r, _ := f.mcp(t, f.chiefTok, `{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"route_to_session","arguments":`+
 				routeArgs(m, "mirror:"+routeSID)+`}}`, nil)
@@ -261,7 +261,7 @@ func TestRouteToSessionInjectsTheStoredMessageOnBothSurfaces(t *testing.T) {
 // queued row.
 func TestRouteToSessionRefusesWithAReason(t *testing.T) {
 	f := newRouteFixture(t)
-	m := f.deliveredMessage(t, f.owner, f.chief.ID, "route-refusals")
+	m := f.deliveredMessage(t, f.owner, f.agent.ID, "route-refusals")
 	notMine := f.deliveringMessage(t, f.owner, 0, "route-queued-only")
 	for _, c := range []struct {
 		name, args, refused string
@@ -269,7 +269,7 @@ func TestRouteToSessionRefusesWithAReason(t *testing.T) {
 	}{
 		{"a window no host shows", routeArgs(m, "mirror:nosuchsession"), RefusedWindowGone, nil},
 		{"a dispatched agent", routeArgs(m, "agent:"+strconv.FormatInt(f.worker.ID, 10)), RefusedUnsupported, nil},
-		{"a message not delivered to this chief", routeArgs(notMine, "mirror:"+routeSID), RefusedMessageNotFound, nil},
+		{"a message not delivered to this agent", routeArgs(notMine, "mirror:"+routeSID), RefusedMessageNotFound, nil},
 		{"a bad subject", routeArgs(m, "pod:1"), RefusedBadArguments, nil},
 		{"a read-only host", routeArgs(m, "mirror:"+routeSID), RefusedHostNotInteractve, func() { f.mirror.interactive = false }},
 		{"a host that does not report status", routeArgs(m, "mirror:"+routeSID), RefusedQueueUnavailable, func() {
@@ -281,7 +281,7 @@ func TestRouteToSessionRefusesWithAReason(t *testing.T) {
 			c.flip()
 			f.mirror.mu.Unlock()
 		}
-		for surface, text := range f.surfaces(t, f.chief, f.chiefTok, "route_to_session", c.args) {
+		for surface, text := range f.surfaces(t, f.agent, f.chiefTok, "route_to_session", c.args) {
 			var res struct{ Error, Refused string }
 			if err := json.Unmarshal([]byte(text), &res); err != nil || res.Refused != c.refused || res.Error == "" || !isToolErr(text) {
 				t.Errorf("%s, %s: %s; want refused=%s", c.name, surface, text, c.refused)
@@ -297,7 +297,7 @@ func TestRouteToSessionRefusesWithAReason(t *testing.T) {
 	}
 	// A second open route for the same message is refused too.
 	f.mirror.interactive, f.mirror.statusReport = true, true
-	gw := f.srv.AgentToolDispatch(f.asOwner, f.chief)
+	gw := f.srv.AgentToolDispatch(f.asOwner, f.agent)
 	if text := gw("route_to_session", routeArgs(m, "mirror:"+routeSID)); !strings.Contains(text, `"state":"routed"`) {
 		t.Fatal(text)
 	}
@@ -306,27 +306,38 @@ func TestRouteToSessionRefusesWithAReason(t *testing.T) {
 	}
 }
 
-// TestRouteToSessionIsChiefOnly: a worker is not offered it on /mcp and the
-// gateway dispatch refuses it with the chief-only error.
-func TestRouteToSessionIsChiefOnly(t *testing.T) {
+// TestRouteToSessionIsOfferedToEveryAgentButStillNeedsItsOwnMessage: the tool
+// was the labelled agent's alone (the gateway refused by rank, /mcp called it
+// unknown). muster has no privileged agent, so a worker is OFFERED it — and is
+// still refused this particular call, because the message was delivered to
+// ANOTHER agent and DeliveredTo is what the handler checks. That is the
+// distinction the removal rests on: the gate is the message's own delivery, not
+// the caller's rank, so nothing a worker may now reach widens what it can route.
+func TestRouteToSessionIsOfferedToEveryAgentButStillNeedsItsOwnMessage(t *testing.T) {
 	f := newRouteFixture(t)
-	m := f.deliveredMessage(t, f.owner, f.chief.ID, "route-worker")
+	m := f.deliveredMessage(t, f.owner, f.agent.ID, "route-worker")
 	got := f.surfaces(t, f.worker, f.workerTok, "route_to_session", routeArgs(m, "mirror:"+routeSID))
-	if got["gateway"] != toolErr("%s is available to your owner's chief agent only", "route_to_session") {
-		t.Errorf("gateway: %s", got["gateway"])
+	if strings.Contains(got["gateway"], "agent agent only") {
+		t.Errorf("gateway refused by rank: %s", got["gateway"])
 	}
-	if !strings.HasPrefix(got["mcp"], "rpc-error -32602 unknown tool") {
-		t.Errorf("mcp: %s", got["mcp"])
+	if strings.HasPrefix(got["mcp"], "rpc-error -32602 unknown tool") {
+		t.Errorf("mcp: the tool was not offered to a worker: %s", got["mcp"])
+	}
+	// Refused on the message, not on the rank — and nothing is routed.
+	for surface, text := range got {
+		if !strings.Contains(text, "is not a plugin message delivered to you") {
+			t.Errorf("%s: want the delivered-to-you refusal, got %s", surface, text)
+		}
 	}
 	if n := len(f.queued(t)); n != 0 {
 		t.Fatalf("a worker's call queued %d message(s)", n)
 	}
 }
 
-// route makes one route through the chief's tool and returns its id.
+// route makes one route through the agent's tool and returns its id.
 func (f *routeFixture) route(t *testing.T, m plugins.Message) string {
 	t.Helper()
-	text := f.srv.AgentToolDispatch(f.asOwner, f.chief)("route_to_session", routeArgs(m, "mirror:"+routeSID))
+	text := f.srv.AgentToolDispatch(f.asOwner, f.agent)("route_to_session", routeArgs(m, "mirror:"+routeSID))
 	var res struct {
 		RouteID string `json:"route_id"`
 	}
@@ -380,7 +391,7 @@ func TestTheAnswerIsRelayedPerTheAllowlist(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	third := f.deliveredMessage(t, f.owner, f.chief.ID, "route-stranger")
+	third := f.deliveredMessage(t, f.owner, f.agent.ID, "route-stranger")
 	id3 := f.route(t, third)
 	if code, _ := f.reply(t, tok, id3, "hijack"); code != http.StatusNotFound {
 		t.Fatalf("a stranger's answer: %d, want 404", code)
@@ -393,13 +404,13 @@ func TestTheAnswerIsRelayedPerTheAllowlist(t *testing.T) {
 // TestATimedOutRouteCancelsItsInjectionAndGoesBackToTheChief.
 func TestATimedOutRouteCancelsItsInjectionAndGoesBackToTheChief(t *testing.T) {
 	f := newRouteFixture(t)
-	m := f.deliveredMessage(t, f.owner, f.chief.ID, "route-timeout")
+	m := f.deliveredMessage(t, f.owner, f.agent.ID, "route-timeout")
 	ps, _ := f.plugins.List(f.asOwner)
-	sess, err := f.srv.ext.Agents.CreateSession(f.asOwner, f.chief.ID, f.chief.Name)
+	sess, err := f.srv.ext.Agents.CreateSession(f.asOwner, f.agent.ID, f.agent.Name)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := f.plugins.SetChiefSession(f.asOwner, ps[0].ID, f.chief.ID, sess.ID); err != nil {
+	if err := f.plugins.SetDeliverySession(f.asOwner, ps[0].ID, f.agent.ID, sess.ID); err != nil {
 		t.Fatal(err)
 	}
 	id := f.route(t, m)
@@ -419,7 +430,7 @@ func TestATimedOutRouteCancelsItsInjectionAndGoesBackToTheChief(t *testing.T) {
 	}
 	msgs, err := f.srv.ext.Agents.ListChatMessages(f.asOwner, sess.ID)
 	if err != nil || len(msgs) != 1 || !strings.Contains(msgs[0].Content, "Route "+id) || !strings.Contains(msgs[0].Content, "back with you") {
-		t.Fatalf("the chief was not handed the message back: %+v %v", msgs, err)
+		t.Fatalf("the agent was not handed the message back: %+v %v", msgs, err)
 	}
 	if code, _ := f.reply(t, f.token, id, "too late"); code != http.StatusConflict {
 		t.Fatalf("an answer after the timeout: %d, want 409", code)
@@ -439,7 +450,7 @@ func TestARouteTakesItsDeadlineFromRoutingTimeout(t *testing.T) {
 		set, want time.Duration
 	}{{7 * time.Minute, 7 * time.Minute}, {3 * time.Hour, 3 * time.Hour}, {0, DefaultRouteTimeout}} {
 		f.routing.Timeout = c.set
-		id := f.route(t, f.deliveredMessage(t, f.owner, f.chief.ID, "route-deadline-"+strconv.Itoa(i)))
+		id := f.route(t, f.deliveredMessage(t, f.owner, f.agent.ID, "route-deadline-"+strconv.Itoa(i)))
 		r, err := f.plugins.Route(f.asOwner, id)
 		if err != nil {
 			t.Fatal(err)
@@ -455,7 +466,7 @@ func TestARouteTakesItsDeadlineFromRoutingTimeout(t *testing.T) {
 func TestRoutingOffOffersNothing(t *testing.T) {
 	f := newRouteFixture(t)
 	f.srv.ext.Routing = nil
-	for _, d := range f.srv.AgentToolDefsFor(f.asOwner, f.chief) {
+	for _, d := range f.srv.AgentToolDefsFor(f.asOwner, f.agent) {
 		if d.Name == "route_to_session" {
 			t.Fatal("route_to_session is offered with routing off")
 		}

@@ -126,7 +126,7 @@ type SendQueueItem struct {
 	// reached the window. Its Retry warns, and asks once before it queues it.
 	MayHaveDelivered bool
 	// Editable: queued, and a person's own (a routed message's text is the
-	// chief's); its menu has Edit.
+	// agent's); its menu has Edit.
 	Editable bool
 	// Held: held for an edit right now (here or on another device); nothing of
 	// the window's queue is sent until it is saved, cancelled or runs out.

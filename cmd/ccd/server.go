@@ -247,7 +247,7 @@ func (s *server) gatewayHandler() http.Handler {
 // /proc/<pid>/environ of any same-user process). The credential is defence in
 // depth against everything else, not against that user; and such a process does
 // not need ccd at all to answer a dialog — it can `tmux send-keys` itself. The gateway runtime beside ccd
-// in a chief's pod cannot: it is another container, with its own filesystem
+// in an agent's pod cannot: it is another container, with its own filesystem
 // (the socket is not in it, and no volume is shared) and its own process
 // namespace (no /proc of ccd's), and a unix socket bound to a PATH — unlike
 // 127.0.0.1, and unlike an abstract unix socket — is not reachable through the

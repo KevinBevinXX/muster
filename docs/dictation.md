@@ -1,7 +1,7 @@
 # Dictation
 
 Every message box can carry a microphone: a mirrored window's Rendered and
-Terminal views, a dispatched agent's chat and Terminal views, and the chief
+Terminal views, a dispatched agent's chat and Terminal views, and the agent
 panel.
 
 To use it, tap the mic, speak, and tap it again. The recording is transcribed

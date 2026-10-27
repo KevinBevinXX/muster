@@ -4,7 +4,7 @@
 //
 // 🔴 WHY A WRAPPER IN ITS OWN PACKAGE. An exec does not inherit ccd's environment
 // (which ccd scrubs); it inherits the CONTAINER's, which holds
-// MUSTER_GATEWAY_BEARER and, for a chief, CCD_GATEWAY_UPSTREAM_BEARER
+// MUSTER_GATEWAY_BEARER and, for an agent, CCD_GATEWAY_UPSTREAM_BEARER
 // (agentspec.TurnCredentialEnv). A job's git run in the session-writable
 // workspace, or the terminal's long-lived `tmux attach` client (readable at
 // /proc/<pid>/environ by any same-uid process), would otherwise hold them. A

@@ -19,14 +19,14 @@ import (
 // sessions (POST /mirror/mcp) — the same answer path the Attention view's form
 // takes, with its provenance recorded and shown to the asker — and nobody else
 // can: not the session that raised the ask, not a dispatched agent, not the
-// chief, not another owner's host.
+// agent, not another owner's host.
 //
 // ⚠ THESE TESTS NAME ONLY IDENTIFIERS THAT EXIST BEFORE THE FEATURE (the tool
 // name and its refusals are string literals; provenance is read with SQL), so
 // the file also compiles against the pre-feature tree and each test is red
 // there for a BEHAVIOURAL reason — not merely because it does not build.
 
-// answerFixture is the delivery fixture (a chief of user 1 with a turn-recording
+// answerFixture is the delivery fixture (an agent of user 1 with a turn-recording
 // gateway and no delivery grace) plus user 1's mirror host "ws" listing two
 // Claude sessions (focusSID in @1, secondSID in @3), user 1's second host
 // "laptop" listing laptopSID, and another owner's token for a host also named
@@ -111,9 +111,9 @@ func (f *answerFixture) provenance(t *testing.T, id int64) (string, string, stri
 }
 
 // TestAMirroredSessionAnswersTheChiefsAskAndTheChiefSeesWhereFrom is the
-// feature: the chief asks and ends its turn; the operator's mirrored session
+// feature: the agent asks and ends its turn; the operator's mirrored session
 // answers it over MCP; the ask is answered BY THE OPERATOR with its provenance
-// (mcp, ws, that session) on the row; the answer is delivered into the chief's
+// (mcp, ws, that session) on the row; the answer is delivered into the agent's
 // default session exactly as a browser answer is, its preface saying it came
 // via MCP from ws/<session>; the Answered item on /attention says so too. The
 // CONTROL is an ask answered on the view: same delivery, no provenance, and no
@@ -133,7 +133,7 @@ func TestAMirroredSessionAnswersTheChiefsAskAndTheChiefSeesWhereFrom(t *testing.
 		t.Fatalf("provenance (%q, %q, %q); want (mcp, ws, %s)", via, host, sess, focusSID)
 	}
 	if a.Delivery != attention.DeliveryDelivered || a.DeliveredSession != f.def.ID {
-		t.Fatalf("delivery %q into %d (%q); want delivered into the chief's default session %d, as a browser answer is", a.Delivery, a.DeliveredSession, a.DeliveryDetail, f.def.ID)
+		t.Fatalf("delivery %q into %d (%q); want delivered into the agent's default session %d, as a browser answer is", a.Delivery, a.DeliveredSession, a.DeliveryDetail, f.def.ID)
 	}
 	turns := f.turnsInto(f.def)
 	if len(turns) != 1 {
@@ -142,7 +142,7 @@ func TestAMirroredSessionAnswersTheChiefsAskAndTheChiefSeesWhereFrom(t *testing.
 	for _, want := range []string{"your owner answered attention #" + strconv.FormatInt(id, 10) + ", which you asked — answered by the operator via MCP from ws/" + focusSID,
 		"|   dispatch it"} {
 		if !strings.Contains(turns[0], want) {
-			t.Errorf("the chief's turn lacks %q:\n%s", want, turns[0])
+			t.Errorf("the agent's turn lacks %q:\n%s", want, turns[0])
 		}
 	}
 	item := answeredItem(f.page(t, "/attention"), id)
@@ -150,7 +150,7 @@ func TestAMirroredSessionAnswersTheChiefsAskAndTheChiefSeesWhereFrom(t *testing.
 		t.Errorf("the Answered item does not say where the answer came from:\n%s", item)
 	}
 
-	// CONTROL: the same chief, answered on the view.
+	// CONTROL: the same agent, answered on the view.
 	viewed := f.ask(t, f.chiefTok, "And task 777?", "dispatch it")
 	f.answerForm(t, viewed, "dispatch it")
 	if b := f.delivery(t, viewed); b.Delivery != attention.DeliveryDelivered {
@@ -246,17 +246,17 @@ func TestAttentionAnswerByTaskID(t *testing.T) {
 		return n
 	}
 	askAbout := func(uid, agent int64, task notes.Note) int64 {
-		a, err := f.attn.Create(asUser(uid), attention.New{Asker: attention.Asker{AgentID: agent, Label: "chief"}, Question: "Task #N needs you", TaskID: task.ID})
+		a, err := f.attn.Create(asUser(uid), attention.New{Asker: attention.Asker{AgentID: agent, Label: "agent"}, Question: "Task #N needs you", TaskID: task.ID})
 		if err != nil {
 			t.Fatal(err)
 		}
 		return a.ID
 	}
 	one, none, two, closed, theirs := mk(1, "one ask"), mk(1, "no ask"), mk(1, "two asks"), mk(1, "closed ask"), mk(f.member, "theirs")
-	id := askAbout(1, f.chief.ID, one)
-	askAbout(1, f.chief.ID, two)
+	id := askAbout(1, f.agent.ID, one)
+	askAbout(1, f.agent.ID, two)
 	askAbout(1, f.op.ID, two)
-	c := askAbout(1, f.chief.ID, closed)
+	c := askAbout(1, f.agent.ID, closed)
 	if _, err := f.attn.Cancel(asUser(1), c); err != nil {
 		t.Fatal(err)
 	}
@@ -293,7 +293,7 @@ func TestAttentionAnswerByTaskID(t *testing.T) {
 	}
 }
 
-// TestOnlyAMirroredSessionCanAnswer: the chief and a worker, calling
+// TestOnlyAMirroredSessionCanAnswer: the agent and a worker, calling
 // attention_answer BY NAME through the gateway dispatcher (the trust boundary:
 // a gateway runtime names any tool it likes) are refused by the handler; over
 // POST /mcp it is not even listed (unknown tool); a non-mirror credential on
@@ -302,8 +302,8 @@ func TestOnlyAMirroredSessionCanAnswer(t *testing.T) {
 	f := newAnswerFixture(t)
 	id := f.ask(t, f.opTok, "Ship it?")
 	args := `{"id":` + strconv.FormatInt(id, 10) + `,"answer":"ship it"}`
-	for name, a := range map[string]struct{ tok string }{"the chief": {f.chiefTok}, "a worker": {f.opTok}, "another worker": {f.op2Tok}} {
-		ag := f.chief
+	for name, a := range map[string]struct{ tok string }{"the agent": {f.chiefTok}, "a worker": {f.opTok}, "another worker": {f.op2Tok}} {
+		ag := f.agent
 		switch a.tok {
 		case f.opTok:
 			ag = f.op
@@ -326,7 +326,7 @@ func TestOnlyAMirroredSessionCanAnswer(t *testing.T) {
 			}
 		}
 	}
-	for name, tok := range map[string]string{"the hook token": connTestHookToken, "the chief's token": f.chiefTok, "an agent's token": f.opTok} {
+	for name, tok := range map[string]string{"the hook token": connTestHookToken, "the agent's token": f.chiefTok, "an agent's token": f.opTok} {
 		if code, _, body := f.mirrorRPC(t, mirrorAs(tok, focusSID), mcpToolCall("attention_answer", map[string]any{"id": id, "answer": "x"})); code != http.StatusUnauthorized {
 			t.Errorf("%s on /mirror/mcp: %d %s, want 401", name, code, body)
 		}
@@ -397,7 +397,7 @@ func TestAnMCPAnswerIsTaskDispatchInstructions(t *testing.T) {
 	t.Cleanup(func() {
 		_, _ = f.pool.Exec(authz.System(context.Background()), `DELETE FROM notes WHERE id = $1`, n.ID)
 	})
-	a, err := f.attn.Create(asUser(1), attention.New{Asker: attention.Asker{AgentID: f.chief.ID, Label: "chief"}, Question: "Task needs you", TaskID: n.ID})
+	a, err := f.attn.Create(asUser(1), attention.New{Asker: attention.Asker{AgentID: f.agent.ID, Label: "agent"}, Question: "Task needs you", TaskID: n.ID})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -405,7 +405,7 @@ func TestAnMCPAnswerIsTaskDispatchInstructions(t *testing.T) {
 		t.Fatal(text)
 	}
 	if got := f.delivery(t, a.ID); got.Delivery != attention.DeliveryDelivered {
-		t.Fatalf("the MCP answer was not delivered to the chief: %q", got.Delivery)
+		t.Fatalf("the MCP answer was not delivered to the agent: %q", got.Delivery)
 	}
 	got, why := f.srv.ownerAnswer(asUser(1), 1, n.ID, "fix the flaky test")
 	if why != "" || got.ID != a.ID {
@@ -414,7 +414,7 @@ func TestAnMCPAnswerIsTaskDispatchInstructions(t *testing.T) {
 	if got.AnsweredVia.Via != "mcp" || got.AnsweredVia.Host != "ws" || got.AnsweredVia.Session != focusSID {
 		t.Fatalf("the accepted answer lost its provenance: %+v", got.AnsweredVia)
 	}
-	b, err := f.attn.Create(asUser(1), attention.New{Asker: attention.Asker{AgentID: f.chief.ID, Label: "chief"}, Question: "Task needs you (again)", TaskID: n.ID})
+	b, err := f.attn.Create(asUser(1), attention.New{Asker: attention.Asker{AgentID: f.agent.ID, Label: "agent"}, Question: "Task needs you (again)", TaskID: n.ID})
 	if err != nil {
 		t.Fatal(err)
 	}

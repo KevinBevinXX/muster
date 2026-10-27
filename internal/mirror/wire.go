@@ -6,8 +6,8 @@
 // holds each connected host's session list IN MEMORY, keyed by the host's token
 // OWNER and host name, and the Agents view renders it from there. No agents row,
 // no kind, no chat, no lifecycle — so it can never be dispatched, deleted,
-// chatted with, or mistaken for an agent by name (a tmux session named "chief"
-// is not the chief). The only table is mirror_tokens (migration 0008).
+// chatted with, or mistaken for an agent by name (a tmux session named "agent"
+// is not the agent). The only table is mirror_tokens (migration 0008).
 //
 // It is an OPTIONAL PLUGIN, off unless MUSTER_MIRROR=1. The other half is the
 // `muster-mirror` binary (cmd/muster-mirror, internal/mirrorhost), installed only

@@ -51,8 +51,8 @@ func (s *Server) registerNotesRoutes(mux Mux) {
 	//
 	// 🔴 THE LIST IS ON THE ATTRIBUTED TIER, THE GET BY ID IS NOT, AND THE
 	// ASYMMETRY IS DELIBERATE (task #633 criterion 2). The board read is the first
-	// half of moving the operator's job onto chief: measured against the live pod,
-	// GET /api/tasks answered 401 to chief's own credential, so chief could be told
+	// half of moving the operator's job onto agent: measured against the live pod,
+	// GET /api/tasks answered 401 to agent's own credential, so agent could be told
 	// to work the board and could not see it. The list already EMBEDS each task's
 	// comments, attachments and agent, so widening it grants the capability without
 	// also widening the by-id read.
@@ -60,8 +60,8 @@ func (s *Server) registerNotesRoutes(mux Mux) {
 	// 🔴 PHASE 0 STEP 5 ADDED A CREDENTIAL RATHER THAN SWAPPING ONE.
 	// requireHookOrServiceToken admits the shared secret, MUSTER_SERVICE_TOKEN with
 	// an asserted X-Muster-Actor, AND — still — the one agent row
-	// MUSTER_CHIEF_TOKEN names, which is what chief's OWN token is. The row half's
-	// deletion is owed to Phase 4; deleting it earlier costs chief the board read that
+	// MUSTER_CHIEF_TOKEN names, which is what agent's OWN token is. The row half's
+	// deletion is owed to Phase 4; deleting it earlier costs agent the board read that
 	// task #633 existed to give it. ⚠ THESE TWO TASK
 	// ROUTES MOVE TO muster IN PHASE 4 and are deliberately NOT special-cased on the
 	// way: they ride the renamed wrapper like the other four. Adding routes to that
@@ -80,15 +80,15 @@ func (s *Server) registerNotesRoutes(mux Mux) {
 	// unlike the bound-agent route which forbids complete); NO in-progress guard.
 	// Full side-effect parity with the human status route (shared applyTaskStatus).
 	//
-	// 🔴 THIS IS THE PRIVILEGE EXPANSION IN TASK #633, SAID OUT LOUD. Chief becomes
+	// 🔴 THIS IS THE PRIVILEGE EXPANSION IN TASK #633, SAID OUT LOUD. Agent becomes
 	// able to mark ANY task complete. The reason that is judged acceptable is the
 	// one the card records: a DISPATCHED worker is structurally denied `complete`
 	// (notes.StatusAllowedForAgent, on its own /agent/task/status route) precisely
-	// so an agent cannot grade its own exam, and chief does not pick up tasks. The
+	// so an agent cannot grade its own exam, and agent does not pick up tasks. The
 	// narrowing that keeps that true here is requireHookOrServiceToken's — it admits
 	// ONE service credential and ONE agent row, not any agent pod. The caller it names
 	// is asserted by that service on the first, and resolved from the row on the
-	// second. If chief ever works tasks, revisit this.
+	// second. If agent ever works tasks, revisit this.
 	mux.HandleFunc("PATCH /api/tasks/{id}/status", s.requireHookOrServiceToken(s.handleAPITaskStatus))
 	// Machine delete (hook-token-gated): a producer can clean up a Task it created.
 	// Reuses dismissTask, so — exactly like the UI dismiss — deleting a task with a

@@ -13,7 +13,7 @@ import (
 	"github.com/ZacxDev/muster/internal/provision"
 )
 
-// chiefSpecWithSidecar is the claude-code chief's spec as muster builds it, with
+// chiefSpecWithSidecar is the claude-code agent's spec as muster builds it, with
 // the gateway runtime beside ccd and the REAL credential scheme ccd uses.
 // Synthetic fixture values only.
 func chiefSpecWithSidecar(t *testing.T) provision.Spec {
@@ -32,8 +32,8 @@ func chiefSpecWithSidecar(t *testing.T) provision.Spec {
 		},
 		OpenRouterAPIKey: "sk-or-v1-FAKE-fixture",
 	}
-	a := agents.Agent{ID: 7, Name: "chief", Kind: agents.KindClaudeCode, CCAccount: "acct", HooksToken: knownHooksToken,
-		GatewaySecret: "fixture-turn-credential-chief-4be1"}
+	a := agents.Agent{ID: 7, Name: "agent", Kind: agents.KindClaudeCode, CCAccount: "acct", HooksToken: knownHooksToken,
+		GatewaySecret: "fixture-turn-credential-agent-4be1"}
 	spec, err := agentspec.Build(a, cfg, agentspec.Options{GatewaySidecar: &agentspec.GatewaySidecar{}})
 	if err != nil {
 		t.Fatal(err)

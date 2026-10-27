@@ -49,15 +49,15 @@ func (f *flakyRoutes) SetRouteQueued(ctx context.Context, routeID string, id int
 	return f.RouteStore.SetRouteQueued(ctx, routeID, id)
 }
 
-// chiefSession gives the chief a conversation for the routes' plugin, so a
+// chiefSession gives the agent a conversation for the routes' plugin, so a
 // note to it lands somewhere a test can read.
 func (f *routeFixture) chiefSession(t *testing.T, p plugins.Plugin) agents.ChatSession {
 	t.Helper()
-	sess, err := f.srv.ext.Agents.CreateSession(f.asOwner, f.chief.ID, f.chief.Name)
+	sess, err := f.srv.ext.Agents.CreateSession(f.asOwner, f.agent.ID, f.agent.Name)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := f.plugins.SetChiefSession(f.asOwner, p.ID, f.chief.ID, sess.ID); err != nil {
+	if err := f.plugins.SetDeliverySession(f.asOwner, p.ID, f.agent.ID, sess.ID); err != nil {
 		t.Fatal(err)
 	}
 	return sess
@@ -155,8 +155,8 @@ func TestARelayOfAnEndedRouteIsFinal(t *testing.T) {
 	}
 }
 
-// 🟡 round 2: an answer that cannot become a draft — here the chief's
-// pending-draft cap — fails the route AND goes back to the chief. Before, the
+// 🟡 round 2: an answer that cannot become a draft — here the agent's
+// pending-draft cap — fails the route AND goes back to the agent. Before, the
 // answer vanished: no draft, no push, no note.
 func TestAnAnswerRefusedAtTheDraftCapGoesBackToTheChief(t *testing.T) {
 	f := newRouteFixture(t)
@@ -164,7 +164,7 @@ func TestAnAnswerRefusedAtTheDraftCapGoesBackToTheChief(t *testing.T) {
 	sess := f.chiefSession(t, p)
 	for i := 0; i < plugins.MaxPendingDraftsPerAgent; i++ {
 		_, mi := f.pluginMessage(t, "example-inbox", "r2-cap-fill-"+strconv.Itoa(i), "someone@example.test", false)
-		if _, _, err := f.plugins.FileDraft(f.asOwner, f.chief.ID, f.owner, f.chief.Name, mi.ID, "pending "+strconv.Itoa(i)); err != nil {
+		if _, _, err := f.plugins.FileDraft(f.asOwner, f.agent.ID, f.owner, f.agent.Name, mi.ID, "pending "+strconv.Itoa(i)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -176,7 +176,7 @@ func TestAnAnswerRefusedAtTheDraftCapGoesBackToTheChief(t *testing.T) {
 	if r := f.routeState(t, id); r.State != plugins.RouteFailed {
 		t.Fatalf("the route is %s, want failed", r.State)
 	}
-	// The failure owes the chief a hand-back; the route sweep delivers it, ONCE.
+	// The failure owes the agent a hand-back; the route sweep delivers it, ONCE.
 	for i := 0; i < 2; i++ {
 		if _, err := f.srv.RouteTimeoutPass(context.Background()); err != nil {
 			t.Fatal(err)
@@ -185,12 +185,12 @@ func TestAnAnswerRefusedAtTheDraftCapGoesBackToTheChief(t *testing.T) {
 	msgs, _ := f.srv.ext.Agents.ListChatMessages(f.asOwner, sess.ID)
 	if len(msgs) != 1 || !strings.Contains(msgs[0].Content, "Route "+id) || !strings.Contains(msgs[0].Content, "back with you") ||
 		!strings.Contains(msgs[0].Content, "await the owner") {
-		t.Fatalf("the chief was not handed the message back: %+v", msgs)
+		t.Fatalf("the agent was not handed the message back: %+v", msgs)
 	}
 }
 
 // 🟡 round 2: a route that fails owing a hand-back WAKES the running sweep —
-// the chief hears now, not at the next tick (here an hour away). Both
+// the agent hears now, not at the next tick (here an hour away). Both
 // request-time failures: an answer refused at the draft cap, and a window that
 // moved on.
 func TestAnOwedHandBackWakesTheSweep(t *testing.T) {
@@ -228,7 +228,7 @@ func TestAnOwedHandBackWakesTheSweep(t *testing.T) {
 	// An answer refused at the draft cap.
 	for i := 0; i < plugins.MaxPendingDraftsPerAgent; i++ {
 		_, mi := f.pluginMessage(t, "example-inbox", "r2-kick-fill-"+strconv.Itoa(i), "someone@example.test", false)
-		if _, _, err := f.plugins.FileDraft(f.asOwner, f.chief.ID, f.owner, f.chief.Name, mi.ID, "pending "+strconv.Itoa(i)); err != nil {
+		if _, _, err := f.plugins.FileDraft(f.asOwner, f.agent.ID, f.owner, f.agent.Name, mi.ID, "pending "+strconv.Itoa(i)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -250,7 +250,7 @@ func TestAnUnrecordedInjectionLeavesNoPasteableRow(t *testing.T) {
 	f.srv.ext.Routes = flaky
 	flaky.failQueued.Store(true)
 	_, m := f.pluginMessage(t, "example-inbox", "r1-unrecorded", "someone@example.test", false)
-	text := f.srv.AgentToolDispatch(f.asOwner, f.chief)("route_to_session", routeArgs(m, "mirror:"+routeSID))
+	text := f.srv.AgentToolDispatch(f.asOwner, f.agent)("route_to_session", routeArgs(m, "mirror:"+routeSID))
 	if !strings.Contains(text, RefusedInjectFailed) {
 		t.Fatalf("the tool reported %s, want %s", text, RefusedInjectFailed)
 	}
@@ -277,7 +277,7 @@ func TestARoutedRowIsNotPastedAfterItsRouteEnds(t *testing.T) {
 }
 
 // 🟡2: the route pins the conversation. A window that now holds ANOTHER Claude
-// session gets nothing; the route fails and goes back to the chief. The same
+// session gets nothing; the route fails and goes back to the agent. The same
 // window still holding it is delivered (the control).
 func TestARoutedRowIsRefusedWhenTheWindowHoldsAnotherConversation(t *testing.T) {
 	f := newRouteFixture(t)
@@ -305,7 +305,7 @@ func TestARoutedRowIsRefusedWhenTheWindowHoldsAnotherConversation(t *testing.T) 
 	msgs, _ := f.srv.ext.Agents.ListChatMessages(f.asOwner, sess.ID)
 	if len(msgs) == 0 || !strings.Contains(msgs[len(msgs)-1].Content, "Route "+id) ||
 		!strings.Contains(msgs[len(msgs)-1].Content, "no longer holds") {
-		t.Fatalf("the chief was not handed the message back: %+v", msgs)
+		t.Fatalf("the agent was not handed the message back: %+v", msgs)
 	}
 }
 
@@ -329,7 +329,7 @@ func TestARoutedRowCarriesTheRouteTimeAndIsGatedOnItsRoute(t *testing.T) {
 	}
 }
 
-// 🟢: the chief's note names the target by its subject, never the window's
+// 🟢: the agent's note names the target by its subject, never the window's
 // label — a label can carry text from the conversation itself.
 func TestTheChiefsNoteNamesTheSubjectNotTheLabel(t *testing.T) {
 	f := newRouteFixture(t)
@@ -422,23 +422,23 @@ func (g *countingGateway) ChatWithTools(ctx context.Context, a agents.Agent, s, 
 	return "ok", nil
 }
 
-// 🟢: a hand-back turn takes the chief's session claim; while another turn
+// 🟢: a hand-back turn takes the agent's session claim; while another turn
 // holds it, the hand-back is a note and starts nothing. Unheld (the control),
 // it is a turn, and the claim is released after it.
 func TestAHandBackTurnTakesTheChiefsClaim(t *testing.T) {
 	f := newRouteFixture(t)
 	gw := &countingGateway{}
 	f.srv.ext.Gateway, f.srv.ext.Provisioner = gw, newFakeTerminal()
-	dbtest.OwnerExec(t, dbtest.DSN(t), `UPDATE agents SET status = 'running' WHERE id = $1`, f.chief.ID)
-	chief, err := f.srv.ext.Agents.Get(f.asOwner, f.chief.ID)
-	if err != nil || chief.Status != agents.StatusRunning {
-		t.Fatalf("chief: %+v %v", chief, err)
+	dbtest.OwnerExec(t, dbtest.DSN(t), `UPDATE agents SET status = 'running' WHERE id = $1`, f.agent.ID)
+	agent, err := f.srv.ext.Agents.Get(f.asOwner, f.agent.ID)
+	if err != nil || agent.Status != agents.StatusRunning {
+		t.Fatalf("agent: %+v %v", agent, err)
 	}
-	f.chief = chief
+	f.agent = agent
 	p, m := f.pluginMessage(t, "example-inbox", "r1-claim", "someone@example.test", false)
 	sess := f.chiefSession(t, p)
 
-	if won, err := f.srv.ext.Agents.ClaimKickoff(f.asOwner, f.chief.ID, "another-turn", time.Minute); err != nil || !won {
+	if won, err := f.srv.ext.Agents.ClaimKickoff(f.asOwner, f.agent.ID, "another-turn", time.Minute); err != nil || !won {
 		t.Fatalf("hold the claim: %v %v", won, err)
 	}
 	id := f.route(t, m)
@@ -453,7 +453,7 @@ func TestAHandBackTurnTakesTheChiefsClaim(t *testing.T) {
 	}
 
 	// The control: the claim released, the next hand-back is a turn.
-	if err := f.srv.ext.Agents.ReleaseKickoffClaim(f.asOwner, f.chief.ID, "another-turn"); err != nil {
+	if err := f.srv.ext.Agents.ReleaseKickoffClaim(f.asOwner, f.agent.ID, "another-turn"); err != nil {
 		t.Fatal(err)
 	}
 	_, m2 := f.pluginMessage(t, "example-inbox", "r1-claim-2", "someone@example.test", false)
@@ -471,7 +471,7 @@ func TestAHandBackTurnTakesTheChiefsClaim(t *testing.T) {
 	}
 	var owner string
 	for time.Now().Before(deadline) {
-		_ = f.pool.QueryRow(authz.System(context.Background()), `SELECT kickoff_claim_owner FROM agents WHERE id = $1`, f.chief.ID).Scan(&owner)
+		_ = f.pool.QueryRow(authz.System(context.Background()), `SELECT kickoff_claim_owner FROM agents WHERE id = $1`, f.agent.ID).Scan(&owner)
 		if owner == "" {
 			break
 		}

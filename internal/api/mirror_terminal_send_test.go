@@ -20,13 +20,13 @@ import (
 // 🔴 EVERY EXPECTATION HERE IS A LITERAL (the route, the markup, the messages),
 // so this file also compiles and runs against the commit before the feature,
 // where the route answers 404 and the page draws no composer — the red half of
-// the PR's matrix. The fake host's "chief" session is the non-Claude one
+// the PR's matrix. The fake host's "agent" session is the non-Claude one
 // ("main" is the Claude pane).
 
 const (
 	termSendPath  = "/mirror/terminal/send"
 	viewSendPath  = "/mirror/view/send"
-	chiefTermPage = "/mirror/terminal?host=ws&session=chief"
+	chiefTermPage = "/mirror/terminal?host=ws&session=agent"
 	emptySendText = "nothing to send: type a message first"
 )
 
@@ -93,7 +93,7 @@ func TestTheTerminalViewHasAComposerForASessionThatIsNotClaude(t *testing.T) {
 	s, ts := viewServer(t, &fakeMirror{online: true, interactive: true, v2: &fakeMirrorV2{}})
 	_, page := mirrorGet(t, s, ts, chiefTermPage)
 	if strings.Contains(page, `id="view-rendered"`) {
-		t.Fatal("fixture: chief has a rendered view; this test is about a session with none")
+		t.Fatal("fixture: agent has a rendered view; this test is about a session with none")
 	}
 	form := tagOf(page, "mv-form")
 	if form == "" {
@@ -104,8 +104,8 @@ func TestTheTerminalViewHasAComposerForASessionThatIsNotClaude(t *testing.T) {
 	if !strings.Contains(form, `method="post" action="/mirror/terminal/send?`) {
 		t.Errorf("the composer form does not post to the terminal's send route: %s", form)
 	}
-	if got := composerFields(t, page); got["host"] != "ws" || got["session"] != "chief" || got["window"] != "" {
-		t.Errorf("the composer's hidden fields = %v, want host ws, session chief and no window", got)
+	if got := composerFields(t, page); got["host"] != "ws" || got["session"] != "agent" || got["window"] != "" {
+		t.Errorf("the composer's hidden fields = %v, want host ws, session agent and no window", got)
 	}
 	input, send := tagOf(page, "mv-input"), tagOf(page, "mv-send")
 	if input == "" || send == "" || disabledAttr.MatchString(input) || disabledAttr.MatchString(send) {
@@ -176,13 +176,13 @@ func TestAReadOnlyHostsTerminalComposerIsDisabledAndSaysWhy(t *testing.T) {
 func TestASendFromTheTerminalViewIsPastedWithoutAnInteractiveAttach(t *testing.T) {
 	fm := &fakeMirror{online: true, interactive: true, v2: &fakeMirrorV2{}}
 	s, ts := viewServer(t, fm)
-	code, body, _ := postSend(t, ts.URL, termSendPath, sessionCookieFor(s), "", url.Values{"host": {"ws"}, "session": {"chief"}, "text": {"ls -la /srv && !!"}})
+	code, body, _ := postSend(t, ts.URL, termSendPath, sessionCookieFor(s), "", url.Values{"host": {"ws"}, "session": {"agent"}, "text": {"ls -la /srv && !!"}})
 	if code != http.StatusNoContent {
 		t.Fatalf("a send from the Terminal view: %d %q, want 204", code, body)
 	}
 	_, pastes := fm.v2.snapshot()
-	if len(pastes) != 1 || pastes[0].user != 1 || pastes[0].host != "ws" || pastes[0].session != "chief" || pastes[0].text != "ls -la /srv && !!" {
-		t.Fatalf("pasted %+v, want one paste of the text into ws/chief for user 1", pastes)
+	if len(pastes) != 1 || pastes[0].user != 1 || pastes[0].host != "ws" || pastes[0].session != "agent" || pastes[0].text != "ls -la /srv && !!" {
+		t.Fatalf("pasted %+v, want one paste of the text into ws/agent for user 1", pastes)
 	}
 	if calls, _ := fm.snapshot(); len(calls) != 0 {
 		t.Fatalf("a send attached a terminal: %+v", calls)
@@ -205,12 +205,12 @@ func TestTheTerminalSendIsGatedLikeTheRenderedSend(t *testing.T) {
 		pasted      bool
 	}
 	for _, c := range []tc{
-		{"a read-only host", false, "fresh", "", "chief", http.StatusConflict, false},
-		{"a stale sign-in", true, "stale", "", "chief", http.StatusForbidden, false},
-		{"another origin", true, "fresh", "https://evil.example", "chief", http.StatusForbidden, false},
-		{"no session", true, "", "", "chief", http.StatusUnauthorized, false},
+		{"a read-only host", false, "fresh", "", "agent", http.StatusConflict, false},
+		{"a stale sign-in", true, "stale", "", "agent", http.StatusForbidden, false},
+		{"another origin", true, "fresh", "https://evil.example", "agent", http.StatusForbidden, false},
+		{"no session", true, "", "", "agent", http.StatusUnauthorized, false},
 		{"a session name that is not one", true, "fresh", "", "ch\x07ief", http.StatusNotFound, false},
-		{"interactive + fresh + same origin", true, "fresh", "", "chief", http.StatusNoContent, true},
+		{"interactive + fresh + same origin", true, "fresh", "", "agent", http.StatusNoContent, true},
 	} {
 		fm := &fakeMirror{online: true, interactive: c.interactive, v2: &fakeMirrorV2{}}
 		s, ts := viewServer(t, fm)
@@ -237,7 +237,7 @@ func TestTheTerminalSendIsGatedLikeTheRenderedSend(t *testing.T) {
 // on the rendered view's alike, since they are one handler — and nothing is
 // pasted. The control is a real message on each route.
 func TestAnEmptySendSaysSoOnBothRoutes(t *testing.T) {
-	for _, r := range []struct{ path, session string }{{termSendPath, "chief"}, {viewSendPath, "main"}} {
+	for _, r := range []struct{ path, session string }{{termSendPath, "agent"}, {viewSendPath, "main"}} {
 		fm := &fakeMirror{online: true, interactive: true, v2: &fakeMirrorV2{}}
 		s, ts := viewServer(t, fm)
 		for _, text := range []string{"", "   ", "\n\t "} {
@@ -262,7 +262,7 @@ func TestAnEmptySendSaysSoOnBothRoutes(t *testing.T) {
 func TestAnotherUsersHostCannotBeSentToFromTheTerminalView(t *testing.T) {
 	r := newStepUpRig(t)
 	r.mirror.v2 = &fakeMirrorV2{}
-	form := url.Values{"host": {"ws"}, "session": {"chief"}, "text": {"id"}}
+	form := url.Values{"host": {"ws"}, "session": {"agent"}, "text": {"id"}}
 	oat, ort, _ := r.fake.Mint(r.owner)
 	if w := do(r.edge, http.MethodPost, termSendPath, form, withCookies(oat, ort), asXHR); w.Code != http.StatusNoContent {
 		t.Fatalf("control: the owner's send: %d %s", w.Code, w.Body)

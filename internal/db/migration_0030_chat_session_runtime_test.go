@@ -6,7 +6,7 @@ import (
 )
 
 // TestMigration0030OnTheLiveChiefShape: a database at version 28 holding the
-// shape a running deployment has — a claude-code chief with its legacy session
+// shape a running deployment has — a claude-code agent with its legacy session
 // (the one its kickoff wrote) and two later sessions keyed by the
 // timestamp scheme, one of them the most recently active, with messages in all
 // three — arrives at 0030 with:
@@ -14,7 +14,7 @@ import (
 //   - every pre-existing session LEGACY (runtime ” and model ”), so not one of
 //     them changes route: a claude-code agent's legacy sessions all stay on the
 //     one CLI ccd has always run;
-//   - the chief's default being its LEGACY-KEY session, not the most recently
+//   - the agent's default being its LEGACY-KEY session, not the most recently
 //     active one and not the oldest by id alone;
 //   - an agent whose sessions include no legacy key defaulting to its OLDEST;
 //   - an agent with no session having no default (elected lazily later);
@@ -27,8 +27,8 @@ func TestMigration0030OnTheLiveChiefShape(t *testing.T) {
 	ctx := ctx0006(t)
 	pool := freshAt(ctx, t, "ms_0030_runtime", 28)
 
-	chief := scanID(ctx, t, pool, `INSERT INTO agents (owner_id, name, namespace, kind, cc_account)
-		VALUES (1, 'chief', 'muster-agent-chief', 'claude-code', 'acct-one') RETURNING id`)
+	agent := scanID(ctx, t, pool, `INSERT INTO agents (owner_id, name, namespace, kind, cc_account)
+		VALUES (1, 'agent', 'muster-agent-agent', 'claude-code', 'acct-one') RETURNING id`)
 	worker := scanID(ctx, t, pool, `INSERT INTO agents (owner_id, name, namespace) VALUES (1, 'quiet-otter', 'ns-otter') RETURNING id`)
 	empty := scanID(ctx, t, pool, `INSERT INTO agents (owner_id, name, namespace) VALUES (1, 'idle-wren', 'ns-wren') RETURNING id`)
 
@@ -38,9 +38,9 @@ func TestMigration0030OnTheLiveChiefShape(t *testing.T) {
 	}
 	// The plugin sessions are NEWER and more recently active than the legacy one:
 	// a backfill by "latest" or "newest" would pick one of them.
-	legacy := session(chief, "agent:chief:webchat", "3 days", "2 days")
-	discord := session(chief, "agent:chief:webchat:1792372820708414638", "2 days", "1 hour")
-	mail := session(chief, "agent:chief:webchat:1792389590335149096", "1 day", "5 minutes")
+	legacy := session(agent, "agent:agent:webchat", "3 days", "2 days")
+	discord := session(agent, "agent:agent:webchat:1792372820708414638", "2 days", "1 hour")
+	mail := session(agent, "agent:agent:webchat:1792389590335149096", "1 day", "5 minutes")
 	wOld := session(worker, "agent:quiet-otter:webchat:100", "5 days", "5 days")
 	wNew := session(worker, "agent:quiet-otter:webchat:200", "1 day", "1 minute")
 	for _, s := range []int64{legacy, discord, mail, wOld} {
@@ -76,8 +76,8 @@ func TestMigration0030OnTheLiveChiefShape(t *testing.T) {
 		defaults[a] = s
 	}
 	rows.Close()
-	if defaults[chief] != legacy {
-		t.Errorf("the chief's default is session %d, want its legacy-key session %d (discord %d, mail %d)", defaults[chief], legacy, discord, mail)
+	if defaults[agent] != legacy {
+		t.Errorf("the agent's default is session %d, want its legacy-key session %d (discord %d, mail %d)", defaults[agent], legacy, discord, mail)
 	}
 	if defaults[worker] != wOld {
 		t.Errorf("an agent with no legacy key defaults to %d, want its oldest %d (newest %d)", defaults[worker], wOld, wNew)
@@ -103,7 +103,7 @@ func TestMigration0030OnTheLiveChiefShape(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := tx.Exec(ctx, `UPDATE chat_sessions SET is_default = false WHERE agent_id = $1 AND is_default`, chief); err != nil {
+	if _, err := tx.Exec(ctx, `UPDATE chat_sessions SET is_default = false WHERE agent_id = $1 AND is_default`, agent); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := tx.Exec(ctx, `UPDATE chat_sessions SET is_default = true WHERE id = $1`, mail); err != nil {
@@ -113,7 +113,7 @@ func TestMigration0030OnTheLiveChiefShape(t *testing.T) {
 
 	insert := func(runtime, model string) error {
 		_, err := pool.Exec(ctx, `INSERT INTO chat_sessions (owner_id, agent_id, session_key, runtime, model)
-			VALUES (1, $1, 'agent:chief:webchat:' || nextval(pg_get_serial_sequence('chat_sessions', 'id')), $2, $3)`, chief, runtime, model)
+			VALUES (1, $1, 'agent:agent:webchat:' || nextval(pg_get_serial_sequence('chat_sessions', 'id')), $2, $3)`, agent, runtime, model)
 		return err
 	}
 	for _, c := range []struct{ runtime, model string }{

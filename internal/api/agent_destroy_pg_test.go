@@ -27,9 +27,9 @@ import (
 // over a real Postgres: the operator's mirrored Claude Code session (POST
 // /mirror/mcp) destroys one of the owner's agents through the browser's own
 // teardown; the task is kept and becomes dispatchable again; an owner's destroy
-// of the agent the CHIEF started releases the chief's one start on that task,
+// of the agent the AGENT started releases the agent's one start on that task,
 // once, on either door; open tabs are told — and nobody else can call it: not a
-// dispatched agent, not the chief, not another owner's host; and the chief
+// dispatched agent, not the agent, not another owner's host; and the agent
 // itself cannot be destroyed this way.
 //
 // ⚠ THE TOOL'S NAME, ITS REFUSALS AND THE RELEASE ACTION ARE STRING LITERALS
@@ -74,7 +74,7 @@ func (p *destroyProv) destroyedIDs() []int64 {
 }
 
 // destroyFixture is the attention fixture (user 1's agents op and op2; a member
-// with a chief and a worker) plus: a recording provisioner, user 1's own chief
+// with an agent and a worker) plus: a recording provisioner, user 1's own agent
 // (its reserved slug), task_dispatch on for user 1 with the plugin store as its
 // ledger, an SSE bus with user 1's stream subscribed, and mirror tokens — ws
 // (user 1's host "ws", listing focusSID), laptop (user 1, lists nothing) and
@@ -82,8 +82,8 @@ func (p *destroyProv) destroyedIDs() []int64 {
 type destroyFixture struct {
 	*attnFixture
 	prov                *destroyProv
-	ownChief            agents.Agent
-	ownChiefTok         string
+	ownFleetAgent       agents.Agent
+	ownFleetAgentTok    string
 	ws, laptop, members string
 	stream              <-chan sse.Event
 }
@@ -95,23 +95,22 @@ func newDestroyFixture(t *testing.T) *destroyFixture {
 		f.prov.pool = pool
 		ext.Provisioner = f.prov
 		ext.TaskRouting = &TaskRouting{DispatchOwners: map[int64]bool{1: true}}
-		ext.ChiefDispatch = plugins.NewPG(pool)
+		ext.TaskDispatch = plugins.NewPG(pool)
 	})
 	bus := sse.New(512)
 	f.srv.bus = bus
 	_, f.stream = bus.Subscribe(1)
-	// User 1's chief is its RESERVED slug, which is the chief whatever else the
-	// package's shared database holds (chiefPredicate: agents.IsChiefName). A
+	// The dispatching agent is an ORDINARY row: there is no reserved name, so a
 	// row another test left is reused, and only a row made here is removed.
 	suffix := strconv.FormatInt(time.Now().UnixNano(), 36)
-	f.ownChiefTok = "ad-chief-token-" + suffix
-	if a, err := agents.NewPG(f.pool).GetByName(asUser(1), agents.ChiefNameFor(1)); err == nil {
-		f.ownChief = a
-		if _, err := f.pool.Exec(authz.System(context.Background()), `UPDATE agents SET hooks_token = $2 WHERE id = $1`, a.ID, f.ownChiefTok); err != nil {
+	f.ownFleetAgentTok = "ad-dispatch-token-" + suffix
+	if a, err := agents.NewPG(f.pool).GetByName(asUser(1), "own-dispatcher"); err == nil {
+		f.ownFleetAgent = a
+		if _, err := f.pool.Exec(authz.System(context.Background()), `UPDATE agents SET hooks_token = $2 WHERE id = $1`, a.ID, f.ownFleetAgentTok); err != nil {
 			t.Fatal(err)
 		}
 	} else {
-		f.ownChief = f.agentFor(t, 1, agents.ChiefNameFor(1), "chief", f.ownChiefTok)
+		f.ownFleetAgent = f.agentFor(t, 1, "own-dispatcher", "dispatcher", f.ownFleetAgentTok)
 	}
 	f.ws, f.laptop, f.members = mirrorTok('a'), mirrorTok('b'), mirrorTok('c')
 	f.tokens[f.ws] = mirror.Token{ID: 1, OwnerID: 1, Host: "ws"}
@@ -120,7 +119,7 @@ func newDestroyFixture(t *testing.T) *destroyFixture {
 	t.Cleanup(func() {
 		sys := authz.System(context.Background())
 		_, _ = f.pool.Exec(sys, `DELETE FROM audit_log WHERE user_id = 1 AND action IN ($1, $2, $3, 'task.chief_dispatch_released')`,
-			plugins.ActionChiefDispatch, plugins.ActionChiefDispatchAgent, plugins.ActionTaskRouted)
+			plugins.ActionTaskDispatch, plugins.ActionTaskDispatchAgent, plugins.ActionTaskRouted)
 		_, _ = f.pool.Exec(sys, `DELETE FROM attention_asks WHERE owner_id = 1 AND mirror_host IS NOT NULL`)
 	})
 	return f
@@ -230,7 +229,7 @@ func (f *destroyFixture) status(t *testing.T, id int64) string {
 	return n.Status
 }
 
-// releases is the number of chief-start release rows for task id.
+// releases is the number of agent-start release rows for task id.
 func (f *destroyFixture) releases(t *testing.T, id int64) int {
 	t.Helper()
 	var n int
@@ -254,13 +253,13 @@ func (f *destroyFixture) drain() []string {
 	}
 }
 
-// dispatch is the chief's task_dispatch on task id, through the gateway
+// dispatch is the agent's task_dispatch on task id, through the gateway
 // dispatcher as user 1.
 func (f *destroyFixture) dispatch(id int64) string {
-	return f.srv.dispatchAgentTool(asUser(1), f.ownChief, "task_dispatch", `{"task_id":`+strconv.FormatInt(id, 10)+`}`)
+	return f.srv.dispatchAgentTool(asUser(1), f.ownFleetAgent, "task_dispatch", `{"task_id":`+strconv.FormatInt(id, 10)+`}`)
 }
 
-// mustStart is a chief task_dispatch on task id that must start an agent: its id.
+// mustStart is an agent task_dispatch on task id that must start an agent: its id.
 func (f *destroyFixture) mustStart(t *testing.T, id int64) int64 {
 	t.Helper()
 	got := f.dispatch(id)
@@ -268,7 +267,7 @@ func (f *destroyFixture) mustStart(t *testing.T, id int64) int64 {
 		AgentID int64 `json:"agent_id"`
 	}
 	if err := json.Unmarshal([]byte(got), &out); err != nil || out.AgentID <= 0 || strings.Contains(got, "already_dispatched") {
-		t.Fatalf("the chief's task_dispatch on task %d did not start an agent: %s", id, got)
+		t.Fatalf("the agent's task_dispatch on task %d did not start an agent: %s", id, got)
 	}
 	t.Cleanup(func() {
 		_, _ = f.pool.Exec(authz.System(context.Background()), `DELETE FROM agents WHERE id = $1`, out.AgentID)
@@ -276,22 +275,22 @@ func (f *destroyFixture) mustStart(t *testing.T, id int64) int64 {
 	return out.AgentID
 }
 
-// mustBeAlreadyDispatched is a chief task_dispatch on task id that must start
+// mustBeAlreadyDispatched is an agent task_dispatch on task id that must start
 // nothing because the task's one start is spent.
 func (f *destroyFixture) mustBeAlreadyDispatched(t *testing.T, id int64) {
 	t.Helper()
 	if got := f.dispatch(id); !strings.Contains(got, `"already_dispatched":true`) {
-		t.Fatalf("the chief's task_dispatch on task %d: %s; want already_dispatched", id, got)
+		t.Fatalf("the agent's task_dispatch on task %d: %s; want already_dispatched", id, got)
 	}
 }
 
 // TestAMirroredSessionDestroysAnAgentAndKeepsItsTask is the feature: user 1's
 // own agent works task n (in_progress) and has an open ask. The CONTROL first:
-// the chief cannot task_dispatch n while it does. Then ws's session destroys the
+// the agent cannot task_dispatch n while it does. Then ws's session destroys the
 // agent by name: Destroy runs for exactly that agent, its row and its open ask
 // are gone, the owner's stream gets agent.changed (naming it) and
 // attention_queue.changed, no audit row of any kind is written for the destroy,
-// the task is KEPT and back to open, and the chief's task_dispatch now starts a
+// the task is KEPT and back to open, and the agent's task_dispatch now starts a
 // new agent on it.
 func TestAMirroredSessionDestroysAnAgentAndKeepsItsTask(t *testing.T) {
 	f := newDestroyFixture(t)
@@ -302,7 +301,7 @@ func TestAMirroredSessionDestroysAnAgentAndKeepsItsTask(t *testing.T) {
 		t.Fatal(err)
 	}
 	if got := f.dispatch(n.ID); !strings.Contains(got, `"error"`) {
-		t.Fatalf("control: the chief started an agent on a task another agent works: %s", got)
+		t.Fatalf("control: the agent started an agent on a task another agent works: %s", got)
 	}
 	f.drain()
 
@@ -416,14 +415,14 @@ func TestTheReopenIsConditionalOnTheTaskStillBeingInProgress(t *testing.T) {
 	}
 }
 
-// TestAnOwnersMCPDestroyReleasesTheChiefsStartOnce: the chief starts agent A
+// TestAnOwnersMCPDestroyReleasesTheChiefsStartOnce: the agent starts agent A
 // on task n; the owner's mirrored session destroys A; the release is recorded
-// (one row), n is open again, and the chief's task_dispatch starts a NEW agent
-// B. A third chief dispatch with no further destroy is already_dispatched,
+// (one row), n is open again, and the agent's task_dispatch starts a NEW agent
+// B. A third agent dispatch with no further destroy is already_dispatched,
 // naming B.
 func TestAnOwnersMCPDestroyReleasesTheChiefsStartOnce(t *testing.T) {
 	f := newDestroyFixture(t)
-	n := f.task(t, "chief started", notes.StatusOpen)
+	n := f.task(t, "agent started", notes.StatusOpen)
 	first := f.mustStart(t, n.ID)
 	f.mustBeAlreadyDispatched(t, n.ID) // control: the start is spent before any destroy
 	if text, isErr := f.destroy(t, f.ws, focusSID, map[string]any{"id": first}); isErr {
@@ -442,14 +441,14 @@ func TestAnOwnersMCPDestroyReleasesTheChiefsStartOnce(t *testing.T) {
 	}
 	got := f.dispatch(n.ID)
 	if !strings.Contains(got, `"already_dispatched":true`) || !strings.Contains(got, `"agent_id":`+strconv.FormatInt(second, 10)) {
-		t.Fatalf("a chief dispatch with no further destroy: %s; want already_dispatched naming %d", got, second)
+		t.Fatalf("an agent dispatch with no further destroy: %s; want already_dispatched naming %d", got, second)
 	}
 }
 
 // TestAnOwnersBrowserDeleteReleasesTheChiefsStart: the same release through
 // the Agents page's Delete (a deliberate change to the browser path). The
 // browser does not reopen the task, so the owner reopens it on its card; the
-// chief may then start one new agent, and not a second.
+// agent may then start one new agent, and not a second.
 func TestAnOwnersBrowserDeleteReleasesTheChiefsStart(t *testing.T) {
 	f := newDestroyFixture(t)
 	n := f.task(t, "browser destroyed", notes.StatusOpen)
@@ -467,16 +466,16 @@ func TestAnOwnersBrowserDeleteReleasesTheChiefsStart(t *testing.T) {
 	f.mustBeAlreadyDispatched(t, n.ID)
 }
 
-// TestDestroyingAnAgentTheChiefDidNotStartReleasesNothing: the chief started
+// TestDestroyingAnAgentTheChiefDidNotStartReleasesNothing: the agent started
 // agent A on task n; the owner's OWN agent B also works n. Destroying B (on
-// either door) writes no release: with A stopped and n open, the chief's
-// dispatch is still already_dispatched. And on a task the chief never started
-// anything for, destroying the owner's agent writes nothing and the chief's
+// either door) writes no release: with A stopped and n open, the agent's
+// dispatch is still already_dispatched. And on a task the agent never started
+// anything for, destroying the owner's agent writes nothing and the agent's
 // dispatch starts an agent exactly as it did before any destroy existed.
 func TestDestroyingAnAgentTheChiefDidNotStartReleasesNothing(t *testing.T) {
 	f := newDestroyFixture(t)
 	n := f.task(t, "mixed", notes.StatusOpen)
-	chiefs := f.mustStart(t, n.ID)
+	agents := f.mustStart(t, n.ID)
 	mcpOwn := f.agentOn(t, 1, "adownmcp", &n.ID)
 	webOwn := f.agentOn(t, 1, "adownweb", &n.ID)
 	if text, isErr := f.destroy(t, f.ws, focusSID, map[string]any{"id": mcpOwn.ID}); isErr {
@@ -486,40 +485,40 @@ func TestDestroyingAnAgentTheChiefDidNotStartReleasesNothing(t *testing.T) {
 	f.browserDelete(t, webOwn.ID)
 	f.waitGone(t, webOwn.ID)
 	if got := f.releases(t, n.ID); got != 0 {
-		t.Fatalf("destroying agents the chief did not start wrote %d release(s)", got)
+		t.Fatalf("destroying agents the agent did not start wrote %d release(s)", got)
 	}
-	if _, err := f.pool.Exec(authz.System(context.Background()), `UPDATE agents SET status = 'stopped' WHERE id = $1`, chiefs); err != nil {
+	if _, err := f.pool.Exec(authz.System(context.Background()), `UPDATE agents SET status = 'stopped' WHERE id = $1`, agents); err != nil {
 		t.Fatal(err)
 	}
 	f.setStatus(t, n.ID, notes.StatusOpen)
 	f.mustBeAlreadyDispatched(t, n.ID)
 
-	fresh := f.task(t, "never chief", notes.StatusInProgress)
+	fresh := f.task(t, "never agent", notes.StatusInProgress)
 	own := f.agentOn(t, 1, "adnever", &fresh.ID)
 	if text, isErr := f.destroy(t, f.ws, focusSID, map[string]any{"id": own.ID}); isErr {
 		t.Fatal(text)
 	}
 	f.waitGone(t, own.ID)
 	if got := f.releases(t, fresh.ID); got != 0 {
-		t.Fatalf("a task the chief never started for got %d release(s)", got)
+		t.Fatalf("a task the agent never started for got %d release(s)", got)
 	}
 	f.mustStart(t, fresh.ID)
 }
 
 // TestAFailedTeardownReleasesAndReopensNothing: when the provisioner's Destroy
 // fails (the row is kept, as Adapter.Destroy keeps it), the task is NOT
-// reopened and the chief's start is NOT released — the agent may still be
+// reopened and the agent's start is NOT released — the agent may still be
 // working it.
 func TestAFailedTeardownReleasesAndReopensNothing(t *testing.T) {
 	f := newDestroyFixture(t)
 	n := f.task(t, "teardown fails", notes.StatusOpen)
-	chiefs := f.mustStart(t, n.ID)
+	agents := f.mustStart(t, n.ID)
 	f.prov.setFail(errors.New("the backend is unreachable"))
-	if text, isErr := f.destroy(t, f.ws, focusSID, map[string]any{"id": chiefs}); isErr {
+	if text, isErr := f.destroy(t, f.ws, focusSID, map[string]any{"id": agents}); isErr {
 		t.Fatal(text)
 	}
 	f.waitDestroyCalled(t, 1)
-	if !f.exists(t, chiefs) {
+	if !f.exists(t, agents) {
 		t.Fatal("the fake deleted the row on a failed teardown")
 	}
 	if st := f.status(t, n.ID); st != notes.StatusInProgress {
@@ -530,19 +529,20 @@ func TestAFailedTeardownReleasesAndReopensNothing(t *testing.T) {
 	}
 }
 
-// TestAgentDestroyRefusesTheChiefOthersAgentsAndBadNames: the owner's chief (by
-// name and by id) gets the chief refusal; the member's worker (by name and by
-// id), an unknown name and a missing id all read "no such agent"; both or
-// neither of name/id is refused. Nothing reaches the provisioner and every
-// agent is still there.
-func TestAgentDestroyRefusesTheChiefOthersAgentsAndBadNames(t *testing.T) {
+// TestAgentDestroyRefusesOthersAgentsAndBadNames: the member's worker (by name
+// and by id), an unknown name and a missing id all read "no such agent"; both or
+// neither of name/id is refused. Nothing reaches the provisioner and every agent
+// is still there.
+//
+// 🔴 THE OWNER'S OWN STANDING AGENT IS NO LONGER AMONG THE REFUSALS. This test
+// began with it — the labelled agent answered "the dispatched agent cannot be
+// deleted; to replace the agent use `muster agent replace`" by name and by id.
+// muster has no privileged agent and no such command, so that half moved to
+// TestAgentDestroyDestroysTheOwnersStandingAgent below, which asserts the
+// opposite. What remains here is the part that never depended on rank: you
+// cannot destroy somebody else's agent, or one that does not exist.
+func TestAgentDestroyRefusesOthersAgentsAndBadNames(t *testing.T) {
 	f := newDestroyFixture(t)
-	const chiefRefused = `{"error":"the chief agent cannot be deleted; to replace the chief use ` + "`muster chief replace`" + `"}`
-	for _, args := range []map[string]any{{"name": f.ownChief.Name}, {"id": f.ownChief.ID}} {
-		if text, _ := f.destroy(t, f.ws, focusSID, args); text != chiefRefused {
-			t.Errorf("the chief %v: %s", args, text)
-		}
-	}
 	for want, args := range map[string]map[string]any{
 		`{"error":"no such agent: ` + f.worker.Name + `"}`:                                             {"name": f.worker.Name},
 		`{"error":"no such agent: ` + strconv.FormatInt(f.worker.ID, 10) + `"}`:                        {"id": f.worker.ID},
@@ -561,7 +561,7 @@ func TestAgentDestroyRefusesTheChiefOthersAgentsAndBadNames(t *testing.T) {
 	if got := f.prov.destroyedIDs(); len(got) != 0 {
 		t.Fatalf("refused calls reached Destroy for %v", got)
 	}
-	for _, a := range []agents.Agent{f.ownChief, f.worker, f.op} {
+	for _, a := range []agents.Agent{f.ownFleetAgent, f.worker, f.op} {
 		if !f.exists(t, a.ID) {
 			t.Errorf("agent %s is gone", a.Name)
 		}
@@ -579,7 +579,7 @@ func TestAgentDestroyRefusesTheChiefOthersAgentsAndBadNames(t *testing.T) {
 	}
 }
 
-// TestOnlyAMirroredSessionCanDestroyAnAgent: a worker and both chiefs, calling
+// TestOnlyAMirroredSessionCanDestroyAnAgent: a worker and both agents, calling
 // agent_destroy BY NAME through the gateway dispatcher (a gateway runtime names
 // any tool it likes), are refused by the handler; over POST /mcp it is neither
 // listed nor callable (unknown tool); a non-mirror credential on /mirror/mcp is
@@ -595,8 +595,8 @@ func TestOnlyAMirroredSessionCanDestroyAnAgent(t *testing.T) {
 		owner int64
 	}{
 		"a worker":        {f.op, f.opTok, 1},
-		"the owner chief": {f.ownChief, f.ownChiefTok, 1},
-		"another chief":   {f.chief, f.chiefTok, f.member},
+		"the owner agent": {f.ownFleetAgent, f.ownFleetAgentTok, 1},
+		"another agent":   {f.agent, f.chiefTok, f.member},
 	}
 	const refused = `{"error":"agent_destroy is available only to your owner's own mirrored Claude Code sessions"}`
 	for name, c := range callers {
@@ -615,7 +615,7 @@ func TestOnlyAMirroredSessionCanDestroyAnAgent(t *testing.T) {
 			}
 		}
 	}
-	for name, tok := range map[string]string{"the hook token": connTestHookToken, "the chief's token": f.ownChiefTok, "an agent's token": f.opTok} {
+	for name, tok := range map[string]string{"the hook token": connTestHookToken, "the agent's token": f.ownFleetAgentTok, "an agent's token": f.opTok} {
 		if code, _, body := f.mirrorRPC(t, mirrorAs(tok, focusSID), mcpToolCall("agent_destroy", map[string]any{"id": target.ID})); code != http.StatusUnauthorized {
 			t.Errorf("%s on /mirror/mcp: %d %s, want 401", name, code, body)
 		}
@@ -642,6 +642,31 @@ func TestOnlyAMirroredSessionCanDestroyAnAgent(t *testing.T) {
 // 1's session asking for the member's worker, by id or by name, is told "no
 // such agent" and nothing reaches the provisioner. CONTROL: the same call for
 // user 1's own agent, under the same RLS-off, destroys it.
+// TestAgentDestroyDestroysTheOwnersStandingAgent is the other half of the
+// refusal test above, and it exists because the behaviour INVERTED: the owner's
+// standing agent — no task, no repository, the shape that once carried the
+// `agent` label and the deletion protection — is destroyed by the ordinary door
+// like any other agent of theirs.
+//
+// 🔴 THE PROTECTION WAS NOT MERELY REMOVED, IT WAS UNREACHABLE BY DESIGN. The
+// only way past it was `muster agent replace`, which deleted and re-created the
+// reserved slug; an operator who simply wanted the agent gone had no route at
+// all. Nothing is exempt now, so there is nothing to work around.
+func TestAgentDestroyDestroysTheOwnersStandingAgent(t *testing.T) {
+	f := newDestroyFixture(t)
+	if !agents.IsFleetAgent(f.ownFleetAgent) {
+		t.Fatalf("fixture: %s holds a task or a repository, so it is not the shape under test", f.ownFleetAgent.Name)
+	}
+	f.drain()
+	if text, isErr := f.destroy(t, f.ws, focusSID, map[string]any{"name": f.ownFleetAgent.Name}); isErr {
+		t.Fatalf("destroying the owner's standing agent was refused: %s", text)
+	}
+	f.waitGone(t, f.ownFleetAgent.ID)
+	if f.exists(t, f.ownFleetAgent.ID) {
+		t.Fatal("the agent is still there")
+	}
+}
+
 func TestAgentDestroyKeepsToTheOwnersAgentsWithRLSOff(t *testing.T) {
 	f := newDestroyFixture(t)
 	if err := db.RLSOff(context.Background(), f.pool); err != nil {

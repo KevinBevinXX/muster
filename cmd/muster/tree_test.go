@@ -41,10 +41,10 @@ import (
 //
 // 🔴 CHANGING IT IS A DESIGN DECISION, NOT A TEST FIX. The extraction split the
 // upstream CLI's verbs between two binaries; this half is: task ls/get/create/
-// status/comment, agent ls/resolve/messages, agent task get/comment/status, and
-// chief ask. If a thirteenth is genuinely wanted, change this number, add its
-// ledger row, and say so in the commit — do not discover it in a diff.
-const wantVerbCount = 22
+// status/comment, agent ls/resolve/messages, agent task get/comment/status.
+// If a new verb is genuinely wanted, change this number, add its ledger row,
+// and say so in the commit — do not discover it in a diff.
+const wantVerbCount = 20
 
 // minRunnableCommands is a hardcoded floor BELOW wantVerbCount. It exists so
 // that a tree wired to NOTHING cannot pass this file vacuously: a tree that lost
@@ -61,9 +61,9 @@ var wiring = []struct {
 	{"agent ls", []string{"agent", "ls"}, "GET /api/agents"},
 	{"agent resolve", []string{"agent", "resolve", "clever-fox"}, "GET /api/agents"},
 	// The machine read of an agent's chat. It takes the NAME in the path, so
-	// unlike `chief ask` it performs no resolve step — asserting it reaches
-	// /api/agents/{name}/messages rather than /api/agents is what pins that.
-	{"agent messages", []string{"agent", "messages", "chief"}, "GET /api/agents/chief/messages"},
+	// asserting it reaches /api/agents/{name}/messages rather than /api/agents
+	// is what pins that.
+	{"agent messages", []string{"agent", "messages", "agent"}, "GET /api/agents/agent/messages"},
 	// The /agent/task* family carries no id: the token identifies the caller and
 	// the server resolves the bound task from it. That these three reach
 	// /agent/task* rather than /api/tasks/* is the whole point of the commands —
@@ -76,13 +76,6 @@ var wiring = []struct {
 	{"task create", []string{"task", "create", "--body", "x"}, "POST /api/tasks"},
 	{"task status", []string{"task", "status", "5", "in_progress"}, "PATCH /api/tasks/5/status"},
 	{"task comment", []string{"task", "comment", "5", "--body", "x"}, "POST /api/tasks/5/comments"},
-	// `chief ask` resolves the agent name over GET /api/agents first, so the
-	// route asserted here is the SECOND of its two requests.
-	{"chief ask", []string{"chief", "ask", "--text", "how are things?"},
-		"POST /api/agents/chief/messages"},
-	// Replacing the chief (chief_replace.go): without --confirm the server
-	// changes nothing and answers the plan.
-	{"chief replace", []string{"chief", "replace", "--kind", "claude-code", "--cc-account", "acct", "--confirm", "chief"}, "POST /api/chief/replace"},
 	// Accounts PR 6: personal API tokens and the identity probe.
 	{"token ls", []string{"token", "ls"}, "GET /api/tokens"},
 	{"token revoke", []string{"token", "revoke", "9"}, "DELETE /api/tokens/9"},
@@ -93,7 +86,7 @@ var wiring = []struct {
 	{"flow status", []string{"flow", "status", "9"}, "GET /api/flows/jobs/9"},
 	// The 22nd verb (muse dispatch): cancel a queued / dismiss a needs_operator job.
 	{"flow cancel", []string{"flow", "cancel", "9"}, "POST /api/flows/jobs/9/cancel"},
-	// Session routing: a mirrored session's reply_to_chief (route.go).
+	// Session routing: a mirrored session's route_reply (route.go).
 	{"route reply", []string{"route", "reply", "rt_0123456789abcdef01234567", "--body", "x"}, "POST /api/routes/rt_0123456789abcdef01234567/reply"},
 	// Retrying an unconfirmed plugin message (plugin_retry.go).
 	{"plugins retry", []string{"plugins", "retry", "6"}, "POST /api/plugins/messages/6/retry"},
@@ -171,19 +164,19 @@ func TestEveryCommandReachesItsRoute(t *testing.T) {
 	for _, w := range wiring {
 		t.Run(w.name, func(t *testing.T) {
 			h := newHarness(t)
-			// 🔴 TWO ROWS, AND THE IDS ARE DIFFERENT ON PURPOSE. `chief ask`
+			// 🔴 TWO ROWS, AND THE IDS ARE DIFFERENT ON PURPOSE. `agent ask`
 			// resolves a name against this roster before it writes, so a fixture
 			// where both agents shared an id could not tell a verb that resolved the
 			// RIGHT name from one that took whatever came first.
 			h.json("GET /api/agents", http.StatusOK,
-				`[{"id":11,"name":"clever-fox"},{"id":12,"name":"chief"}]`)
-			h.json("GET /api/agents/chief/messages", http.StatusOK,
-				`{"agent":"chief","agentId":12,"sessionId":8,"sessionCount":1,"sessions":[],`+
+				`[{"id":11,"name":"clever-fox"},{"id":12,"name":"agent"}]`)
+			h.json("GET /api/agents/agent/messages", http.StatusOK,
+				`{"agent":"agent","agentId":12,"sessionId":8,"sessionCount":1,"sessions":[],`+
 					`"messages":[{"id":1,"sessionId":8,"role":"user","kind":"text","content":"hi",`+
 					`"toolId":"","toolName":"","toolOk":false,"createdAt":"2000-01-02T12:00:00Z"}],`+
 					`"count":1,"limit":50,"maxLimit":200,"before":0,"hasMore":false,"nextBefore":0}`)
-			h.json("POST /api/agents/chief/messages", http.StatusOK,
-				`{"agent":"chief","agentId":12,"sessionId":8,"reply":"all quiet"}`)
+			h.json("POST /api/agents/agent/messages", http.StatusOK,
+				`{"agent":"agent","agentId":12,"sessionId":8,"reply":"all quiet"}`)
 			h.json("GET /api/tasks", http.StatusOK, `[]`)
 			h.json("GET /api/tasks/5", http.StatusOK, `{"id":5}`)
 			h.json("POST /api/tasks", http.StatusOK, `{"id":5}`)
@@ -203,7 +196,7 @@ func TestEveryCommandReachesItsRoute(t *testing.T) {
 			h.json("POST /api/flows/jobs/9/cancel", http.StatusOK, `{"id":9,"status":"cancelled"}`)
 			h.json("POST /api/routes/rt_0123456789abcdef01234567/reply", http.StatusOK, `{"route_id":"rt_0123456789abcdef01234567","state":"relayed","nested":{"a":1}}`)
 			h.json("POST /api/plugins/messages/6/retry", http.StatusAccepted, `{"id":6,"status":"queued","retrying":true}`)
-			h.json("POST /api/chief/replace", http.StatusOK, `{"deleted":null,"created":true,"agent":{"id":2,"name":"chief"}}`)
+			h.json("POST /api/agent/replace", http.StatusOK, `{"deleted":null,"created":true,"agent":{"id":2,"name":"agent"}}`)
 
 			got := h.runCLI(w.args...)
 			if got.code != exitOK {

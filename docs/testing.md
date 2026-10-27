@@ -111,7 +111,7 @@ at 390×844 (touch) and 1280×800. What it measures, exactly:
   nothing cannot pass as still. The page list comes from
   `internal/api/testdata/routes.golden`: a new `GET` route fails the spec until
   it is measured there or named as not a page;
-- the chief panel opened, and restored open on a load;
+- the agent panel opened, and restored open on a load;
 - **after a load**, started by script so nothing counts as input: the Agents
   list re-rendering with nothing changed, an agent arriving while the list is
   open (held behind the "N new ↑" pill, so nothing moves until the reader taps

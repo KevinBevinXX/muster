@@ -199,7 +199,7 @@ func TestTheHelpNeverSpellsAFixedProgramName(t *testing.T) {
 		// "in front of muster") — that is the project, not the command. What must
 		// not appear is the command-invocation shape: the name followed by a verb
 		// this binary has.
-		for _, verb := range []string{"task", "agent", "chief"} {
+		for _, verb := range []string{"task", "agent"} {
 			bad := defaultProgName + " " + verb
 			if strings.Contains(body, bad) {
 				t.Errorf("🔴 %s spells the command invocation %q. The binary answers to whatever "+

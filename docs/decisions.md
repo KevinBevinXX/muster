@@ -197,7 +197,7 @@ reports what happened to each one.
   `/plugin/v1/*` and nothing else.
 - **There is no background loop.** The plugin's long-poll is the clock. Each
   claim first retries the owner's messages that could not be delivered to the
-  chief. A plugin that stops polling stops costing anything.
+  agent. A plugin that stops polling stops costing anything.
 - **At most once is the plugin's promise to keep, and muster makes it
   checkable.** A claimed reply is leased for two minutes. If no result comes
   back, the reply is marked unconfirmed and is never offered again, because the

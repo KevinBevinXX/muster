@@ -26,7 +26,7 @@ import (
 //
 // 🔴 A MIRRORED SESSION IS NOT AN AGENT. It lives in the hub's memory, keyed by
 // its host's token OWNER, and is addressed by (host, session) — never by an
-// agents row, so no agent route, lookup or predicate (the chief's included) can
+// agents row, so no agent route, lookup or predicate (the agent's included) can
 // ever see one.
 //
 // 🔴 EVERY WINDOW IS AN ENTRY, ADDRESSED BY (host, session, window id). A host

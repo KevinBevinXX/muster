@@ -8,9 +8,9 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// `route reply` — reply_to_chief for a MIRRORED session (session routing,
+// `route reply` — route_reply for a MIRRORED session (session routing,
 // internal/plugins/routes.go). A Claude Code window on the operator's own host
-// that the chief routed a plugin message into answers it from that window:
+// that the agent routed a plugin message into answers it from that window:
 //
 //	muster route reply rt_… --body "Noon works."
 //	muster route reply rt_… --body-file - < answer.txt
@@ -34,7 +34,7 @@ var routeIDPattern = regexp.MustCompile(`^rt_[0-9a-f]{24}$`)
 func newRouteCmd(a *app) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "route",
-		Short: "Answer a plugin message the chief routed to this session",
+		Short: "Answer a plugin message the agent routed to this session",
 	}
 	cmd.AddCommand(newRouteReplyCmd(a))
 	return cmd
@@ -51,8 +51,8 @@ func newRouteReplyCmd(a *app) *cobra.Command {
 	)
 	cmd := &cobra.Command{
 		Use:   "reply <route_id>",
-		Short: "POST /api/routes/{route_id}/reply — answer a routed message (reply_to_chief)",
-		Long: `Answer the plugin message the chief routed to this session, by its route_id
+		Short: "POST /api/routes/{route_id}/reply — answer a routed message (route_reply)",
+		Long: `Answer the plugin message the agent routed to this session, by its route_id
 (rt_…, in the routed block). The answer is sent to the sender as written — at
 once when your owner allowlisted the sender, otherwise after your owner approves
 it. The same answer again is a no-op; a different second answer is refused.`,

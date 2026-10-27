@@ -3,7 +3,7 @@ package main
 import "testing"
 
 // TestTheChiefIsToldAboutPluginsExactlyWhenTheStoreIsWired: agentspec.Config's
-// Plugins flag (which puts the plugin section in the chief's prose) comes from
+// Plugins flag (which puts the plugin section in the agent's prose) comes from
 // config.pluginsEnabled — the SAME predicate buildApp wires ext.Plugins on — so
 // the prose cannot name task_create_gated on a deployment where the tool is not
 // offered. The flag without a database is the case that discriminates it from

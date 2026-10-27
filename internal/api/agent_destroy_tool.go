@@ -24,18 +24,18 @@ import (
 // task"), on attention_answer's pattern:
 //
 //   - LISTED ONLY on the mirror door (mirror_mcp.go's mirrorTools), never in the
-//     agent registry, so POST /mcp (a dispatched agent, the chief included) does
+//     agent registry, so POST /mcp (a dispatched agent, the agent included) does
 //     not offer it and refuses it by name as unknown;
 //   - 🔴 REFUSED IN ITS HANDLER to every caller that is not a mirrored session
 //     (toolCaller.mirroredSession): dispatchCallerTool is reached by a gateway
-//     agent naming ANY tool (dispatchAgentTool's default case), the chief
+//     agent naming ANY tool (dispatchAgentTool's default case), the agent
 //     included.
 //
 // It takes the browser's own teardown (destroyAgent, which handleAgentDelete
-// calls too): the chief is refused there, then the provisioner's Destroy runs
+// calls too): the agent is refused there, then the provisioner's Destroy runs
 // in the background — the instance, then the row — and, after a successful
-// teardown and on BOTH doors, the chief's start on the task is released when
-// the chief's start made this agent (releaseChiefStart) and the owner's open
+// teardown and on BOTH doors, the agent's start on the task is released when
+// the agent's start made this agent (releaseDispatchStart) and the owner's open
 // tabs are told (agent.changed, attention_queue.changed). What the row's
 // deletion takes with it is the browser path's: the agent's open attention asks
 // are deleted (0025's ON DELETE CASCADE) and a turn in flight is not stopped
@@ -48,7 +48,7 @@ import (
 // The one thing only this door does: the TASK IS KEPT and, once the teardown
 // has succeeded, moved back from in_progress to open when no other live agent
 // is on it (reopenTaskAfterDestroy) — the state task_dispatch needs
-// (chiefDispatchTaskRefusal: open, ungated, no live agent).
+// (taskDispatchTaskRefusal: open, ungated, no live agent).
 // ---------------------------------------------------------------------------
 
 const agentDestroyTool = "agent_destroy"
@@ -63,8 +63,8 @@ func agentDestroyToolDef() agents.ToolDef {
 		Description: "Destroy one of your owner's agents ON YOUR OWNER'S BEHALF — use it only when your owner asked you to. It is the same " +
 			"teardown as Delete on muster's Agents page: the agent's pod and record are removed in the background, its open attention asks " +
 			"go with it, and a turn it is running is cut off. The task it worked is KEPT: once the agent is gone, a task still in_progress " +
-			"with no other live agent goes back to open, and if your owner's chief started this agent, the chief may start one new agent " +
-			"on that task again. Name the agent by EXACTLY ONE of: name (its slug, as `muster agent ls` shows it) or id. The chief cannot " +
+			"with no other live agent goes back to open, and if your owner's agent started this agent, the agent may start one new agent " +
+			"on that task again. Name the agent by EXACTLY ONE of: name (its slug, as `muster agent ls` shows it) or id. The agent cannot " +
 			"be destroyed this way.",
 		Parameters: objSchema(map[string]any{
 			"name": strProp("The agent's name (slug), as `muster agent ls` shows it. Give this OR id."),
@@ -127,16 +127,13 @@ func (s *Server) toolAgentDestroy(ctx context.Context, c toolCaller, arguments s
 		return toolErr("the agent could not be read")
 	}
 	from := c.asker.MirrorHost + "/" + c.asker.MirrorSession
-	var chief errDestroyChief
 	destroy := func(ctx context.Context, id int64) error { return s.ext.Provisioner.Destroy(ctx, id) }
-	_, err = s.destroyAgent(ctx, a.ID, destroy, destroyHooks{done: s.reopenTaskAfterDestroy})
-	switch {
-	case err == nil:
-	case errors.As(err, &chief):
-		return toolErr("%s; to replace the chief use `muster chief replace`", chief.Error())
-	default:
+	// 🔴 NO AGENT IS EXEMPT. This used to refuse the labelled `agent` and point
+	// the caller at `muster agent replace`; there is no privileged agent and no
+	// such command.
+	if _, err = s.destroyAgent(ctx, a.ID, destroy, destroyHooks{done: s.reopenTaskAfterDestroy}); err != nil {
 		s.logger.Printf("agent_destroy: %d (%s) via MCP from %s: %v", a.ID, a.Name, from, err)
-		return toolErr("nothing was destroyed: could not check whether this is the chief agent")
+		return toolErr("nothing was destroyed: the agent could not be destroyed")
 	}
 	// The ONLY record of where an MCP destroy came from (no audit row).
 	s.logger.Printf("agents: destroy of %d (%s) started by the operator via MCP from %s", a.ID, a.Name, from)
@@ -151,31 +148,31 @@ func (s *Server) toolAgentDestroy(ctx context.Context, c toolCaller, arguments s
 	return toolJSON(out)
 }
 
-// releaseChiefStart is the shared after-step of an owner's destroy of agent a
-// (both doors, destroyAgent): when the chief's latest start on a's task made
-// a, that start is released, so the chief may start ONE new agent on the task
-// (plugins.ReleaseChiefDispatch; operator decision "Owner's destroy resets the
-// chief's allowance"). An agent with no task, a deployment with no
-// chief-dispatch ledger, or an agent the chief did not start release nothing.
+// releaseDispatchStart is the shared after-step of an owner's destroy of agent a
+// (both doors, destroyAgent): when the agent's latest start on a's task made
+// a, that start is released, so the agent may start ONE new agent on the task
+// (plugins.ReleaseTaskDispatch; operator decision "Owner's destroy resets the
+// agent's allowance"). An agent with no task, a deployment with no
+// agent-dispatch ledger, or an agent the agent did not start release nothing.
 // Best-effort: a failure is logged and the task keeps its one start (the
 // fail-closed direction).
-func (s *Server) releaseChiefStart(ctx context.Context, a agents.Agent) {
-	if a.ID == 0 || a.NoteID == nil || s.ext.ChiefDispatch == nil {
+func (s *Server) releaseDispatchStart(ctx context.Context, a agents.Agent) {
+	if a.ID == 0 || a.NoteID == nil || s.ext.TaskDispatch == nil {
 		return
 	}
-	released, err := s.ext.ChiefDispatch.ReleaseChiefDispatch(ctx, *a.NoteID, a.ID)
+	released, err := s.ext.TaskDispatch.ReleaseTaskDispatch(ctx, *a.NoteID, a.ID)
 	if err != nil {
-		s.logger.Printf("agents: release the chief's start on task %d after destroying %d: %v", *a.NoteID, a.ID, err)
+		s.logger.Printf("agents: release the agent's start on task %d after destroying %d: %v", *a.NoteID, a.ID, err)
 		return
 	}
 	if released {
-		s.logger.Printf("agents: destroying %d released the chief's start on task %d", a.ID, *a.NoteID)
+		s.logger.Printf("agents: destroying %d released the agent's start on task %d", a.ID, *a.NoteID)
 	}
 }
 
 // reopenTaskAfterDestroy moves destroyed agent a's task back from in_progress
-// to open when no other live agent is on it, so the chief's task_dispatch can
-// start a new one (chiefDispatchTaskRefusal wants it open). A task in any other
+// to open when no other live agent is on it, so the agent's task_dispatch can
+// start a new one (taskDispatchTaskRefusal wants it open). A task in any other
 // state (open already, ready_for_review, complete) is left as it is. Best-effort:
 // a failure is logged and the task stays in_progress, as the browser path leaves
 // it.

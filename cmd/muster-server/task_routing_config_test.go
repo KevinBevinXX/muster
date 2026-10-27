@@ -13,16 +13,16 @@ func TestTaskRoutingConfigIsOffByDefaultAndTheOwnersMustParse(t *testing.T) {
 		return loadConfig(func(n string) string { return env[n] })
 	}
 	cfg, err := load(nil)
-	if err != nil || cfg.TaskRouting || len(cfg.ChiefDispatchOwners) != 0 {
-		t.Fatalf("unset: %+v %v", cfg.ChiefDispatchOwners, err)
+	if err != nil || cfg.TaskRouting || len(cfg.TaskDispatchOwners) != 0 {
+		t.Fatalf("unset: %+v %v", cfg.TaskDispatchOwners, err)
 	}
-	cfg, err = load(map[string]string{envTaskRouting: "1", envChiefDispatchOwners: " 2, 7 ,"})
-	if err != nil || !cfg.TaskRouting || len(cfg.ChiefDispatchOwners) != 2 ||
-		!cfg.ChiefDispatchOwners[2] || !cfg.ChiefDispatchOwners[7] {
-		t.Fatalf("set: %+v %v", cfg.ChiefDispatchOwners, err)
+	cfg, err = load(map[string]string{envTaskRouting: "1", envTaskDispatchOwners: " 2, 7 ,"})
+	if err != nil || !cfg.TaskRouting || len(cfg.TaskDispatchOwners) != 2 ||
+		!cfg.TaskDispatchOwners[2] || !cfg.TaskDispatchOwners[7] {
+		t.Fatalf("set: %+v %v", cfg.TaskDispatchOwners, err)
 	}
 	for _, bad := range []string{"x", "1,0", "-3", "1;2"} {
-		if _, err := load(map[string]string{envChiefDispatchOwners: bad}); err == nil || !strings.Contains(err.Error(), envChiefDispatchOwners) {
+		if _, err := load(map[string]string{envTaskDispatchOwners: bad}); err == nil || !strings.Contains(err.Error(), envTaskDispatchOwners) {
 			t.Errorf("%q: booted (%v)", bad, err)
 		}
 	}

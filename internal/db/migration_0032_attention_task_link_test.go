@@ -5,9 +5,9 @@ import (
 )
 
 // TestMigration0032LinksOnlyTheChiefRoutedAsks: a database before 0032 holding
-// the live shape — the chief's task_route_attention asks (each written beside
+// the live shape — the agent's task_route_attention asks (each written beside
 // its `task.chief_routed` audit row), plus asks that only LOOK like one — arrives
-// at 0032 with task_id set on exactly the chief-routed ones:
+// at 0032 with task_id set on exactly the agent-routed ones:
 //
 //   - linked: question "Task #N needs you: …" AND the owner's chief_routed row for
 //     note:N, tool task_route_attention, within 5s after the ask;
@@ -23,8 +23,8 @@ func TestMigration0032LinksOnlyTheChiefRoutedAsks(t *testing.T) {
 	pool := freshAt(ctx, t, "ms_0032_task_link", 31)
 
 	other := scanID(ctx, t, pool, `INSERT INTO users (role) VALUES ('member') RETURNING id`)
-	chief := scanID(ctx, t, pool, `INSERT INTO agents (owner_id, name, namespace, kind, cc_account)
-		VALUES (1, 'chief', 'muster-agent-chief', 'claude-code', 'acct-one') RETURNING id`)
+	agent := scanID(ctx, t, pool, `INSERT INTO agents (owner_id, name, namespace, kind, cc_account)
+		VALUES (1, 'agent', 'muster-agent-agent', 'claude-code', 'acct-one') RETURNING id`)
 	task := func(owner int64) int64 {
 		return scanID(ctx, t, pool, `INSERT INTO notes (owner_id, body) VALUES ($1, 'b') RETURNING id`, owner)
 	}
@@ -41,18 +41,18 @@ func TestMigration0032LinksOnlyTheChiefRoutedAsks(t *testing.T) {
 			user, taskID, tool, at)
 	}
 	// Linked: the ask at -60s, its audit row 3ms after (the live gap).
-	routed := ask(1, chief, t1, "60 seconds")
+	routed := ask(1, agent, t1, "60 seconds")
 	audit(1, t1, "task_route_attention", "59.997 seconds")
 	// Not linked: text only.
-	textOnly := ask(1, chief, t2, "50 seconds")
+	textOnly := ask(1, agent, t2, "50 seconds")
 	// Not linked: the audit names another task.
-	wrongTask := ask(1, chief, t3, "40 seconds")
+	wrongTask := ask(1, agent, t3, "40 seconds")
 	audit(1, t4, "task_route_attention", "39.99 seconds")
 	// Not linked: another owner's audit row.
-	wrongUser := ask(1, chief, t5, "30 seconds")
+	wrongUser := ask(1, agent, t5, "30 seconds")
 	audit(other, t5, "task_route_attention", "29.99 seconds")
 	// Not linked: 10s after the ask.
-	late := ask(1, chief, t6, "100 seconds")
+	late := ask(1, agent, t6, "100 seconds")
 	audit(1, t6, "task_route_attention", "90 seconds")
 	// Not linked: task_forward, not task_route_attention.
 	forward := ask(1, nil, t4, "20 seconds")

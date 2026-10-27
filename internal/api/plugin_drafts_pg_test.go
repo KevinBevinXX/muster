@@ -146,17 +146,68 @@ func (d *draftSeam) mint(uid int64) string {
 	if rec.Code != http.StatusOK || m == nil {
 		d.t.Fatalf("mint for user %d: %d, no token on the page", uid, rec.Code)
 	}
+	// A freshly minted plugin has no target. If uid already has an agent, point
+	// the plugin at it — see agent's header for why this has to be explicit.
+	if id := d.standingAgent(uid); id != 0 {
+		d.linkPlugins(uid, id)
+	}
 	return m[1]
 }
 
-func (d *draftSeam) chief(uid int64, name string) agents.Agent {
+// agent creates uid's standing agent and MAKES IT THE TARGET of uid's plugins.
+//
+// 🔴 THE LINK USED TO BE IMPLICIT IN THE DISPLAY NAME, AND NOW HAS TO BE
+// WRITTEN. Delivery resolved its recipient by label — the lowest-id agent called
+// `agent` — so creating this row was all a test had to do. A plugin now names
+// its target (plugins.target_agent_id), so a fixture that only creates the agent
+// leaves every message QUEUED with reason `no_target`, which is how each of
+// these tests first failed. linkPlugins is called from BOTH ends (here and in
+// mint) because tests create the agent and mint the plugin in either order.
+func (d *draftSeam) agent(uid int64, name string) agents.Agent {
 	d.t.Helper()
 	a, err := d.as.Create(d.asUser(uid), agents.Agent{Name: name + "-" + d.suffix, Namespace: "devpod-" + name + "-" + d.suffix,
-		DisplayName: "chief", Status: agents.StatusRunning, HooksToken: "drf-hooks-" + name + "-" + d.suffix})
+		DisplayName: "agent", Status: agents.StatusRunning, HooksToken: "drf-hooks-" + name + "-" + d.suffix})
 	if err != nil {
 		d.t.Fatal(err)
 	}
+	d.linkPlugins(uid, a.ID)
 	return a
+}
+
+// linkPlugins points every one of uid's plugins at agent agentID. A plugin with
+// a target already set is left alone, so a test that chose one deliberately
+// keeps it.
+func (d *draftSeam) linkPlugins(uid, agentID int64) {
+	d.t.Helper()
+	ps, err := d.ps.List(d.asUser(uid))
+	if err != nil {
+		d.t.Fatalf("link plugins for user %d: %v", uid, err)
+	}
+	for _, p := range ps {
+		if p.TargetAgentID != nil && *p.TargetAgentID != 0 {
+			continue
+		}
+		if err := d.ps.SetTargetAgent(d.asUser(uid), p.ID, agentID); err != nil {
+			d.t.Fatalf("plugin %d -> agent %d: %v", p.ID, agentID, err)
+		}
+	}
+}
+
+// standingAgent is uid's lowest-id agent, or 0. mint uses it so a plugin minted
+// AFTER the agent still gets a target.
+func (d *draftSeam) standingAgent(uid int64) int64 {
+	d.t.Helper()
+	list, err := d.as.List(d.asUser(uid))
+	if err != nil {
+		return 0
+	}
+	var found int64
+	for _, a := range list {
+		if a.OwnerID == uid && (found == 0 || a.ID < found) {
+			found = a.ID
+		}
+	}
+	return found
 }
 
 func (d *draftSeam) post(tok, ext, extra string) int64 {
@@ -205,10 +256,10 @@ func (d *draftSeam) replyDraft(a agents.Agent, messageID int64, body string) (in
 // TestAReplyDraftGoesFromTheChiefToThePluginOnceThroughTheRealPlane is the
 // whole reply loop, end to end over the real plane:
 //
-//  1. RETRY-ON-CLAIM: a message posted while its owner has no chief stays queued;
-//     the chief appears; the plugin's next claim (nothing to hand out: 204)
+//  1. RETRY-ON-CLAIM: a message posted while its owner has no agent stays queued;
+//     the agent appears; the plugin's next claim (nothing to hand out: 204)
 //     delivers it — the only retry there is.
-//  2. The chief drafts a reply (reply_draft). The owner gets the `plugin` push,
+//  2. The agent drafts a reply (reply_draft). The owner gets the `plugin` push,
 //     in muster's words, deep-linked to the card.
 //  3. The Asks page's Reply drafts tab shows the card: the outside text
 //     escaped, the draft spelled out.
@@ -230,10 +281,10 @@ func TestAReplyDraftGoesFromTheChiefToThePluginOnceThroughTheRealPlane(t *testin
 	// 1. Retry-on-claim.
 	m1 := d.post(aTok, "ext-1-"+d.suffix, "")
 	if got, _ := d.ps.Message(d.asUser(d.a), m1); got.Status != plugins.StatusQueued || got.Attempts != 1 {
-		t.Fatalf("with no chief the message is %s after %d attempt(s); want queued after 1", got.Status, got.Attempts)
+		t.Fatalf("with no agent the message is %s after %d attempt(s); want queued after 1", got.Status, got.Attempts)
 	}
-	chief := d.chief(d.a, "drfchief")
-	d.rt.expect(chief)
+	agent := d.agent(d.a, "drfchief")
+	d.rt.expect(agent)
 	if rec := d.claim(aTok, 0); rec.Code != http.StatusNoContent {
 		t.Fatalf("a claim with nothing approved: %d %s; want 204", rec.Code, rec.Body.String())
 	}
@@ -246,9 +297,9 @@ func TestAReplyDraftGoesFromTheChiefToThePluginOnceThroughTheRealPlane(t *testin
 		t.Fatalf("the runtime saw %d turns; want 1", n)
 	}
 
-	// 2. The chief drafts a reply; the owner is told WHO and WHERE only — the
+	// 2. The agent drafts a reply; the owner is told WHO and WHERE only — the
 	// sender is not verified, so not even the name it claims.
-	draftID, out := d.replyDraft(chief, m1, "Yes, noon works.")
+	draftID, out := d.replyDraft(agent, m1, "Yes, noon works.")
 	if draftID == 0 || !strings.Contains(out, `"status":"pending"`) {
 		t.Fatalf("reply_draft: %s", out)
 	}
@@ -354,7 +405,7 @@ func TestAReplyDraftGoesFromTheChiefToThePluginOnceThroughTheRealPlane(t *testin
 
 	// 7. A lapsed lease.
 	m2 := d.post(aTok, "ext-2-"+d.suffix, "")
-	second, out := d.replyDraft(chief, m2, "Second reply.")
+	second, out := d.replyDraft(agent, m2, "Second reply.")
 	if second == 0 {
 		t.Fatalf("second draft: %s", out)
 	}
@@ -379,10 +430,10 @@ func TestAReplyDraftGoesFromTheChiefToThePluginOnceThroughTheRealPlane(t *testin
 	if rec := d.do("POST", "/plugins/drafts/"+strconv.FormatInt(second, 10)+"/approve", "", d.session(d.a, false, true)); rec.Code != http.StatusConflict {
 		t.Fatalf("approving an unconfirmed draft: %d; want 409 — it is never offered again", rec.Code)
 	}
-	// 8. The message-scoped rule: the chief files a NEW draft for the same
+	// 8. The message-scoped rule: the agent files a NEW draft for the same
 	// message (its card warns), the owner approves it — and then the plugin
 	// reports the unconfirmed one sent after all. The new one must not go too.
-	third, out := d.replyDraft(chief, m2, "Third reply.")
+	third, out := d.replyDraft(agent, m2, "Third reply.")
 	if third == 0 {
 		t.Fatalf("third draft: %s", out)
 	}
@@ -422,10 +473,10 @@ func cardOf(t *testing.T, page string, id int64) string {
 func TestARejectNeedsNoFreshSignInAndAClaimWaitsForAnApproval(t *testing.T) {
 	d := newDraftSeam(t)
 	aTok := d.mint(d.a)
-	chief := d.chief(d.a, "drfchief")
-	d.rt.expect(chief)
+	agent := d.agent(d.a, "drfchief")
+	d.rt.expect(agent)
 	m := d.post(aTok, "ext-r-"+d.suffix, "")
-	id, out := d.replyDraft(chief, m, "No thanks.")
+	id, out := d.replyDraft(agent, m, "No thanks.")
 	if id == 0 {
 		t.Fatalf("draft: %s", out)
 	}
@@ -447,7 +498,7 @@ func TestARejectNeedsNoFreshSignInAndAClaimWaitsForAnApproval(t *testing.T) {
 	if resolved != 1 {
 		t.Fatalf("rejecting draft %d sent %d resolved message(s); want 1: %+v", id, resolved, d.pusher.to(ep("draft-a")))
 	}
-	id2, _ := d.replyDraft(chief, m, "Maybe.")
+	id2, _ := d.replyDraft(agent, m, "Maybe.")
 	done := make(chan *httptest.ResponseRecorder, 1)
 	start := time.Now()
 	go func() { done <- d.claim(aTok, 20) }()
@@ -469,37 +520,37 @@ func TestARejectNeedsNoFreshSignInAndAClaimWaitsForAnApproval(t *testing.T) {
 }
 
 // TestNoReplyIsStoredAndToldToTheChief: a message posted with no_reply:true is
-// stored with the mark, the chief's turn says no reply is possible, and
+// stored with the mark, the agent's turn says no reply is possible, and
 // reply_draft refuses it. CONTROL: the same flow without the mark drafts.
 func TestNoReplyIsStoredAndToldToTheChief(t *testing.T) {
 	d := newDraftSeam(t)
 	aTok := d.mint(d.a)
-	chief := d.chief(d.a, "drfchief")
-	d.rt.expect(chief)
+	agent := d.agent(d.a, "drfchief")
+	d.rt.expect(agent)
 	nr := d.post(aTok, "ext-nr-"+d.suffix, `,"no_reply":true`)
 	if got, _ := d.ps.Message(d.asUser(d.a), nr); !got.NoReply || got.Status != plugins.StatusDelivered {
 		t.Fatalf("the no_reply message: %+v", got)
 	}
 	seen := d.rt.seen()
 	if len(seen) != 1 || !strings.Contains(seen[0], strings.ReplaceAll(plugins.NoReplySentence, `"`, `\"`)) {
-		t.Fatalf("the chief's turn does not say no reply is possible: %q", seen)
+		t.Fatalf("the agent's turn does not say no reply is possible: %q", seen)
 	}
-	if id, out := d.replyDraft(chief, nr, "hello"); id != 0 || !strings.Contains(out, "cannot be replied to") {
+	if id, out := d.replyDraft(agent, nr, "hello"); id != 0 || !strings.Contains(out, "cannot be replied to") {
 		t.Fatalf("reply_draft on a no_reply message: %s; want refused", out)
 	}
 	ok := d.post(aTok, "ext-ok-"+d.suffix, "")
 	if seen := d.rt.seen(); strings.Contains(seen[len(seen)-1], "cannot be replied to") {
 		t.Fatal("CONTROL: an ordinary message's turn says it cannot be replied to")
 	}
-	if id, out := d.replyDraft(chief, ok, "hello"); id == 0 {
+	if id, out := d.replyDraft(agent, ok, "hello"); id == 0 {
 		t.Fatalf("CONTROL: reply_draft on an ordinary message: %s", out)
 	}
 }
 
-// TestTheChiefDraftsAReplyOverMCP: through the real /mcp door, the chief's own
+// TestTheChiefDraftsAReplyOverMCP: through the real /mcp door, the agent's own
 // token files a draft for a message delivered to it; a worker of the same owner
 // is not offered the tool (tools/call is refused); a message delivered to the
-// worker, and a no_reply one, are refused to the chief with words.
+// worker, and a no_reply one, are refused to the agent with words.
 func TestTheChiefDraftsAReplyOverMCP(t *testing.T) {
 	g := newGatedFixture(t)
 	call := func(token string, args map[string]any) (string, bool, *mcpError) {
@@ -515,13 +566,20 @@ func TestTheChiefDraftsAReplyOverMCP(t *testing.T) {
 		text, isErr := toolText(t, r)
 		return text, isErr, nil
 	}
-	m := g.deliveredMessage(t, g.owner, g.chief.ID, "mcp-1")
+	m := g.deliveredMessage(t, g.owner, g.agent.ID, "mcp-1")
 	text, isErr, rpcErr := call(g.chiefTok, map[string]any{"message_id": m.ID, "body": "Thanks!"})
 	if rpcErr != nil || isErr || !strings.Contains(text, `"status":"pending"`) {
-		t.Fatalf("the chief's reply_draft: %q isErr=%v rpc=%v", text, isErr, rpcErr)
+		t.Fatalf("the agent's reply_draft: %q isErr=%v rpc=%v", text, isErr, rpcErr)
 	}
-	if _, _, rpcErr := call(g.workerTok, map[string]any{"message_id": m.ID, "body": "x"}); rpcErr == nil {
-		t.Fatal("a worker was able to call reply_draft over /mcp")
+	// 🔴 A WORKER IS OFFERED reply_draft NOW AND IS STILL REFUSED THIS CALL — on
+	// the MESSAGE, not on its rank. The tool was the labelled agent's alone, so
+	// /mcp answered a worker with an rpc error ("unknown tool"); the gate that
+	// actually protects a plugin's conversation is DeliveredTo, which this
+	// message fails because it was delivered to another agent.
+	if text, isErr, rpcErr := call(g.workerTok, map[string]any{"message_id": m.ID, "body": "x"}); rpcErr != nil {
+		t.Fatalf("a worker was not offered reply_draft over /mcp: %v", rpcErr)
+	} else if !isErr || !strings.Contains(text, "not a plugin message delivered to you") {
+		t.Fatalf("a worker's reply_draft on another agent's message: %q isErr=%v; want the delivered-to-you refusal", text, isErr)
 	}
 	wm := g.deliveredMessage(t, g.owner, g.worker.ID, "mcp-2")
 	if text, isErr, _ := call(g.chiefTok, map[string]any{"message_id": wm.ID, "body": "x"}); !isErr || !strings.Contains(text, "not a plugin message delivered to you") {
@@ -532,10 +590,10 @@ func TestTheChiefDraftsAReplyOverMCP(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ok, err := g.plugins.BeginDelivery(g.asOwner, nr.ID, g.chief.ID); err != nil || !ok {
+	if ok, err := g.plugins.BeginDelivery(g.asOwner, nr.ID, g.agent.ID); err != nil || !ok {
 		t.Fatal(err)
 	}
-	if ok, err := g.plugins.RecordDelivery(g.asOwner, nr.ID, g.chief.ID, plugins.StatusDelivered); err != nil || !ok {
+	if ok, err := g.plugins.RecordDelivery(g.asOwner, nr.ID, g.agent.ID, plugins.StatusDelivered); err != nil || !ok {
 		t.Fatal(err)
 	}
 	if text, isErr, _ := call(g.chiefTok, map[string]any{"message_id": nr.ID, "body": "x"}); !isErr || !strings.Contains(text, "cannot be replied to") {
@@ -546,15 +604,15 @@ func TestTheChiefDraftsAReplyOverMCP(t *testing.T) {
 // TestAClaimAnswersWhileADeliveryIsStillRunning: a delivered message is a TOOL
 // turn and can take minutes, so neither the claim-time retry nor a delivery
 // already running may hold a claim's answer — and one message is never handed
-// to the chief twice at once.
+// to the agent twice at once.
 //
-//  1. A message queued while its owner had no chief; then a chief whose runtime
+//  1. A message queued while its owner had no agent; then an agent whose runtime
 //     HOLDS every turn. A claim must answer (204) while the retry it started is
 //     still inside that held turn — and a second claim meanwhile starts nothing
 //     new. Released, the message is delivered, in ONE turn.
 //  2. A message whose POST-time delivery is held: a claim answers, and its retry
 //     — which finds the same message still queued — does not send it again (the
-//     chief's session claim refuses the second attempt). One turn in all.
+//     agent's session claim refuses the second attempt). One turn in all.
 func TestAClaimAnswersWhileADeliveryIsStillRunning(t *testing.T) {
 	d := newDraftSeam(t)
 	aTok := d.mint(d.a)
@@ -582,14 +640,14 @@ func TestAClaimAnswersWhileADeliveryIsStillRunning(t *testing.T) {
 
 	// 1. The claim-time retry is detached.
 	m1 := d.post(aTok, "slow-1-"+d.suffix, "")
-	chief := d.chief(d.a, "slowchief")
-	d.rt.expect(chief)
+	agent := d.agent(d.a, "slowchief")
+	d.rt.expect(agent)
 	arrived, release := d.rt.hold()
 	t.Cleanup(release)
 	claimWithin("a claim whose retry is delivering")
 	arrivedWithin(arrived, "the claim's retry")
-	// While its turn is held the message is being delivered to the chief (audit
-	// round 1: the chief may cite it on that turn), and not offered again.
+	// While its turn is held the message is being delivered to the agent (audit
+	// round 1: the agent may cite it on that turn), and not offered again.
 	if got, _ := d.ps.Message(d.asUser(d.a), m1); got.Status != plugins.StatusDelivering {
 		t.Fatalf("the message is %s while its turn is still held; want delivering", got.Status)
 	}

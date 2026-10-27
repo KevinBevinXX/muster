@@ -24,7 +24,7 @@ import (
 
 // THE ATTENTION QUEUE end to end on a real Postgres: the tools on both
 // transports, the view and its forms, the JSON API, the pushes, the unified
-// read model's three sources, and the chief-only gate.
+// read model's three sources, and the agent-only gate.
 
 type attnFixture struct {
 	*connFixture
@@ -34,12 +34,12 @@ type attnFixture struct {
 	pusher  *payloadPusher
 	mirror  *fakeMirror
 	tokens  fakeMirrorTokens
-	// The operator's (user 1's) two non-chief agents: the asker, and another.
+	// The operator's (user 1's) two non-agent agents: the asker, and another.
 	op, op2       agents.Agent
 	opTok, op2Tok string
-	// A member with a chief and a worker: the chief-only gate's subjects.
+	// A member with an agent and a worker: the agent-only gate's subjects.
 	member              int64
-	chief, worker       agents.Agent
+	agent, worker       agents.Agent
 	chiefTok, workerTok string
 }
 
@@ -72,8 +72,8 @@ func newAttnFixture(t *testing.T, more ...func(*Extensions, *pgxpool.Pool)) *att
 	f.op = f.agentFor(t, 1, "attnop-"+suffix, "", f.opTok)
 	f.op2 = f.agentFor(t, 1, "attnop2-"+suffix, "", f.op2Tok)
 	f.member = f.newMember(t)
-	f.chiefTok, f.workerTok = "attn-chief-token-"+suffix, "attn-worker-token-"+suffix
-	f.chief = f.agentFor(t, f.member, "attnchief-"+suffix, "chief", f.chiefTok)
+	f.chiefTok, f.workerTok = "attn-agent-token-"+suffix, "attn-worker-token-"+suffix
+	f.agent = f.agentFor(t, f.member, "attnchief-"+suffix, "agent", f.chiefTok)
 	f.worker = f.agentFor(t, f.member, "attnworker-"+suffix, "", f.workerTok)
 	t.Cleanup(func() {
 		_, _ = f.pool.Exec(authz.System(context.Background()), `DELETE FROM attention_asks WHERE agent_id IN ($1, $2)`, f.op.ID, f.op2.ID)
@@ -314,46 +314,50 @@ func TestAnAskIsOnlyItsAskersToWaitOnOrCancel(t *testing.T) {
 	}
 }
 
-// TestTheChiefOnlyToolsAreRefusedToEveryoneElse: a worker is not offered
-// attention_list, attention_answer or session_transcript, and calling one by
-// name is refused on BOTH transports; the chief is offered and served them.
-func TestTheChiefOnlyToolsAreRefusedToEveryoneElse(t *testing.T) {
+// TestTheQueueToolsAreOfferedToEveryAgent: attention_list and
+// session_transcript were once offered to the labelled agent ALONE and refused
+// to anyone else on both transports. muster has no privileged agent, so every
+// agent is offered and served them, scoped to its own owner by row-level
+// security — and attention_answer is still nobody's (it is the owner's mirrored
+// sessions' alone), which is what the second half pins.
+//
+// 🔴 THIS TEST USED TO ASSERT THE OPPOSITE HALF, and the inversion is the
+// point: it is kept rather than deleted so the listing AND both dispatch paths
+// are still exercised for these two tools. TestNoToolIsRestrictedToAParticularAgent
+// (gated_task_test.go) pins the general rule; this pins that these two actually
+// answer for a worker rather than merely appearing in its list.
+func TestTheQueueToolsAreOfferedToEveryAgent(t *testing.T) {
 	f := newAttnFixture(t)
-	chiefOnly := []string{attentionListTool, sessionTranscript}
+	fleetTools := []string{attentionListTool, sessionTranscript}
 	allAgents := []string{attentionAskTool, attentionWaitTool, attentionCancelTool, tasksListTool, taskGetTool, taskCommentTool, taskSetStatusTool}
 	wl, cl := f.listed(t, f.workerTok), f.listed(t, f.chiefTok)
-	for _, n := range chiefOnly {
-		if wl[n] || !cl[n] {
-			t.Fatalf("%s: worker listed %v, chief listed %v", n, wl[n], cl[n])
-		}
-	}
-	for _, n := range allAgents {
+	for _, n := range append(append([]string{}, fleetTools...), allAgents...) {
 		if !wl[n] || !cl[n] {
-			t.Fatalf("%s: worker listed %v, chief listed %v", n, wl[n], cl[n])
+			t.Fatalf("%s: worker listed %v, other agent listed %v; both want true", n, wl[n], cl[n])
 		}
 	}
 	id := f.ask(t, f.workerTok, "Which region?", "us", "eu")
 	args := map[string]any{"id": id, "answer": "eu", "subject": "agent:" + strconv.FormatInt(f.worker.ID, 10)}
-	for _, n := range chiefOnly {
-		_, _, rpc := f.tool(t, f.workerTok, n, args)
-		if rpc == nil || rpc.Code != -32602 || !strings.Contains(rpc.Message, "unknown tool") {
-			t.Fatalf("MCP %s by a worker: %+v", n, rpc)
+	// A worker CALLING them is served on both transports: no "agent agent only".
+	for _, n := range fleetTools {
+		if _, _, rpc := f.tool(t, f.workerTok, n, args); rpc != nil {
+			t.Fatalf("MCP %s by a worker: %+v, want served", n, rpc)
 		}
 		raw, _ := json.Marshal(args)
-		if got := f.srv.AgentToolDispatch(asUser(f.member), f.worker)(n, string(raw)); !strings.Contains(got, "chief agent only") {
-			t.Fatalf("gateway %s by a worker: %s", n, got)
+		if got := f.srv.AgentToolDispatch(asUser(f.member), f.worker)(n, string(raw)); strings.Contains(got, "agent agent only") {
+			t.Fatalf("gateway %s by a worker was refused by rank: %s", n, got)
 		}
 	}
-	// No dispatched agent answers an ask — the chief included. attention_answer
+	// No dispatched agent answers an ask. attention_answer
 	// exists, but only for the owner's mirrored sessions: unlisted on /mcp, and
 	// refused by its handler when a gateway runtime names it.
 	for n, want := range map[string]string{"attention_answer": "available only to your owner's own mirrored Claude Code sessions", "attention_get": "unknown tool"} {
 		if _, _, rpc := f.tool(t, f.chiefTok, n, args); rpc == nil || rpc.Code != -32602 {
-			t.Fatalf("MCP %s by the chief: %+v", n, rpc)
+			t.Fatalf("MCP %s by the agent: %+v", n, rpc)
 		}
 		raw, _ := json.Marshal(args)
-		if got := f.srv.AgentToolDispatch(asUser(f.member), f.chief)(n, string(raw)); !strings.Contains(got, want) {
-			t.Fatalf("gateway %s by the chief: %s", n, got)
+		if got := f.srv.AgentToolDispatch(asUser(f.member), f.agent)(n, string(raw)); !strings.Contains(got, want) {
+			t.Fatalf("gateway %s by the agent: %s", n, got)
 		}
 	}
 	if a, _ := f.attn.Get(asUser(f.member), id); a.Status != attention.Open {
@@ -361,7 +365,7 @@ func TestTheChiefOnlyToolsAreRefusedToEveryoneElse(t *testing.T) {
 	}
 	text, _, _ := f.tool(t, f.chiefTok, attentionListTool, map[string]any{})
 	if !strings.Contains(text, `"ask_id":`+strconv.FormatInt(id, 10)) || !strings.Contains(text, "Which region?") {
-		t.Fatalf("chief list: %s", text)
+		t.Fatalf("agent list: %s", text)
 	}
 	// session_transcript: the worker's own conversation, size-capped.
 	sess, err := agents.NewPG(f.pool).CreateSession(asUser(f.member), f.worker.ID, f.worker.Name)
@@ -383,7 +387,7 @@ func TestTheChiefOnlyToolsAreRefusedToEveryoneElse(t *testing.T) {
 		len([]rune(tr.Entries[1].Text)) != transcriptEntryMax+1 || !tr.Trunc {
 		t.Fatalf("transcript: %v %.300s", err, text)
 	}
-	// Another owner's agent is not a session of the chief's owner.
+	// Another owner's agent is not a session of the agent's owner.
 	if text, isErr, _ := f.tool(t, f.chiefTok, sessionTranscript, map[string]any{"subject": "agent:" + strconv.FormatInt(f.op.ID, 10)}); !isErr || !strings.Contains(text, "not a session") {
 		t.Fatalf("another owner's transcript: %s", text)
 	}
@@ -393,7 +397,7 @@ func TestTheChiefOnlyToolsAreRefusedToEveryoneElse(t *testing.T) {
 // sets the status of the task it was dispatched for — on BOTH transports —
 // and nothing else: its owner's other task and another owner's task each
 // answer exactly what a task that does not exist answers, and are untouched.
-// tasks_list lists its own task alone; the chief's lists the whole board. No
+// tasks_list lists its own task alone; the agent's lists the whole board. No
 // agent moves a task into or out of complete.
 func TestATaskToolTouchesOnlyTheCallersOwnTasks(t *testing.T) {
 	f := newAttnFixture(t)
@@ -493,17 +497,17 @@ func TestATaskToolTouchesOnlyTheCallersOwnTasks(t *testing.T) {
 	if n, _ := f.notes.Get(asUser(f.member), mine.ID); n.Status != notes.StatusComplete {
 		t.Fatalf("a completed task was reopened: %s", n.Status)
 	}
-	// The chief: the whole board of its owner, and never another owner's.
+	// The agent: the whole board of its owner, and never another owner's.
 	text, _, _ := f.tool(t, f.chiefTok, tasksListTool, map[string]any{})
 	if !strings.Contains(text, `"id":`+strconv.FormatInt(sibling.ID, 10)) || !strings.Contains(text, `"id":`+strconv.FormatInt(mine.ID, 10)) ||
 		strings.Contains(text, `"id":`+strconv.FormatInt(theirs.ID, 10)+",") {
-		t.Fatalf("chief list: %s", text)
+		t.Fatalf("agent list: %s", text)
 	}
-	if text, _, _ := f.tool(t, f.chiefTok, taskCommentTool, map[string]any{"id": sibling.ID, "body": "chief note"}); !strings.Contains(text, `"body":"chief note"`) {
-		t.Fatalf("chief comment: %s", text)
+	if text, _, _ := f.tool(t, f.chiefTok, taskCommentTool, map[string]any{"id": sibling.ID, "body": "agent note"}); !strings.Contains(text, `"body":"agent note"`) {
+		t.Fatalf("agent comment: %s", text)
 	}
 	if text, _, _ := f.tool(t, f.chiefTok, taskGetTool, map[string]any{"id": theirs.ID}); text != `{"error":"no such task: `+strconv.FormatInt(theirs.ID, 10)+`"}` {
-		t.Fatalf("chief on another owner's task: %s", text)
+		t.Fatalf("agent on another owner's task: %s", text)
 	}
 }
 

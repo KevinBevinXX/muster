@@ -360,7 +360,7 @@ func TestAStuckOwedRowGoesRedWithItsLastSendError(t *testing.T) {
 // check stands between a foreign row and an action.
 //
 //   - brave-heron: foreign namespace, status error, a pending note.
-//   - chief:       foreign namespace, status running, kicked_off=t, a pending note,
+//   - agent:       foreign namespace, status running, kicked_off=t, a pending note,
 //     a READY instance of the same name.
 //   - amber-otter: foreign namespace, provisioning, owed, dwelt past the timeout,
 //     no instance → the table says ActionError. Only ownership prevents it.
@@ -373,9 +373,9 @@ func TestTheDelivererLeavesRowsItDoesNotOwnAndKickedOffRowsAlone(t *testing.T) {
 	braveHeron := agents.Agent{ID: 11, Name: "brave-heron", Namespace: "devpod-brave-heron",
 		Status: agents.StatusError, PendingNote: "note for heron", HooksToken: "tok-heron",
 		UpdatedAt: fixedNow.Add(-72 * time.Hour)}
-	chief := agents.Agent{ID: 12, Name: "chief", Namespace: "devpod-chief",
-		Status: agents.StatusRunning, KickedOff: true, PendingNote: "note for chief",
-		HooksToken: "tok-chief", KickoffPod: "chief-old-pod", UpdatedAt: fixedNow.Add(-48 * time.Hour)}
+	agent := agents.Agent{ID: 12, Name: "agent", Namespace: "devpod-agent",
+		Status: agents.StatusRunning, KickedOff: true, PendingNote: "note for agent",
+		HooksToken: "tok-agent", KickoffPod: "agent-old-pod", UpdatedAt: fixedNow.Add(-48 * time.Hour)}
 	amberOtter := agents.Agent{ID: 13, Name: "amber-otter", Namespace: "devpod-amber-otter",
 		Status: agents.StatusProvisioning, PendingNote: "note for otter", HooksToken: "tok-otter",
 		UpdatedAt: fixedNow.Add(-5 * time.Hour)}
@@ -384,10 +384,10 @@ func TestTheDelivererLeavesRowsItDoesNotOwnAndKickedOffRowsAlone(t *testing.T) {
 		UpdatedAt: fixedNow.Add(-1 * time.Minute)}
 
 	h := newHarness(t, []provision.Instance{
-		readyInstance("chief", "chief-new-pod", 4),
+		readyInstance("agent", "agent-new-pod", 4),
 		readyInstance("silver-wren", "silver-wren-pod", 1),
 		readyInstance("lively-newt", "lively-newt-7f9c-x2", 2),
-	}, braveHeron, chief, amberOtter, silverWren, ownedRow())
+	}, braveHeron, agent, amberOtter, silverWren, ownedRow())
 	log := h.tick(t)
 
 	if indexOf(log, "Chat(lively-newt,") < 0 {
@@ -401,7 +401,7 @@ func TestTheDelivererLeavesRowsItDoesNotOwnAndKickedOffRowsAlone(t *testing.T) {
 			}
 		}
 	}
-	for _, name := range []string{"brave-heron", "chief", "amber-otter", "silver-wren"} {
+	for _, name := range []string{"brave-heron", "agent", "amber-otter", "silver-wren"} {
 		if indexOf(log, "Chat("+name+",") >= 0 {
 			t.Errorf("a turn was sent to %s, a row this deployment does not own.%s", name, transcript(log))
 		}

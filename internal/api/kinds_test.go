@@ -166,12 +166,12 @@ func TestAClaudeCodeDispatchTakesOnlyAConnectedRepository(t *testing.T) {
 	s, h, store := kindsServer(t, stubKinds{pick: "work"})
 	connectRepos(t, s, "example-org/tide")
 	rec := postDispatch(t, s, h, url.Values{"kind": {"claude-code"}, "note_text": {"t"}, "repo": {"stranger/x"}})
-	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), chiefDispatchRepo) || len(store.rows()) != 0 {
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), taskDispatchRepo) || len(store.rows()) != 0 {
 		t.Fatalf("unconnected repo: %d %q rows=%d", rec.Code, rec.Body, len(store.rows()))
 	}
 	s2, h2, store2 := kindsServer(t, stubKinds{pick: "work"})
 	rec = postDispatch(t, s2, h2, url.Values{"kind": {"claude-code"}, "note_text": {"t"}, "repo": {"example-org/tide"}})
-	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), chiefDispatchNoGitHub) || len(store2.rows()) != 0 {
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), taskDispatchNoGitHub) || len(store2.rows()) != 0 {
 		t.Fatalf("no GitHub connection: %d %q rows=%d", rec.Code, rec.Body, len(store2.rows()))
 	}
 	if rec := postDispatch(t, s, h, url.Values{"note_text": {"t"}, "repo": {"stranger/x"}}); rec.Code != http.StatusOK {

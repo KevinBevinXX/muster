@@ -41,11 +41,14 @@ func storeSpecConfig() agentspec.Config {
 	return cfg
 }
 
-// supervisorRow is the one agent eligible for the credential.
+// supervisorRow is the one agent eligible for the credential. It is a FLEET
+// agent: fixtureAgent is a worker (it binds a task), and the supervisor must
+// carry no task and no repository, exactly what IsFleetAgent keys on.
 func supervisorRow() agents.Agent {
 	ag := fixtureAgent()
-	ag.Name = agents.ChiefName
-	ag.Namespace = agents.NamespaceFor(agents.NamespacePrefix, agents.ChiefName)
+	ag.Name = "seam-supervisor"
+	ag.Namespace = agents.NamespaceFor(agents.NamespacePrefix, "seam-supervisor")
+	ag.NoteID = nil
 	return ag
 }
 
@@ -117,9 +120,6 @@ func filePaths(spec provision.Spec) []string {
 // axis cannot see a build that gated on the wrong one.
 func TestTheSupervisorsProseAndItsSpecAgreeAboutTheStore(t *testing.T) {
 	worker := fixtureAgent()
-	if worker.Name == agents.ChiefName {
-		t.Fatal("the worker fixture IS the supervisor, so the two axes below collapse into one")
-	}
 
 	cases := []struct {
 		name       string
@@ -238,8 +238,8 @@ func TestOnlyTheSupervisorIsEligibleForTheStoreCredential(t *testing.T) {
 // supervisor is told it holds a credential the instance does not carry.
 //
 // ⚠ AND THE "COMPUTED TWICE" MUTANT IS NOT A HAZARD, WHICH IS WHY NO TEST HERE
-// CATCHES IT. Replacing `store := a.spec.CairnConfigured()` + `ChiefInstructions(store)`
-// with an inlined `ChiefInstructions(a.spec.CairnConfigured())` is the SAME
+// CATCHES IT. Replacing `store := a.spec.CairnConfigured()` + `SupervisorInstructions(store)`
+// with an inlined `SupervisorInstructions(a.spec.CairnConfigured())` is the SAME
 // EXPRESSION evaluated twice: it is semantically equivalent, changes no output, and
 // a sweep confirmed it survives every test in these three packages. An equivalent
 // mutant surviving is correct behaviour for a behavioural suite, not a gap — and the

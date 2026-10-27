@@ -10,17 +10,17 @@ import (
 // TestAMessageAGatedTaskAlreadyCitesIsNotRetried (#138 follow-up 2): the cut-off
 // turn may already have run task_create_gated citing the message — recorded
 // only as the ActionGatedTask audit row carrying its message_id. A retry would
-// hand the chief the message again and it would file a SECOND gated task. So a
+// hand the target the message again and it would file a SECOND gated task. So a
 // message a gated task cites is not listed and its requeue is refused, saying
 // why. A gated task citing a DIFFERENT message, or none, does not count (control).
 func TestAMessageAGatedTaskAlreadyCitesIsNotRetried(t *testing.T) {
-	s, _, gw, d, p, chief := deliverFixture(t)
+	s, _, gw, d, p, target := deliverFixture(t)
 	cut := func(ext string) Message {
 		t.Helper()
 		m, _, _ := s.Submit(plugin(2), p.ID, msg(ext))
 		gw.err = context.DeadlineExceeded
 		defer func() { gw.err = nil }()
-		if r := d.Deliver(plugin(2), p.ID, m.ID, chief); r.Outcome != OutcomeUnconfirmed {
+		if r := d.Deliver(plugin(2), p.ID, m.ID, target); r.Outcome != OutcomeUnconfirmed {
 			t.Fatalf("setup %s: %+v; want unconfirmed", ext, r)
 		}
 		return m
@@ -39,12 +39,12 @@ func TestAMessageAGatedTaskAlreadyCitesIsNotRetried(t *testing.T) {
 		}
 		return false
 	}
-	// The chief files a gated task citing CITED (under the owner's principal,
+	// The target files a gated task citing CITED (under the owner's principal,
 	// as its tool call runs) — and one citing no message at all.
-	if err := s.ReserveGatedTask(plugin(2), chief.ID, &cited.ID); err != nil {
+	if err := s.ReserveGatedTask(plugin(2), target.ID, &cited.ID); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.ReserveGatedTask(plugin(2), chief.ID, nil); err != nil {
+	if err := s.ReserveGatedTask(plugin(2), target.ID, nil); err != nil {
 		t.Fatal(err)
 	}
 	if !listed(free.ID) {

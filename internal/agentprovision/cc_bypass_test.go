@@ -9,9 +9,25 @@ import (
 	"testing"
 
 	"github.com/ZacxDev/muster/internal/agents"
+	"github.com/ZacxDev/muster/internal/agentspec"
 	"github.com/ZacxDev/muster/internal/connectors"
 	"github.com/ZacxDev/muster/internal/provision"
 )
+
+func ccSpecConfig() agentspec.Config {
+	cfg := fixtureSpecConfig()
+	cfg.ClaudeCode = &agentspec.ClaudeCodeConfig{Image: "ghcr.io/example-org/claude-code-agent:7c1", Accounts: map[string]string{"acct-x": "sk-ant-oat01-FAKE-cc-3e9a"}}
+	cfg.ConnectURL, cfg.ConnectPort = "http://muster.example.test:18091", 18091
+	return cfg
+}
+
+func ccRow(name string) agents.Agent {
+	ag := fixtureAgent()
+	ag.Name = name
+	ag.Kind, ag.CCAccount, ag.HooksToken = agents.KindClaudeCode, "acct-x", "fixture-hooks-cc"
+	ag.GatewaySecret = "test-gateway-secret"
+	return ag
+}
 
 // noGitHubGrant is the grant lookup answering "holds none" for every agent.
 func noGitHubGrant(context.Context, int64) (string, error) { return "", nil }
@@ -34,15 +50,13 @@ func jobModeEnv(spec provision.Spec) (env, secrets []string) {
 }
 
 // 🔴 THE BYPASS VARIABLE REACHES ONLY A LISTED POOL'S AGENTS, AT THE SEAM. Built
-// through the provisioner's own buildSpec (the chief's real path, with its
+// through the provisioner's own buildSpec (the agent's real path, with its
 // prose): an agent in a listed pool gets CCD_JOB_PERMISSION_MODE=bypassPermissions
-// exactly once; an agent in an UNLISTED pool, an UNPOOLED agent, and the CHIEF —
+// exactly once; an agent in an UNLISTED pool, an UNPOOLED agent, and the AGENT —
 // even with a row naming a listed pool — get no such variable at all; and with
 // the list empty nobody does.
 //
-// ⚠ THE TWO CHIEF CASES ARE INVARIANT GUARDS, NOT REGRESSION COVERAGE: no
-// creation path gives a chief a WorkerPool today, so they pin agentspec's own
-// refusal (jobBypass) against a future path that does. One unlisted pool has a listed one as its prefix,
+// ⚠ One unlisted pool has a listed one as its prefix,
 // so a prefix or substring match would be caught.
 func TestOnlyAListedPoolsAgentsAreToldToBypassJobPermissions(t *testing.T) {
 	for _, c := range []struct {
@@ -56,8 +70,6 @@ func TestOnlyAListedPoolsAgentsAreToldToBypassJobPermissions(t *testing.T) {
 		{"unpooled agent", "plain-worker", "", []string{"triage", "pr-review"}, nil},
 		// The server never lets "" into the list; agentspec holds the line itself.
 		{"unpooled agent, list naming the empty pool", "plain-worker-2", "", []string{"", "pr-review"}, nil},
-		{"INVARIANT chief, row naming a listed pool", agents.ChiefName, "pr-review", []string{"pr-review"}, nil},
-		{"INVARIANT chief of another user", agents.ChiefNameFor(7), "pr-review", []string{"pr-review"}, nil},
 		{"listed pool, list empty", "review-worker-3", "pr-review", nil, nil},
 	} {
 		t.Run(c.name, func(t *testing.T) {

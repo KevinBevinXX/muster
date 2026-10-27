@@ -13,7 +13,7 @@ import (
 )
 
 // Audit round 1: task events have their OWN allowance, separate from the
-// plugin's chief-mail caps, and the dispatch ledger and the "Task to route"
+// plugin's target-mail caps, and the dispatch ledger and the "Task to route"
 // read are filtered to the caller's own rows in SQL, not only by row-level
 // security.
 
@@ -39,24 +39,24 @@ func taskEventIn(t *testing.T, task int64, d string) MessageIn {
 }
 
 // TestTaskEventsHaveTheirOwnHourlyAllowance, both directions: a full hour of
-// chief mail does not refuse a task event, and a full hour of task events does
-// not refuse chief mail — each bucket refuses only its own next one. The fills
+// target mail does not refuse a task event, and a full hour of task events does
+// not refuse target mail — each bucket refuses only its own next one. The fills
 // overshoot the OTHER bucket's cap, so a bucket that counted every row would
 // refuse.
 func TestTaskEventsHaveTheirOwnHourlyAllowance(t *testing.T) {
-	t.Run("chief mail does not spend the task-event allowance", func(t *testing.T) {
+	t.Run("target mail does not spend the task-event allowance", func(t *testing.T) {
 		s, pool, dsn := pgStore(t)
 		_, p := mustCreate(t, s, 2, "example-tracker")
 		task := pgTask(t, pool, 2)
 		fillMessages(t, dsn, p, 0, MaxTaskEventsPerHour, "mail-", "0")
 		if _, _, err := s.Submit(plugin(2), p.ID, msg("mail-over")); !errors.Is(err, ErrRateLimited) {
-			t.Fatalf("chief mail past its hour: %v; want ErrRateLimited (control)", err)
+			t.Fatalf("target mail past its hour: %v; want ErrRateLimited (control)", err)
 		}
 		if _, created, err := s.SubmitTaskEvent(plugin(2), p.ID, task, taskEventIn(t, task, "e1")); err != nil || !created {
-			t.Fatalf("a task event after a full hour of chief mail: created=%v %v; want stored", created, err)
+			t.Fatalf("a task event after a full hour of target mail: created=%v %v; want stored", created, err)
 		}
 	})
-	t.Run("task events do not spend the chief-mail allowance", func(t *testing.T) {
+	t.Run("task events do not spend the target-mail allowance", func(t *testing.T) {
 		s, pool, dsn := pgStore(t)
 		_, p := mustCreate(t, s, 2, "example-tracker")
 		task := pgTask(t, pool, 2)
@@ -68,7 +68,7 @@ func TestTaskEventsHaveTheirOwnHourlyAllowance(t *testing.T) {
 			t.Fatalf("task event %d in an hour: %v; want ErrRateLimited", MaxTaskEventsPerHour+1, err)
 		}
 		if _, created, err := s.Submit(plugin(2), p.ID, msg("mail-1")); err != nil || !created {
-			t.Fatalf("chief mail after a full hour of task events: created=%v %v; want stored", created, err)
+			t.Fatalf("target mail after a full hour of task events: created=%v %v; want stored", created, err)
 		}
 	})
 }
@@ -76,19 +76,19 @@ func TestTaskEventsHaveTheirOwnHourlyAllowance(t *testing.T) {
 // TestTaskEventsHaveTheirOwnQueue: the same, for the undelivered caps, with
 // every row outside the hour.
 func TestTaskEventsHaveTheirOwnQueue(t *testing.T) {
-	t.Run("queued chief mail does not fill the task-event queue", func(t *testing.T) {
+	t.Run("queued target mail does not fill the task-event queue", func(t *testing.T) {
 		s, pool, dsn := pgStore(t)
 		_, p := mustCreate(t, s, 2, "example-tracker")
 		task := pgTask(t, pool, 2)
 		fillMessages(t, dsn, p, 0, MaxTaskEventsQueued, "mail-", "2 hours")
 		if _, _, err := s.Submit(plugin(2), p.ID, msg("mail-over")); !errors.Is(err, ErrQueueFull) {
-			t.Fatalf("chief mail past its queue: %v; want ErrQueueFull (control)", err)
+			t.Fatalf("target mail past its queue: %v; want ErrQueueFull (control)", err)
 		}
 		if _, created, err := s.SubmitTaskEvent(plugin(2), p.ID, task, taskEventIn(t, task, "e1")); err != nil || !created {
-			t.Fatalf("a task event behind a full chief-mail queue: created=%v %v; want stored", created, err)
+			t.Fatalf("a task event behind a full target-mail queue: created=%v %v; want stored", created, err)
 		}
 	})
-	t.Run("queued task events do not fill the chief-mail queue", func(t *testing.T) {
+	t.Run("queued task events do not fill the target-mail queue", func(t *testing.T) {
 		s, pool, dsn := pgStore(t)
 		_, p := mustCreate(t, s, 2, "example-tracker")
 		task := pgTask(t, pool, 2)
@@ -100,7 +100,7 @@ func TestTaskEventsHaveTheirOwnQueue(t *testing.T) {
 			t.Fatalf("task event past %d undelivered: %v; want ErrQueueFull", MaxTaskEventsQueued, err)
 		}
 		if _, created, err := s.Submit(plugin(2), p.ID, msg("mail-1")); err != nil || !created {
-			t.Fatalf("chief mail behind a full task-event queue: created=%v %v; want stored", created, err)
+			t.Fatalf("target mail behind a full task-event queue: created=%v %v; want stored", created, err)
 		}
 	})
 }
@@ -155,30 +155,30 @@ func TestUnroutedTaskEventsAreTheCallersWithRLSOff(t *testing.T) {
 	}
 }
 
-// TestTheChiefDispatchLedgerIsTheCallersWithoutRLS: with row-level security
+// TestTheTaskDispatchLedgerIsTheCallersWithoutRLS: with row-level security
 // off (audit_log included), another owner's start for the SAME task id, its
 // live agents and its day's starts count for nothing: the caller reserves.
-func TestTheChiefDispatchLedgerIsTheCallersWithoutRLS(t *testing.T) {
+func TestTheTaskDispatchLedgerIsTheCallersWithoutRLS(t *testing.T) {
 	s, pool, dsn := pgStore(t)
 	dbtest.OwnerExec(t, dsn, `DELETE FROM audit_log WHERE action LIKE 'task.chief_%'`)
 	const shared = 610
 	// Owner 3: a full cap of live started agents, the first on task 610, and a
 	// full day of starts. A full cap is what makes "counts for nothing" able to
 	// fail: fewer would leave the caller a slot even if they were counted.
-	for i := 0; i < MaxChiefLiveAgents; i++ {
+	for i := 0; i < MaxLiveDispatchedAgents; i++ {
 		task := shared + int64(i)
-		if _, err := s.ReserveChiefDispatch(session(3), task, nil, nil); err != nil {
+		if _, err := s.ReserveTaskDispatch(session(3), task, nil, nil); err != nil {
 			t.Fatal(err)
 		}
 		a := mustAgent(t, dsn, 3, "plg-led-"+strconv.Itoa(i))
-		if err := s.RecordChiefDispatchAgent(session(3), task, a.ID); err != nil {
+		if err := s.RecordTaskDispatchAgent(session(3), task, a.ID); err != nil {
 			t.Fatal(err)
 		}
 	}
 	dbtest.OwnerExec(t, dsn, `INSERT INTO audit_log (user_id, action, object)
-		SELECT 3, $1, 'note:' || (700 + g) FROM generate_series(1, $2) g`, ActionChiefDispatch, MaxChiefDispatchesPerDay)
+		SELECT 3, $1, 'note:' || (700 + g) FROM generate_series(1, $2) g`, ActionTaskDispatch, MaxDispatchesPerDay)
 	rlsOffForTest(t, pool, dsn, true)
-	r, err := s.ReserveChiefDispatch(session(2), shared, nil, nil)
+	r, err := s.ReserveTaskDispatch(session(2), shared, nil, nil)
 	if err != nil || r.Prior {
 		t.Fatalf("owner 2's first start for task %d with RLS off: %+v %v; want a fresh reservation", shared, r, err)
 	}
@@ -190,18 +190,18 @@ func TestTheChiefDispatchLedgerIsTheCallersWithoutRLS(t *testing.T) {
 func TestAnotherOwnersStartedAgentDoesNotFreeTheCallersPendingSlot(t *testing.T) {
 	s, pool, dsn := pgStore(t)
 	dbtest.OwnerExec(t, dsn, `DELETE FROM audit_log WHERE action LIKE 'task.chief_%'`)
-	if err := s.RecordChiefDispatchAgent(session(3), 620, mustAgent(t, dsn, 3, "plg-led-x").ID); err != nil {
+	if err := s.RecordTaskDispatchAgent(session(3), 620, mustAgent(t, dsn, 3, "plg-led-x").ID); err != nil {
 		t.Fatal(err)
 	}
 	rlsOffForTest(t, pool, dsn, true)
 	// Fill the caller's cap, 620 (the task the other owner's agent shares) first.
-	for task := int64(620); task < 620+MaxChiefLiveAgents; task++ {
-		if r, err := s.ReserveChiefDispatch(session(2), task, nil, nil); err != nil || r.Prior {
+	for task := int64(620); task < 620+MaxLiveDispatchedAgents; task++ {
+		if r, err := s.ReserveTaskDispatch(session(2), task, nil, nil); err != nil || r.Prior {
 			t.Fatalf("reserve %d: %+v %v", task, r, err)
 		}
 	}
-	if _, err := s.ReserveChiefDispatch(session(2), 620+MaxChiefLiveAgents, nil, nil); !errors.Is(err, ErrChiefLiveCap) {
-		t.Fatalf("one more start with the caller's cap in flight: %v; want ErrChiefLiveCap", err)
+	if _, err := s.ReserveTaskDispatch(session(2), 620+MaxLiveDispatchedAgents, nil, nil); !errors.Is(err, ErrDispatchLiveCap) {
+		t.Fatalf("one more start with the caller's cap in flight: %v; want ErrDispatchLiveCap", err)
 	}
 }
 
@@ -211,14 +211,14 @@ func TestAnotherOwnersStartedAgentDoesNotFreeTheCallersPendingSlot(t *testing.T)
 func TestAPriorStartNamesOnlyTheCallersAgent(t *testing.T) {
 	s, pool, dsn := pgStore(t)
 	dbtest.OwnerExec(t, dsn, `DELETE FROM audit_log WHERE action LIKE 'task.chief_%'`)
-	if _, err := s.ReserveChiefDispatch(session(2), 630, nil, nil); err != nil {
+	if _, err := s.ReserveTaskDispatch(session(2), 630, nil, nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.RecordChiefDispatchAgent(session(3), 630, mustAgent(t, dsn, 3, "plg-led-y").ID); err != nil {
+	if err := s.RecordTaskDispatchAgent(session(3), 630, mustAgent(t, dsn, 3, "plg-led-y").ID); err != nil {
 		t.Fatal(err)
 	}
 	rlsOffForTest(t, pool, dsn, true)
-	r, err := s.ReserveChiefDispatch(session(2), 630, nil, nil)
+	r, err := s.ReserveTaskDispatch(session(2), 630, nil, nil)
 	if err != nil || !r.Prior || r.AgentID != nil {
 		t.Fatalf("the caller's repeat: %+v %v; want Prior with no agent", r, err)
 	}

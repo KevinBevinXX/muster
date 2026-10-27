@@ -182,9 +182,9 @@ func newLaneSet(getenv func(string) string, maxLanes int, newTerm func(target st
 //
 // 🔴 A UNIX SOCKET, NOT 127.0.0.1. Every container in a pod shares one network
 // namespace, so a TCP loopback listener is reachable from a sidecar — in a
-// chief's pod, the gateway runtime, which untrusted content can steer. A socket
+// agent's pod, the gateway runtime, which untrusted content can steer. A socket
 // bound to a path is reachable only through the filesystem, and the sidecar has
-// its own (agentspec's gateway sidecar mounts no volume of the chief's). The
+// its own (agentspec's gateway sidecar mounts no volume of the agent's). The
 // directory is os.MkdirTemp's, mode 0700, owned by ccd's user. The credential is
 // per process: 32 random bytes, never written to disk, handed only to the CLIs
 // ccd starts (tmuxTerminal.env). It is defence in depth — it keeps the channel

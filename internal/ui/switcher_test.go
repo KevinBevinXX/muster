@@ -243,7 +243,7 @@ func TestTheSwitcherBarIsServerRenderedAtAFixedHeight(t *testing.T) {
 // inside the pinned composer AFTER the input row (so composerPinScript's
 // measure includes it), the row gives up the safe-area inset to it, and the
 // body reserves the taller fallback; on an agent's chat page it follows the
-// chat form; the chief panel's copy of the pane draws none; and a page given
+// chat form; the agent panel's copy of the pane draws none; and a page given
 // no switcher draws none.
 func TestTheSwitcherIsBelowTheInputOnBothPages(t *testing.T) {
 	sw := NewSwitcher([]AgentCardView{{ID: 9, Name: "ag-nine", Status: "running"}}, nil, nil, SwitcherCurrent{})
@@ -304,10 +304,6 @@ func TestTheSwitcherIsBelowTheInputOnBothPages(t *testing.T) {
 	}
 	if !strings.Contains(pane, `href="/agents/ag-nine"`) {
 		t.Error("the agent page's bar does not link the other agent")
-	}
-	panel := renderString(t, agentChatPane(AgentDetailView{Name: "a", Status: "running", ActiveSessionID: 1, Switcher: sw, Surface: ChatSurfaceChiefPanel}))
-	if strings.Contains(panel, SwitcherID) {
-		t.Error("the chief panel draws the switcher")
 	}
 }
 

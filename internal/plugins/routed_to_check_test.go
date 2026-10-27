@@ -45,7 +45,7 @@ func TestTheDatabaseKeepsNoticeRoutesToTheirShape(t *testing.T) {
 		delivered      bool
 		done, claimed  bool
 	}{
-		{"an unknown destination", "chief", task, true, false, false},
+		{"an unknown destination", "target", task, true, false, false},
 		{"a route without a task", "agent", nil, true, false, false},
 		{"a route not delivered", "attention", task, false, false, false},
 		{"done without a route", nil, task, true, true, false},

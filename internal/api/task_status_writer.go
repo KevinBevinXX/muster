@@ -61,7 +61,7 @@ const (
 	writerTaskTool statusWriter = "task_set_status"
 	// writerDestroyReopen is the in_progress→open step after a mirrored
 	// session's agent_destroy tore down the last live agent on a task
-	// (agent_destroy_tool.go), so the chief can task_dispatch it again.
+	// (agent_destroy_tool.go), so the agent can task_dispatch it again.
 	writerDestroyReopen statusWriter = "agent-destroy-reopen"
 	// 🔴 TWO LABELS WERE DELETED HERE (upstream task #653 phase two), and the
 	// deletion-tracking note matters more than usual because these are LOG VALUES:
@@ -89,8 +89,8 @@ const (
 // caller and must not be flattened here.
 //
 // 🔴 ONE SIDE EFFECT LIVES HERE, AND ONLY ONE: a write that moved the task
-// INTO `complete` from another status stops the agent the chief started for it
-// (stopChiefAgentOnComplete). The previous status is the one the store's own
+// INTO `complete` from another status stops the agent the agent started for it
+// (stopDispatchedAgentOnComplete). The previous status is the one the store's own
 // UPDATE replaced (notes.WithPreviousStatus), so a re-save of a task already
 // complete — after the owner Started the agent again, say — stops nothing, and
 // no read can race the write. A store that does not report the previous status
@@ -112,7 +112,7 @@ func (s *Server) setNoteStatus(ctx context.Context, writer statusWriter, id int6
 	wctx, previous := notes.WithPreviousStatus(notes.WithWriter(ctx, string(writer)))
 	n, err := s.ext.Notes.SetStatus(wctx, id, status)
 	if prev, ok := previous(); err == nil && status == notes.StatusComplete && ok && prev != notes.StatusComplete {
-		s.stopChiefAgentOnComplete(ctx, n)
+		s.stopDispatchedAgentOnComplete(ctx, n)
 	}
 	return n, err
 }

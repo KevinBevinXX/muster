@@ -200,13 +200,13 @@ func TestAnAnswerOnASessionPageReturnsThere(t *testing.T) {
 	}
 }
 
-// TestTheChiefsTaskAskOffersItsActionsOnTheChiefsPage: the chief's
-// task_route_attention ask, on the chief's page, offers the task actions as its
+// TestTheChiefsTaskAskOffersItsActionsOnTheChiefsPage: the agent's
+// task_route_attention ask, on the agent's page, offers the task actions as its
 // buttons (task_dispatch here: the owner opted in and nobody works the task).
 func TestTheChiefsTaskAskOffersItsActionsOnTheChiefsPage(t *testing.T) {
 	f := newTaskRouteFixture(t, true, true)
 	n := f.task(t, "who takes it")
-	res := f.call(f.chief, taskRouteAttentionTool, map[string]any{"task_id": n.ID, "note": "Who should take it?"})
+	res := f.call(f.agent, taskRouteAttentionTool, map[string]any{"task_id": n.ID, "note": "Who should take it?"})
 	var out struct {
 		ID      int64    `json:"id"`
 		Offered []string `json:"actions_offered"`
@@ -214,27 +214,27 @@ func TestTheChiefsTaskAskOffersItsActionsOnTheChiefsPage(t *testing.T) {
 	if err := json.Unmarshal([]byte(res), &out); err != nil || out.ID <= 0 || !containsStr(out.Offered, taskDispatchTool) {
 		t.Fatalf("task_route_attention answered %s", res)
 	}
-	// The chief's page, as its owner (a member: the handler itself, under the
+	// The agent's page, as its owner (a member: the handler itself, under the
 	// owner's principal, as requireSession would call it).
 	get := func(path string) *httptest.ResponseRecorder {
 		r := httptest.NewRequest(http.MethodGet, path, nil).WithContext(f.asOwner)
-		r.SetPathValue("name", f.chief.Name)
+		r.SetPathValue("name", f.agent.Name)
 		w := httptest.NewRecorder()
 		f.srv.handleAgentDetail(w, r)
 		return w
 	}
-	w := get("/agents/" + f.chief.Name)
+	w := get("/agents/" + f.agent.Name)
 	if w.Code == http.StatusSeeOther {
 		w = get(w.Header().Get("Location"))
 	}
 	if w.Code != http.StatusOK {
-		t.Fatalf("the chief's page: %d", w.Code)
+		t.Fatalf("the agent's page: %d", w.Code)
 	}
 	block := askBlock(w.Body.String())
 	for _, want := range []string{`id="` + attentionAskKey(out.ID) + `"`, `value="task_dispatch: start a new agent on it"`,
-		`action="/attention/asks/` + strconv.FormatInt(out.ID, 10) + `/answer"`, `name="return" value="/agents/` + f.chief.Name + `?session=`} {
+		`action="/attention/asks/` + strconv.FormatInt(out.ID, 10) + `/answer"`, `name="return" value="/agents/` + f.agent.Name + `?session=`} {
 		if !strings.Contains(block, want) {
-			t.Errorf("the chief's block lacks %q:\n%s", want, block)
+			t.Errorf("the agent's block lacks %q:\n%s", want, block)
 		}
 	}
 }

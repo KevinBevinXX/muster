@@ -532,7 +532,7 @@ func (s *Server) handleSendQueueDelete(w http.ResponseWriter, r *http.Request) {
 
 // sendQueueRetryable is whether it's row offers Retry: it failed, has not
 // been retried yet, and is a person's own — never a ROUTED row, whose failed
-// route goes back to the chief (sendqueue.PGStore.Retry refuses it otherwise).
+// route goes back to the agent (sendqueue.PGStore.Retry refuses it otherwise).
 func sendQueueRetryable(it sendqueue.Item) bool {
 	return it.State == sendqueue.Failed && it.RetriedAs == 0 && it.RouteID == ""
 }
@@ -932,7 +932,7 @@ func sendQueueFailure(err error) sendqueue.Outcome {
 // Why a routed queued message is not sent (sendQueueRoutedGate).
 const (
 	SendQueueRouteClosed  = "Not sent: its route is no longer waiting for an answer"
-	SendQueueRouteMoved   = "Not sent: the window no longer holds the conversation the message was routed to; it went back to the chief."
+	SendQueueRouteMoved   = "Not sent: the window no longer holds the conversation the message was routed to; it went back to the agent."
 	SendQueueRouteUnknown = "Not sent: its route could not be read."
 )
 
@@ -941,7 +941,7 @@ const (
 // never outlives its route, whether or not its cancel happened — and the
 // window must still hold the Claude session the route PINNED (the route's
 // target key). A window that moved on fails the route and hands it back to
-// the chief. ctx is the row's owner.
+// the agent. ctx is the row's owner.
 func (s *Server) sendQueueRoutedGate(ctx context.Context, it sendqueue.Item) string {
 	if s.ext.Routes == nil {
 		return SendQueueRouteUnknown
@@ -968,7 +968,7 @@ func (s *Server) sendQueueRoutedGate(ctx context.Context, it sendqueue.Item) str
 		s.logger.Printf("routes: %s: fail on a moved window: %v", r.RouteID, err)
 		return SendQueueRouteMoved
 	}
-	// The failure owes the chief a hand-back, which the route sweep delivers.
+	// The failure owes the agent a hand-back, which the route sweep delivers.
 	s.logger.Printf("routes: %s: %s (it holds %q)", r.RouteID, why, holds)
 	s.kickRouteSweep()
 	return SendQueueRouteMoved

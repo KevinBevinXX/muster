@@ -174,7 +174,7 @@ func (s *PGStore) LastMessageByAgentIDs(ctx context.Context, ids []int64) (map[i
 // ledger this reads.
 //
 // ⚠ THE LEDGER IS ONLY EVER READ HERE. Nothing refuses an INSERT of a retired
-// name, deliberately (migration 0002 says why: `chief` is provisioned with a
+// name, deliberately (migration 0002 says why: `agent` is provisioned with a
 // hand-set name and a refusal would make re-provisioning it impossible). So this
 // closes the AUTO-GENERATED path and no other.
 //
@@ -818,7 +818,7 @@ func (s *PGStore) CreateSessionOn(ctx context.Context, agentID int64, agentName,
 //
 // 🔴 THE ELECTION IS THE MIGRATION'S RULE, IN ONE PLACE PER LAYER: the legacy-key
 // session first, then the oldest. "Latest" would be wrong — it is whatever was
-// touched last, which for a chief is usually a plugin's session — and a default
+// touched last, which for an agent is usually a plugin's session — and a default
 // that moved every time a message arrived would not be a default.
 //
 // ⚠ TWO CALLERS ELECTING AT ONCE: the partial unique index lets one UPDATE win;

@@ -22,7 +22,7 @@ import (
 // the one after answers already_dispatched (the release freed exactly one).
 func refusedThenRetried(t *testing.T, f *taskRouteFixture, n notes.Note, want string, fix func()) {
 	t.Helper()
-	text := f.call(f.chief, taskDispatchTool, map[string]any{"task_id": n.ID})
+	text := f.call(f.agent, taskDispatchTool, map[string]any{"task_id": n.ID})
 	if !strings.Contains(text, `"error"`) || !strings.Contains(text, "could not be started") || !strings.Contains(text, want) {
 		t.Fatalf("the refused start: %s; want a refusal naming %q", text, want)
 	}
@@ -33,14 +33,14 @@ func refusedThenRetried(t *testing.T, f *taskRouteFixture, n notes.Note, want st
 		t.Fatalf("reservations after the refusal: %d, want 1 (the unit is spent)", r)
 	}
 	fix()
-	text = f.call(f.chief, taskDispatchTool, map[string]any{"task_id": n.ID})
+	text = f.call(f.agent, taskDispatchTool, map[string]any{"task_id": n.ID})
 	if strings.Contains(text, `"error"`) || strings.Contains(text, "already_dispatched") || !strings.Contains(text, `"agent_id"`) {
 		t.Fatalf("the call after the refusal: %s; want a started agent (the refused start released)", text)
 	}
 	if got := f.agentsOn(t, n.ID); len(got) != 1 {
 		t.Fatalf("agents on the task after the retry: %d, want 1", len(got))
 	}
-	if again := f.call(f.chief, taskDispatchTool, map[string]any{"task_id": n.ID}); !strings.Contains(again, `"already_dispatched":true`) {
+	if again := f.call(f.agent, taskDispatchTool, map[string]any{"task_id": n.ID}); !strings.Contains(again, `"already_dispatched":true`) {
 		t.Fatalf("a third call: %s", again)
 	}
 }
@@ -98,7 +98,7 @@ func TestARepositoryDisconnectedAfterTheReservationReleasesTheStart(t *testing.T
 	github.UseAPIBaseURL(srv.URL)
 	t.Cleanup(func() { github.UseAPIBaseURL("https://api.github.com") })
 	f.srv.ext.GitHub = fakeGitHubConn{}
-	refusedThenRetried(t, f, n, chiefDispatchRepo, func() {
+	refusedThenRetried(t, f, n, taskDispatchRepo, func() {
 		mu.Lock()
 		dropAfterReserve = false
 		mu.Unlock()
@@ -131,7 +131,7 @@ func TestAForwardToARunningAgentWhoseFirstTurnIsOwedRidesThatTurn(t *testing.T) 
 	}
 	turnCount := func() int { mu.Lock(); defer mu.Unlock(); return len(turns) }
 
-	text := f.call(f.chief, taskForwardTool, map[string]any{"task_id": n.ID, "note": "Scope changed upstream"})
+	text := f.call(f.agent, taskForwardTool, map[string]any{"task_id": n.ID, "note": "Scope changed upstream"})
 	if strings.Contains(text, `"error"`) || !strings.Contains(text, `"turn_started":false`) {
 		t.Fatalf("the forward: %s", text)
 	}
@@ -147,7 +147,7 @@ func TestAForwardToARunningAgentWhoseFirstTurnIsOwedRidesThatTurn(t *testing.T) 
 	if _, err := f.pool.Exec(f.asOwner, `UPDATE agents SET kicked_off = true WHERE id = $1`, a.ID); err != nil {
 		t.Fatal(err)
 	}
-	if text := f.call(f.chief, taskForwardTool, map[string]any{"task_id": n.ID, "note": "And again"}); !strings.Contains(text, `"turn_started":true`) {
+	if text := f.call(f.agent, taskForwardTool, map[string]any{"task_id": n.ID, "note": "And again"}); !strings.Contains(text, `"turn_started":true`) {
 		t.Fatalf("a forward after the stamp: %s", text)
 	}
 	if turnCount() != 1 {
@@ -156,7 +156,7 @@ func TestAForwardToARunningAgentWhoseFirstTurnIsOwedRidesThatTurn(t *testing.T) 
 }
 
 // TestForwardsFoldedIntoAHeldFirstTurnKeepTheRulesLastAndStayBounded (#209
-// audit 🟢6): a forward folded into a chief-started agent's owed first turn
+// audit 🟢6): a forward folded into an agent-started agent's owed first turn
 // goes BEFORE muster's rules, which stay the message's last word; and past the
 // size bound a forward is not added — the turn says so, once — so the first
 // turn stays within what ccd reads (1 MiB).
@@ -164,7 +164,7 @@ func TestForwardsFoldedIntoAHeldFirstTurnKeepTheRulesLastAndStayBounded(t *testi
 	f := newTaskRouteFixture(t, false, false)
 	n := f.task(t, "held, rules last")
 	store := agents.NewPG(f.pool)
-	first := "Work the held task." + chiefDispatchRules
+	first := "Work the held task." + taskDispatchRules
 	a, err := store.Create(f.asOwner, agents.Agent{Name: "trrules-" + strconv.FormatInt(f.owner, 10),
 		Namespace: "ns-trrules", Status: agents.StatusRunning, NoteID: &n.ID, PendingNote: first})
 	if err != nil {
@@ -178,12 +178,12 @@ func TestForwardsFoldedIntoAHeldFirstTurnKeepTheRulesLastAndStayBounded(t *testi
 		}
 		return cur.PendingNote
 	}
-	if text := f.call(f.chief, taskForwardTool, map[string]any{"task_id": n.ID, "note": "First change upstream"}); !strings.Contains(text, `"turn_started":false`) {
+	if text := f.call(f.agent, taskForwardTool, map[string]any{"task_id": n.ID, "note": "First change upstream"}); !strings.Contains(text, `"turn_started":false`) {
 		t.Fatalf("the forward: %s", text)
 	}
 	got := note()
-	if !strings.HasSuffix(got, chiefDispatchRules) || !strings.Contains(got, "First change upstream") ||
-		strings.Index(got, "First change upstream") > strings.Index(got, chiefDispatchRules) {
+	if !strings.HasSuffix(got, taskDispatchRules) || !strings.Contains(got, "First change upstream") ||
+		strings.Index(got, "First change upstream") > strings.Index(got, taskDispatchRules) {
 		t.Fatalf("first turn %q: want the forward folded in BEFORE muster's rules, which stay last", got)
 	}
 
@@ -203,9 +203,9 @@ func TestForwardsFoldedIntoAHeldFirstTurnKeepTheRulesLastAndStayBounded(t *testi
 		t.Fatal("instrument: the delivered forward recorded no routing")
 	}
 	// 🔴 (#209 round-2 🟢5) a forward past the bound was NOT delivered: the
-	// chief is told so, and the task is not recorded as routed.
+	// agent is told so, and the task is not recorded as routed.
 	for _, c := range []string{"Second change " + strings.Repeat("x", 300), "Third change " + strings.Repeat("y", 300)} {
-		text := f.call(f.chief, taskForwardTool, map[string]any{"task_id": n.ID, "note": c})
+		text := f.call(f.agent, taskForwardTool, map[string]any{"task_id": n.ID, "note": c})
 		if !strings.Contains(text, `"error"`) || !strings.Contains(text, "not delivered") || strings.Contains(text, "Forwarded") {
 			t.Fatalf("a forward past the bound answered %s; want an error saying it was not delivered", text)
 		}
@@ -217,7 +217,7 @@ func TestForwardsFoldedIntoAHeldFirstTurnKeepTheRulesLastAndStayBounded(t *testi
 	if strings.Contains(got, "Second change") || strings.Contains(got, "Third change") {
 		t.Fatalf("a forward past the bound was added: %d bytes", len(got))
 	}
-	if strings.Count(got, "were not added here") != 1 || !strings.HasSuffix(got, chiefDispatchRules) {
+	if strings.Count(got, "were not added here") != 1 || !strings.HasSuffix(got, taskDispatchRules) {
 		t.Fatalf("first turn %q: want the size-limit line once, and muster's rules still last", got)
 	}
 }

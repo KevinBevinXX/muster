@@ -219,38 +219,35 @@ var isolationClasses = map[string]routeClass{
 	"POST /admin/users/{id}/role":            classAdminOnly,
 	"POST /admin/users/{id}/passkeys/delete": classAdminOnly,
 
-	"GET /{$}":                     classList,
-	"GET /agents":                  classList,
-	"GET /api/directories":         classList,
-	"GET /api/openrouter/models":   classList,
-	"GET /connectors":              classList,
-	"GET /events":                  classList,
-	"GET /github/callback":         classList,
-	"GET /github/connect":          classList,
-	"GET /repos":                   classList,
-	"GET /share":                   classList,
-	"GET /tasks":                   classList,
-	"GET /ui/agents":               classList,
-	"GET /ui/agents/new":           classList,
-	"GET /ui/agents/notes":         classList,
-	"GET /ui/agents/repos":         classList,
-	"GET /ui/chief/panel":          classList,
-	"GET /ui/chief/threads/search": classList,
-	"GET /ui/connector-requests":   classList,
-	"GET /ui/connectors":           classList,
-	"GET /ui/connectors/new":       classList,
-	"GET /ui/notifications":        classList,
-	"GET /ui/repos":                classList,
-	"GET /ui/tags":                 classList,
-	"GET /ui/tasks":                classList,
-	"GET /ui/tasks/new":            classList,
-	"GET /ui/tasks/review-count":   classList,
-	"POST /agents":                 classList, // the form names A's task as note_id
-	"POST /chief/provision":        classList,
-	"POST /connectors":             classList,
-	"POST /github/disconnect":      classList,
-	"POST /tasks":                  classList,
-	"POST /tasks/merge":            classList, // the form names A's task as the loser
+	"GET /{$}":                   classList,
+	"GET /agents":                classList,
+	"GET /api/directories":       classList,
+	"GET /api/openrouter/models": classList,
+	"GET /connectors":            classList,
+	"GET /events":                classList,
+	"GET /github/callback":       classList,
+	"GET /github/connect":        classList,
+	"GET /repos":                 classList,
+	"GET /share":                 classList,
+	"GET /tasks":                 classList,
+	"GET /ui/agents":             classList,
+	"GET /ui/agents/new":         classList,
+	"GET /ui/agents/notes":       classList,
+	"GET /ui/agents/repos":       classList,
+	"GET /ui/connector-requests": classList,
+	"GET /ui/connectors":         classList,
+	"GET /ui/connectors/new":     classList,
+	"GET /ui/notifications":      classList,
+	"GET /ui/repos":              classList,
+	"GET /ui/tags":               classList,
+	"GET /ui/tasks":              classList,
+	"GET /ui/tasks/new":          classList,
+	"GET /ui/tasks/review-count": classList,
+	"POST /agents":               classList, // the form names A's task as note_id
+	"POST /connectors":           classList,
+	"POST /github/disconnect":    classList,
+	"POST /tasks":                classList,
+	"POST /tasks/merge":          classList, // the form names A's task as the loser
 
 	"DELETE /agents/{id}":           classParam,
 	"DELETE /connector-grants/{id}": classParam,
@@ -304,9 +301,8 @@ var isolationClasses = map[string]routeClass{
 	"PATCH /api/tasks/{id}":                 classAdmin,
 	"PATCH /api/tasks/{id}/status":          classAdmin,
 	"POST /api/agents/{name}/messages":      classAdmin,
-	// Chief replacement (chief_replace.go), hook tier, acting as the caller.
-	"POST /api/chief/replace": classAdmin,
-	"POST /api/tasks":         classAdmin,
+	// Agent replacement (chief_replace.go), hook tier, acting as the caller.
+	"POST /api/tasks": classAdmin,
 	// Session routing (0021): a mirrored session's answer, on the hook tier
 	// (requireArmedHookToken), acting as the route's owner.
 	"POST /api/routes/{id}/reply": classAdmin,
@@ -369,6 +365,9 @@ var isolationClasses = map[string]routeClass{
 	"GET /plugins":              classList,
 	"POST /plugins":             classList,
 	"POST /plugins/{id}/revoke": classParam,
+	// target names A's plugin by id and A's agent in the body; B's attempt is
+	// refused by the agent read (row-level security) before anything is written.
+	"POST /plugins/{id}/target": classParam,
 	// Pins (0017): the form names A's agent as agent_id. B's pin of it is
 	// refused (the owner trigger) and B's unpin deletes only B's rows; A's
 	// seeded pins are in the snapshot, so either reaching A's would show.
@@ -454,9 +453,9 @@ var isolationClasses = map[string]routeClass{
 	// The attention queue (0025). The page, its live list and the badge name
 	// no object (each reads the caller's own queue); the answer and dismiss
 	// forms name A's ask by id.
-	"GET /attention":                   classList,
-	"GET /attention/items":             classList,
-	"GET /attention/drafts":            classList,
+	"GET /attention":        classList,
+	"GET /attention/items":  classList,
+	"GET /attention/drafts": classList,
 	// A session page's asks block names its asker by query (?agent=): A's
 	// agent's asks, never B's view of them. The tap route names an item by key.
 	"GET /attention/asker":             classParam,
@@ -485,7 +484,6 @@ var isolationClasses = map[string]routeClass{
 // the same route is a fact about B.
 var wantCanaryForA = []string{
 	"GET /ui/agents", "GET /ui/agents/notes", "GET /ui/connector-requests", "GET /ui/connectors",
-	"GET /ui/repos", "GET /ui/tasks", "GET /ui/chief/panel",
 	// The AGGREGATES — vocabularies, suggestion lists, unread rolls — read
 	// across rows rather than by id, which is exactly where a missing scope
 	// hides (plan §Recon 4). A's tag and project are identities, its unread
@@ -596,7 +594,7 @@ type isoWorld struct {
 	aConnName    string
 	aGrantID     int64
 	aSessionLink string
-	aChief       agents.Agent
+	aSecond      agents.Agent
 	opApproval   string
 	aProject     string
 	objA, ghost  isoObjs
@@ -853,7 +851,7 @@ func newIsoWorld(t *testing.T) *isoWorld {
 	must(err, "a plugin message delivered")
 	w.aDraft, _, err = ps.FileDraft(ua, w.a.agent.ID, w.a.uid, w.a.agent.Name, aMsg.ID, w.canary+" reply")
 	must(err, "a reply draft")
-	// A's chief routed that message to a mirrored session (0021): the object
+	// A's agent routed that message to a mirrored session (0021): the object
 	// POST /api/routes/{id}/reply names.
 	aRoute, err := ps.CreateRoute(ua, w.a.agent.ID, w.a.uid, aMsg.ID,
 		plugins.RouteTarget{Kind: "mirror", Key: "iso-session", Label: w.canary + " window"}, time.Hour)
@@ -893,7 +891,7 @@ func newIsoWorld(t *testing.T) *isoWorld {
 		Question: w.canary + " asks", Options: []string{"yes", "no"}})
 	must(err, "an ask")
 
-	w.aIdentities = []string{w.a.agent.Name, agents.ChiefNameFor(w.a.uid), w.aSessionLink, w.aTag, w.aProject}
+	w.aIdentities = []string{w.a.agent.Name, "isoa2" + w.suffix, w.aSessionLink, w.aTag, w.aProject}
 	w.opInvite, err = users.NewPG(pool).CreateInvite(ctx, users.Actor{UserID: authz.OperatorUserID, Via: authz.ViaSession},
 		bytes.Repeat([]byte{byte(time.Now().UnixNano())}, 32), "", time.Now().Add(time.Hour))
 	must(err, "op invite")
@@ -1047,26 +1045,24 @@ func newIsoWorld(t *testing.T) *isoWorld {
 	w.h = srv.Handler()
 	w.connectH = OnlyConnectSurface(w.h)
 
-	// A's chief, through the REAL provision path (POST /chief/provision as A's
-	// session) — not a hand-set display name, so the walk sees the chief a
-	// member actually gets.
-	if rec := w.do(w.h, "POST", "/chief/provision", url.Values{"model": {""}}.Encode(), cred{sessionUser: w.a.uid}); rec.Code != http.StatusOK {
-		t.Fatalf("seed: A's chief provision: %d %s", rec.Code, rec.Body)
-	}
-	w.aChief, err = as.GetByName(ua, agents.ChiefNameFor(w.a.uid))
-	must(err, "a chief")
+	// A's second agent: an ORDINARY row — muster has no privileged agent —
+	// created through the store, so the walk sees an agent a member actually
+	// gets.
+	w.aSecond, err = as.Create(ua, agents.Agent{Name: "isoa2" + w.suffix, DisplayName: w.canary + " second agent",
+		Namespace: "ns-isoa2" + w.suffix, HooksToken: "iso-a2-token-" + w.suffix, Status: agents.StatusRunning})
+	must(err, "a second agent")
 	must(pool.QueryRow(w.sys, `INSERT INTO connector_grants (agent_id, owner_id, connector_name, status, reason)
-		VALUES ($1, $2, $3, 'pending', $4) RETURNING id`, w.aChief.ID, w.a.uid, w.aConnName, w.canary+" reason").Scan(&w.aGrantID), "a pending grant")
+		VALUES ($1, $2, $3, 'pending', $4) RETURNING id`, w.aSecond.ID, w.a.uid, w.aConnName, w.canary+" reason").Scan(&w.aGrantID), "a pending grant")
 	w.objA.grant = w.aGrantID
 	// A's shared approval (a standing grant, 0043): the target B's revoke names.
 	must(pool.QueryRow(w.sys, `INSERT INTO connector_standing_grants (owner_id, connector_name, source)
 		VALUES ($1, $2, 'stored') RETURNING id`, w.a.uid, w.aConnName).Scan(&w.objA.standing), "a standing grant")
-	// An ACTIVE TURN of A's chief (round-2 audit 🟡1): the notifications
+	// An ACTIVE TURN of A's second agent (round-2 audit 🟡1): the notifications
 	// panel's ACTIVE section reads a SERVER-WIDE in-memory registry, not a
-	// table, so row-level security never sees it. The chief has no unread
+	// table, so row-level security never sees it. The second agent has no unread
 	// messages, so its name on a panel can only come from this registry.
 	// (markAgentActive is exactly what handleAgentWS calls at turn start.)
-	srv.markAgentActive(w.a.uid, w.aChief.Name, "thinking")
+	srv.markAgentActive(w.a.uid, w.aSecond.Name, "thinking")
 	// The operator's own tag and project: the positive control for the admin's
 	// vocabulary routes, whose leak check looks for A's.
 	_, err = ns.AddTags(authz.Operator(ctx), w.op.task.ID, []string{"isoop" + w.suffix, "project:isoopproj" + w.suffix})
@@ -1855,10 +1851,10 @@ func TestNoRouteLetsOneUserReachAnothersData(t *testing.T) {
 	if len(reached) < 30 {
 		t.Errorf("CONTROL: A's walk distinguished its own objects on only %d routes", len(reached))
 	}
-	// The ACTIVE-section control: A's panel names A's in-flight chief.
-	if body := w.do(w.h, "GET", "/ui/notifications", "", cred{sessionUser: w.a.uid}).Body.String(); !strings.Contains(body, w.aChief.Name) {
+	// The ACTIVE-section control: A's panel names A's in-flight agent.
+	if body := w.do(w.h, "GET", "/ui/notifications", "", cred{sessionUser: w.a.uid}).Body.String(); !strings.Contains(body, w.aSecond.Name) {
 		t.Errorf("CONTROL: A's notifications panel does not name A's in-flight %s, so B's clean panel proves nothing\n  body: %s",
-			w.aChief.Name, truncate(body, 300))
+			w.aSecond.Name, truncate(body, 300))
 	}
 	// The side-effect controls.
 	if w.up.sawSecret(w.canary+"-SECRET") == 0 {
@@ -1902,7 +1898,7 @@ func (w *isoWorld) checkCounts(t *testing.T) {
 			t.Errorf("COUNT: %s's review count = %s; want its own %d", u.name, rec.Body, truth(u))
 		}
 	}
-	// The ACTIVE section: A's in-flight chief is on nobody else's panel (the
+	// The ACTIVE section: A's in-flight agent is on nobody else's panel (the
 	// walk's identity check covers this too). A's own panel is the control,
 	// asserted after the mutation legs — rendering it creates A's chat session.
 	for _, c := range []struct {
@@ -1910,9 +1906,9 @@ func (w *isoWorld) checkCounts(t *testing.T) {
 		want bool
 	}{{w.b, false}, {w.op, false}} {
 		body := w.do(w.h, "GET", "/ui/notifications", "", cred{sessionUser: c.u.uid}).Body.String()
-		if strings.Contains(body, w.aChief.Name) != c.want {
+		if strings.Contains(body, w.aSecond.Name) != c.want {
 			t.Errorf("ACTIVE: %s's notifications panel names A's in-flight %s = %v; want %v\n  body: %s",
-				c.u.name, w.aChief.Name, !c.want, c.want, truncate(body, 300))
+				c.u.name, w.aSecond.Name, !c.want, c.want, truncate(body, 300))
 		}
 	}
 	if truth(w.a) == 0 {

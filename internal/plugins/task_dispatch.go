@@ -12,166 +12,166 @@ import (
 	"github.com/ZacxDev/muster/internal/authz"
 )
 
-// THE CHIEF-DISPATCH LEDGER: how many agents the chief may start on tasks
+// THE AGENT-DISPATCH LEDGER: how many agents the agent may start on tasks
 // (task_dispatch, internal/api/task_routing.go), and which task it already
 // started one for.
 //
 // Starting an agent spends the owner's model credential and runs code against
 // the owner's repositories, on the say-so of an agent that is reading text an
-// outside party wrote. So the chief gets a small, fixed budget, and each task
-// at most ONE chief-started agent per owner's destroy:
+// outside party wrote. So the agent gets a small, fixed budget, and each task
+// at most ONE agent-started agent per owner's destroy:
 //
-//   - at most MaxChiefLiveAgents of the agents it started are live at once;
-//   - at most MaxChiefDispatchesPerDay starts in any GatedTaskWindow-long day;
+//   - at most MaxLiveDispatchedAgents of the agents it started are live at once;
+//   - at most MaxDispatchesPerDay starts in any GatedTaskWindow-long day;
 //   - a task it already started an agent for answers with that start again
 //     (idempotent per task), whatever happened to the agent since — UNTIL ITS
 //     OWNER DESTROYS THE AGENT THAT START MADE (the Agents page's Delete, or
 //     their mirrored session's agent_destroy): that destroy RELEASES the start
-//     (ActionChiefDispatchReleased) and the chief may start ONE new agent on
-//     the task again. Operator decision ("Owner's destroy resets the chief's
-//     allowance"); the chief re-dispatching on its own is still refused, and a
+//     (ActionTaskDispatchReleased) and the agent may start ONE new agent on
+//     the task again. Operator decision ("Owner's destroy resets the agent's
+//     allowance"); the agent re-dispatching on its own is still refused, and a
 //     second agent alongside a live one is still the owner's call.
 //   - when the task becomes `complete`, the agent the task's latest, unreleased
-//     start made is STOPPED, not destroyed (api's stopChiefAgentOnComplete, via
-//     ChiefStartedAgent): a stopped agent is not in liveAgentStatuses, so it
-//     stops holding one of the MaxChiefLiveAgents slots. The start stays SPENT
-//     — a stop writes no release — so the chief answers already_dispatched for
+//     start made is STOPPED, not destroyed (api's stopDispatchedAgentOnComplete, via
+//     DispatchStartedAgent): a stopped agent is not in liveAgentStatuses, so it
+//     stops holding one of the MaxLiveDispatchedAgents slots. The start stays SPENT
+//     — a stop writes no release — so the agent answers already_dispatched for
 //     the task as before. `ready_for_review` stops nothing.
 //
 // 🔴 THE LEDGER IS THE AUDIT LOG, AS THE GATED-TASK BUDGET'S IS (gated.go). A
-// reservation is one ActionChiefDispatch row naming the task; the agent it
-// started is one ActionChiefDispatchAgent row. The caps are COUNTED from those
+// reservation is one ActionTaskDispatch row naming the task; the agent it
+// started is one ActionTaskDispatchAgent row. The caps are COUNTED from those
 // rows, so the audit trail and the caps cannot disagree, and no new table is
 // needed.
 const (
-	MaxChiefLiveAgents       = 5
-	MaxChiefDispatchesPerDay = 10
-	ChiefDispatchWindow      = 24 * time.Hour
+	MaxLiveDispatchedAgents = 5
+	MaxDispatchesPerDay     = 10
+	TaskDispatchWindow      = 24 * time.Hour
 
-	// ActionChiefDispatch is the reservation row (object NoteObject(task)).
-	ActionChiefDispatch = "task.chief_dispatch"
-	// ActionChiefDispatchAgent records the agent a reservation started.
-	ActionChiefDispatchAgent = "task.chief_dispatch_agent"
-	// ActionChiefDispatchReleased records the owner destroying the agent the
+	// ActionTaskDispatch is the reservation row (object NoteObject(task)).
+	ActionTaskDispatch = "task.chief_dispatch"
+	// ActionTaskDispatchAgent records the agent a reservation started.
+	ActionTaskDispatchAgent = "task.chief_dispatch_agent"
+	// ActionTaskDispatchReleased records the owner destroying the agent the
 	// task's latest reservation started, which frees the task's one start
-	// (ReleaseChiefDispatch). Nothing is deleted: a task's start is spent while
-	// its latest ActionChiefDispatch row is newer (by id) than its latest
+	// (ReleaseTaskDispatch). Nothing is deleted: a task's start is spent while
+	// its latest ActionTaskDispatch row is newer (by id) than its latest
 	// release row.
-	ActionChiefDispatchReleased = "task.chief_dispatch_released"
+	ActionTaskDispatchReleased = "task.chief_dispatch_released"
 )
 
 var (
-	// ErrChiefLiveCap: MaxChiefLiveAgents agents the chief started are still live.
-	ErrChiefLiveCap = errors.New("plugins: the chief already has the most live agents it may start")
-	// ErrChiefDailyCap: MaxChiefDispatchesPerDay starts in the last day.
-	ErrChiefDailyCap = errors.New("plugins: the chief's agent starts for the last day are spent")
+	// ErrDispatchLiveCap: MaxLiveDispatchedAgents agents the agent started are still live.
+	ErrDispatchLiveCap = errors.New("plugins: the agent already has the most live agents it may start")
+	// ErrDispatchDailyCap: MaxDispatchesPerDay starts in the last day.
+	ErrDispatchDailyCap = errors.New("plugins: this owner's task-dispatch starts for the last day are spent")
 )
 
 // NoteObject is the audit_log `object` naming a task.
 func NoteObject(id int64) string { return "note:" + strconv.FormatInt(id, 10) }
 
-// ChiefDispatch is what a reservation found or made.
-type ChiefDispatch struct {
-	// Prior: this task already had a chief start; nothing was reserved.
+// TaskDispatch is what a reservation found or made.
+type TaskDispatch struct {
+	// Prior: this task already had an agent start; nothing was reserved.
 	Prior bool
 	// AgentID is the agent the prior start recorded, nil when it recorded none
 	// (it failed before an agent existed).
 	AgentID *int64
 	// ReservationID is the audit row this call wrote (0 for Prior): what
-	// ReleaseRefusedChiefDispatch names, so a release frees THIS reservation
+	// ReleaseRefusedTaskDispatch names, so a release frees THIS reservation
 	// and never a later one.
 	ReservationID int64
-	// Budget is the budget a cap refusal (ErrChiefLiveCap, ErrChiefDailyCap)
+	// Budget is the budget a cap refusal (ErrDispatchLiveCap, ErrDispatchDailyCap)
 	// was decided on; nil otherwise.
-	Budget *ChiefBudget
+	Budget *DispatchBudget
 }
 
-// ChiefBudget is the chief's dispatch budget as the chief is shown it: every
+// DispatchBudget is the agent's dispatch budget as the agent is shown it: every
 // task_dispatch answer and refusal, and task_route_attention, carry it, so the
-// caps are DATA read at the call — never numbers the chief remembers from an
+// caps are DATA read at the call — never numbers the agent remembers from an
 // older conversation (its session survives restarts, and after the live cap
 // was raised it kept quoting the old one, "at most 2").
-type ChiefBudget struct {
-	// Live is how many chief-started agents count as live now: len(LiveAgents).
+type DispatchBudget struct {
+	// Live is how many agent-started agents count as live now: len(LiveAgents).
 	Live    int `json:"live"`
 	LiveCap int `json:"live_cap"`
-	// Today is the chief's starts (reservations) in the last ChiefDispatchWindow.
+	// Today is the agent's starts (reservations) in the last TaskDispatchWindow.
 	Today    int `json:"today"`
 	DailyCap int `json:"daily_cap"`
 	// LiveAgents is what Live counts: the recorded agents, oldest first, then
 	// the starts whose agent is not recorded yet (ID and Name nil).
-	LiveAgents []ChiefLiveAgent `json:"live_agents"`
+	LiveAgents []LiveDispatchedAgent `json:"live_agents"`
 }
 
 // LiveFull reports whether the live cap refuses another start. THE live-cap
-// predicate: ReserveChiefDispatch refuses on it, Full offers on it.
-func (b ChiefBudget) LiveFull() bool { return b.Live >= b.LiveCap }
+// predicate: ReserveTaskDispatch refuses on it, Full offers on it.
+func (b DispatchBudget) LiveFull() bool { return b.Live >= b.LiveCap }
 
 // DailyFull reports whether the daily cap refuses another start.
-func (b ChiefBudget) DailyFull() bool { return b.Today >= b.DailyCap }
+func (b DispatchBudget) DailyFull() bool { return b.Today >= b.DailyCap }
 
 // Full reports whether either cap refuses another start.
-func (b ChiefBudget) Full() bool { return b.LiveFull() || b.DailyFull() }
+func (b DispatchBudget) Full() bool { return b.LiveFull() || b.DailyFull() }
 
-// ChiefLiveAgent is one entry the live count counts. A recorded agent has ID and
+// LiveDispatchedAgent is one entry the live count counts. A recorded agent has ID and
 // Name; a reservation whose agent is not recorded yet — a start in flight, or
 // one that failed before an agent existed and was not released, counted for
 // pendingAgentWindow — has both nil (JSON null) and only Task.
-type ChiefLiveAgent struct {
+type LiveDispatchedAgent struct {
 	ID   *int64  `json:"id"`
 	Name *string `json:"name"`
 	// Task is the task the start was for (the ledger row's object).
 	Task int64 `json:"task"`
 }
 
-// DispatchStore is the chief-dispatch ledger. Every method acts as ctx's
+// DispatchStore is the agent-dispatch ledger. Every method acts as ctx's
 // principal (the task's owner): audit_log is under row-level security, so it
 // reads and appends that owner's rows only.
 type DispatchStore interface {
-	// ReserveChiefDispatch reserves one chief start for taskID, or reports the
+	// ReserveTaskDispatch reserves one agent start for taskID, or reports the
 	// prior one (Prior), or refuses: with check's error (the caller's own
 	// conditions on the task, run under the reservation's lock after the prior
-	// check), or ErrChiefLiveCap / ErrChiefDailyCap. Only a reservation that
+	// check), or ErrDispatchLiveCap / ErrDispatchDailyCap. Only a reservation that
 	// passed all of them writes anything. detail (nil-safe) is written into the
-	// reservation's audit row: what the chief asked for (the kind, its relayed
+	// reservation's audit row: what the agent asked for (the kind, its relayed
 	// instructions), as a ledger. ⚠ No muster page or route reads it back (#149):
-	// it is read with SQL (docs/chief.md); what the agent was told is also its
+	// it is read with SQL (docs/agent.md); what the agent was told is also its
 	// first message, in its transcript.
 	// A cap refusal returns, with its error, the budget it was decided on
-	// (ChiefDispatch.Budget).
-	ReserveChiefDispatch(ctx context.Context, taskID int64, detail map[string]any, check func() error) (ChiefDispatch, error)
-	// ChiefDispatchBudget is the principal's chief-dispatch budget now
-	// (chiefBudget, the count the caps compare). Read-only.
-	ChiefDispatchBudget(ctx context.Context) (ChiefBudget, error)
-	// RecordChiefDispatchAgent records the agent a reservation for taskID started.
-	RecordChiefDispatchAgent(ctx context.Context, taskID, agentID int64) error
-	// ReleaseChiefDispatch records that the owner destroyed agentID, releasing
-	// taskID's one chief start when — and only when — agentID is the agent the
+	// (TaskDispatch.Budget).
+	ReserveTaskDispatch(ctx context.Context, taskID int64, detail map[string]any, check func() error) (TaskDispatch, error)
+	// TaskDispatchBudget is the principal's agent-dispatch budget now
+	// (dispatchBudget, the count the caps compare). Read-only.
+	TaskDispatchBudget(ctx context.Context) (DispatchBudget, error)
+	// RecordTaskDispatchAgent records the agent a reservation for taskID started.
+	RecordTaskDispatchAgent(ctx context.Context, taskID, agentID int64) error
+	// ReleaseTaskDispatch records that the owner destroyed agentID, releasing
+	// taskID's one agent start when — and only when — agentID is the agent the
 	// task's latest, unreleased reservation started. It reports whether it
 	// wrote a release.
-	ReleaseChiefDispatch(ctx context.Context, taskID, agentID int64) (bool, error)
-	// ReleaseRefusedChiefDispatch releases the reservation reservationID (a
-	// ChiefDispatch.ReservationID) of taskID when — and only when — it is still
+	ReleaseTaskDispatch(ctx context.Context, taskID, agentID int64) (bool, error)
+	// ReleaseRefusedTaskDispatch releases the reservation reservationID (a
+	// TaskDispatch.ReservationID) of taskID when — and only when — it is still
 	// the task's latest, unreleased reservation and recorded no agent: the
 	// caller reserved, then the agent's create was REFUSED before any agent row
 	// existed (no pool account, an uncredentialed model, a repository no longer
 	// connected), so nothing was started and the task's one start must not stay
 	// spent. The day's unit stays spent (fail-closed). It reports whether it
 	// wrote a release.
-	ReleaseRefusedChiefDispatch(ctx context.Context, taskID, reservationID int64) (bool, error)
-	// ChiefStartedAgent is the agent the task's latest, unreleased chief start
+	ReleaseRefusedTaskDispatch(ctx context.Context, taskID, reservationID int64) (bool, error)
+	// DispatchStartedAgent is the agent the task's latest, unreleased agent start
 	// made, for the principal (the task's owner). ok is false when the task has
-	// no chief start, its latest start is released, or that start recorded no
+	// no agent start, its latest start is released, or that start recorded no
 	// agent. It is what a task becoming complete stops (api's
-	// stopChiefAgentOnComplete).
-	ChiefStartedAgent(ctx context.Context, taskID int64) (agentID int64, ok bool, err error)
-	// RecordTaskRouted records the chief routing taskID with tool (an
+	// stopDispatchedAgentOnComplete).
+	DispatchStartedAgent(ctx context.Context, taskID int64) (agentID int64, ok bool, err error)
+	// RecordTaskRouted records the agent routing taskID with tool (an
 	// ActionTaskRouted row).
 	RecordTaskRouted(ctx context.Context, taskID int64, tool string) error
 	// UnroutedTaskEvents is the principal's task events, newest first, at most
-	// limit, that the chief has not acted on: not being delivered right now,
+	// limit, that the agent has not acted on: not being delivered right now,
 	// and with no routing or start recorded for their task at or after the
-	// event's latest attempt, or its creation if it has had none (chiefActedOn).
+	// event's latest attempt, or its creation if it has had none (agentActedOn).
 	UnroutedTaskEvents(ctx context.Context, limit int) ([]Message, error)
 	// ReserveNoticeRoute / CompleteNoticeRoute / ReleaseNoticeRoute: task_events.go.
 	ReserveNoticeRoute(ctx context.Context, pluginID, taskID int64, in MessageIn, to string) (Message, bool, error)
@@ -186,18 +186,18 @@ var liveAgentStatuses = []string{"pending", "provisioning", "running"}
 
 // pendingAgentWindow is how long a reservation with no recorded agent counts
 // as a live agent: long enough to cover the create between the reservation and
-// RecordChiefDispatchAgent; bounded so a start that failed before any agent
+// RecordTaskDispatchAgent; bounded so a start that failed before any agent
 // existed frees its live slot (its day's unit and its task's one start stay
 // spent).
 const pendingAgentWindow = 10 * time.Minute
 
-// ActionTaskRouted records the chief routing a task without starting an agent
+// ActionTaskRouted records the agent routing a task without starting an agent
 // (task_route_attention, task_forward, or a task_dispatch answered
 // already_dispatched while an agent is running on the task): what takes the task off
 // the attention queue's "Task to route" list once its event was delivered.
 const ActionTaskRouted = "task.chief_routed"
 
-// ReserveChiefDispatch: see DispatchStore.
+// ReserveTaskDispatch: see DispatchStore.
 //
 // 🔴 SERIALISED PER OWNER ON A TRANSACTION ADVISORY LOCK, so the prior check,
 // both counts and the insert are one decision: two concurrent calls for one task
@@ -211,12 +211,12 @@ const ActionTaskRouted = "task.chief_routed"
 // SPENDS THE DAY'S UNIT AND THE TASK'S ONE START — the fail-closed direction, as
 // for the gated-task budget. The caller checks everything else before it
 // reserves.
-func (s *PGStore) ReserveChiefDispatch(ctx context.Context, taskID int64, detail map[string]any, check func() error) (ChiefDispatch, error) {
+func (s *PGStore) ReserveTaskDispatch(ctx context.Context, taskID int64, detail map[string]any, check func() error) (TaskDispatch, error) {
 	p, ok := authz.From(ctx)
 	if !ok || p.UserID <= 0 {
-		return ChiefDispatch{}, errors.New("plugins: a chief dispatch needs a user principal")
+		return TaskDispatch{}, errors.New("plugins: an agent dispatch needs a user principal")
 	}
-	var out ChiefDispatch
+	var out TaskDispatch
 	err := s.inTx(ctx, func(tx pgx.Tx) error {
 		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('muster.chief_dispatch:' || $1::text, 0))`,
 			strconv.FormatInt(p.UserID, 10)); err != nil {
@@ -227,8 +227,8 @@ func (s *PGStore) ReserveChiefDispatch(ctx context.Context, taskID int64, detail
 		// owner's start for the same task id read as this owner's, and its live
 		// agents and day's starts spent this owner's caps (audit round 1).
 		// The task's start is spent while its latest reservation is newer than
-		// its latest release (ReleaseChiefDispatch).
-		reserved, released, err := chiefStartRows(ctx, tx, p.UserID, taskID)
+		// its latest release (ReleaseTaskDispatch).
+		reserved, released, err := dispatchStartRows(ctx, tx, p.UserID, taskID)
 		if err != nil {
 			return err
 		}
@@ -255,85 +255,85 @@ func (s *PGStore) ReserveChiefDispatch(ctx context.Context, taskID int64, detail
 				return err
 			}
 		}
-		// The caps are decided on the SAME budget the chief is shown
-		// (chiefBudget): the refusal carries it (out.Budget).
-		b, err := chiefBudget(ctx, tx, p.UserID)
+		// The caps are decided on the SAME budget the agent is shown
+		// (dispatchBudget): the refusal carries it (out.Budget).
+		b, err := dispatchBudget(ctx, tx, p.UserID)
 		if err != nil {
 			return err
 		}
 		if b.LiveFull() {
 			out.Budget = &b
-			return ErrChiefLiveCap
+			return ErrDispatchLiveCap
 		}
 		if b.DailyFull() {
 			out.Budget = &b
-			return ErrChiefDailyCap
+			return ErrDispatchDailyCap
 		}
 		if detail == nil {
 			detail = map[string]any{}
 		}
-		if err := audit(ctx, tx, ActionChiefDispatch, NoteObject(taskID), detail); err != nil {
+		if err := audit(ctx, tx, ActionTaskDispatch, NoteObject(taskID), detail); err != nil {
 			return err
 		}
 		// Under the owner's lock: the newest reservation row for the task is
 		// the one just written.
-		written, _, err := chiefStartRows(ctx, tx, p.UserID, taskID)
+		written, _, err := dispatchStartRows(ctx, tx, p.UserID, taskID)
 		out.ReservationID = written
 		return err
 	})
 	if err != nil {
 		// Only a cap refusal carries anything: the budget it was decided on.
-		return ChiefDispatch{Budget: out.Budget}, err
+		return TaskDispatch{Budget: out.Budget}, err
 	}
 	return out, nil
 }
 
-// ChiefDispatchBudget: see DispatchStore. A read: it writes nothing and takes no
+// TaskDispatchBudget: see DispatchStore. A read: it writes nothing and takes no
 // reservation lock, so a reservation racing it can make it one start stale —
-// it is what the chief is SHOWN, never what a reservation is decided on (that
-// reads chiefBudget again under the lock).
-func (s *PGStore) ChiefDispatchBudget(ctx context.Context) (ChiefBudget, error) {
+// it is what the agent is SHOWN, never what a reservation is decided on (that
+// reads dispatchBudget again under the lock).
+func (s *PGStore) TaskDispatchBudget(ctx context.Context) (DispatchBudget, error) {
 	p, ok := authz.From(ctx)
 	if !ok || p.UserID <= 0 {
-		return ChiefBudget{}, errors.New("plugins: reading the chief's budget needs a user principal")
+		return DispatchBudget{}, errors.New("plugins: reading the agent's budget needs a user principal")
 	}
-	var b ChiefBudget
+	var b DispatchBudget
 	err := s.inTx(ctx, func(tx pgx.Tx) error {
 		var err error
-		b, err = chiefBudget(ctx, tx, p.UserID)
+		b, err = dispatchBudget(ctx, tx, p.UserID)
 		return err
 	})
 	return b, err
 }
 
-// chiefBudget is owner's chief-dispatch budget, counted from the ledger: THE
-// one count, shared by ReserveChiefDispatch (whose caps compare it) and
-// ChiefDispatchBudget (what the chief is shown). Live is len(LiveAgents), so the
+// dispatchBudget is owner's agent-dispatch budget, counted from the ledger: THE
+// one count, shared by ReserveTaskDispatch (whose caps compare it) and
+// TaskDispatchBudget (what the agent is shown). Live is len(LiveAgents), so the
 // list and the number cannot disagree.
 //
-//   - a RECORDED agent (an ActionChiefDispatchAgent row of owner's naming it)
+//   - a RECORDED agent (an ActionTaskDispatchAgent row of owner's naming it)
 //     whose stored status is live (liveAgentStatuses), once per agent;
 //   - a reservation from the last pendingAgentWindow with no agent row and no
-//     release row (ReleaseRefusedChiefDispatch) for its task newer than it: a
+//     release row (ReleaseRefusedTaskDispatch) for its task newer than it: a
 //     start in flight, or one that failed before any agent existed and was not
 //     released — listed with ID and Name nil. A start released after a refused
 //     create made no agent and holds no slot.
 //
-// Today is owner's reservations in the last ChiefDispatchWindow.
+// Today is owner's reservations in the last TaskDispatchWindow.
 //
 // 🔴 EVERY LEDGER READ NAMES THE OWNER (user_id = $n), not only row-level
-// security: see ReserveChiefDispatch.
-func chiefBudget(ctx context.Context, tx pgx.Tx, owner int64) (ChiefBudget, error) {
-	b := ChiefBudget{LiveCap: MaxChiefLiveAgents, DailyCap: MaxChiefDispatchesPerDay, LiveAgents: []ChiefLiveAgent{}}
+// security: see ReserveTaskDispatch.
+func dispatchBudget(ctx context.Context, tx pgx.Tx, owner int64) (DispatchBudget, error) {
+	b := DispatchBudget{LiveCap: MaxLiveDispatchedAgents, DailyCap: MaxDispatchesPerDay, LiveAgents: []LiveDispatchedAgent{}}
 	rows, err := tx.Query(ctx, `SELECT a.id, a.name, l.object FROM agents a
 		  JOIN LATERAL (SELECT object FROM audit_log
 		                 WHERE action = $1 AND user_id = $3 AND (detail->>'agent_id')::bigint = a.id
 		                 ORDER BY id DESC LIMIT 1) l ON true
 		 WHERE a.status = ANY($2)
 		 ORDER BY a.id`,
-		ActionChiefDispatchAgent, liveAgentStatuses, owner)
+		ActionTaskDispatchAgent, liveAgentStatuses, owner)
 	if err != nil {
-		return ChiefBudget{}, err
+		return DispatchBudget{}, err
 	}
 	for rows.Next() {
 		var (
@@ -343,13 +343,13 @@ func chiefBudget(ctx context.Context, tx pgx.Tx, owner int64) (ChiefBudget, erro
 		)
 		if err := rows.Scan(&id, &name, &object); err != nil {
 			rows.Close()
-			return ChiefBudget{}, err
+			return DispatchBudget{}, err
 		}
-		b.LiveAgents = append(b.LiveAgents, ChiefLiveAgent{ID: &id, Name: &name, Task: noteObjectID(object)})
+		b.LiveAgents = append(b.LiveAgents, LiveDispatchedAgent{ID: &id, Name: &name, Task: noteObjectID(object)})
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
-		return ChiefBudget{}, err
+		return DispatchBudget{}, err
 	}
 	rows, err = tx.Query(ctx, `SELECT r.object FROM audit_log r
 		 WHERE r.action = $1 AND r.user_id = $4 AND r.at > now() - make_interval(secs => $3)
@@ -357,27 +357,27 @@ func chiefBudget(ctx context.Context, tx pgx.Tx, owner int64) (ChiefBudget, erro
 		   -- a start released after a refused create made no agent: it holds no slot
 		   AND NOT EXISTS (SELECT 1 FROM audit_log x WHERE x.action = $5 AND x.user_id = $4 AND x.object = r.object AND x.id > r.id)
 		 ORDER BY r.id`,
-		ActionChiefDispatch, ActionChiefDispatchAgent, pendingAgentWindow.Seconds(), owner, ActionChiefDispatchReleased)
+		ActionTaskDispatch, ActionTaskDispatchAgent, pendingAgentWindow.Seconds(), owner, ActionTaskDispatchReleased)
 	if err != nil {
-		return ChiefBudget{}, err
+		return DispatchBudget{}, err
 	}
 	for rows.Next() {
 		var object string
 		if err := rows.Scan(&object); err != nil {
 			rows.Close()
-			return ChiefBudget{}, err
+			return DispatchBudget{}, err
 		}
-		b.LiveAgents = append(b.LiveAgents, ChiefLiveAgent{Task: noteObjectID(object)})
+		b.LiveAgents = append(b.LiveAgents, LiveDispatchedAgent{Task: noteObjectID(object)})
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
-		return ChiefBudget{}, err
+		return DispatchBudget{}, err
 	}
 	b.Live = len(b.LiveAgents)
 	if err := tx.QueryRow(ctx, `SELECT count(*) FROM audit_log
 		WHERE action = $1 AND user_id = $3 AND at > now() - make_interval(secs => $2)`,
-		ActionChiefDispatch, ChiefDispatchWindow.Seconds(), owner).Scan(&b.Today); err != nil {
-		return ChiefBudget{}, err
+		ActionTaskDispatch, TaskDispatchWindow.Seconds(), owner).Scan(&b.Today); err != nil {
+		return DispatchBudget{}, err
 	}
 	return b, nil
 }
@@ -391,37 +391,37 @@ func noteObjectID(object string) int64 {
 	return id
 }
 
-// RecordChiefDispatchAgent: see DispatchStore.
-func (s *PGStore) RecordChiefDispatchAgent(ctx context.Context, taskID, agentID int64) error {
+// RecordTaskDispatchAgent: see DispatchStore.
+func (s *PGStore) RecordTaskDispatchAgent(ctx context.Context, taskID, agentID int64) error {
 	return s.inTx(ctx, func(tx pgx.Tx) error {
-		return audit(ctx, tx, ActionChiefDispatchAgent, NoteObject(taskID), map[string]any{"agent_id": agentID})
+		return audit(ctx, tx, ActionTaskDispatchAgent, NoteObject(taskID), map[string]any{"agent_id": agentID})
 	})
 }
 
-// chiefStartRows is the ids of task taskID's latest reservation and latest
+// dispatchStartRows is the ids of task taskID's latest reservation and latest
 // release by owner (0 for none). The start is spent while reserved > released.
-func chiefStartRows(ctx context.Context, tx pgx.Tx, owner, taskID int64) (reserved, released int64, err error) {
+func dispatchStartRows(ctx context.Context, tx pgx.Tx, owner, taskID int64) (reserved, released int64, err error) {
 	err = tx.QueryRow(ctx, `SELECT coalesce(max(id) FILTER (WHERE action = $1), 0), coalesce(max(id) FILTER (WHERE action = $2), 0)
 		FROM audit_log WHERE action IN ($1, $2) AND object = $3 AND user_id = $4`,
-		ActionChiefDispatch, ActionChiefDispatchReleased, NoteObject(taskID), owner).Scan(&reserved, &released)
+		ActionTaskDispatch, ActionTaskDispatchReleased, NoteObject(taskID), owner).Scan(&reserved, &released)
 	return reserved, released, err
 }
 
 // latestStartAgent is the agent recorded for owner's reservation row reserved
-// on task taskID: the newest ActionChiefDispatchAgent row for the task that is
+// on task taskID: the newest ActionTaskDispatchAgent row for the task that is
 // newer than that reservation. ok is false when that start recorded no agent
 // (it failed before one existed). An agent row OLDER than the reservation
 // belongs to an earlier, released start and is never answered.
 //
-// The one reading of "the agent the chief's start made", shared by
-// ReserveChiefDispatch (the already_dispatched answer), ReleaseChiefDispatch
-// (whose destroy frees the start) and ChiefStartedAgent (whose agent a
+// The one reading of "the agent the agent's start made", shared by
+// ReserveTaskDispatch (the already_dispatched answer), ReleaseTaskDispatch
+// (whose destroy frees the start) and DispatchStartedAgent (whose agent a
 // completed task stops).
 func latestStartAgent(ctx context.Context, tx pgx.Tx, owner, taskID, reserved int64) (int64, bool, error) {
 	var agentID int64
 	err := tx.QueryRow(ctx, `SELECT (detail->>'agent_id')::bigint FROM audit_log
 		WHERE action = $1 AND object = $2 AND user_id = $3 AND id > $4 ORDER BY id DESC LIMIT 1`,
-		ActionChiefDispatchAgent, NoteObject(taskID), owner, reserved).Scan(&agentID)
+		ActionTaskDispatchAgent, NoteObject(taskID), owner, reserved).Scan(&agentID)
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
 		return 0, false, nil
@@ -431,26 +431,26 @@ func latestStartAgent(ctx context.Context, tx pgx.Tx, owner, taskID, reserved in
 	return agentID, true, nil
 }
 
-// ChiefStartedAgent: see DispatchStore. A read: it writes nothing, and it takes
+// DispatchStartedAgent: see DispatchStore. A read: it writes nothing, and it takes
 // no reservation lock — a reservation racing it is for ANOTHER start (this
 // task's is spent while it is unreleased), and a release racing it means the
 // owner is destroying the agent, which a Stop of it cannot make worse.
-func (s *PGStore) ChiefStartedAgent(ctx context.Context, taskID int64) (int64, bool, error) {
+func (s *PGStore) DispatchStartedAgent(ctx context.Context, taskID int64) (int64, bool, error) {
 	p, ok := authz.From(ctx)
 	if !ok || p.UserID <= 0 {
-		return 0, false, errors.New("plugins: reading a chief start needs a user principal")
+		return 0, false, errors.New("plugins: reading an agent start needs a user principal")
 	}
 	var (
 		agentID int64
 		found   bool
 	)
 	err := s.inTx(ctx, func(tx pgx.Tx) error {
-		reserved, released, err := chiefStartRows(ctx, tx, p.UserID, taskID)
+		reserved, released, err := dispatchStartRows(ctx, tx, p.UserID, taskID)
 		if err != nil {
 			return err
 		}
 		if reserved == 0 || released > reserved {
-			return nil // no chief start on the task, or its latest is released
+			return nil // no agent start on the task, or its latest is released
 		}
 		agentID, found, err = latestStartAgent(ctx, tx, p.UserID, taskID, reserved)
 		return err
@@ -461,12 +461,12 @@ func (s *PGStore) ChiefStartedAgent(ctx context.Context, taskID int64) (int64, b
 	return agentID, true, nil
 }
 
-// ReleaseChiefDispatch: see DispatchStore. Under the owner's reservation lock,
+// ReleaseTaskDispatch: see DispatchStore. Under the owner's reservation lock,
 // so it is one decision with any reservation of the same owner's.
-func (s *PGStore) ReleaseChiefDispatch(ctx context.Context, taskID, agentID int64) (bool, error) {
+func (s *PGStore) ReleaseTaskDispatch(ctx context.Context, taskID, agentID int64) (bool, error) {
 	p, ok := authz.From(ctx)
 	if !ok || p.UserID <= 0 {
-		return false, errors.New("plugins: a chief-dispatch release needs a user principal")
+		return false, errors.New("plugins: an agent-dispatch release needs a user principal")
 	}
 	wrote := false
 	err := s.inTx(ctx, func(tx pgx.Tx) error {
@@ -474,12 +474,12 @@ func (s *PGStore) ReleaseChiefDispatch(ctx context.Context, taskID, agentID int6
 			strconv.FormatInt(p.UserID, 10)); err != nil {
 			return err
 		}
-		reserved, released, err := chiefStartRows(ctx, tx, p.UserID, taskID)
+		reserved, released, err := dispatchStartRows(ctx, tx, p.UserID, taskID)
 		if err != nil {
 			return err
 		}
 		if reserved == 0 || released > reserved {
-			return nil // no chief start on the task, or its latest is released already
+			return nil // no agent start on the task, or its latest is released already
 		}
 		// The agent the LATEST reservation started: its agent row is newer.
 		started, ok, err := latestStartAgent(ctx, tx, p.UserID, taskID, reserved)
@@ -490,20 +490,20 @@ func (s *PGStore) ReleaseChiefDispatch(ctx context.Context, taskID, agentID int6
 			return nil // that start made no agent, so the owner destroyed someone else's
 		}
 		if started != agentID {
-			return nil // another agent on the task: the chief's start is still in use
+			return nil // another agent on the task: the agent's start is still in use
 		}
 		wrote = true
-		return audit(ctx, tx, ActionChiefDispatchReleased, NoteObject(taskID), map[string]any{"agent_id": agentID})
+		return audit(ctx, tx, ActionTaskDispatchReleased, NoteObject(taskID), map[string]any{"agent_id": agentID})
 	})
 	return wrote, err
 }
 
-// ReleaseRefusedChiefDispatch: see DispatchStore. Under the owner's
-// reservation lock, as ReleaseChiefDispatch.
-func (s *PGStore) ReleaseRefusedChiefDispatch(ctx context.Context, taskID, reservationID int64) (bool, error) {
+// ReleaseRefusedTaskDispatch: see DispatchStore. Under the owner's
+// reservation lock, as ReleaseTaskDispatch.
+func (s *PGStore) ReleaseRefusedTaskDispatch(ctx context.Context, taskID, reservationID int64) (bool, error) {
 	p, ok := authz.From(ctx)
 	if !ok || p.UserID <= 0 {
-		return false, errors.New("plugins: a chief-dispatch release needs a user principal")
+		return false, errors.New("plugins: an agent-dispatch release needs a user principal")
 	}
 	if reservationID <= 0 {
 		return false, nil
@@ -514,7 +514,7 @@ func (s *PGStore) ReleaseRefusedChiefDispatch(ctx context.Context, taskID, reser
 			strconv.FormatInt(p.UserID, 10)); err != nil {
 			return err
 		}
-		reserved, released, err := chiefStartRows(ctx, tx, p.UserID, taskID)
+		reserved, released, err := dispatchStartRows(ctx, tx, p.UserID, taskID)
 		if err != nil {
 			return err
 		}
@@ -525,7 +525,7 @@ func (s *PGStore) ReleaseRefusedChiefDispatch(ctx context.Context, taskID, reser
 			return err // an agent was started: only the owner's destroy releases it
 		}
 		wrote = true
-		return audit(ctx, tx, ActionChiefDispatchReleased, NoteObject(taskID), map[string]any{"refused_reservation": reservationID})
+		return audit(ctx, tx, ActionTaskDispatchReleased, NoteObject(taskID), map[string]any{"refused_reservation": reservationID})
 	})
 	return wrote, err
 }
@@ -537,12 +537,12 @@ func (s *PGStore) RecordTaskRouted(ctx context.Context, taskID int64, tool strin
 	})
 }
 
-// chiefActedOn is THE "the chief acted on this task event" predicate over
+// agentActedOn is THE "the agent acted on this task event" predicate over
 // plugin_messages aliased m: a routing (ActionTaskRouted) or a started agent
-// (ActionChiefDispatchAgent — not the reservation, which a start that then
+// (ActionTaskDispatchAgent — not the reservation, which a start that then
 // failed also wrote) recorded by the event's owner for its task AT OR AFTER
 // THE EVENT'S LATEST ATTEMPT (last_attempt_at), delivered or not: BeginDelivery
-// stamps it as the chief's turn on this event starts, and RecordAttempt also
+// stamps it as the agent's turn on this event starts, and RecordAttempt also
 // stamps it on a failed attempt that left the event queued. With no attempt
 // at all, the anchor is its creation (created_at). UnroutedTaskEvents lists
 // the events it is false for; Retry (retry.go) refuses the ones it is true for
@@ -554,29 +554,29 @@ func (s *PGStore) RecordTaskRouted(ctx context.Context, taskID int64, tool strin
 // through BeginDelivery, so its anchor is the turn that handed it over.
 //
 // 🔴 PER EVENT, NOT PER TASK (audit round 5). Measured from created_at alone,
-// the chief's forward on one event of a task counted as an action on a SECOND
+// the agent's forward on one event of a task counted as an action on a SECOND
 // event of that task it had not yet been handed — whose turn could then be cut
 // off, leaving it unconfirmed and refused by Retry for good. An action before
-// this event's delivery is the chief acting on something else. (It also
+// this event's delivery is the agent acting on something else. (It also
 // closes a window created_at left open: created_at is the inserting
 // transaction's start, which can precede an action committed while the insert
 // waited on the plugin-row lock.)
-const chiefActedOn = `EXISTS (SELECT 1 FROM audit_log a
-		WHERE a.action IN ('` + ActionTaskRouted + `', '` + ActionChiefDispatchAgent + `') AND a.user_id = m.owner_id
+const agentActedOn = `EXISTS (SELECT 1 FROM audit_log a
+		WHERE a.action IN ('` + ActionTaskRouted + `', '` + ActionTaskDispatchAgent + `') AND a.user_id = m.owner_id
 		  AND a.object = 'note:' || m.task_id AND a.at >= coalesce(m.last_attempt_at, m.created_at))`
 
 // UnroutedTaskEvents: see DispatchStore.
 //
 // 🔴 FILTERED TO TASK EVENTS IN SQL, BEFORE THE LIMIT. Reading the owner's
 // queued messages and filtering afterwards let 50 ordinary messages hide every
-// task (audit r1) — exactly the backlog a chief that is down leaves behind.
+// task (audit r1) — exactly the backlog an agent that is down leaves behind.
 //
-// 🔴 DELIVERED IS NOT ROUTED. An event the chief took and did nothing with (its
+// 🔴 DELIVERED IS NOT ROUTED. An event the agent took and did nothing with (its
 // turn failed, it called no tool, its call was refused) stays listed until a
-// routing or a STARTED AGENT (ActionChiefDispatchAgent — not the reservation,
+// routing or a STARTED AGENT (ActionTaskDispatchAgent — not the reservation,
 // which a start that then failed also wrote; delta audit r2) is recorded for
 // the task at or after the event's latest attempt, or its creation when it
-// has had none (chiefActedOn).
+// has had none (agentActedOn).
 func (s *PGStore) UnroutedTaskEvents(ctx context.Context, limit int) ([]Message, error) {
 	if limit <= 0 {
 		return []Message{}, nil
@@ -591,7 +591,7 @@ func (s *PGStore) UnroutedTaskEvents(ctx context.Context, limit int) ([]Message,
 	rows, err := s.pool.Query(ctx, `SELECT `+prefixed("m", messageCols)+`
 		  FROM plugin_messages m
 		 WHERE m.owner_id = $2 AND m.task_id IS NOT NULL AND m.routed_to IS NULL AND m.status <> 'delivering'
-		   AND NOT `+chiefActedOn+`
+		   AND NOT `+agentActedOn+`
 		 ORDER BY m.id DESC LIMIT $1`, limit, p.UserID)
 	if err != nil {
 		return nil, err

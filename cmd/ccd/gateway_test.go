@@ -85,7 +85,7 @@ func TestAGatewayTurnIsHandedToTheRuntimeBesideCcd(t *testing.T) {
 	rt, gw := gatewayRig(t)
 	tools := []agents.ToolDef{{Type: "function", Name: "fleet_list", Description: "x", Parameters: map[string]any{"type": "object"}}}
 	reply, err := mustersGateway(t, gw.URL).ChatWithTools(gatewayRoute("openrouter/vendor-x/model-y"), contractAgent,
-		"agent:chief:webchat:7", "chief instructions", "hello", tools, func(string, string) string { return "" }, nil)
+		"agent:agent:webchat:7", "agent instructions", "hello", tools, func(string, string) string { return "" }, nil)
 	if err != nil || reply != "from the gateway" {
 		t.Fatalf("the gateway turn: %q, %v", reply, err)
 	}
@@ -98,7 +98,7 @@ func TestAGatewayTurnIsHandedToTheRuntimeBesideCcd(t *testing.T) {
 		t.Errorf("the runtime got Authorization %q; ccd's bearer must stop at ccd", got)
 	}
 	for name, want := range map[string]string{
-		"Authorization": "Bearer " + fixtureRuntimeCredential, "X-Openclaw-Session-Key": "agent:chief:webchat:7",
+		"Authorization": "Bearer " + fixtureRuntimeCredential, "X-Openclaw-Session-Key": "agent:agent:webchat:7",
 		agents.HeaderGatewayModel: "openrouter/vendor-x/model-y", agents.HeaderRuntime: "",
 	} {
 		if got := r.Header.Get(name); got != want {
@@ -111,7 +111,7 @@ func TestAGatewayTurnIsHandedToTheRuntimeBesideCcd(t *testing.T) {
 			Name string `json:"name"`
 		} `json:"tools"`
 	}
-	if r.URL.Path != "/v1/responses" || json.Unmarshal([]byte(body), &req) != nil || req.Instructions != "chief instructions" ||
+	if r.URL.Path != "/v1/responses" || json.Unmarshal([]byte(body), &req) != nil || req.Instructions != "agent instructions" ||
 		len(req.Tools) != 1 || req.Tools[0].Name != "fleet_list" {
 		t.Errorf("the runtime got %s %s; want /v1/responses with the instructions and the tool", r.URL.Path, body)
 	}

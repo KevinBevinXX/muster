@@ -627,7 +627,7 @@ func TestAGrantApprovedUnderTheStoredTokenNeedsReapprovalOnceTheAppIsConfigured(
 
 // TestAStrangersInstallationConnectsNothing (R1): the App is public, so a
 // stranger installs it on stranger/payload. With the allowlist naming only
-// example-org, that repository is not a connected one — the chief's
+// example-org, that repository is not a connected one — the agent's
 // task_dispatch and every dispatch door refuse it — and nothing is minted on
 // the stranger's installation. The admin's real repository is accepted
 // (control).
@@ -636,7 +636,7 @@ func TestAStrangersInstallationConnectsNothing(t *testing.T) {
 	up := newFakeGitHubUpstream(t)
 	srv, _, _ := appServer(t, f, up)
 	admin := authz.WithPrincipal(context.Background(), authz.Principal{UserID: 1, Role: authz.RoleAdmin, Via: authz.ViaSession})
-	if why := srv.connectedRepo(admin, "stranger/payload"); !strings.Contains(why, chiefDispatchRepo) {
+	if why := srv.connectedRepo(admin, "stranger/payload"); !strings.Contains(why, taskDispatchRepo) {
 		t.Fatalf("a stranger's installation repository is connected: %q", why)
 	}
 	if why := srv.connectedRepo(admin, "example-org/widget"); why != "" {

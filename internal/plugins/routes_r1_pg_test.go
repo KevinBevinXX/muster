@@ -47,7 +47,7 @@ func TestAnAnsweredRouteWhoseRelayNeverHappenedIsListedForTheSweep(t *testing.T)
 		t.Fatalf("a stuck answered route is not listed for a relay retry: %+v %v", d, ok)
 	}
 	// The retry is the ordinary relay: exactly once, and then it is off the list.
-	if got, _, err := w.s.RelayRoute(session(2), r.RouteID, w.chief.Name, false); err != nil || got.State != RouteFallback {
+	if got, _, err := w.s.RelayRoute(session(2), r.RouteID, w.target.Name, false); err != nil || got.State != RouteFallback {
 		t.Fatalf("the retried relay: %+v %v", got, err)
 	}
 	if _, ok := listed(); ok {
@@ -73,7 +73,7 @@ func TestTwoFirstRelaysFileOneDraft(t *testing.T) {
 			go func(i int) {
 				defer wg.Done()
 				<-start
-				_, d, err := w.s.RelayRoute(session(2), r.RouteID, w.chief.Name, i%2 == 0)
+				_, d, err := w.s.RelayRoute(session(2), r.RouteID, w.target.Name, i%2 == 0)
 				if err != nil {
 					t.Errorf("relay %d: %v", i, err)
 				}
@@ -99,17 +99,17 @@ func TestTwoFirstRelaysFileOneDraft(t *testing.T) {
 // accounting — the count on the filing's audit row.
 func TestARelaySupersedingAPendingDraftCountsItLikeFileDraft(t *testing.T) {
 	w := newDraftWorld(t)
-	old := w.file(t, w.m, "From the chief first.")
+	old := w.file(t, w.m, "From the target first.")
 	r := w.route(t, w.m)
 	if _, _, err := w.s.AnswerRoute(session(2), r.RouteID, "From the session."); err != nil {
 		t.Fatal(err)
 	}
-	_, d, err := w.s.RelayRoute(session(2), r.RouteID, w.chief.Name, false)
+	_, d, err := w.s.RelayRoute(session(2), r.RouteID, w.target.Name, false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got, _ := w.s.Draft(session(2), old.ID); got.Status != DraftSuperseded {
-		t.Fatalf("the chief's pending draft is %s, want superseded", got.Status)
+		t.Fatalf("the target's pending draft is %s, want superseded", got.Status)
 	}
 	var raw []byte
 	if err := w.s.pool.QueryRow(authz.System(context.Background()), `SELECT detail FROM audit_log
@@ -134,14 +134,14 @@ func TestAPendingRelayObeysTheDraftCap(t *testing.T) {
 		w.file(t, w.delivered(t, "cap-"+strconv.Itoa(i), false), "pending "+strconv.Itoa(i))
 	}
 	// FileDraft itself refuses the next one: the parity the relay must match.
-	if _, _, err := w.s.FileDraft(session(2), w.chief.ID, 2, w.chief.Name, w.m.ID, "one more"); !errors.Is(err, ErrTooManyPendingDrafts) {
+	if _, _, err := w.s.FileDraft(session(2), w.target.ID, 2, w.target.Name, w.m.ID, "one more"); !errors.Is(err, ErrTooManyPendingDrafts) {
 		t.Fatalf("the control: FileDraft at the cap: %v", err)
 	}
 	r := w.route(t, w.m)
 	if _, _, err := w.s.AnswerRoute(session(2), r.RouteID, "From the session."); err != nil {
 		t.Fatal(err)
 	}
-	got, d, err := w.s.RelayRoute(session(2), r.RouteID, w.chief.Name, false)
+	got, d, err := w.s.RelayRoute(session(2), r.RouteID, w.target.Name, false)
 	if !errors.Is(err, ErrRouteClosed) || got.State != RouteFailed || d.ID != 0 {
 		t.Fatalf("a pending relay at the cap: %+v / %+v / %v", got, d, err)
 	}
@@ -156,7 +156,7 @@ func TestAPendingRelayObeysTheDraftCap(t *testing.T) {
 	if _, _, err := w.s.AnswerRoute(session(2), r2.RouteID, "Approved one."); err != nil {
 		t.Fatal(err)
 	}
-	if got, _, err := w.s.RelayRoute(session(2), r2.RouteID, w.chief.Name, true); err != nil || got.State != RouteRelayed {
+	if got, _, err := w.s.RelayRoute(session(2), r2.RouteID, w.target.Name, true); err != nil || got.State != RouteRelayed {
 		t.Fatalf("an approved relay at the pending cap: %+v %v", got, err)
 	}
 }
@@ -185,7 +185,7 @@ func TestRelaysRacingAtTheCapFailTheRouteOnce(t *testing.T) {
 			go func() {
 				defer wg.Done()
 				<-start
-				_, _, err := w.s.RelayRoute(session(2), r.RouteID, w.chief.Name, false)
+				_, _, err := w.s.RelayRoute(session(2), r.RouteID, w.target.Name, false)
 				mu.Lock()
 				defer mu.Unlock()
 				switch {
@@ -215,9 +215,9 @@ func TestRelaysRacingAtTheCapFailTheRouteOnce(t *testing.T) {
 	}
 }
 
-// 🟡 round 2: every route that ends WITHOUT its chief already knowing owes a
+// 🟡 round 2: every route that ends WITHOUT its target already knowing owes a
 // hand-back — a timeout, a relay that could not be made, a failure that names
-// one — and TakeHandBack gives it out exactly once. A failure the chief was
+// one — and TakeHandBack gives it out exactly once. A failure the target was
 // told about directly (an injection that failed in its own tool call) owes
 // nothing.
 func TestAnEndedRouteOwesItsChiefOneHandBack(t *testing.T) {
@@ -248,8 +248,8 @@ func TestAnEndedRouteOwesItsChiefOneHandBack(t *testing.T) {
 	if _, _, err := w.s.AnswerRoute(session(2), r2.RouteID, "From the session."); err != nil {
 		t.Fatal(err)
 	}
-	w.approve(t, w.file(t, m2, "From the chief meanwhile."))
-	if _, _, err := w.s.RelayRoute(session(2), r2.RouteID, w.chief.Name, true); !errors.Is(err, ErrRouteClosed) {
+	w.approve(t, w.file(t, m2, "From the target meanwhile."))
+	if _, _, err := w.s.RelayRoute(session(2), r2.RouteID, w.target.Name, true); !errors.Is(err, ErrRouteClosed) {
 		t.Fatal(err)
 	}
 	if reason, ok := take(r2.RouteID); !ok || !strings.HasPrefix(reason, "its answer could not be sent (") {
@@ -270,7 +270,7 @@ func TestAnEndedRouteOwesItsChiefOneHandBack(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, ok := take(r4.RouteID); ok {
-		t.Fatal("a failure the chief was told about directly owes a hand-back")
+		t.Fatal("a failure the target was told about directly owes a hand-back")
 	}
 	// The sweep lists exactly the owed ones it has not delivered.
 	dbtest.OwnerExec(t, w.dsn, `UPDATE session_routes SET handback = 'owed' WHERE route_id = '`+r4.RouteID+`'`)

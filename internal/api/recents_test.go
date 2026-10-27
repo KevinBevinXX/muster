@@ -125,13 +125,13 @@ var recentEntryHref = regexp.MustCompile(`<a href="([^"]+)" hx-boost="false" dat
 // TestTheListDrawsTheRecentStrip: GET /ui/agents sends the strip OUT OF BAND,
 // resolved against the cards it renders: newest first, pinned entries and
 // entries that are gone skipped. Fixture: agents 5, 6, 7 and windows main@1,
-// chief@2 (pinWindows); agent 6 and chief@2 are pinned; agent 99 and window
+// agent@2 (pinWindows); agent 6 and agent@2 are pinned; agent 99 and window
 // main@9 do not exist.
 func TestTheListDrawsTheRecentStrip(t *testing.T) {
 	mem := &memRecents{}
 	for _, v := range []recents.Entry{
 		{AgentID: 5},
-		{Mirror: pins.MirrorKey{Host: "ws", Session: "chief", Window: "@2"}},
+		{Mirror: pins.MirrorKey{Host: "ws", Session: "agent", Window: "@2"}},
 		{AgentID: 99},
 		{Mirror: pins.MirrorKey{Host: "ws", Session: "main", Window: "@1"}},
 		{AgentID: 6},
@@ -144,7 +144,7 @@ func TestTheListDrawsTheRecentStrip(t *testing.T) {
 	s, h := pinServer(t, &fakeMirror{online: true, windows: pinWindows()}, mp)
 	s.ext.Recents = mem
 	mp.pinFor(1).Agents[6] = true
-	mp.pinFor(1).Mirrors[pins.MirrorKey{Host: "ws", Session: "chief", Window: "@2"}] = true
+	mp.pinFor(1).Mirrors[pins.MirrorKey{Host: "ws", Session: "agent", Window: "@2"}] = true
 
 	body := getOwed(t, s, h, "/ui/agents").Body.String()
 	if !regexp.MustCompile(`<nav id="agents-recent" aria-label="Recently viewed" hx-swap-oob="morph"`).MatchString(body) {
@@ -156,18 +156,18 @@ func TestTheListDrawsTheRecentStrip(t *testing.T) {
 	}
 	want := []string{"/agents/idle-newest", amp(ref("main", "@1").TerminalPath()), "/agents/chatting-oldest"}
 	if !eqStrings(got, want) {
-		t.Errorf("strip = %v, want %v (newest first, without the pinned 6 / chief@2 and the gone 99 / main@9)", got, want)
+		t.Errorf("strip = %v, want %v (newest first, without the pinned 6 / agent@2 and the gone 99 / main@9)", got, want)
 	}
 	// Control: with nothing pinned the pinned two are drawn, in their places.
 	mp.pinFor(1).Agents[6] = false
-	delete(mp.pinFor(1).Mirrors, pins.MirrorKey{Host: "ws", Session: "chief", Window: "@2"})
+	delete(mp.pinFor(1).Mirrors, pins.MirrorKey{Host: "ws", Session: "agent", Window: "@2"})
 	body = getOwed(t, s, h, "/ui/agents").Body.String()
 	got = nil
 	for _, m := range recentEntryHref.FindAllStringSubmatch(body, -1) {
 		got = append(got, m[1])
 	}
 	want = []string{"/agents/idle-newest", "/agents/status-moved", amp(ref("main", "@1").TerminalPath()),
-		amp(ref("chief", "@2").TerminalPath()), "/agents/chatting-oldest"}
+		amp(ref("agent", "@2").TerminalPath()), "/agents/chatting-oldest"}
 	if !eqStrings(got, want) {
 		t.Errorf("unpinned strip = %v, want %v", got, want)
 	}

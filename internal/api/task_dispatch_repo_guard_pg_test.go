@@ -15,7 +15,7 @@ import (
 )
 
 // TestTaskDispatchRefusesATaskStoredRepoThatIsNotConnected: the connected-repo
-// guard covers the EFFECTIVE repository — the task's own when the chief passes
+// guard covers the EFFECTIVE repository — the task's own when the agent passes
 // none — for both kinds, before the reservation (mustRefuse: no agent, no unit,
 // no provisioner call). A task's repository can have been written by an agent
 // (task_create_gated), and a claude-code agent's session starts pre-trusted in
@@ -28,13 +28,13 @@ func TestTaskDispatchRefusesATaskStoredRepoThatIsNotConnected(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		f.mustRefuse(t, f.call(f.chief, taskDispatchTool, map[string]any{"task_id": n.ID, "kind": kind}), chiefDispatchRepo, n.ID)
+		f.mustRefuse(t, f.call(f.agent, taskDispatchTool, map[string]any{"task_id": n.ID, "kind": kind}), taskDispatchRepo, n.ID)
 	}
 	ok, err := f.notes.Create(f.asOwner, notes.Note{Title: "connected repo", Body: "b", Repo: "example/app"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := f.startedOne(t, f.call(f.chief, taskDispatchTool, map[string]any{"task_id": ok.ID}), ok.ID); got.Repo != "example/app" {
+	if got := f.startedOne(t, f.call(f.agent, taskDispatchTool, map[string]any{"task_id": ok.ID}), ok.ID); got.Repo != "example/app" {
 		t.Fatalf("agent %+v", got)
 	}
 }
@@ -63,11 +63,11 @@ func TestTaskDispatchRefusesATaskWhoseRepoChangedAfterTheCheck(t *testing.T) {
 	github.UseAPIBaseURL(srv.URL)
 	t.Cleanup(func() { github.UseAPIBaseURL("https://api.github.com") })
 	f.srv.ext.GitHub = fakeGitHubConn{}
-	f.mustRefuse(t, f.call(f.chief, taskDispatchTool, map[string]any{"task_id": n.ID}), "repository changed while it was being checked", n.ID)
+	f.mustRefuse(t, f.call(f.agent, taskDispatchTool, map[string]any{"task_id": n.ID}), "repository changed while it was being checked", n.ID)
 }
 
 // TestTaskDispatchStillRunsTheTaskRefusalsWithEveryOtherCheckPassing: the
-// merged toolTaskDispatch must still call chiefDispatchTaskRefusal (#152) under
+// merged toolTaskDispatch must still call taskDispatchTaskRefusal (#152) under
 // the reservation lock. A task with a live agent, a CONNECTED repository and
 // instructions that ARE the owner's answer on it — every check this branch
 // added passes — is refused with #152's own sentence, and nothing is reserved.
@@ -85,8 +85,8 @@ func TestTaskDispatchStillRunsTheTaskRefusalsWithEveryOtherCheckPassing(t *testi
 		Namespace: "ns-trbusy2", Status: agents.StatusRunning, NoteID: &n.ID}); err != nil {
 		t.Fatal(err)
 	}
-	text := f.call(f.chief, taskDispatchTool, map[string]any{"task_id": n.ID, "instructions": ownersWords})
-	if !strings.Contains(text, chiefDispatchHasAgent) {
+	text := f.call(f.agent, taskDispatchTool, map[string]any{"task_id": n.ID, "instructions": ownersWords})
+	if !strings.Contains(text, taskDispatchHasAgent) {
 		t.Fatalf("answer %s; want #152's live-agent refusal", text)
 	}
 	if got := len(f.agentsOn(t, n.ID)); got != 1 || f.reservations(t, n.ID) != 0 || f.prov.calls(0) != 0 {

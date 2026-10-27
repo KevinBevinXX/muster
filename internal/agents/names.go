@@ -37,59 +37,51 @@ var (
 	}
 )
 
-// ChiefName is the one RESERVED agent name: the standing agent the operator
-// talks to, as opposed to a worker dispatched against a task.
+// ---------------------------------------------------------------------------
+// THERE IS NO RESERVED AGENT NAME
 //
-// 🔴 IT IS A CONSTANT BECAUSE THE INSTRUCTIONS BRANCH ON IT, AND A NAME THE
-// GENERATOR PRODUCED WOULD SILENTLY FAIL THAT BRANCH. Ordinary agent names come
-// from the adjective-noun pool above, so nothing a human can type reaches this
-// value — POST /chief/provision is the only producer. Upstream, a release that
-// reserved this name before anything could create one shipped an agent whose
-// whole instruction set was unreachable: it was handed the WORKER instructions,
-// dutifully asked for its assigned task, was told it had none, and reported to
-// the operator that there was nothing to do. It was not malfunctioning; it was
-// executing the only instructions it had.
+// 🔴 ChiefName / ChiefNameFor / IsChiefName USED TO LIVE HERE AND THEIR REMOVAL
+// IS THE POINT. muster reserved the slug `agent` (`agent-<id>` per user) for a
+// standing agent, and three different things branched on it: the standing
+// INSTRUCTIONS an agent was built with, DELETION PROTECTION, and which agent a
+// plugin's messages were delivered to. A reserved name is a rank, and a rank
+// made all three undiscussable — the agent holding the name could not be
+// deleted by the ordinary route, and relabelling any agent `agent` moved every
+// plugin's inbox to it.
 //
-// ⚠ IT IS NOT IN adjectives/nouns AND MUST NOT BE. The collision loop in
-// BuildUniqueAgentName guards against an accidental duplicate of an EXISTING
-// agent, not against the pool minting a reserved word — so a reserved name that
-// the pool could also produce would be a coin flip, not a guard.
-const ChiefName = "chief"
+// Each of the three now asks a question that does not need a name:
+//
+//   - INSTRUCTIONS ask the agent's SHAPE: [IsFleetAgent] below. An agent with
+//     no task and no repository is working on the fleet, so it is given the
+//     supervisor prose; one with a task is given the worker prose. Any agent
+//     can be either, and nothing is reserved.
+//   - DELETION is not protected at all. Every agent is deletable by the route
+//     that deletes agents.
+//   - DELIVERY asks the plugin, which names its target agent
+//     (plugins.target_agent_id, migration 0050, internal/api/plugin_target.go).
+//
+// ⚠ NOTHING STOPS AN OPERATOR CALLING AN AGENT "agent". It is now an ordinary
+// display name with no behaviour attached, which is the state this file wants:
+// a label the operator reads, not one muster branches on.
+// ---------------------------------------------------------------------------
 
-// ChiefNameFor is the reserved slug of user owner's chief (accounts PR 3b:
-// one chief PER USER). The operator — user 1 — keeps ChiefName itself, so the
-// single-user deployment, its namespace and `muster chief ask`'s default are
-// unchanged; every other user's chief is "chief-<id>".
+// IsFleetAgent reports whether a works on THE FLEET rather than on a piece of
+// code: it holds no task and no repository.
 //
-// 🔴 agents.name IS ONE GLOBAL NAMESPACE (it keys the instance's namespace),
-// so two users cannot both be "chief"; the id suffix is what makes each
-// user's reserved slug unique without a lookup. The adjective-noun pool can
-// mint none of these (it has no "chief"), and migration 0009's partial unique
-// index holds one reserved chief per owner.
-func ChiefNameFor(owner int64) string {
-	if owner == 1 {
-		return ChiefName
-	}
-	return ChiefName + "-" + strconv.FormatInt(owner, 10)
-}
-
-// IsChiefName reports whether name is a reserved chief slug — ChiefName, or
-// ChiefNameFor some other user. The instructions branch on it
-// (agentprovision.buildSpec) and deletion protection covers it.
-func IsChiefName(name string) bool {
-	if name == ChiefName {
-		return true
-	}
-	rest, ok := strings.CutPrefix(name, ChiefName+"-")
-	if !ok || rest == "" || rest[0] == '0' {
-		return false
-	}
-	for _, c := range rest {
-		if c < '0' || c > '9' {
-			return false
-		}
-	}
-	return true
+// 🔴 IT IS A SHAPE, NOT A RANK, AND THAT IS THE WHOLE DIFFERENCE. It asks only
+// what the row says about this agent's assignment, so it needs no list of the
+// owner's other agents, no tie-break and no reserved word: an owner may have
+// none, one or ten fleet agents, and one becomes a worker the moment it is
+// given a task. Nothing is protected or privileged by answering true — it
+// decides the standing prose an agent is BUILT with (agentprovision.buildSpec)
+// and nothing else. Every muster tool is offered to every agent either way
+// (internal/api/agent.go).
+//
+// ⚠ IT IS ANSWERED AT BUILD TIME, so an agent whose task is dismissed later
+// keeps the prose it was built with until its spec is re-applied. That is the
+// same timing the reserved-name branch had, and the same fix: Stop → Start.
+func IsFleetAgent(a Agent) bool {
+	return a.NoteID == nil && strings.TrimSpace(a.Repo) == ""
 }
 
 func pick(list []string) string {

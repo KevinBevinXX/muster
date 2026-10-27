@@ -3,7 +3,6 @@ package api
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -32,7 +31,7 @@ import (
 
 const plainName = "plain-otter"
 
-// mirrorAgents serves one gateway agent (and no chief).
+// mirrorAgents serves one gateway agent (and no agent).
 type mirrorAgents struct{ stubAgentsStore }
 
 func (mirrorAgents) rows() []agents.Agent {
@@ -67,7 +66,7 @@ type mirrorCall struct {
 	readOnly bool
 }
 
-// fakeMirror is the plugin, played. Its host "ws" (sessions main and chief)
+// fakeMirror is the plugin, played. Its host "ws" (sessions main and agent)
 // belongs to user 1 only: Hosts and Attach act for ctx's principal, as
 // mirror.Service does.
 type fakeMirror struct {
@@ -153,7 +152,7 @@ func (f *fakeMirror) Hosts(ctx context.Context) []mirror.HostView {
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	hv := mirror.HostView{Host: "ws", Sessions: []string{"chief", "main"}, Labels: f.labels, Activity: f.activity, Online: f.online, Interactive: f.interactive}
+	hv := mirror.HostView{Host: "ws", Sessions: []string{"agent", "main"}, Labels: f.labels, Activity: f.activity, Online: f.online, Interactive: f.interactive}
 	hv.StatusReport = f.statusReport && f.online
 	if !f.online {
 		hv.OfflineSince = f.offlineSince
@@ -451,24 +450,6 @@ func TestAnotherUsersHostIsNotFound(t *testing.T) {
 	}
 	if calls, _ := fm.snapshot(); len(calls) != 0 {
 		t.Fatalf("the plugin was asked to attach for a non-owner: %+v", calls)
-	}
-}
-
-// TestAMirroredSessionNamedChiefIsNotTheChief: a host listing a tmux session
-// called "chief" changes nothing about the chief — mirrored sessions are not
-// agents, so no agent lookup can see one.
-func TestAMirroredSessionNamedChiefIsNotTheChief(t *testing.T) {
-	fm := &fakeMirror{online: true}
-	s, ts := mirrorServer(t, fm, newFakeTerminal())
-	ctx := authz.WithPrincipal(context.Background(), authz.Principal{UserID: 1, Role: authz.RoleAdmin, Via: authz.ViaSession})
-	if hs := fm.Hosts(ctx); len(hs) != 1 || hs[0].Sessions[0] != "chief" {
-		t.Fatalf("fixture: the host does not list a session named chief: %+v", hs)
-	}
-	if a, err := s.chiefAgent(ctx); !errors.Is(err, ErrNoChief) {
-		t.Fatalf("chiefAgent found %+v (%v); a mirrored tmux session named chief must not be the chief", a, err)
-	}
-	if resp, _ := mirrorGet(t, s, ts, "/agents/chief"); resp.StatusCode != http.StatusNotFound {
-		t.Fatalf("/agents/chief = %d; a mirrored session must not resolve as an agent", resp.StatusCode)
 	}
 }
 

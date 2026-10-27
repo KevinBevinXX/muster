@@ -43,9 +43,9 @@
 //     the mechanism and the prose have different owners and different review
 //     needs.
 //   - ⚠ IT DOES TOUCH CAIRN NOW, AND THIS BULLET USED TO SAY IT DID NOT. Ranked
-//     item 3 ("port the chief→cairn integration") has landed: see cairn.go for
+//     item 3 ("port the agent→cairn integration") has landed: see cairn.go for
 //     the client install, the credential file and the one gate that decides
-//     whether either exists, and [ChiefInstructions] for the prose half. What is
+//     whether either exists, and [SupervisorInstructions] for the prose half. What is
 //     still true is the SHAPE the old bullet was defending — the coordinates are
 //     [Config] fields, eligibility is an [Options] input, and nothing in this
 //     package compares an agent name against a constant to decide who gets a
@@ -392,7 +392,7 @@ type Config struct {
 
 	// Plugins reports that the plugin interface is on for this deployment
 	// (MUSTER_PLUGINS=1 with a database). It decides one thing here: whether the
-	// supervisor's prose carries the plugin section ([ChiefInstructions]). The
+	// supervisor's prose carries the plugin section ([SupervisorInstructions]). The
 	// server sets it from the same predicate that wires the plugin store.
 	Plugins bool
 
@@ -417,11 +417,11 @@ type Config struct {
 	// identical whether or not this is set. See claudecode.go.
 	ClaudeCode *ClaudeCodeConfig
 
-	// ChiefGatewaySidecar: a claude-code CHIEF runs the gateway runtime beside
-	// ccd (chief_sidecar.go), for its chat sessions on that runtime
-	// (MUSTER_CHIEF_SESSION_RUNTIMES names gateway). Read by agentprovision,
+	// GatewaySidecarEnabled: a claude-code AGENT runs the gateway runtime beside
+	// ccd (gateway_sidecar.go), for its chat sessions on that runtime
+	// (MUSTER_AGENT_SESSION_RUNTIMES names gateway). Read by agentprovision,
 	// which asks for the sidecar through Options.GatewaySidecar.
-	ChiefGatewaySidecar bool
+	GatewaySidecarEnabled bool
 }
 
 // Options is the per-call part that is neither deployment config nor a column on
@@ -443,7 +443,7 @@ type Options struct {
 	// shell form could not express one and a caller writing "a/b.md" is more
 	// likely to be confused than deliberate.
 	//
-	// Upstream these were the chief-only BOOTSTRAP.md / IDENTITY.md / USER.md
+	// Upstream these were the agent-only BOOTSTRAP.md / IDENTITY.md / USER.md
 	// writes in workspaceSeedInitCommands, selected by comparing the agent name
 	// against a hardcoded constant. That selection is a CALLER's policy, not a
 	// spec-building rule, so it does not live here.
@@ -473,7 +473,7 @@ type Options struct {
 	CairnEligible bool
 
 	// GatewaySidecar, for a claude-code agent only, runs the gateway runtime
-	// beside ccd in its pod (chief_sidecar.go). A gateway-kind agent refuses it:
+	// beside ccd in its pod (gateway_sidecar.go). A gateway-kind agent refuses it:
 	// its own process IS that runtime.
 	GatewaySidecar *GatewaySidecar
 

@@ -104,6 +104,13 @@ func (c *countingPlugins) FinishDraft(ctx context.Context, _, _ int64, _ plugins
 // pluginsTestAgents resolves one agent by its own token (pgnAgent).
 type pluginsTestAgents struct{ agents.Store }
 
+// List is what the plugins PAGE needs: each plugin row draws a picker of the
+// owner's agents to deliver to (plugin_target.go). The embedded Store is nil, so
+// without this the page's read dispatches on nil and panics — which is how this
+// was caught. An empty list is the honest answer for this fixture: it wires no
+// agents, so every picker offers only "nobody".
+func (pluginsTestAgents) List(context.Context) ([]agents.Agent, error) { return nil, nil }
+
 func (pluginsTestAgents) GetByHooksToken(_ context.Context, tok string) (agents.Agent, error) {
 	if tok == pgnAgent {
 		return agents.Agent{ID: 7, Name: "plugins-test-agent", OwnerID: authz.OperatorUserID}, nil
@@ -311,6 +318,7 @@ func TestPluginsOffIsNotFound(t *testing.T) {
 	for _, rt := range []struct{ method, path, body string }{
 		{"GET", "/plugins", ""}, {"POST", "/plugins", "name=example-inbox&label=x&data_scope=x"},
 		{"POST", "/plugins/1/revoke", ""}, {"POST", "/plugin/v1/messages", pgnMsg},
+		{"POST", "/plugins/1/target", "agent_id=0"},
 		{"POST", "/plugins/drafts/1/approve", ""},
 		{"POST", "/plugins/drafts/1/reject", ""},
 		{"POST", "/plugins/messages/1/retry", ""}, {"POST", "/api/plugins/messages/1/retry", ""},

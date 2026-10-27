@@ -40,7 +40,7 @@ func TestComposerFitCapIsOneNumber(t *testing.T) {
 // TestBothComposersGrowByTheSameRule pins the seam between the two message boxes
 // and the one implementation: each box wears composerFitClass (through
 // composerInputClass), and each document that draws a box also carries the
-// script — the agent page (and so the chief panel, which renders the same pane),
+// script — the agent page (and so the agent panel, which renders the same pane),
 // the mirrored Rendered view, and the Terminal view.
 func TestBothComposersGrowByTheSameRule(t *testing.T) {
 	if !strings.Contains(composerInputClass, composerFitClass) {

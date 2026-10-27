@@ -154,7 +154,7 @@ const (
 	// envPluginTaskNamespaces lists the tag namespaces POST /plugin/v1/tasks
 	// accepts keys in (internal/api/plugin_tasks.go), comma-separated.
 	envPluginTaskNamespaces = "MUSTER_PLUGIN_TASK_NAMESPACES"
-	// SESSION ROUTING (internal/plugins/routes.go): "1" lets the chief hand a
+	// SESSION ROUTING (internal/plugins/routes.go): "1" lets the agent hand a
 	// plugin message to one of its owner's sessions (route_to_session) and relay
 	// the session's answer. Needs the plugin interface on. Off, the routing
 	// tools are not offered and POST /api/routes/{id}/reply answers 404.
@@ -165,27 +165,27 @@ const (
 	// routed answer becomes a pending draft the owner approves.
 	envRouteRelayAllow = "MUSTER_ROUTE_RELAY_ALLOW"
 	// How long a routed message waits for its session's answer before it is
-	// handed back to the chief (api.DefaultRouteTimeout, 30m, when unset). A Go
+	// handed back to the agent (api.DefaultRouteTimeout, 30m, when unset). A Go
 	// duration between api.MinRouteTimeout and api.MaxRouteTimeout, and — with
 	// routing on — longer than MUSTER_SEND_QUEUE_IDLE; anything else refuses to
 	// boot.
 	envRouteTimeout = "MUSTER_ROUTE_TIMEOUT"
 	// TASK ROUTING (internal/api/task_routing.go): "1" lets a plugin hand a task
-	// it files (POST /plugin/v1/tasks, route_to_chief) to the owner's chief,
+	// it files (POST /plugin/v1/tasks, route_to_chief) to the owner's agent,
 	// which routes it with task_route_attention / task_forward. Needs the plugin
 	// interface on. Off, route_to_chief is ignored and the tools are not offered.
 	envTaskRouting = "MUSTER_TASK_ROUTING"
-	// The users (ids, comma-separated) who opted in to their chief starting
-	// agents. Non-empty (with task routing on) is what offers the chief
+	// The users (ids, comma-separated) who opted in to their agent starting
+	// agents. Non-empty (with task routing on) is what offers the agent
 	// task_dispatch, for the listed owners only; empty, it is not offered.
-	envChiefDispatchOwners = "MUSTER_CHIEF_DISPATCH_OWNERS"
-	// CHIEF SESSION RUNTIMES (internal/api/session_runtime.go): the runtimes a
-	// chief chat session may be started on, comma-separated — claude-code (a CLI
-	// of its own in ccd, with a chosen Claude model; needs a claude-code chief on
+	envTaskDispatchOwners = "MUSTER_TASK_DISPATCH_OWNERS"
+	// AGENT SESSION RUNTIMES (internal/api/session_runtime.go): the runtimes a
+	// agent chat session may be started on, comma-separated — claude-code (a CLI
+	// of its own in ccd, with a chosen Claude model; needs a claude-code agent on
 	// a ccd that runs one CLI per session) and gateway (an OpenRouter model, on
-	// the gateway runtime — in a claude-code chief, the one beside ccd). Unset is
-	// OFF: no picker, and a session is the chief's own kind as before.
-	envChiefSessionRuntimes = "MUSTER_CHIEF_SESSION_RUNTIMES"
+	// the gateway runtime — in a claude-code agent, the one beside ccd). Unset is
+	// OFF: no picker, and a session is the agent's own kind as before.
+	envAgentSessionRuntimes = "MUSTER_AGENT_SESSION_RUNTIMES"
 	// How long a sign-in stays fresh enough to TYPE into a mirrored session
 	// (internal/stepup): a Go duration, 12h when unset, refused outside
 	// 1m–24h. Freshness is per browser session, never per user.
@@ -569,15 +569,15 @@ type config struct {
 	// RouteTimeout is MUSTER_ROUTE_TIMEOUT (api.DefaultRouteTimeout when unset):
 	// a route's deadline.
 	RouteTimeout time.Duration
-	// TaskRouting is MUSTER_TASK_ROUTING=1; ChiefDispatchOwners
-	// MUSTER_CHIEF_DISPATCH_OWNERS, parsed (loadConfig refuses one that does not
+	// TaskRouting is MUSTER_TASK_ROUTING=1; TaskDispatchOwners
+	// MUSTER_TASK_DISPATCH_OWNERS, parsed (loadConfig refuses one that does not
 	// parse) — non-empty turns task_dispatch on.
-	TaskRouting            bool
-	ChiefDispatchOwnersRaw string
-	ChiefDispatchOwners    map[int64]bool
-	// ChiefSessionRuntimes is MUSTER_CHIEF_SESSION_RUNTIMES, split on commas
+	TaskRouting           bool
+	TaskDispatchOwnersRaw string
+	TaskDispatchOwners    map[int64]bool
+	// AgentSessionRuntimes is MUSTER_AGENT_SESSION_RUNTIMES, split on commas
 	// (validateSessionRuntimes refuses an unknown or repeated entry).
-	ChiefSessionRuntimes []string
+	AgentSessionRuntimes []string
 	// StepUpWindow is internal/stepup's freshness window (MUSTER_STEPUP_WINDOW;
 	// stepup.DefaultWindow when unset). loadConfig refuses an out-of-bounds one.
 	StepUpWindow time.Duration
@@ -1229,7 +1229,7 @@ func loadConfig(getenv func(string) string) (config, error) {
 	// 🔴 A ROUTE MUST OUTLAST ITS OWN PASTE. A routed message is pasted only
 	// once the window has been idle for MUSTER_SEND_QUEUE_IDLE, so a deadline
 	// no longer than that wait times the route out before its message can
-	// reach the session — every route would go back to the chief unread.
+	// reach the session — every route would go back to the agent unread.
 	// Checked only with routing on: with it off neither value is about routes,
 	// and a long idle wait alone is a valid setting.
 	if c.SessionRouting && c.RouteTimeout <= c.SendQueueIdle {
@@ -1244,13 +1244,13 @@ func loadConfig(getenv func(string) string) (config, error) {
 		c.RouteRelayAllow = l
 	}
 	c.TaskRouting = envFlag(getenv, envTaskRouting)
-	c.ChiefDispatchOwnersRaw = strings.TrimSpace(getenv(envChiefDispatchOwners))
-	owners, err := parseOwnerIDs(c.ChiefDispatchOwnersRaw)
+	c.TaskDispatchOwnersRaw = strings.TrimSpace(getenv(envTaskDispatchOwners))
+	owners, err := parseOwnerIDs(c.TaskDispatchOwnersRaw)
 	if err != nil {
-		return config{}, fmt.Errorf("invalid %s: %v (want user ids, comma-separated)", envChiefDispatchOwners, err)
+		return config{}, fmt.Errorf("invalid %s: %v (want user ids, comma-separated)", envTaskDispatchOwners, err)
 	}
-	c.ChiefDispatchOwners = owners
-	c.ChiefSessionRuntimes = splitList(getenv(envChiefSessionRuntimes))
+	c.TaskDispatchOwners = owners
+	c.AgentSessionRuntimes = splitList(getenv(envAgentSessionRuntimes))
 
 	icons, err := parseHostIcons(getenv(envHostIcons))
 	if err != nil {
@@ -1327,7 +1327,7 @@ const minGoTrueSecretLen = 32
 // a database (its tokens and messages are rows; buildApp connects one exactly
 // when Database is set, or refuses to boot). It decides two things that must
 // agree — whether the plugin store (and with it task_create_gated) is wired, and
-// whether the chief's prose describes plugins (agentSpecConfig) — so both read it
+// whether the agent's prose describes plugins (agentSpecConfig) — so both read it
 // here rather than spelling it twice.
 func (c config) pluginsEnabled() bool { return c.Plugins && c.Database != "" }
 
@@ -1865,32 +1865,32 @@ func (c config) validateProvisioner() error {
 // 200: an unknown kind, an image that does not pin a version, an account list
 // with no tokens behind it, an empty pool. And the armed-switch shape: claude-code
 // settings with the kind not enabled are refused rather than ignored.
-// validateSessionRuntimes refuses a MUSTER_CHIEF_SESSION_RUNTIMES entry that is
+// validateSessionRuntimes refuses a MUSTER_AGENT_SESSION_RUNTIMES entry that is
 // not a session runtime or is listed twice, and claude-code while the
-// claude-code kind is off (no chief could run such a session).
+// claude-code kind is off (no agent could run such a session).
 func (c config) validateSessionRuntimes() error {
 	seen := map[string]bool{}
-	for _, rt := range c.ChiefSessionRuntimes {
+	for _, rt := range c.AgentSessionRuntimes {
 		if !slices.Contains(agents.SessionRuntimes, rt) {
-			return fmt.Errorf("invalid %s entry %q: want a comma list of %s", envChiefSessionRuntimes, rt, strings.Join(agents.SessionRuntimes, ", "))
+			return fmt.Errorf("invalid %s entry %q: want a comma list of %s", envAgentSessionRuntimes, rt, strings.Join(agents.SessionRuntimes, ", "))
 		}
 		if seen[rt] {
-			return fmt.Errorf("invalid %s: %q is listed twice", envChiefSessionRuntimes, rt)
+			return fmt.Errorf("invalid %s: %q is listed twice", envAgentSessionRuntimes, rt)
 		}
 		seen[rt] = true
 	}
-	// A claude-code chief's gateway sessions run on the gateway runtime BESIDE
+	// A claude-code agent's gateway sessions run on the gateway runtime BESIDE
 	// ccd, built from the same runtime bundle as a gateway-kind agent: without
-	// it, the chief's next Start would fail to build its spec.
+	// it, the agent's next Start would fail to build its spec.
 	if seen[agents.SessionRuntimeGateway] && c.claudeCodeEnabled() && c.agentGateway() == gatewayNone {
-		return fmt.Errorf("invalid %s: it names %s and %s enables %s, so a %s chief runs the gateway runtime beside "+
+		return fmt.Errorf("invalid %s: it names %s and %s enables %s, so a %s agent runs the gateway runtime beside "+
 			"ccd — and %s is %s, so there is no runtime bundle to build it from",
-			envChiefSessionRuntimes, agents.SessionRuntimeGateway, envAgentKinds, agents.KindClaudeCode,
+			envAgentSessionRuntimes, agents.SessionRuntimeGateway, envAgentKinds, agents.KindClaudeCode,
 			agents.KindClaudeCode, envAgentGateway, gatewayNone)
 	}
 	if seen[agents.SessionRuntimeClaudeCode] && !c.claudeCodeEnabled() {
-		return fmt.Errorf("invalid %s: it names %s, but %s does not enable that kind, so no chief could run such a session",
-			envChiefSessionRuntimes, agents.SessionRuntimeClaudeCode, envAgentKinds)
+		return fmt.Errorf("invalid %s: it names %s, but %s does not enable that kind, so no agent could run such a session",
+			envAgentSessionRuntimes, agents.SessionRuntimeClaudeCode, envAgentKinds)
 	}
 	return nil
 }

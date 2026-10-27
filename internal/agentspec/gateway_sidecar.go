@@ -13,9 +13,9 @@ import (
 	"github.com/ZacxDev/muster/internal/provision"
 )
 
-// THE GATEWAY RUNTIME BESIDE ccd IN A CLAUDE-CODE CHIEF'S POD.
+// THE GATEWAY RUNTIME BESIDE ccd IN A CLAUDE-CODE AGENT'S POD.
 //
-// A claude-code chief hosts chat sessions on two runtimes (muster's
+// A claude-code agent hosts chat sessions on two runtimes (muster's
 // chat_sessions.runtime, migration 0030): Claude Code (ccd, the pod's own
 // process) and the model-gateway runtime, which runs here as a SIDECAR
 // (provision.Sidecar) — a second container in the same pod, reached by ccd on
@@ -38,13 +38,13 @@ import (
 //     directory as ROOT, which the uid-1000 process then cannot write under;
 //   - HOME is set to the image's own user's home, where the runtime keeps its
 //     state (and where the install script writes its configuration) in the
-//     container's own writable layer — never on the chief's volume, which the
+//     container's own writable layer — never on the agent's volume, which the
 //     Claude Code session can read (provision.Sidecar);
 //   - GatewaySidecarPortEnv tells the operator's install script which LOOPBACK
 //     port to serve on: 18789 is ccd's.
 //
-// The chief's INSTRUCTIONS are not placed here: the runtime reads its standing
-// files from its own home, and muster sends a gateway session's turn the chief's
+// The agent's INSTRUCTIONS are not placed here: the runtime reads its standing
+// files from its own home, and muster sends a gateway session's turn the agent's
 // prose as the request's instructions (internal/api's chatTurn), which the
 // runtime adds to its system prompt.
 //
@@ -85,16 +85,16 @@ var TurnCredentialEnv = []string{EnvGatewayBearer, EnvCCDGatewayUpstreamBearer, 
 // LOOPBACK. Containers in one pod share a network namespace, so anything the
 // gateway runtime can be talked into doing — a tool call or a fetch, steered by
 // model output that untrusted content influences — can reach ccd on 127.0.0.1.
-// ccd's network port accepts one bearer (the chief's turn credential,
+// ccd's network port accepts one bearer (the agent's turn credential,
 // MUSTER_GATEWAY_BEARER; agents.Agent.GatewaySecret), and a holder of it drives
-// the Claude Code chief: its turns, its tools, its account. Until this was fixed the
-// sidecar was built from the chief's own row and so held exactly that: the raw
+// the Claude Code agent: its turns, its tools, its account. Until this was fixed the
+// sidecar was built from the agent's own row and so held exactly that: the raw
 // hooks token under two names and the derived bearer.
 //
 // So the sidecar is built from a token of its OWN, [sidecarHooksToken]: a
-// one-way, domain-separated derivation of the chief's TURN CREDENTIAL, from which
-// ccd's bearer cannot be computed. 🔴 Not of the chief's hooks token, as it once
-// was: the chief's session holds that (MUSTER_HOOK_TOKEN), so every tool call
+// one-way, domain-separated derivation of the agent's TURN CREDENTIAL, from which
+// ccd's bearer cannot be computed. 🔴 Not of the agent's hooks token, as it once
+// was: the agent's session holds that (MUSTER_HOOK_TOKEN), so every tool call
 // could compute the sidecar's credential from it and drive the runtime directly. The gateway kind's own Build
 // then derives the sidecar's gateway credential from it as it would for any
 // gateway agent, and ccd is handed that credential
@@ -110,14 +110,19 @@ var TurnCredentialEnv = []string{EnvGatewayBearer, EnvCCDGatewayUpstreamBearer, 
 // called muster with it.
 
 // sidecarTokenDomain separates the sidecar's token from every other use of the
-// chief's turn credential.
+// agent's turn credential.
 const sidecarTokenDomain = "muster/chief-gateway-sidecar/v1\x00"
 
-// sidecarHooksToken is the gateway sidecar's own token, derived from the chief's
+// ⚠ THE DOMAIN STRING STILL SAYS "agent" AND MUST NOT BE "TIDIED". It is a
+// cryptographic domain separator, not prose: every sidecar credential in every
+// running deployment is sha256(this string + the turn credential). Changing the
+// text would silently re-derive every one of them, so the word stays.
+
+// sidecarHooksToken is the gateway sidecar's own token, derived from the agent's
 // turn credential: sha256 over a domain prefix, lower-case hex. One-way, so the
 // sidecar cannot recover ccd's bearer from it.
-func sidecarHooksToken(chiefTurnCredential string) string {
-	sum := sha256.Sum256([]byte(sidecarTokenDomain + chiefTurnCredential))
+func sidecarHooksToken(turnCredential string) string {
+	sum := sha256.Sum256([]byte(sidecarTokenDomain + turnCredential))
 	return hex.EncodeToString(sum[:])
 }
 
@@ -172,7 +177,7 @@ const GatewaySidecarRestartSeconds = 10
 var GatewaySidecarResources = provision.Resources{CPURequest: "100m", MemoryRequest: "512Mi", MemoryLimit: "1536Mi"}
 
 // GatewaySidecar asks buildClaudeCode (via [Options.GatewaySidecar]) for the
-// gateway runtime beside ccd. Only a claude-code CHIEF is given one (the caller
+// gateway runtime beside ccd. Only a claude-code agent is given one (the caller
 // decides; agentprovision's buildClaudeCodeSpec).
 type GatewaySidecar struct{}
 
@@ -192,10 +197,10 @@ func buildGatewaySidecar(a agents.Agent, cfg Config) (*provision.Sidecar, error)
 			"install script (MUSTER_AGENT_RUNTIME_INSTALL) never reads $%s: the runtime would serve on its own "+
 			"default port, which is %d — ccd's, in the same pod — and either crash-loop the pod or answer muster in "+
 			"ccd's place. Update the install script to pass --port \"$%s\" (and bind loopback) before naming "+
-			"gateway in MUSTER_CHIEF_SESSION_RUNTIMES", a.Name, GatewaySidecarPortEnv, DefaultGatewayPort,
+			"gateway in MUSTER_AGENT_SESSION_RUNTIMES", a.Name, GatewaySidecarPortEnv, DefaultGatewayPort,
 			GatewaySidecarPortEnv)
 	}
-	// 🔴 DERIVED FROM THE CHIEF'S TURN CREDENTIAL, NOT ITS HOOKS TOKEN. The chief's
+	// 🔴 DERIVED FROM THE AGENT'S TURN CREDENTIAL, NOT ITS HOOKS TOKEN. The agent's
 	// session holds the hooks token (MUSTER_HOOK_TOKEN), so a sidecar token derived
 	// from it would let any tool call compute the sidecar's credential and drive
 	// the gateway runtime directly. The turn credential is one the session never
@@ -277,7 +282,7 @@ var gatewayPortRef = regexp.MustCompile(`\$\{?` + GatewaySidecarPortEnv + `\b`)
 // loops — the pod goes NotReady, its endpoint drops, and the Deployment's Recreate
 // takes the Claude Code sessions with it — or, rarer, it wins the bind and
 // answers muster in ccd's place. That is what a deployment gets by naming gateway
-// in MUSTER_CHIEF_SESSION_RUNTIMES before the runtime ConfigMap is updated, and
+// in MUSTER_AGENT_SESSION_RUNTIMES before the runtime ConfigMap is updated, and
 // refusing the build names the cause on the agent instead.
 //
 // ⚠ IT IS A TEXT CHECK, AND IT IS NECESSARY RATHER THAN SUFFICIENT. The script is
@@ -304,7 +309,7 @@ func installHonoursGatewayPort(install []byte) bool {
 // CONTAINER IN A POD GATES THE POD'S READINESS. A pod is Ready only when all its
 // containers are (the ContainersReady condition); a container that has exited,
 // or waits out a CrashLoopBackOff, is not. So a runtime that crashes — a bad
-// configuration, a lost bind — would take the pod NotReady and drop the chief's
+// configuration, a lost bind — would take the pod NotReady and drop the agent's
 // Service endpoint, which is ccd's: Claude Code sessions would become unreachable
 // over a runtime they do not use. Restarting INSIDE the container keeps the
 // container running, so it stays Ready (it has no readiness probe) and the pod's

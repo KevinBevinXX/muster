@@ -21,7 +21,7 @@ var standing = []string{
 
 // UnverifiedSenderMark follows the sender on the "from" line of every plugin
 // message the plugin did NOT mark sender_verified (Message.SenderVerified):
-// in the chief's turn (renderMessage) and in a routed session's paste
+// in the agent's turn (renderMessage) and in a routed session's paste
 // (internal/api/session_routes.go), both through SenderText.
 //
 // 🔴 ONLY THE UNVERIFIED CASE IS MARKED, DELIBERATELY. The mark sits after the
@@ -47,10 +47,10 @@ func SenderText(m Message) string {
 }
 
 // preface is the one line OUTSIDE the fence. It begins with the plugin's label
-// because the chief's dedicated session for this plugin takes its title from the
+// because the agent's dedicated session for this plugin takes its title from the
 // first line of its first turn (agents.Store.AddChatMessage).
 //
-// 🔴 THE DATA SCOPE SENTENCE IS ADVISORY, AND IT SAYS SO NOWHERE ELSE. The chief's
+// 🔴 THE DATA SCOPE SENTENCE IS ADVISORY, AND IT SAYS SO NOWHERE ELSE. The agent's
 // own subsystem-store credential can write to every scope; nothing but this line
 // keeps what it records from a plugin message inside the plugin's scope.
 //
@@ -83,11 +83,11 @@ type Retry struct {
 // like RoutingSentence and the hint block's preface — and nothing the sender
 // wrote can spell it there.
 //
-// 🔴 WHY THE CHIEF IS TOLD. A retried message is one whose earlier turn was
+// 🔴 WHY THE AGENT IS TOLD. A retried message is one whose earlier turn was
 // cut off AFTER the text may have been pasted: that turn may already have
 // filed a task, drafted a reply or routed it. The retry refusal rule
 // (retryableWhere) catches the actions muster records against the message;
-// this sentence is for everything else the chief may have done.
+// this sentence is for everything else the agent may have done.
 //
 // The delivery attempt is m.Attempts+1: m is read before BeginDelivery counts
 // this one. The age is from created_at (when muster stored it), not the
@@ -111,7 +111,7 @@ func retrySentence(m Message, r Retry) string {
 		m.CreatedAt.UTC().Format(time.RFC3339) + ")."
 }
 
-// RoutingSentence is what the chief's turn says when session routing is on
+// RoutingSentence is what the agent's turn says when session routing is on
 // (internal/plugins/routes.go): when to hand a message to a session rather
 // than answer it. Muster's own words, outside the fence. A no_reply message
 // gets NoReplySentence instead: there is no answer to route for.
@@ -119,12 +119,12 @@ const RoutingSentence = "If one of your user's sessions is better placed to answ
 	"focus_search and hand the message to it with route_to_session(message_id, subject): the session's answer " +
 	"comes back as the reply, and only the stored message is passed on, fenced as untrusted."
 
-// NoReplySentence is what the chief's turn says about a no_reply message.
+// NoReplySentence is what the agent's turn says about a no_reply message.
 const NoReplySentence = "This message cannot be replied to: do not draft a reply to it (reply_draft refuses it)."
 
-// RenderMessage is the whole turn delivered to the chief for one plugin message,
+// RenderMessage is the whole turn delivered to the agent for one plugin message,
 // with a fresh nonce. retry, for a message the owner retried, adds the retry
-// sentence (retrySentence) to the preface, for a task event too. routing says session routing is on (the chief has
+// sentence (retrySentence) to the preface, for a task event too. routing says session routing is on (the agent has
 // route_to_session), which adds RoutingSentence to the preface. hints, when it
 // names any session, appends the session-hint block (renderHints) AFTER the
 // message's fence, under its own nonce; its routing line is left out for a
@@ -133,7 +133,7 @@ const NoReplySentence = "This message cannot be replied to: do not draft a reply
 // A TASK EVENT (m.TaskID set, task_events.go) is rendered as one: muster's
 // structured event, never as mail — and WITHOUT a session hint. The event
 // already names its task and the agents bound to it from muster's own rows,
-// the chief routes it with the task tools, and it is no_reply, so the hint's
+// the agent routes it with the task tools, and it is no_reply, so the hint's
 // route_to_session line could never apply (the deliverer does not compute a
 // hint for one either).
 func RenderMessage(p Plugin, m Message, routing bool, hints Hints, retry Retry) string {

@@ -421,7 +421,7 @@ func cairnCredentialFile(cfg Config) provision.File {
 //
 // ⚠ AN EARLIER VERSION OF THIS PARAGRAPH JUSTIFIED THE DESIGN ON A FALSE PROPERTY
 // OF THE TOOL, and the correction is recorded rather than quietly swapped because
-// the same false sentence ALSO shipped to the agent — see [chiefCairnSection],
+// the same false sentence ALSO shipped to the agent — see [supervisorCairnSection],
 // corrected there too. It read: "A `--version` style probe cannot do this job:
 // `cairn --version` exits 0 printing usage, exactly like a verb that does not
 // exist." Measured at [cairnRev]: there is no `--version` option anywhere in the

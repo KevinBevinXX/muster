@@ -394,12 +394,6 @@ func shell(activeTab string, feat Features, extra g.Node, data ShellData) g.Node
 					// Only when the server holds VAPID keys (Features.Push): with
 					// none, every route this script calls answers 503.
 					g.If(feat.Push, pushScript()),
-					// 🔴 THE CHIEF PANEL'S OPEN/WIDTH MEMORY, IN THE SHELL — NOT IN THE
-					// PANEL. #chief-panel-body is an `hx-swap: innerHTML` target, so a
-					// persistence script rendered inside it would be destroyed by the
-					// very swap it exists to survive. See chiefPanelScript's header for
-					// the other two constraints it is written against.
-					chiefPanelScript(),
 				),
 				// Body-level overlays: rendered outside the content column so their
 				// `position: fixed` is always viewport-relative (no ancestor
@@ -419,20 +413,6 @@ func shell(activeTab string, feat Features, extra g.Node, data ShellData) g.Node
 				// agent replies. Always visible (not per-tab); only the count badge
 				// hides at zero. Its panel lazy-loads /ui/notifications.
 				notifFAB(),
-				// The chief slide-out. Body level for the same reason as badgePopover
-				// and the FABs — and for one stronger one: it holds a LIVE WebSocket
-				// and whatever the operator has half-typed, so a panel inside <main>
-				// would lose both every time any tab panel swapped. That is criterion
-				// 3, and it is satisfied by WHERE this line is rather than by anything
-				// the panel itself does.
-				//
-				// ⚠ RENDERED ON EVERY TAB, NOT ONLY ON tmux. The sidebar switches tabs
-				// CLIENT-SIDE inside this one document (appScript's switchTab), so a
-				// panel rendered only when activeTab == "tmux" would be absent for
-				// anyone who reached the grid by clicking rather than by URL. Its body
-				// is lazy, so the cost of always rendering it is the shut aside and
-				// nothing else.
-				ChiefPanel(),
 				extra,
 			),
 		),
@@ -506,7 +486,7 @@ func shell(activeTab string, feat Features, extra g.Node, data ShellData) g.Node
 // Once the operator has scrolled INTO a panel, nothing at or below the scroll
 // position is an eligible anchor: the only other in-flow content (the sr-only
 // `<h1>` and `#push-status`) sits ABOVE the panels, the header is `sticky`, and
-// the sidebar / FABs / modals / chief panel are `fixed`. So anchoring is
+// the sidebar / FABs / modals / agent panel are `fixed`. So anchoring is
 // effectively off for the document on every muster tab. That is the intended
 // trade rather than an accident — but it IS scroller-level behaviour, so do not
 // read this as "only the panel is affected". The one reachable loss today is

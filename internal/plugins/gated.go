@@ -15,8 +15,8 @@ import (
 // A gated task cannot run until its owner approves it, so the budget is not what
 // keeps a plugin message from causing work. It bounds the OTHER cost: every gated
 // task is a `created` push on the owner's phone and a card on their board, and the
-// chief files them while reading text an outside party wrote. Twenty a day is
-// more than a person triages from one inbox; a chief talked into a loop stops
+// agent files them while reading text an outside party wrote. Twenty a day is
+// more than a person triages from one inbox; an agent talked into a loop stops
 // there.
 const (
 	MaxGatedTasksPerDay = 20
@@ -37,10 +37,10 @@ func AgentObject(id int64) string { return "agent:" + strconv.FormatInt(id, 10) 
 
 // DeliveredTo reports whether message m was handed to agent agentID of owner
 // ownerID: it is that owner's, the agent it went to is agentID, and it is
-// delivering, delivered or unconfirmed (each means the chief may have read it).
+// delivering, delivered or unconfirmed (each means the agent may have read it).
 //
 // 🔴 `delivering` IS THE CASE THE FEATURE EXISTS FOR. It is the state DURING the
-// turn that hands the message to the chief — the turn on which the chief learns
+// turn that hands the message to the agent — the turn on which the agent learns
 // of it and files a task for it (Deliverer.Deliver writes it before the turn
 // runs). Refusing it would refuse the core flow and accept only a citation made
 // on some later turn. A `queued` message names no agent (0015's CHECK), so it is

@@ -26,7 +26,7 @@ func TestAHostsHermesGuardRefusalReadsTheSameWithAndWithoutScript(t *testing.T) 
 	fm := &fakeMirror{online: true, interactive: true, v2: &fakeMirrorV2{}}
 	s, ts := viewServer(t, fm)
 	cookie := sessionCookieFor(s)
-	form := url.Values{"host": {"ws"}, "session": {"chief"}, "text": {"4"}}
+	form := url.Values{"host": {"ws"}, "session": {"agent"}, "text": {"4"}}
 	nav := func() string {
 		t.Helper()
 		req, _ := http.NewRequest(http.MethodPost, ts.URL+ui.MirrorTerminalSendPath, strings.NewReader(form.Encode()))
@@ -77,7 +77,7 @@ func TestAHostsHermesGuardRefusalReadsTheSameWithAndWithoutScript(t *testing.T) 
 	}
 
 	// Control: another host refusal, with no kind, is the generic answer.
-	fm.v2.pasteErr = &mirror.PasteRefusedError{Why: "session \"chief\" is not in this host's latest list"}
+	fm.v2.pasteErr = &mirror.PasteRefusedError{Why: "session \"agent\" is not in this host's latest list"}
 	if code, body, _ := postSend(t, ts.URL, ui.MirrorTerminalSendPath, cookie, "", form); code != http.StatusBadGateway || !strings.HasPrefix(body, "mirror: the host refused the message: ") {
 		t.Errorf("a refusal that is not the guard's: %d %q; want the generic 502 with the host's reason after the prefix", code, body)
 	}

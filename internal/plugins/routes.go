@@ -16,9 +16,9 @@ import (
 	"github.com/ZacxDev/muster/internal/authz"
 )
 
-// SESSION ROUTES (session_routes, migration 0021): the chief hands a plugin
+// SESSION ROUTES (session_routes, migration 0021): the agent hands a plugin
 // message delivered to it to the session best placed to answer it
-// (route_to_session), the session answers (reply_to_chief), and the answer
+// (route_to_session), the session answers (route_reply), and the answer
 // becomes the plugin reply — a reply draft that is AUTO-APPROVED when the
 // sender is on the owner's allowlist, and an ordinary pending draft the owner
 // approves otherwise. The plugin claims and sends it through the existing
@@ -43,13 +43,13 @@ import (
 // RouteStore is the session_routes half of the plugin store (PGStore). Every
 // method acts as ctx's principal except ExpiredRoutes (see there).
 type RouteStore interface {
-	CreateRoute(ctx context.Context, chiefID, ownerID, messageID int64, target RouteTarget, timeout time.Duration) (Route, error)
+	CreateRoute(ctx context.Context, agentID, ownerID, messageID int64, target RouteTarget, timeout time.Duration) (Route, error)
 	Route(ctx context.Context, routeID string) (Route, error)
 	SetRouteQueued(ctx context.Context, routeID string, sendQueueID int64) error
 	// FailRoute ends an open route as failed; handBack, when not "", is the
-	// reason it is owed back to the chief (TakeHandBack delivers it).
+	// reason it is owed back to the agent (TakeHandBack delivers it).
 	FailRoute(ctx context.Context, routeID, why, handBack string) (Route, error)
-	// TakeHandBack clears and returns the hand-back routeID owes its chief,
+	// TakeHandBack clears and returns the hand-back routeID owes its agent,
 	// exactly once: ok is false when none is owed (or another taker won).
 	TakeHandBack(ctx context.Context, routeID string) (r Route, reason string, ok bool, err error)
 	AnswerRoute(ctx context.Context, routeID, body string) (Route, bool, error)
@@ -149,13 +149,13 @@ func clampRouteError(msg string) string {
 	return msg
 }
 
-// CreateRoute opens a route for message messageID, by chief agent chiefID of
+// CreateRoute opens a route for message messageID, by agent agentID of
 // owner ownerID, to target, answerable until timeout from now. The message
-// must be one delivered (or being delivered) to that chief (DeliveredTo), not
+// must be one delivered (or being delivered) to that agent (DeliveredTo), not
 // marked no_reply, with no reply already approved and in flight, and not
 // already routed (ErrAlreadyRouted).
-func (s *PGStore) CreateRoute(ctx context.Context, chiefID, ownerID, messageID int64, target RouteTarget, timeout time.Duration) (Route, error) {
-	if chiefID <= 0 || ownerID <= 0 {
+func (s *PGStore) CreateRoute(ctx context.Context, agentID, ownerID, messageID int64, target RouteTarget, timeout time.Duration) (Route, error) {
+	if agentID <= 0 || ownerID <= 0 {
 		return Route{}, invalid("the agent has no owner")
 	}
 	var r Route
@@ -164,7 +164,7 @@ func (s *PGStore) CreateRoute(ctx context.Context, chiefID, ownerID, messageID i
 		if inFlight != nil && !errors.Is(inFlight, ErrReplyInFlight) {
 			return inFlight
 		}
-		if !DeliveredTo(m, chiefID, ownerID) {
+		if !DeliveredTo(m, agentID, ownerID) {
 			return ErrNotFound
 		}
 		if m.NoReply {
@@ -177,7 +177,7 @@ func (s *PGStore) CreateRoute(ctx context.Context, chiefID, ownerID, messageID i
 		r, err = scanRoute(tx.QueryRow(ctx, `INSERT INTO session_routes (owner_id, route_id, plugin_message_id, agent_id,
 				target_kind, target_key, target_label, timeout_at)
 			VALUES ($1, $2, $3, $4, $5, $6, $7, now() + make_interval(secs => $8)) RETURNING `+routeCols,
-			ownerID, NewRouteID(), messageID, chiefID, target.Kind, target.Key, cutRunes(target.Label, 200), timeout.Seconds()))
+			ownerID, NewRouteID(), messageID, agentID, target.Kind, target.Key, cutRunes(target.Label, 200), timeout.Seconds()))
 		var pg *pgconn.PgError
 		if errors.As(err, &pg) && pg.Code == "23505" && pg.ConstraintName == "session_routes_one_open" {
 			return ErrAlreadyRouted
@@ -186,7 +186,7 @@ func (s *PGStore) CreateRoute(ctx context.Context, chiefID, ownerID, messageID i
 			return err
 		}
 		return audit(ctx, tx, "session_route.routed", RouteObject(r.RouteID), map[string]any{
-			"message_id": messageID, "agent_id": chiefID, "target": target.Kind + ":" + target.Key,
+			"message_id": messageID, "agent_id": agentID, "target": target.Kind + ":" + target.Key,
 			"timeout_at": r.TimeoutAt.UTC().Format(time.RFC3339)})
 	})
 	return r, err
@@ -225,7 +225,7 @@ func lockRoute(ctx context.Context, tx pgx.Tx, routeID string) (Route, error) {
 
 // FailRoute ends an OPEN route as failed, recording why (the message could not
 // be put into the session, or its window moved on) and, when handBack is not
-// "", the hand-back it owes the chief. A route that is no longer open is
+// "", the hand-back it owes the agent. A route that is no longer open is
 // returned unchanged, and owes nothing new.
 func (s *PGStore) FailRoute(ctx context.Context, routeID, why, handBack string) (Route, error) {
 	var r Route
@@ -245,7 +245,7 @@ func (s *PGStore) FailRoute(ctx context.Context, routeID, why, handBack string) 
 }
 
 // failRouteTx ends cur — locked by the caller, and open — as failed, in tx,
-// owing the chief handBack ("" for nothing).
+// owing the agent handBack ("" for nothing).
 func failRouteTx(ctx context.Context, tx pgx.Tx, cur Route, why, handBack string) (Route, error) {
 	r, err := scanRoute(tx.QueryRow(ctx, `UPDATE session_routes SET state = 'failed', finished_at = now(), error = $2,
 		handback = nullif($3, '') WHERE route_id = $1 RETURNING `+routeCols, cur.RouteID, clampRouteError(why), clampHandBack(handBack)))
@@ -295,7 +295,7 @@ func (s *PGStore) AnswerRoute(ctx context.Context, routeID, body string) (r Rout
 // ONCE: approve files it already APPROVED (relayed — the plugin's next claim
 // takes it, the owner is not asked), otherwise PENDING for the owner
 // (fallback). A route that already became a draft returns that draft and
-// files nothing (exactly once). A relay that cannot be made — the chief is
+// files nothing (exactly once). A relay that cannot be made — the agent is
 // gone, the message is no_reply, another reply to it is already in flight, a
 // pending draft would pass MaxPendingDraftsPerAgent — fails the route, saying
 // why, in the same transaction (ErrRouteClosed: exactly one caller gets it).
@@ -335,7 +335,7 @@ func (s *PGStore) RelayRoute(ctx context.Context, routeID, agentName string, app
 		}
 		switch {
 		case cur.AgentID == nil:
-			failWhy = "the chief that routed it no longer exists"
+			failWhy = "the agent that routed it no longer exists"
 		case m.NoReply:
 			failWhy = "the message may not be replied to (no_reply)"
 		case inFlight != nil:
@@ -444,7 +444,7 @@ func (s *PGStore) TimeOutRoute(ctx context.Context, routeID string) (r Route, ti
 // its deadline (time it out), an ANSWERED one whose relay never happened —
 // a crash or an error between the answer's commit and the relay — which would
 // otherwise hold the message's one open route forever (relay it again: the
-// relay is idempotent), or an ended one that still OWES its chief a hand-back
+// relay is idempotent), or an ended one that still OWES its agent a hand-back
 // (HandBack; deliver it).
 type DueRoute struct {
 	RouteID  string

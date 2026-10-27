@@ -34,7 +34,7 @@ import (
 // /v1/responses that returns when the CLI's turn ends — with the final reply
 // text, or a typed failure (rate_limited, auth_failed, turn_timeout, …). That
 // request IS "the job is done when the agent's turn completes", so the runner
-// below is that call (Gateway.Chat, the call `chief ask` makes) in a goroutine
+// below is that call (Gateway.Chat, the call `agent ask` makes) in a goroutine
 // whose outcome is written to the row. Nothing in ccd changes.
 //
 // 🔴 THE SERVICE TIER, requireServiceToken: MUSTER_SERVICE_TOKEN plus an

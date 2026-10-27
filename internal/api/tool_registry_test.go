@@ -16,8 +16,8 @@ import (
 // The ONE agent tool registry (agentTools, agent.go) and its two transports.
 
 // mcpLedger and gatewayOnlyLedger are the two halves of the registry with the
-// connector, flow and plugin stores configured, as the CHIEF sees it;
-// chiefOnlyLedger is the part of it no other agent is offered.
+// connector, flow and plugin stores configured, as ANY agent sees it: the
+// registry has no rank axis, so no ledger needs one.
 //
 // 🔴 BOTH ARE PINNED AS LITERALS AND THE TEST FAILS WHEN EITHER SET GROWS OR
 // SHRINKS. A new tool is a decision about which pods may call it: setting the
@@ -29,18 +29,13 @@ var (
 	mcpLedger = []string{"connectors_list", "connector_request", "connector_status",
 		"browser_flow_request", "browser_flow_status", "task_create_gated", "reply_draft",
 		"fleet_list", "focus_search", "focus_refresh", "sessions_overview",
-		// The attention queue (attention_tools.go): every agent asks and works the
-		// owner's tasks; the chief alone lists, answers and reads transcripts.
+		// The attention queue (attention_tools.go): every agent asks, works, lists,
+		// answers and reads the owner's tasks.
 		"attention_ask", "attention_wait", "attention_cancel",
 		"tasks_list", "task_get", "task_comment", "task_set_status",
 		"attention_list", "session_transcript"}
 	gatewayOnlyLedger = []string{"agent_get_task", "agent_comment_task", "agent_set_task_status",
 		"agent_list_pull_requests"}
-	// 🔴 chiefOnlyLedger IS PINNED THE SAME WAY: a tool joining it is offered to
-	// one agent per owner and refused to every other, and a tool LEAVING it is
-	// offered to every worker in the fleet. Either is a decision to review here.
-	chiefOnlyLedger = []string{"task_create_gated", "reply_draft", "fleet_list", "focus_search", "focus_refresh",
-		"sessions_overview", "attention_list", "session_transcript"}
 )
 
 // without returns list minus the names in drop, in order.
@@ -96,8 +91,7 @@ func normJSON(t *testing.T, v any) string {
 // TestTheMCPToolsAreTheRegistrysMCPSubset: what POST /mcp lists for an agent is,
 // tool for tool and byte for byte (name, description, input schema), the
 // MCP-flagged entries of what the registry offers THAT agent — the same
-// definitions its gateway turns are given — and the split is the ledgered one,
-// for the chief and (minus the chief-only tools) for a worker.
+// definitions its gateway turns are given.
 func TestTheMCPToolsAreTheRegistrysMCPSubset(t *testing.T) {
 	g := newGatedFixture(t)
 
@@ -107,8 +101,8 @@ func TestTheMCPToolsAreTheRegistrysMCPSubset(t *testing.T) {
 		token   string
 		wantMCP []string
 	}{
-		{"chief", g.chief, g.chiefTok, mcpLedger},
-		{"worker", g.worker, g.workerTok, without(mcpLedger, chiefOnlyLedger)},
+		{"agent", g.agent, g.chiefTok, mcpLedger},
+		{"worker", g.worker, g.workerTok, mcpLedger},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			mcpNames, tools := mcpListNames(t, g.connFixture, c.token)
@@ -153,60 +147,21 @@ func TestTheMCPToolsAreTheRegistrysMCPSubset(t *testing.T) {
 	}
 }
 
-// TestTheChiefOnlyToolsAreLedgered: the registry's chief-only set is exactly
-// chiefOnlyLedger with the plugin store wired, and EMPTY without it (a chief-only
-// tool with plugins off would be offered to the chief and answer "unconfigured").
-func TestTheChiefOnlyToolsAreLedgered(t *testing.T) {
-	g := newGatedFixture(t)
-	chiefOnly := func(s *Server) []string {
-		var out []string
-		for _, tl := range s.agentTools() {
-			if tl.chiefOnly {
-				out = append(out, tl.def.Name)
-			}
-		}
-		return out
-	}
-	if got := chiefOnly(g.srv); !reflect.DeepEqual(got, chiefOnlyLedger) {
-		t.Errorf("chief-only tools = %v, want exactly %v", got, chiefOnlyLedger)
-	}
-	if got := chiefOnly(newConnFixture(t).srv); len(got) != 0 {
-		t.Errorf("with no plugin store the registry still declares chief-only tools %v", got)
-	}
-	// Behavioural half: each ledgered tool is offered to the chief and to nobody else.
-	names := func(a agents.Agent) map[string]bool {
-		m := map[string]bool{}
-		for _, d := range g.srv.AgentToolDefsFor(g.asOwner, a) {
-			m[d.Name] = true
-		}
-		return m
-	}
-	chief, worker := names(g.chief), names(g.worker)
-	for _, n := range chiefOnlyLedger {
-		if !chief[n] {
-			t.Errorf("the chief is not offered %s", n)
-		}
-		if worker[n] {
-			t.Errorf("a worker is offered the chief-only %s", n)
-		}
-	}
-}
-
 // TestEveryRegisteredToolIsDispatched: a tool declared in the registry with no
 // case in dispatchAgentTool would be listed and then answer "unknown tool".
 func TestEveryRegisteredToolIsDispatched(t *testing.T) {
 	g := newGatedFixture(t)
-	defs := g.srv.AgentToolDefsFor(g.asOwner, g.chief)
+	defs := g.srv.AgentToolDefsFor(g.asOwner, g.agent)
 	if len(defs) != len(mcpLedger)+len(gatewayOnlyLedger) {
 		t.Fatalf("positive control: %d tool defs, want %d", len(defs), len(mcpLedger)+len(gatewayOnlyLedger))
 	}
 	for _, d := range defs {
-		if out := g.srv.dispatchAgentTool(g.asOwner, g.chief, d.Name, "{}"); out == toolErr("unknown tool %q", d.Name) {
+		if out := g.srv.dispatchAgentTool(g.asOwner, g.agent, d.Name, "{}"); out == toolErr("unknown tool %q", d.Name) {
 			t.Errorf("%s is registered but not dispatched", d.Name)
 		}
 	}
 	// Control: the comparison above can see an unknown tool.
-	if out := g.srv.dispatchAgentTool(g.asOwner, g.chief, "no_such_tool", "{}"); out != toolErr("unknown tool %q", "no_such_tool") {
+	if out := g.srv.dispatchAgentTool(g.asOwner, g.agent, "no_such_tool", "{}"); out != toolErr("unknown tool %q", "no_such_tool") {
 		t.Fatalf("control: an unregistered name answered %s", out)
 	}
 }

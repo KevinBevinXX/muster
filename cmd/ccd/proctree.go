@@ -12,12 +12,12 @@ import (
 // INSIDE it.
 //
 // A hook with no ?lane= is the primary's (lanes.go) — but that is a claim about
-// the environment the hook ran in, and a nested `claude` that the chief runs in
+// the environment the hook ran in, and a nested `claude` that the agent runs in
 // its own shell (a Bash tool call in /data/workspace) inherits that environment:
 // CLAUDE_CONFIG_DIR, the settings that register `ccd hook`, and no CCD_LANE. Its
 // SessionStart arrived as the primary's, and its session id was RECORDED as the
 // primary's (primaryRecordFile), so the next primary restart resumed the nested
-// conversation instead of the chief's own.
+// conversation instead of the agent's own.
 //
 // An environment marker cannot tell the two apart — whatever ccd sets in the
 // primary's environment the nested CLI inherits. The PROCESS TREE can: ccd

@@ -11,13 +11,13 @@ import (
 	"github.com/ZacxDev/muster/internal/focus"
 )
 
-// THE FOCUS TOOLS (internal/focus): how the chief finds the session working on
-// something. fleet_list, focus_search, focus_refresh — all CHIEF-ONLY: they
+// THE FOCUS TOOLS (internal/focus): how the agent finds the session working on
+// something. fleet_list, focus_search, focus_refresh — all AGENT-ONLY: they
 // enumerate (or spend summarizer budget on) the owner's WHOLE fleet, which is
-// the chief's job and no worker's. Token-efficient by design: ids, kinds,
+// the agent's job and no worker's. Token-efficient by design: ids, kinds,
 // names, statuses, titles and — where a session has no focus or a stale one —
 // the short reason why; a search hit carries a snippet of at most
-// focus.MaxSnippetRunes. All three are on MCP too, so a claude-code chief
+// focus.MaxSnippetRunes. All three are on MCP too, so a claude-code agent
 // reaches them. Focus itself has ONE writer, muster's own refresh.
 
 // focusUntrustedTail ends every focus tool's description: the field-level
@@ -128,7 +128,7 @@ func (s *Server) toolFocusSearch(ctx context.Context, arguments string) string {
 		in.Limit = 5
 	}
 	// Dead mirrored sessions (a window closed, a conversation ended) are left
-	// out — by the store, BEFORE its limit (Store.Search): a chief must not
+	// out — by the store, BEFORE its limit (Store.Search): an agent must not
 	// route to one, and dead rows must not crowd out a live one.
 	var live []string
 	for _, e := range s.mirrorFocusEntries(ctx) {

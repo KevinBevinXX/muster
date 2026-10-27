@@ -21,7 +21,7 @@ import (
 )
 
 // REPLY DRAFTS, THE OWNER'S AND THE PLUGIN'S HALVES (internal/plugins/drafts.go
-// holds the rules; reply_draft_tool.go is the chief's half).
+// holds the rules; reply_draft_tool.go is the agent's half).
 //
 //   - The OWNER decides on the Asks page's Reply drafts tab (/attention,
 //     asks_drafts.go — they used to be on /plugins): each pending draft is a card showing the
@@ -34,8 +34,8 @@ import (
 //     approved draft and leases it; POST /plugin/v1/drafts/{id}/result settles it
 //     as sent or failed. muster never calls the plugin.
 //
-// 🔴 RETRY-ON-CLAIM IS THE ONLY RETRY. A message whose delivery to the chief was
-// provably not made (the chief was down, busy, absent) stays queued; the START of
+// 🔴 RETRY-ON-CLAIM IS THE ONLY RETRY. A message whose delivery to the agent was
+// provably not made (the agent was down, busy, absent) stays queued; the START of
 // every claim retries the owner's queued messages (retryQueuedPluginMessages).
 // There is no background loop: a plugin that long-polls is the clock.
 
@@ -201,7 +201,7 @@ func (s *Server) draftStatusMoved(owner, id int64) {
 // retryQueuedPluginMessages starts one attempt at the owner's queued messages,
 // oldest first, detached from the request like deliverPluginMessage (and waited
 // for by WaitForPluginDeliveries). It stops at the first attempt that left its
-// message queued: the chief is not taking turns, and the next claim will try
+// message queued: the agent is not taking turns, and the next claim will try
 // again. One retry per owner at a time in this process.
 func (s *Server) retryQueuedPluginMessages(r *http.Request, p plugins.Plugin) {
 	if s.pluginDeliverer == nil || p.OwnerID <= 0 {
@@ -224,12 +224,16 @@ func (s *Server) retryQueuedPluginMessages(r *http.Request, p plugins.Plugin) {
 		if len(msgs) == 0 {
 			return
 		}
-		chief, err := s.chiefAgent(ctx)
-		if err != nil && !errors.Is(err, ErrNoChief) {
-			s.logger.Printf("plugins: owner %d retry: resolve the chief: %v", p.OwnerID, err)
-		}
+		// 🔴 RESOLVED PER MESSAGE, because the target is per PLUGIN and this batch
+		// is the owner's whole queue across every plugin. One agent resolved
+		// before the loop (as the agent was) would send one plugin's messages to
+		// another plugin's agent.
 		for _, m := range msgs {
-			if s.pluginDeliverer.Deliver(ctx, m.PluginID, m.ID, chief).Outcome == plugins.OutcomePending {
+			target, err := s.pluginTargetByID(ctx, m.PluginID)
+			if err != nil && !errors.Is(err, ErrNoPluginTarget) {
+				s.logger.Printf("plugins: owner %d retry: resolve plugin %d's target agent: %v", p.OwnerID, m.PluginID, err)
+			}
+			if s.pluginDeliverer.Deliver(ctx, m.PluginID, m.ID, target).Outcome == plugins.OutcomePending {
 				return
 			}
 		}
@@ -330,7 +334,7 @@ func draftStatusText(d plugins.Draft) string {
 		return "The plugin could not send it" + at(d.FinishedAt)
 	case plugins.DraftUnconfirmed:
 		return "Unconfirmed: the plugin collected it" + at(d.ClaimedAt) + " and never said whether it was sent. It may have been. " +
-			"muster will not offer it again; ask your chief for a new draft if the sender still needs an answer."
+			"muster will not offer it again; ask the target agent for a new draft if the sender still needs an answer."
 	case plugins.DraftRejected:
 		return "Rejected" + at(d.DecidedAt)
 	case plugins.DraftSuperseded:

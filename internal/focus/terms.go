@@ -10,7 +10,7 @@ import (
 )
 
 // DISTINCTIVE TERMS: the identifier-like words a message and a session's focus
-// history must share before the chief's session hint names that session
+// history must share before the agent's session hint names that session
 // (MatchHistory).
 //
 // 🔴 ONE EXTRACTOR, BOTH SIDES. The message's terms and every history row's are

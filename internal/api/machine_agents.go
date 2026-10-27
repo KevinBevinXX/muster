@@ -339,7 +339,7 @@ type chatSessionJSON struct {
 // browser — and answers 401 to the hook token, to X-Muster-Token and to no
 // credential alike. The only machine GETs were /api/tmux/snapshot,
 // /api/transcripts/{sessionId} and /api/agents, none of which carries a message. So
-// `muster chief ask` could post a message and print ONE reply, and nothing
+// `muster agent ask` could post a message and print ONE reply, and nothing
 // could read the conversation afterwards — not even the agent's own past replies.
 // The remaining ways to read it were the operator's browser and a SELECT against
 // chat_messages, which is a backdoor rather than an interface.
@@ -461,7 +461,7 @@ func (s *Server) handleAPIAgentMessages(w http.ResponseWriter, r *http.Request) 
 	} else if len(sessions) > 0 {
 		// The most-recently-active session — ListSessions orders updated_at DESC,
 		// and it is the SAME session POST /api/agents/{name}/messages steers into
-		// (LatestOrCreateSession), which is what `muster chief ask` posts to. A
+		// (LatestOrCreateSession), which is what `muster agent ask` posts to. A
 		// default that resolved differently would mean asking a question here and
 		// reading the answer there.
 		activeID = sessions[0].ID
@@ -548,21 +548,21 @@ func (s *Server) handleAPIAgentMessages(w http.ResponseWriter, r *http.Request) 
 // handleAPIAgentSendMessage handles POST /api/agents/{name}/messages (machine
 // tier): post one message to an agent's current chat session and return its reply.
 //
-// 🔴 IT IS THE RE-HOMED `chief ask` DOOR (task #633 criterion 1), AND THE POINT IS
+// 🔴 IT IS THE RE-HOMED `agent ask` DOOR (task #633 criterion 1), AND THE POINT IS
 // WHICH TIER IT IS **NOT** ON. The verb used to reach
 // POST /operator/agents/{id}/message behind requireOperatorToken, which resolved
 // the bearer to an agent ROW and required that row to be the reserved Operator.
-// That made the only machine path to chief a dependency on a second privileged
+// That made the only machine path to agent a dependency on a second privileged
 // AGENT existing — so deleting that agent broke the CLI. Nothing about "send a
 // message to an agent" needs the operator's identity; it needed a route, and the
 // route had already been built for the operator's browser. ⚠ THAT ROUTE AND THAT
 // GATE ARE BOTH DELETED as of task #653 phase two — every sentence about them here
 // is history.
 //
-// 🔴 KEYED ON {name}, DELIBERATELY, AND IT IS NOT COSMETIC. `chief ask --agent`
+// 🔴 KEYED ON {name}, DELIBERATELY, AND IT IS NOT COSMETIC. `agent ask --agent`
 // addresses an ARBITRARY agent — measured against three distinct agents in the
-// week before this change — so a chief-only door would have satisfied the card's
-// criterion (which exercises `--agent chief`) while deleting a working feature.
+// week before this change — so an agent-only door would have satisfied the card's
+// criterion (which exercises `--agent agent`) while deleting a working feature.
 // The name is also the key the READ next door already uses, so the pair
 // GET/POST /api/agents/{name}/messages is one resource rather than two spellings.
 //
@@ -579,7 +579,7 @@ func (s *Server) handleAPIAgentMessages(w http.ResponseWriter, r *http.Request) 
 // it: the handler keys on an arbitrary {name} with NO self-scoping, so on the wider
 // tier one admitted pod could steer EVERY other agent. A write is strictly worse
 // than the read that argument was made about. The caller this exists for is
-// `chief ask`, run from the operator's own host, which holds the shared secret
+// `agent ask`, run from the operator's own host, which holds the shared secret
 // already.
 //
 // ⚠ THE ARMING HALF IS A SEPARATE CLAIM AND IT IS THE ONE THE ROUND-1 AUDIT FORCED.
@@ -596,7 +596,7 @@ func (s *Server) handleAPIAgentMessages(w http.ResponseWriter, r *http.Request) 
 // ⚠ IT RUNS A TOOL-LESS TURN (askTurn), NOT chatTurn: the operator route it
 // replaces ran a plain turn, and this change re-homes a path rather than widening
 // what the agent can do while answering on it. A turn for the gateway runtime
-// beside a claude-code chief's ccd carries the chief's instructions (askTurn).
+// beside a claude-code agent's ccd carries the agent's instructions (askTurn).
 //
 // 🔴 THIS IS THE ROUTE THE EMPTY-REPLY DEFECT WAS MEASURED ON, AND THE READING IT
 // PRODUCES IS WORTH KNOWING: three consecutive turns against a live agent answered
@@ -619,7 +619,7 @@ func (s *Server) handleAPIAgentSendMessage(w http.ResponseWriter, r *http.Reques
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || strings.TrimSpace(body.Message) == "" {
 		// An unset shell variable must not become an empty message the agent
-		// answers anyway — the same refusal `chief ask` makes client-side.
+		// answers anyway — the same refusal `agent ask` makes client-side.
 		s.writeJSON(w, http.StatusBadRequest, map[string]any{"error": "message required"})
 		return
 	}
@@ -638,12 +638,16 @@ func (s *Server) handleAPIAgentSendMessage(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	// The chief's messages go to its DEFAULT session (session_runtime.go) — the
-	// one plugin deliveries go to — and every other agent's to its latest, as
-	// before. Whether or not MUSTER_CHIEF_SESSION_RUNTIMES is set: that flag
+	// A FLEET agent's messages go to its DEFAULT session (session_runtime.go) —
+	// the one plugin deliveries go to — and a task-bound agent's to its latest, as
+	// before. Whether or not MUSTER_AGENT_SESSION_RUNTIMES is set: that flag
 	// draws the runtime picker, it does not gate this routing.
+	//
+	// ⚠ THE QUESTION IS THE AGENT'S SHAPE, NOT A LABEL (agents.IsFleetAgent). It
+	// was the agent predicate, which resolved a mutable display name across the
+	// whole table: a relabel moved this routing silently.
 	var sess agents.ChatSession
-	if s.isChiefAgent(ctx, a) {
+	if agents.IsFleetAgent(a) {
 		sess, err = s.defaultSession(ctx, a)
 	} else {
 		sess, err = s.ext.Agents.LatestOrCreateSession(ctx, a.ID, a.Name)

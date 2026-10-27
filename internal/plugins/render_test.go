@@ -9,7 +9,7 @@ import (
 
 const fixedNonce = "0123456789abcdef"
 
-// TestThePluginTurnIsExactlyThisBlock pins the WHOLE turn: the preface the chief
+// TestThePluginTurnIsExactlyThisBlock pins the WHOLE turn: the preface the target
 // reads first (untrusted data, the message id, the data scope) and the fence —
 // once for a sender the plugin verified (no mark) and once for one it did not
 // (the from line carries the UNVERIFIED mark, spelled out here rather than
@@ -144,7 +144,7 @@ func TestWithRoutingOnThePrefaceSaysWhenToRoute(t *testing.T) {
 }
 
 // TestARetriedMessageSaysSoOutsideTheFence (#138 follow-up 3): a message the
-// owner retried tells the chief so — the retry and delivery-attempt numbers,
+// owner retried tells the target so — the retry and delivery-attempt numbers,
 // what to check, and the message's age — in the PREFACE, muster's line at
 // column 0, outside the fence. The whole sentence is pinned. A body spelling
 // "Retry:" stays behind the fence's prefix, and a message that was never

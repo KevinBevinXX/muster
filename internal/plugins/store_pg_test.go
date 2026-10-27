@@ -318,7 +318,7 @@ func mustAgent(t *testing.T, dsn string, uid int64, name string) agents.Agent {
 		t.Fatal(err)
 	}
 	defer pool.Close()
-	a, err := agents.NewPG(pool).Create(session(uid), agents.Agent{Name: name, Namespace: "devpod-" + name, DisplayName: "chief",
+	a, err := agents.NewPG(pool).Create(session(uid), agents.Agent{Name: name, Namespace: "devpod-" + name, DisplayName: "target",
 		Status: agents.StatusRunning, HooksToken: "hooks-" + name})
 	if err != nil {
 		t.Fatalf("agent %s: %v", name, err)
@@ -329,7 +329,7 @@ func mustAgent(t *testing.T, dsn string, uid int64, name string) agents.Agent {
 func TestADeliveryIsRecordedOnceWithItsAuditRow(t *testing.T) {
 	s, pool, dsn := pgStore(t)
 	_, p := mustCreate(t, s, 2, "example-inbox")
-	a := mustAgent(t, dsn, 2, "plg-chief")
+	a := mustAgent(t, dsn, 2, "plg-target")
 	m, _, _ := s.Submit(plugin(2), p.ID, msg("d-1"))
 	other := mustAgent(t, dsn, 2, "plg-other")
 	if err := s.RecordAttempt(plugin(2), m.ID); err != nil {

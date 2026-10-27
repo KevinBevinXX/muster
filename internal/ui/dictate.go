@@ -102,7 +102,7 @@ func dictateNote(path, noteID, class string) g.Node {
 // dictateScript wires every mic on the page. Nothing when path is "".
 //
 // It is safe to run more than once (a boosted navigation re-runs a swapped
-// body's scripts, and the chief panel re-renders its chat): the
+// body's scripts, and the agent panel re-renders its chat): the
 // document-lifetime listeners bind once (window.__musterDictate), and each run
 // only reveals the buttons now on the page.
 //

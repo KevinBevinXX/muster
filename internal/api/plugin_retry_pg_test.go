@@ -19,7 +19,7 @@ import (
 	"github.com/ZacxDev/muster/internal/plugins"
 )
 
-// RETRYING A PLUGIN MESSAGE THE CHIEF NEVER CONFIRMED (plugin_retry.go,
+// RETRYING A PLUGIN MESSAGE THE AGENT NEVER CONFIRMED (plugin_retry.go,
 // internal/plugins/retry.go), on a real Postgres.
 
 // asSession is uid as a signed-in browser — the principal the /plugins forms run
@@ -29,17 +29,17 @@ func asSession(uid int64) context.Context {
 }
 
 // unconfirmed stores a message for the plane's plugin and settles it the way a
-// cut-off delivery turn does: delivering to the chief, then unconfirmed.
+// cut-off delivery turn does: delivering to the agent, then unconfirmed.
 func (pp *pluginPlane) unconfirmed(t *testing.T, ext string) plugins.Message {
 	t.Helper()
 	m, _, err := pp.ps.Submit(pp.owner, pp.plugin.ID, plugins.MessageIn{ExternalID: ext, Sender: "someone@example.test", Subject: "hello", Body: "Are you free at noon?"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ok, err := pp.ps.BeginDelivery(pp.owner, m.ID, pp.chief.ID); err != nil || !ok {
+	if ok, err := pp.ps.BeginDelivery(pp.owner, m.ID, pp.agent.ID); err != nil || !ok {
 		t.Fatalf("begin: %v %v", ok, err)
 	}
-	if ok, err := pp.ps.RecordDelivery(pp.owner, m.ID, pp.chief.ID, plugins.StatusUnconfirmed); err != nil || !ok {
+	if ok, err := pp.ps.RecordDelivery(pp.owner, m.ID, pp.agent.ID, plugins.StatusUnconfirmed); err != nil || !ok {
 		t.Fatalf("settle unconfirmed: %v %v", ok, err)
 	}
 	m, _ = pp.ps.Message(pp.owner, m.ID)
@@ -47,9 +47,9 @@ func (pp *pluginPlane) unconfirmed(t *testing.T, ext string) plugins.Message {
 }
 
 // TestRetryDeliversAnUnconfirmedMessageAndTheChiefDrafts: an unconfirmed message,
-// retried, goes back through the real deliverer to the CURRENT chief — the
-// runtime is called, the chief's reply_draft lands as a pending draft for that
-// message, the message settles delivered to the chief, and the attempt is
+// retried, goes back through the real deliverer to the CURRENT agent — the
+// runtime is called, the agent's reply_draft lands as a pending draft for that
+// message, the message settles delivered to the agent, and the attempt is
 // counted. Its card leaves the page's retry list.
 func TestRetryDeliversAnUnconfirmedMessageAndTheChiefDrafts(t *testing.T) {
 	rt := &scriptedRuntime{name: replyDraftToolName}
@@ -72,7 +72,7 @@ func TestRetryDeliversAnUnconfirmedMessageAndTheChiefDrafts(t *testing.T) {
 		t.Fatalf("the runtime saw %d request(s); want 2 (the delivery turn and its tool output)", n)
 	}
 	after, _ := pp.ps.Message(pp.owner, m.ID)
-	if after.Status != plugins.StatusDelivered || after.AgentID == nil || *after.AgentID != pp.chief.ID || after.Attempts != m.Attempts+1 {
+	if after.Status != plugins.StatusDelivered || after.AgentID == nil || *after.AgentID != pp.agent.ID || after.Attempts != m.Attempts+1 {
 		t.Fatalf("after the retry: %+v (attempts before %d)", after, m.Attempts)
 	}
 	cards, _ := pp.ps.DraftCards(pp.owner, 10)
@@ -85,7 +85,7 @@ func TestRetryDeliversAnUnconfirmedMessageAndTheChiefDrafts(t *testing.T) {
 }
 
 // TestARetryDoesNotFileASecondGatedTask (#138 follow-up 2), through the real
-// plane: the chief's turn on a retried message runs the REAL task_create_gated
+// plane: the agent's turn on a retried message runs the REAL task_create_gated
 // citing it (so the link is whatever that tool really writes), and that turn's
 // end is then lost — the message is unconfirmed again. A second retry would
 // hand it over again and file a second task, so it is refused (409, saying
@@ -137,11 +137,11 @@ func TestARetryDoesNotFileASecondGatedTask(t *testing.T) {
 }
 
 // TestRetryRefusesWhatMustNotBeSentAgain: each state that must not be handed to
-// the chief again is refused (409) and left exactly as it was — queued (which is
+// the agent again is refused (409) and left exactly as it was — queued (which is
 // also a double click), delivering, delivered, a draft in each live status
 // (pending, approved, sent, unconfirmed), a session route in each live state
 // (routed, answered, relayed) — as is a message of another owner (404) and an
-// owner with no chief (409). Every status of liveDraft's and every state of
+// owner with no agent (409). Every status of liveDraft's and every state of
 // liveRoute's list has its own case, so dropping any one of them goes red.
 func TestRetryRefusesWhatMustNotBeSentAgain(t *testing.T) {
 	pp := newPluginPlane(t, &scriptedRuntime{name: replyDraftToolName})
@@ -150,21 +150,21 @@ func TestRetryRefusesWhatMustNotBeSentAgain(t *testing.T) {
 
 	queued, _, _ := pp.ps.Submit(pp.owner, pp.plugin.ID, plugins.MessageIn{ExternalID: "r-queued", Body: "b"})
 	delivering, _, _ := pp.ps.Submit(pp.owner, pp.plugin.ID, plugins.MessageIn{ExternalID: "r-delivering", Body: "b"})
-	if ok, err := pp.ps.BeginDelivery(pp.owner, delivering.ID, pp.chief.ID); err != nil || !ok {
+	if ok, err := pp.ps.BeginDelivery(pp.owner, delivering.ID, pp.agent.ID); err != nil || !ok {
 		t.Fatal(ok, err)
 	}
 	delivered, _, _ := pp.ps.Submit(pp.owner, pp.plugin.ID, plugins.MessageIn{ExternalID: "r-delivered", Body: "b"})
-	_, _ = pp.ps.BeginDelivery(pp.owner, delivered.ID, pp.chief.ID)
-	_, _ = pp.ps.RecordDelivery(pp.owner, delivered.ID, pp.chief.ID, plugins.StatusDelivered)
+	_, _ = pp.ps.BeginDelivery(pp.owner, delivered.ID, pp.agent.ID)
+	_, _ = pp.ps.RecordDelivery(pp.owner, delivered.ID, pp.agent.ID, plugins.StatusDelivered)
 	// A reply drafted on the turn that was cut off.
 	drafted := func(ext string, status string) plugins.Message {
 		m, _, _ := pp.ps.Submit(pp.owner, pp.plugin.ID, plugins.MessageIn{ExternalID: ext, Body: "b"})
-		_, _ = pp.ps.BeginDelivery(pp.owner, m.ID, pp.chief.ID)
-		d, _, err := pp.ps.FileDraft(pp.owner, pp.chief.ID, pp.ownerID, pp.chief.Name, m.ID, "a reply")
+		_, _ = pp.ps.BeginDelivery(pp.owner, m.ID, pp.agent.ID)
+		d, _, err := pp.ps.FileDraft(pp.owner, pp.agent.ID, pp.ownerID, pp.agent.Name, m.ID, "a reply")
 		if err != nil {
 			t.Fatal(err)
 		}
-		_, _ = pp.ps.RecordDelivery(pp.owner, m.ID, pp.chief.ID, plugins.StatusUnconfirmed)
+		_, _ = pp.ps.RecordDelivery(pp.owner, m.ID, pp.agent.ID, plugins.StatusUnconfirmed)
 		// An approved draft is NOT claimed: a claim whose lease has run out is
 		// settled unconfirmed by the plane's draft sweep, which would turn this
 		// fixture into the unconfirmed case (measured: it did).
@@ -192,7 +192,7 @@ func TestRetryRefusesWhatMustNotBeSentAgain(t *testing.T) {
 			VALUES ($1, $4, $2, $3, 'mirror', 'sess-1', now() + interval '1 hour', $5,
 				CASE WHEN $5 = 'routed' THEN NULL ELSE 'an answer' END,
 				CASE WHEN $5 = 'routed' THEN NULL ELSE now() END,
-				CASE WHEN $5 = 'relayed' THEN now() ELSE NULL END)`, pp.ownerID, m.ID, pp.chief.ID,
+				CASE WHEN $5 = 'relayed' THEN now() ELSE NULL END)`, pp.ownerID, m.ID, pp.agent.ID,
 			fmt.Sprintf("rt_%024x", time.Now().UnixNano()), state); err != nil {
 			t.Fatal(err)
 		}
@@ -271,8 +271,8 @@ func TestRetryRefusesWhatMustNotBeSentAgain(t *testing.T) {
 		_, _ = pool.Exec(sys, `DELETE FROM agents WHERE owner_id=$1`, stranger)
 		_, _ = pool.Exec(sys, `DELETE FROM users WHERE id=$1`, stranger)
 	})
-	if _, err := agents.NewPG(pool).Create(asSession(stranger), agents.Agent{Name: "retry-stranger-chief-" + strconv.FormatInt(stranger, 10), Namespace: "ns-retry-stranger",
-		DisplayName: "chief", Status: agents.StatusRunning}); err != nil {
+	if _, err := agents.NewPG(pool).Create(asSession(stranger), agents.Agent{Name: "retry-stranger-agent-" + strconv.FormatInt(stranger, 10), Namespace: "ns-retry-stranger",
+		DisplayName: "agent", Status: agents.StatusRunning}); err != nil {
 		t.Fatal(err)
 	}
 	if code, _, p := pp.srv.retryPluginMessage(asSession(stranger), other.ID); code != http.StatusNotFound {
@@ -282,15 +282,21 @@ func TestRetryRefusesWhatMustNotBeSentAgain(t *testing.T) {
 		t.Fatalf("another owner's retry moved the message to %s", after.Status)
 	}
 
-	// No chief: refused before anything is requeued.
-	if _, err := pool.Exec(sys, `UPDATE agents SET display_name='retired' WHERE id=$1`, pp.chief.ID); err != nil {
+	// NO TARGET: refused before anything is requeued.
+	//
+	// ⚠ THE WAY TO REACH THIS STATE CHANGED. It used to be enough to RELABEL the
+	// agent (display_name='retired'), because delivery resolved its recipient by
+	// that label. The recipient is a stored choice now, so the state under test
+	// is the plugin's target being cleared — relabelling an agent no longer
+	// affects delivery at all, which is the point of the change.
+	if err := pp.ps.SetTargetAgent(pp.owner, pp.plugin.ID, 0); err != nil {
 		t.Fatal(err)
 	}
-	if code, _, p := pp.srv.retryPluginMessage(asSession(pp.ownerID), other.ID); code != http.StatusConflict || !strings.Contains(p, "no chief") {
-		t.Fatalf("with no chief: %d %q", code, p)
+	if code, _, p := pp.srv.retryPluginMessage(asSession(pp.ownerID), other.ID); code != http.StatusConflict || !strings.Contains(p, "names no target agent") {
+		t.Fatalf("with no target: %d %q", code, p)
 	}
 	if after, _ := pp.ps.Message(pp.owner, other.ID); after.Status != plugins.StatusUnconfirmed {
-		t.Fatalf("a retry with no chief requeued the message (%s)", after.Status)
+		t.Fatalf("a retry with no target requeued the message (%s)", after.Status)
 	}
 }
 
@@ -308,16 +314,20 @@ func TestTheRetryRoutes(t *testing.T) {
 	op := authz.Operator(context.Background())
 	suffix := strconv.FormatInt(time.Now().UnixNano(), 36)
 	ca, cerr := agents.NewPG(f.pool).Create(op, agents.Agent{Name: "retry-opchief-" + suffix, Namespace: "ns-retry-opchief-" + suffix,
-		DisplayName: "chief", Status: agents.StatusRunning})
+		DisplayName: "agent", Status: agents.StatusRunning})
 	if cerr != nil {
 		t.Fatal(cerr)
 	}
 	t.Cleanup(func() {
 		_, _ = f.pool.Exec(authz.System(context.Background()), `DELETE FROM agents WHERE id=$1`, ca.ID)
 	})
-	chief := ca.ID
+	agent := ca.ID
 	_, p, err := ps.Create(op, "retry-inbox-"+suffix[len(suffix)-6:], "Retry inbox", "retry-inbox")
 	if err != nil {
+		t.Fatal(err)
+	}
+	// The plugin names the agent it delivers to (migration 0050).
+	if err := ps.SetTargetAgent(op, p.ID, agent); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
@@ -328,8 +338,8 @@ func TestTheRetryRoutes(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		_, _ = ps.BeginDelivery(op, m.ID, chief)
-		_, _ = ps.RecordDelivery(op, m.ID, chief, plugins.StatusUnconfirmed)
+		_, _ = ps.BeginDelivery(op, m.ID, agent)
+		_, _ = ps.RecordDelivery(op, m.ID, agent, plugins.StatusUnconfirmed)
 		return m
 	}
 	viaCLI, viaForm := mk("route-cli-"+suffix), mk("route-form-"+suffix)
@@ -383,14 +393,19 @@ func TestTheRetryRoutes(t *testing.T) {
 	}
 }
 
-// TestRetryButtonsAreDisabledWithNoChief (#138 follow-up 6): with no chief
-// every retry is refused (409), so the page must not offer a working Retry
-// button. The message is still listed — it still needs a decision — with its
-// button disabled and the section saying why; with a chief, the same page
-// offers a working button (control). The POST still refuses on its own
-// (TestRetryRefusesWhatMustNotBeSentAgain's no-chief case). The owner is the
-// plane's own fresh user, so no other test's chief can stand in.
-func TestRetryButtonsAreDisabledWithNoChief(t *testing.T) {
+// TestRetryButtonsAreDisabledWithNoTarget (#138 follow-up 6): when the plugin
+// names no target agent every retry is refused (409), so the page must not offer
+// a working Retry button. The message is still listed — it still needs a
+// decision — with its button disabled and the section saying why; with a target,
+// the same page offers a working button (control). The POST still refuses on its
+// own (TestRetryRefusesWhatMustNotBeSentAgain's no-target case).
+//
+// ⚠ THE STATE IS REACHED BY CLEARING THE PLUGIN'S TARGET, NOT BY RELABELLING THE
+// AGENT. This test used to set display_name='retired', because the recipient was
+// resolved from that label; relabelling an agent now has no effect on delivery
+// at all, so doing it here would exercise nothing and the control would never
+// flip.
+func TestRetryButtonsAreDisabledWithNoTarget(t *testing.T) {
 	pp := newPluginPlane(t, &scriptedRuntime{name: replyDraftToolName})
 	m := pp.unconfirmed(t, "nochief-1")
 	render := func() string {
@@ -400,30 +415,30 @@ func TestRetryButtonsAreDisabledWithNoChief(t *testing.T) {
 		return w.Body.String()
 	}
 	button := regexp.MustCompile(`<li [^>]*data-retry-message-id="` + strconv.FormatInt(m.ID, 10) + `"(?s:.*?)<button ([^>]*data-retry-button[^>]*)>`)
-	reason := regexp.MustCompile(`<p [^>]*data-retry-no-chief>([^<]*)</p>`)
+	reason := regexp.MustCompile(`<p [^>]*data-retry-no-target>([^<]*)</p>`)
 	disabled := func(attrs string) bool { return strings.Contains(" "+attrs+" ", " disabled ") }
 
 	page := render()
 	if b := button.FindStringSubmatch(page); b == nil || disabled(b[1]) {
-		t.Fatalf("CONTROL: with a chief the Retry button is missing or disabled: %q", b)
+		t.Fatalf("CONTROL: with a target the Retry button is missing or disabled: %q", b)
 	}
 	if reason.MatchString(page) {
-		t.Fatalf("CONTROL: with a chief the page says there is none")
+		t.Fatalf("CONTROL: with a target the page says there is none")
 	}
 
-	if _, err := pp.pool.Exec(authz.System(context.Background()), `UPDATE agents SET display_name='retired' WHERE id=$1`, pp.chief.ID); err != nil {
+	if err := pp.ps.SetTargetAgent(pp.owner, pp.plugin.ID, 0); err != nil {
 		t.Fatal(err)
 	}
 	page = render()
 	b := button.FindStringSubmatch(page)
 	if b == nil {
-		t.Fatalf("with no chief the unconfirmed message is no longer listed:\n%s", page)
+		t.Fatalf("with no target the unconfirmed message is no longer listed:\n%s", page)
 	}
 	if !disabled(b[1]) {
-		t.Errorf("with no chief the Retry button is not disabled: <button %s>", b[1])
+		t.Errorf("with no target the Retry button is not disabled: <button %s>", b[1])
 	}
-	const want = `Retry is off: you have no chief agent to deliver these to. An agent becomes your chief when its display name is &#34;chief&#34;.`
+	const want = `Retry is off: these plugins name no target agent to deliver to. Pick one for each plugin under Plugins above.`
 	if r := reason.FindStringSubmatch(page); r == nil || r[1] != want {
-		t.Errorf("with no chief the section does not say why: %q; want %q", r, want)
+		t.Errorf("with no target the section does not say why: %q; want %q", r, want)
 	}
 }

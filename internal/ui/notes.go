@@ -1200,7 +1200,7 @@ func sourceTypeLabel(source string) string {
 	case "drafter":
 		return "Task drafter"
 	case "repo-cos":
-		return "Repo chief-of-staff"
+		return "Repo agent-of-staff"
 	case "extension":
 		return "Browser extension"
 	case "api":

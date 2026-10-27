@@ -99,7 +99,7 @@ var notLinkedLedger = map[string]string{
 		"ending in _e2e.",
 	"e2e/sqfix": "the send-queue browser spec's fixture (`go run ./e2e/sqfix`): ages a queued message, or strands it " +
 		"mid-send, so the server's own dispatcher fails it; run by the spec, never linked into a binary.",
-	"e2e/pluginfix": "the plugins browser spec's fixture (`go run ./e2e/pluginfix`): a chief agent, a " +
+	"e2e/pluginfix": "the plugins browser spec's fixture (`go run ./e2e/pluginfix`): an agent, a " +
 		"delivered message and a lapsed lease, written as the login role with row-level security's " +
 		"scope set to all, so it must never be reachable from a shipped binary; it refuses any " +
 		"database not ending in _e2e.",

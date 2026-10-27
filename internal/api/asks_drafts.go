@@ -22,7 +22,7 @@ import (
 // URL fragment never reaches the server, so a redirect from /attention to a
 // new path could not carry `#ask-12` along in any way the server can see — it
 // survives a 30x only by browser convention, and a link that already lives on
-// a phone (a push notification's tap target, an agent card's badge, the chief's
+// a phone (a push notification's tap target, an agent card's badge, the agent's
 // attention_list) is exactly the link that must not break. Keeping the path
 // and renaming the page (heading, title, sidebar) costs nothing and breaks no
 // link. The tab is in the QUERY (?tab=drafts, ?tab=archived), so it IS seen by
@@ -206,7 +206,7 @@ func draftIDs(cards []plugins.DraftCard) string {
 // draftsPanel is the Reply drafts tab's panel: its own two tabs, Awaiting
 // decision and Archived, the one sub selected.
 func draftsPanel(pending, archived []plugins.DraftCard, sub string) g.Node {
-	pendingList := `<p class="text-xs text-fg2">Your chief drafts replies; nothing is sent until you approve one. The plugin then sends it once.</p>
+	pendingList := `<p class="text-xs text-fg2">The target agent drafts replies; nothing is sent until you approve one. The plugin then sends it once.</p>
 <p id="asks-drafts-changed" role="status" class="flex flex-wrap items-center gap-2 rounded-md bg-s2 px-3 py-2 text-sm text-fg ring-1 ring-inset ring-line" data-testid="drafts-changed" hidden>
 <span>Drafts changed since you opened this list. The cards below are as you saw them.</span>
 <button type="button" class="` + flowsQuietButton + `" data-drafts-show-latest>Show the latest</button></p>
@@ -366,5 +366,5 @@ func asksIntroDrafts(plugins bool) string {
 	if !plugins {
 		return ""
 	}
-	return " and, under Reply drafts, replies your chief drafted awaiting your approval"
+	return " and, under Reply drafts, replies the target agent drafted awaiting your approval"
 }

@@ -142,17 +142,6 @@ var unportedCitations = map[string][]string{
 		"TestAnUntitledSessionsPlaceholderIsPerSurfaceAndLedgered",
 		"TestTheShellPlusAnOpenChiefPanelHasNoDuplicateIDs",
 	},
-	"internal/ui/chief_panel.go": {
-		"TestAFailedReadIsAThirdStateAndNamesItself",
-		"TestAFailedSearchIsNotRenderedAsAnANSWER",
-		"TestAFailedThreadListReadIsNEVERRenderedAsAnEmptyHistory",
-		"TestHeaderAndContentShareOneWidth",
-		"TestRouteHeaderMatchesItsOwnContentColumn",
-		"TestTheChiefPanelObservesClicksWithoutSwallowingThem",
-		"TestTheChiefPanelTriggerAndTheDispatchedEventAreOneName",
-		"TestTheChiefQuickActionsAreTheLedgeredThree",
-		"TestTheTmuxChangedSeamIsWiredEndToEnd",
-	},
 	"internal/ui/components.go": {
 		"TestEveryTabpanelDeclaresItsSwapHonestly",
 		"TestEveryTasksListAjaxIsSourcedAtTheContainer",

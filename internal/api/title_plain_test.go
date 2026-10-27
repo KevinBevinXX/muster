@@ -122,7 +122,7 @@ func TestTheAttentionQueueShowsPlainTitles(t *testing.T) {
 		}
 	}
 	// The queue's label is plained (taskLabelPlain); the label that is STORED
-	// and quoted to the chief (taskLabel) keeps the title as written.
+	// and quoted to the agent (taskLabel) keeps the title as written.
 	n := notes.Note{ID: 34, Title: "1. **Route** [it](https://example.com/r) to #34"}
 	if got, want := taskLabelPlain(n), "Route it to #34"; got != want {
 		t.Errorf("taskLabelPlain = %q, want %q", got, want)

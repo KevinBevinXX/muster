@@ -54,7 +54,7 @@ func TestTheLaneModelSetIsMusters(t *testing.T) {
 func TestLaneIDsAndUUIDs(t *testing.T) {
 	strict := regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
 	seen := map[string]bool{}
-	for _, k := range []string{"agent:chief:webchat:1", "agent:chief:webchat:2", "", "x y\nz"} {
+	for _, k := range []string{"agent:agent:webchat:1", "agent:agent:webchat:2", "", "x y\nz"} {
 		id, u := laneID(k), laneUUID(k)
 		if !isLaneID(id) || laneID(k) != id || laneUUID(k) != u {
 			t.Errorf("%q: id %q uuid %q not stable or not hex", k, id, u)

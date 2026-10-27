@@ -19,12 +19,12 @@ import (
 //
 // connector_requests_list — the owner's PENDING connector requests, read-only —
 // and connector_request_decide — approve or deny one — are mirror_mcp.go's
-// tools, never the agent registry's: no dispatched agent (the chief included)
+// tools, never the agent registry's: no dispatched agent (the agent included)
 // is offered them on its gateway tool list or on POST /mcp, and POST /mcp
 // refuses an unlisted name.
 //
 // 🔴 THEY ARE REFUSED IN THEIR HANDLERS, NOT ONLY BY THE LISTINGS:
-// dispatchCallerTool is reached by a gateway agent naming ANY tool (the chief
+// dispatchCallerTool is reached by a gateway agent naming ANY tool (the agent
 // included: dispatchAgentTool's default case), so each handler refuses every
 // caller that is not a mirrored session (toolCaller.mirroredSession) before it
 // reads anything. A dispatched agent therefore cannot approve its own request,

@@ -314,9 +314,11 @@ func (d *flakyDriver) Destroy(ctx context.Context, ref provision.Ref) error {
 const (
 	fixtureAgentID   = int64(4291)
 	fixtureAgentName = "harbour-kestrel"
+	fixtureNoteID    = int64(6001)
 )
 
 func fixtureAgent() agents.Agent {
+	noteID := fixtureNoteID
 	return agents.Agent{
 		ID:          fixtureAgentID,
 		Name:        fixtureAgentName,
@@ -324,13 +326,16 @@ func fixtureAgent() agents.Agent {
 		DisplayName: "#633 rewire the seam",
 		PendingNote: "read the plan and report what is missing",
 		Status:      agents.StatusProvisioning,
+		NoteID:      &noteID,
 	}
 }
 
 func fixtureSpecConfig() agentspec.Config {
 	return agentspec.Config{
-		ImageRepo:  "registry.example.test/muster/agent-runtime",
-		APIBaseURL: "http://muster.example.test:8105",
+		ImageRepo:   "registry.example.test/muster/agent-runtime",
+		APIBaseURL:  "http://muster.example.test:8105",
+		ConnectURL:  "http://muster.example.test:18091",
+		ConnectPort: 18091,
 	}
 }
 

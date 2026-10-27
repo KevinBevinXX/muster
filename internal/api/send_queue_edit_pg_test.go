@@ -210,7 +210,7 @@ func TestEditRefusals(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	routed, err := f.queue.Enqueue(asQueueUser(1, time.Now()), sendqueue.Item{Target: queueTarget, Body: "the chief's answer",
+	routed, err := f.queue.Enqueue(asQueueUser(1, time.Now()), sendqueue.Item{Target: queueTarget, Body: "the agent's answer",
 		StepUpAt: time.Now(), RouteID: "rt_0123456789abcdef01234567"})
 	if err != nil {
 		t.Fatal(err)

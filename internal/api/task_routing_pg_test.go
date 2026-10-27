@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -13,6 +12,7 @@ import (
 	"time"
 
 	"github.com/ZacxDev/muster/internal/agents"
+	"github.com/ZacxDev/muster/internal/attention"
 	"github.com/ZacxDev/muster/internal/fence"
 	"github.com/ZacxDev/muster/internal/github"
 	"github.com/ZacxDev/muster/internal/notes"
@@ -54,8 +54,8 @@ func (p *recordingProvisioner) calls(want int) int {
 }
 
 // taskRouteFixture is the gated fixture (real Postgres, real /mcp door, a
-// member owning a chief and a worker) with task routing wired as tr says, the
-// plugin store as the chief-dispatch ledger, and a recording provisioner.
+// member owning an agent and a worker) with task routing wired as tr says, the
+// plugin store as the agent-dispatch ledger, and a recording provisioner.
 type taskRouteFixture struct {
 	*gatedFixture
 	tr   *TaskRouting
@@ -66,12 +66,12 @@ func newTaskRouteFixture(t *testing.T, dispatch, optIn bool, extra ...func(ext *
 	t.Helper()
 	f := &taskRouteFixture{tr: &TaskRouting{DispatchOwners: map[int64]bool{}}, prov: &recordingProvisioner{}}
 	f.gatedFixture = newGatedFixtureWith(t, func(g *gatedFixture, ext *Extensions) {
-		ext.TaskRouting, ext.ChiefDispatch, ext.Provisioner = f.tr, g.plugins, f.prov
+		ext.TaskRouting, ext.TaskDispatch, ext.Provisioner = f.tr, g.plugins, f.prov
 		for _, e := range extra {
 			e(ext)
 		}
 	})
-	// Dispatch is ON exactly when MUSTER_CHIEF_DISPATCH_OWNERS is non-empty: on
+	// Dispatch is ON exactly when MUSTER_TASK_DISPATCH_OWNERS is non-empty: on
 	// and not opted in is a list naming somebody else.
 	switch {
 	case dispatch && optIn:
@@ -137,12 +137,12 @@ func (f *taskRouteFixture) agentsOn(t *testing.T, id int64) []agents.Agent {
 	return out
 }
 
-// reservations is the owner's chief-dispatch reservation rows for task id.
+// reservations is the owner's agent-dispatch reservation rows for task id.
 func (f *taskRouteFixture) reservations(t *testing.T, id int64) int {
 	t.Helper()
 	var n int
 	if err := f.pool.QueryRow(f.asOwner, `SELECT count(*) FROM audit_log WHERE action = $1 AND object = $2`,
-		plugins.ActionChiefDispatch, plugins.NoteObject(id)).Scan(&n); err != nil {
+		plugins.ActionTaskDispatch, plugins.NoteObject(id)).Scan(&n); err != nil {
 		t.Fatal(err)
 	}
 	return n
@@ -168,34 +168,34 @@ func (f *taskRouteFixture) mustRefuse(t *testing.T, text, want string, id int64)
 
 // --- task_dispatch: each guard with its OWN refusal ----------------------------
 
-// TestTaskDispatchFlagOffStartsNothing: with MUSTER_CHIEF_DISPATCH_OWNERS
-// empty, the tool is not listed for the chief, and called by name anyway (a
+// TestTaskDispatchFlagOffStartsNothing: with MUSTER_TASK_DISPATCH_OWNERS
+// empty, the tool is not listed for the agent, and called by name anyway (a
 // gateway can name an unoffered tool) it refuses with the flag's own sentence.
 func TestTaskDispatchFlagOffStartsNothing(t *testing.T) {
 	f := newTaskRouteFixture(t, false, false)
 	n := f.task(t, "flag off")
-	for _, d := range f.srv.AgentToolDefsFor(f.asOwner, f.chief) {
+	for _, d := range f.srv.AgentToolDefsFor(f.asOwner, f.agent) {
 		if d.Name == taskDispatchTool {
-			t.Fatal("task_dispatch is offered with MUSTER_CHIEF_DISPATCH_OWNERS empty")
+			t.Fatal("task_dispatch is offered with MUSTER_TASK_DISPATCH_OWNERS empty")
 		}
 	}
-	f.mustRefuse(t, f.call(f.chief, taskDispatchTool, map[string]any{"task_id": n.ID}), chiefDispatchOffText, n.ID)
+	f.mustRefuse(t, f.call(f.agent, taskDispatchTool, map[string]any{"task_id": n.ID}), taskDispatchOffText, n.ID)
 }
 
 // TestTaskDispatchRefusesAnOwnerWhoDidNotOptIn: dispatch on (the list names
-// another user), the owner not on MUSTER_CHIEF_DISPATCH_OWNERS → the opt-in's
+// another user), the owner not on MUSTER_TASK_DISPATCH_OWNERS → the opt-in's
 // own refusal.
 func TestTaskDispatchRefusesAnOwnerWhoDidNotOptIn(t *testing.T) {
 	f := newTaskRouteFixture(t, true, false)
 	n := f.task(t, "opt out")
-	f.mustRefuse(t, f.call(f.chief, taskDispatchTool, map[string]any{"task_id": n.ID}), chiefDispatchOptOut, n.ID)
+	f.mustRefuse(t, f.call(f.agent, taskDispatchTool, map[string]any{"task_id": n.ID}), taskDispatchOptOut, n.ID)
 }
 
 // TestTaskDispatchRefusesAGatedTask: a `gate:` task is the owner's to release.
 func TestTaskDispatchRefusesAGatedTask(t *testing.T) {
 	f := newTaskRouteFixture(t, true, true)
 	n := f.task(t, "gated", "gate:needs-owner-ok")
-	f.mustRefuse(t, f.call(f.chief, taskDispatchTool, map[string]any{"task_id": n.ID}), chiefDispatchGatedText, n.ID)
+	f.mustRefuse(t, f.call(f.agent, taskDispatchTool, map[string]any{"task_id": n.ID}), taskDispatchGatedText, n.ID)
 }
 
 // TestTaskDispatchRefusesATaskThatIsNotOpen: a task already moved on (here
@@ -206,7 +206,7 @@ func TestTaskDispatchRefusesATaskThatIsNotOpen(t *testing.T) {
 	if _, err := f.srv.setNoteStatus(f.asOwner, writerDispatchAdvance, n.ID, notes.StatusReadyForReview); err != nil {
 		t.Fatal(err)
 	}
-	f.mustRefuse(t, f.call(f.chief, taskDispatchTool, map[string]any{"task_id": n.ID}), chiefDispatchNotOpen, n.ID)
+	f.mustRefuse(t, f.call(f.agent, taskDispatchTool, map[string]any{"task_id": n.ID}), taskDispatchNotOpen, n.ID)
 }
 
 // TestTaskDispatchRefusesATaskSomeoneIsWorking: an open task with a live agent
@@ -218,8 +218,8 @@ func TestTaskDispatchRefusesATaskSomeoneIsWorking(t *testing.T) {
 		Namespace: "ns-trbusy", Status: agents.StatusRunning, NoteID: &n.ID}); err != nil {
 		t.Fatal(err)
 	}
-	text := f.call(f.chief, taskDispatchTool, map[string]any{"task_id": n.ID})
-	if !strings.Contains(text, chiefDispatchHasAgent) {
+	text := f.call(f.agent, taskDispatchTool, map[string]any{"task_id": n.ID})
+	if !strings.Contains(text, taskDispatchHasAgent) {
 		t.Fatalf("answer %s", text)
 	}
 	if got := len(f.agentsOn(t, n.ID)); got != 1 || f.reservations(t, n.ID) != 0 || f.prov.calls(0) != 0 {
@@ -236,8 +236,8 @@ func TestTaskDispatchRefusesAnotherOwnersTask(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	text := f.call(f.chief, taskDispatchTool, map[string]any{"task_id": n.ID})
-	if !strings.Contains(text, chiefDispatchNoTask) {
+	text := f.call(f.agent, taskDispatchTool, map[string]any{"task_id": n.ID})
+	if !strings.Contains(text, taskDispatchNoTask) {
 		t.Fatalf("another owner's task: %s", text)
 	}
 	if n := f.prov.calls(0); n != 0 {
@@ -245,44 +245,44 @@ func TestTaskDispatchRefusesAnotherOwnersTask(t *testing.T) {
 	}
 }
 
-// TestTaskDispatchRefusesAtTheLiveCap: a full cap of live agents the chief
+// TestTaskDispatchRefusesAtTheLiveCap: a full cap of live agents the agent
 // started → the live cap's own refusal, nothing reserved for the next task.
 func TestTaskDispatchRefusesAtTheLiveCap(t *testing.T) {
 	f := newTaskRouteFixture(t, true, true)
 	store := agents.NewPG(f.pool)
-	for i := 0; i < plugins.MaxChiefLiveAgents; i++ {
+	for i := 0; i < plugins.MaxLiveDispatchedAgents; i++ {
 		seed := f.task(t, "live "+strconv.Itoa(i))
 		a, err := store.Create(f.asOwner, agents.Agent{Name: "trlive-" + strconv.Itoa(i) + "-" + strconv.FormatInt(f.owner, 10),
 			Namespace: "ns-trlive", Status: agents.StatusRunning, NoteID: &seed.ID})
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := f.plugins.RecordChiefDispatchAgent(f.asOwner, seed.ID, a.ID); err != nil {
+		if err := f.plugins.RecordTaskDispatchAgent(f.asOwner, seed.ID, a.ID); err != nil {
 			t.Fatal(err)
 		}
 	}
 	n := f.task(t, "third")
-	f.mustRefuse(t, f.call(f.chief, taskDispatchTool, map[string]any{"task_id": n.ID}), chiefDispatchLiveCap, n.ID)
+	f.mustRefuse(t, f.call(f.agent, taskDispatchTool, map[string]any{"task_id": n.ID}), taskDispatchLiveCap, n.ID)
 }
 
 // TestTaskDispatchRefusesAtTheDailyCap: ten reservations in the last day → the
 // daily cap's own refusal.
 func TestTaskDispatchRefusesAtTheDailyCap(t *testing.T) {
 	f := newTaskRouteFixture(t, true, true)
-	for i := 0; i < plugins.MaxChiefDispatchesPerDay; i++ {
-		if _, err := f.plugins.ReserveChiefDispatch(f.asOwner, int64(900000+i), nil, nil); err != nil {
+	for i := 0; i < plugins.MaxDispatchesPerDay; i++ {
+		if _, err := f.plugins.ReserveTaskDispatch(f.asOwner, int64(900000+i), nil, nil); err != nil {
 			t.Fatalf("seed reservation %d: %v", i, err)
 		}
 		// A finished start: its agent recorded, and no longer live (no such row).
-		if err := f.plugins.RecordChiefDispatchAgent(f.asOwner, int64(900000+i), 0); err != nil {
+		if err := f.plugins.RecordTaskDispatchAgent(f.asOwner, int64(900000+i), 0); err != nil {
 			t.Fatal(err)
 		}
 	}
 	n := f.task(t, "eleventh")
-	f.mustRefuse(t, f.call(f.chief, taskDispatchTool, map[string]any{"task_id": n.ID}), chiefDispatchDailyCap, n.ID)
+	f.mustRefuse(t, f.call(f.agent, taskDispatchTool, map[string]any{"task_id": n.ID}), taskDispatchDailyCap, n.ID)
 }
 
-// TestTaskDispatchStartsOneDraftOnlyAgentOncePerTask: the chief's start,
+// TestTaskDispatchStartsOneDraftOnlyAgentOncePerTask: the agent's start,
 // through the real /mcp door, creates ONE agent bound to the task, kicked off
 // with the task's text and muster's draft-only rules, and moves the task to
 // in_progress; the same call again starts nothing and answers with the first
@@ -292,7 +292,7 @@ func TestTaskDispatchStartsOneDraftOnlyAgentOncePerTask(t *testing.T) {
 	n := f.task(t, "start me")
 	text, isErr, rpcErr := f.mcpCall(t, f.chiefTok, taskDispatchTool, map[string]any{"task_id": n.ID})
 	if rpcErr != nil || isErr {
-		t.Fatalf("the chief's start failed: rpc=%+v %s", rpcErr, text)
+		t.Fatalf("the agent's start failed: rpc=%+v %s", rpcErr, text)
 	}
 	var out struct {
 		AgentID int64 `json:"agent_id"`
@@ -304,7 +304,7 @@ func TestTaskDispatchStartsOneDraftOnlyAgentOncePerTask(t *testing.T) {
 	if len(on) != 1 || on[0].ID != out.AgentID {
 		t.Fatalf("agents on the task: %+v; want exactly agent %d", on, out.AgentID)
 	}
-	if !strings.HasPrefix(on[0].PendingNote, n.Body) || !strings.Contains(on[0].PendingNote, chiefDispatchRules) {
+	if !strings.HasPrefix(on[0].PendingNote, n.Body) || !strings.Contains(on[0].PendingNote, taskDispatchRules) {
 		t.Errorf("kickoff text %q: want the task's body, then muster's rules", on[0].PendingNote)
 	}
 	if got := f.prov.calls(1); got != 1 {
@@ -369,19 +369,19 @@ func connectRepos(t *testing.T, s *Server, repos ...string) {
 }
 
 // TestTaskDispatchTakesOnlyAConnectedRepo: a task with no repository can be
-// given one by the chief — only one of the owner's connected repositories, and
+// given one by the agent — only one of the owner's connected repositories, and
 // never over the task's own; a refused repo reserves nothing.
 func TestTaskDispatchTakesOnlyAConnectedRepo(t *testing.T) {
 	f := newTaskRouteFixture(t, true, true)
 	n := f.task(t, "needs a repo")
 	// No GitHub connection: refused before anything is reserved.
-	f.mustRefuse(t, f.call(f.chief, taskDispatchTool, map[string]any{"task_id": n.ID, "repo": "example/app"}), chiefDispatchNoGitHub, n.ID)
+	f.mustRefuse(t, f.call(f.agent, taskDispatchTool, map[string]any{"task_id": n.ID, "repo": "example/app"}), taskDispatchNoGitHub, n.ID)
 
 	f.withConnectedRepos(t, "example/app")
-	f.mustRefuse(t, f.call(f.chief, taskDispatchTool, map[string]any{"task_id": n.ID, "repo": "stranger/app"}), chiefDispatchRepo, n.ID)
-	f.mustRefuse(t, f.call(f.chief, taskDispatchTool, map[string]any{"task_id": n.ID, "repo": "not a repo"}), "is not owner/name", n.ID)
+	f.mustRefuse(t, f.call(f.agent, taskDispatchTool, map[string]any{"task_id": n.ID, "repo": "stranger/app"}), taskDispatchRepo, n.ID)
+	f.mustRefuse(t, f.call(f.agent, taskDispatchTool, map[string]any{"task_id": n.ID, "repo": "not a repo"}), "is not owner/name", n.ID)
 
-	text := f.call(f.chief, taskDispatchTool, map[string]any{"task_id": n.ID, "repo": "Example/App"})
+	text := f.call(f.agent, taskDispatchTool, map[string]any{"task_id": n.ID, "repo": "Example/App"})
 	if strings.Contains(text, `"error"`) {
 		t.Fatalf("a connected repo: %s", text)
 	}
@@ -392,7 +392,7 @@ func TestTaskDispatchTakesOnlyAConnectedRepo(t *testing.T) {
 }
 
 // TestTaskDispatchKeepsTheTasksOwnRepo: a task that names its repository is not
-// moved to another by the chief.
+// moved to another by the agent.
 func TestTaskDispatchKeepsTheTasksOwnRepo(t *testing.T) {
 	f := newTaskRouteFixture(t, true, true)
 	f.withConnectedRepos(t, "example/app", "example/other")
@@ -400,15 +400,22 @@ func TestTaskDispatchKeepsTheTasksOwnRepo(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	f.mustRefuse(t, f.call(f.chief, taskDispatchTool, map[string]any{"task_id": n.ID, "repo": "example/other"}), chiefDispatchTaskRepo, n.ID)
+	f.mustRefuse(t, f.call(f.agent, taskDispatchTool, map[string]any{"task_id": n.ID, "repo": "example/other"}), taskDispatchTaskRepo, n.ID)
 }
 
-// TestTaskDispatchIsChiefOnly: a worker calling it by name is refused by the
-// chief-only gate, and starts nothing.
-func TestTaskDispatchIsChiefOnly(t *testing.T) {
+// TestTaskDispatchIsOfferedToAWorkerAndStillGated: the tool was the labelled
+// agent's alone and a worker was refused by rank. muster has no privileged
+// agent, so a worker reaches the tool — and the guards that actually matter are
+// unchanged: the task must be open, ungated, have no live agent, and the owner
+// must have opted in, with the dispatch budget still counted
+// (TestTaskDispatchRefusesWhatItMayNotStart and the budget tests cover those).
+// This pins only that nothing is refused for being the wrong agent.
+func TestTaskDispatchIsOfferedToAWorkerAndStillGated(t *testing.T) {
 	f := newTaskRouteFixture(t, true, true)
 	n := f.task(t, "worker tries")
-	f.mustRefuse(t, f.call(f.worker, taskDispatchTool, map[string]any{"task_id": n.ID}), "chief agent only", n.ID)
+	if out := f.call(f.worker, taskDispatchTool, map[string]any{"task_id": n.ID}); strings.Contains(out, "agent agent only") {
+		t.Fatalf("a worker was refused by rank: %s", out)
+	}
 }
 
 // TestAnAgentStillCannotMarkATaskComplete is an INVARIANT GUARD, not regression
@@ -424,7 +431,7 @@ func TestAnAgentStillCannotMarkATaskComplete(t *testing.T) {
 // --- task_route_attention and task_forward ------------------------------------
 
 // TestTaskRouteAttentionPutsTheTaskInFrontOfTheOwner: an ask, raised by the
-// chief, naming the task, on the owner's attention queue.
+// agent, naming the task, on the owner's attention queue.
 func TestTaskRouteAttentionPutsTheTaskInFrontOfTheOwner(t *testing.T) {
 	f := newTaskRouteFixture(t, false, false)
 	n := f.task(t, "look at me")
@@ -440,20 +447,20 @@ func TestTaskRouteAttentionPutsTheTaskInFrontOfTheOwner(t *testing.T) {
 	found := false
 	for _, it := range items {
 		if it.Kind == attentionKindAsk && strings.HasPrefix(it.Text, want) && strings.Contains(it.Text, "Assigned to you upstream.") &&
-			it.Source == firstNonBlank(f.chief.DisplayName, f.chief.Name) {
+			it.Source == firstNonBlank(f.agent.DisplayName, f.agent.Name) {
 			found = true
 		}
 	}
 	if !found {
-		t.Fatalf("no ask by the chief naming the task among %+v", items)
+		t.Fatalf("no ask by the agent naming the task among %+v", items)
 	}
-	if bad := f.call(f.chief, taskRouteAttentionTool, map[string]any{"task_id": n.ID + 1000000, "note": "x"}); !strings.Contains(bad, chiefDispatchNoTask) {
+	if bad := f.call(f.agent, taskRouteAttentionTool, map[string]any{"task_id": n.ID + 1000000, "note": "x"}); !strings.Contains(bad, taskDispatchNoTask) {
 		t.Errorf("an unknown task: %s", bad)
 	}
 }
 
 // TestTaskForwardReachesTheAgentWorkingTheTask: the newest running agent bound
-// to the task gets muster's message with the chief's note fenced, and its turn
+// to the task gets muster's message with the agent's note fenced, and its turn
 // is started; a task nobody works is refused.
 func TestTaskForwardReachesTheAgentWorkingTheTask(t *testing.T) {
 	f := newTaskRouteFixture(t, false, false)
@@ -484,7 +491,7 @@ func TestTaskForwardReachesTheAgentWorkingTheTask(t *testing.T) {
 	assertFencedOnly(t, strings.TrimPrefix(got[0], worker.Name+"|"), "Reassigned upstream")
 
 	idle := f.task(t, "nobody on it")
-	if bad := f.call(f.chief, taskForwardTool, map[string]any{"task_id": idle.ID, "note": "x"}); !strings.Contains(bad, "no running agent works task") {
+	if bad := f.call(f.agent, taskForwardTool, map[string]any{"task_id": idle.ID, "note": "x"}); !strings.Contains(bad, "no running agent works task") {
 		t.Errorf("a task nobody works: %s", bad)
 	}
 }
@@ -503,7 +510,7 @@ func TestATaskForwardWithoutAGatewayStoresTheMessageAndStartsNoTurn(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	text := f.call(f.chief, taskForwardTool, map[string]any{"task_id": n.ID, "note": "heads up"})
+	text := f.call(f.agent, taskForwardTool, map[string]any{"task_id": n.ID, "note": "heads up"})
 	if !strings.Contains(text, `"turn_started":false`) {
 		t.Fatalf("answer %s", text)
 	}
@@ -562,14 +569,14 @@ func (f *taskRouteFixture) taskEvents(t *testing.T, pluginID int64) []plugins.Me
 // route_to_chief through the real routes and stores:
 //
 //   - routing on → the task is filed AND one task event is stored for the
-//     chief: muster's sender, no_reply, linked to the task, its body muster's
+//     agent: muster's sender, no_reply, linked to the task, its body muster's
 //     structured event; `routed: true`;
 //   - the same request again → the same task and still ONE event;
 //   - a new comment (a new upstream event) on a task no agent works → filed,
 //     not routed (TestAnUpdateRoutesOnlyWhileALiveAgentWorksTheTask has both
 //     branches);
-//   - with no chief to take it, the task is on /attention as "Task to route",
-//     and it leaves once the chief takes the event;
+//   - with no agent to take it, the task is on /attention as "Task to route",
+//     and it leaves once the agent takes the event;
 //   - nothing is started by the hand-off itself.
 func TestRouteToChiefHandsTheTaskToTheChiefOnce(t *testing.T) {
 	f := newTaskRouteFixture(t, true, true)
@@ -613,7 +620,7 @@ func TestRouteToChiefHandsTheTaskToTheChiefOnce(t *testing.T) {
 		t.Fatalf("after an update nobody works %d events, want 1", got)
 	}
 
-	// No chief has taken them (the fixture wires no deliverer): the task is on
+	// No agent has taken them (the fixture wires no deliverer): the task is on
 	// the attention queue, once.
 	items, err := f.srv.attentionItems(f.asOwner)
 	if err != nil {
@@ -628,16 +635,16 @@ func TestRouteToChiefHandsTheTaskToTheChiefOnce(t *testing.T) {
 	if len(tasks) != 1 || tasks[0].Link != canonicalTaskPath(taskID) || !strings.Contains(tasks[0].Text, "Rotate the build key") {
 		t.Fatalf("task items %+v; want one for task %d", tasks, taskID)
 	}
-	// The chief takes the event: the item leaves.
+	// The agent takes the event: the item leaves.
 	for _, e := range f.taskEvents(t, p.ID) {
-		if ok, err := f.plugins.BeginDelivery(f.asOwner, e.ID, f.chief.ID); err != nil || !ok {
+		if ok, err := f.plugins.BeginDelivery(f.asOwner, e.ID, f.agent.ID); err != nil || !ok {
 			t.Fatalf("begin delivery: %v %v", ok, err)
 		}
 	}
 	items, _ = f.srv.attentionItems(f.asOwner)
 	for _, it := range items {
 		if it.Kind == attentionKindTask {
-			t.Fatalf("the task is still on /attention after the chief took its events: %+v", it)
+			t.Fatalf("the task is still on /attention after the agent took its events: %+v", it)
 		}
 	}
 	if got := len(f.agentsOn(t, taskID)); got != 0 || f.prov.calls(0) != 0 {
@@ -686,7 +693,7 @@ func (f *taskRouteFixture) lastEvent(t *testing.T, pluginID int64) (plugins.Task
 
 // TestAnAssignmentRoutesToTheChiefWhetherOrNotTheTaskExisted (audit round 1):
 // a mention files the task and goes nowhere; the LATER assignment of the same
-// task reaches the chief though it files nothing. A task filed with no comment
+// task reaches the agent though it files nothing. A task filed with no comment
 // does not make a later status change routable (the first-comment proxy did).
 func TestAnAssignmentRoutesToTheChiefWhetherOrNotTheTaskExisted(t *testing.T) {
 	f := newTaskRouteFixture(t, false, false)
@@ -696,11 +703,11 @@ func TestAnAssignmentRoutesToTheChiefWhetherOrNotTheTaskExisted(t *testing.T) {
 		t.Fatalf("the mention that files it: %v; want created, not routed", out)
 	}
 	if _, n := f.lastEvent(t, p.ID); n != 0 {
-		t.Fatalf("a mention stored %d task event(s) for the chief", n)
+		t.Fatalf("a mention stored %d task event(s) for the agent", n)
 	}
 	out := f.notice(t, tok, key, noticeAssigned, "message 2: assigned", true)
 	if out["created"] != false || out["routed"] != routedChief {
-		t.Fatalf("the later assignment: %v; want created false, routed chief", out)
+		t.Fatalf("the later assignment: %v; want created false, routed agent", out)
 	}
 	if ev, n := f.lastEvent(t, p.ID); n != 1 || ev.Event != noticeAssigned || ev.Change != "message 2: assigned" {
 		t.Fatalf("events %d, last %+v; want one assigned event", n, ev)
@@ -723,7 +730,7 @@ func TestAnAssignmentRoutesToTheChiefWhetherOrNotTheTaskExisted(t *testing.T) {
 }
 
 // TestAnUpdateRoutesOnlyWhileALiveAgentWorksTheTask: an `update` notice goes
-// to the chief only while a live agent — pending, provisioning or running — is
+// to the agent only while a live agent — pending, provisioning or running — is
 // bound to the task. No agent, or only a finished one: filed, not routed.
 func TestAnUpdateRoutesOnlyWhileALiveAgentWorksTheTask(t *testing.T) {
 	f := newTaskRouteFixture(t, false, false)
@@ -748,7 +755,7 @@ func TestAnUpdateRoutesOnlyWhileALiveAgentWorksTheTask(t *testing.T) {
 		}
 		want++
 		if out := f.notice(t, tok, key, noticeUpdate, "c3: "+status, false); out["routed"] != routedChief {
-			t.Fatalf("a %s agent: %v; want routed chief", status, out)
+			t.Fatalf("a %s agent: %v; want routed agent", status, out)
 		}
 		ev, n := f.lastEvent(t, p.ID)
 		if n != want || ev.Event != noticeUpdate || len(ev.Agents) != 1 || ev.Agents[0].ID != a.ID {
@@ -758,7 +765,7 @@ func TestAnUpdateRoutesOnlyWhileALiveAgentWorksTheTask(t *testing.T) {
 }
 
 // TestAMentionGoesToTheLiveAgentNotTheChief: a mention on a task a live agent
-// works goes to that agent, never to the chief. Still pending with its first
+// works goes to that agent, never to the agent. Still pending with its first
 // turn owed, the agent gets it appended to that first turn (no chat row of its
 // own, once per notice); running, it gets a turn. A resend delivers nothing
 // twice. (The real turn path's single store: task_routing_r2_pg_test.go.)
@@ -813,13 +820,13 @@ func TestAMentionGoesToTheLiveAgentNotTheChief(t *testing.T) {
 		t.Fatalf("running agent: turns %q; want one carrying the mention", got)
 	}
 	if _, n := f.lastEvent(t, p.ID); n != 0 {
-		t.Fatalf("a mention stored %d task event(s) for the chief", n)
+		t.Fatalf("a mention stored %d task event(s) for the agent", n)
 	}
 }
 
 // TestAMentionWithNoAgentGoesToAttentionOnlyWhenInProgress: with no live
 // agent, a mention on an in-progress task is an ask on the owner's attention
-// queue naming the task (raised by the chief, once per notice); on any other
+// queue naming the task (raised by the agent, once per notice); on any other
 // task it is filed only — the operator-unspecified default.
 func TestAMentionWithNoAgentGoesToAttentionOnlyWhenInProgress(t *testing.T) {
 	f := newTaskRouteFixture(t, false, false)
@@ -851,12 +858,17 @@ func TestAMentionWithNoAgentGoesToAttentionOnlyWhenInProgress(t *testing.T) {
 			t.Fatalf("a mention on an in-progress task (send %d): %v; want routed attention", i+1, out)
 		}
 	}
+	// 🔴 THE ASK IS MUSTER'S OWN NOW, NOT AN AGENT'S. A mention on an in-progress
+	// task that no agent is working was raised in the name of the owner's agent,
+	// resolved by label. muster has no privileged agent, so it asks under its own
+	// name (mentionAsker) — which is also what upstream already did whenever the
+	// owner happened to have no agent, so this is that path becoming the only one.
 	got := asks()
-	if len(got) != 1 || !strings.Contains(got[0].Text, mentionAttentionNote) || got[0].Source != firstNonBlank(f.chief.DisplayName, f.chief.Name) {
-		t.Fatalf("asks %+v; want one by the chief naming the task", got)
+	if len(got) != 1 || !strings.Contains(got[0].Text, mentionAttentionNote) || got[0].Source != attention.SystemAskerLabel {
+		t.Fatalf("asks %+v; want one by muster naming the task", got)
 	}
 	if _, n := f.lastEvent(t, p.ID); n != 0 {
-		t.Fatalf("a mention stored %d task event(s) for the chief", n)
+		t.Fatalf("a mention stored %d task event(s) for the agent", n)
 	}
 }
 
@@ -901,8 +913,8 @@ func (f *taskRouteFixture) taskItems(t *testing.T) []attentionItem {
 }
 
 // TestADeliveredTaskTheChiefDidNotRouteStaysOnAttention: delivered is not
-// routed — a task whose event the chief took without acting stays on
-// "Task to route" until the chief routes it (audit r1).
+// routed — a task whose event the agent took without acting stays on
+// "Task to route" until the agent routes it (audit r1).
 func TestADeliveredTaskTheChiefDidNotRouteStaysOnAttention(t *testing.T) {
 	f := newTaskRouteFixture(t, false, false)
 	tok, p := f.plugin(t)
@@ -914,16 +926,16 @@ func TestADeliveredTaskTheChiefDidNotRouteStaysOnAttention(t *testing.T) {
 	}
 	taskID := int64(out["id"].(float64))
 	ev := f.taskEvents(t, p.ID)[0]
-	if ok, err := f.plugins.BeginDelivery(f.asOwner, ev.ID, f.chief.ID); err != nil || !ok {
+	if ok, err := f.plugins.BeginDelivery(f.asOwner, ev.ID, f.agent.ID); err != nil || !ok {
 		t.Fatal(ok, err)
 	}
-	if ok, err := f.plugins.RecordDelivery(f.asOwner, ev.ID, f.chief.ID, plugins.StatusDelivered); err != nil || !ok {
+	if ok, err := f.plugins.RecordDelivery(f.asOwner, ev.ID, f.agent.ID, plugins.StatusDelivered); err != nil || !ok {
 		t.Fatal(ok, err)
 	}
 	if got := f.taskItems(t); len(got) != 1 || got[0].Link != canonicalTaskPath(taskID) {
 		t.Fatalf("delivered, not routed: task items %+v; want the task", got)
 	}
-	if text := f.call(f.chief, taskRouteAttentionTool, map[string]any{"task_id": taskID, "note": "yours"}); strings.Contains(text, `"error"`) {
+	if text := f.call(f.agent, taskRouteAttentionTool, map[string]any{"task_id": taskID, "note": "yours"}); strings.Contains(text, `"error"`) {
 		t.Fatal(text)
 	}
 	if got := f.taskItems(t); len(got) != 0 {
@@ -947,7 +959,7 @@ func TestAFailedStartLeavesTheTaskToRoute(t *testing.T) {
 	if _, err := f.pool.Exec(f.asOwner, `UPDATE notes SET model = 'anthropic/example-model' WHERE id = $1`, bad.ID); err != nil {
 		t.Fatal(err)
 	}
-	if text := f.call(f.chief, taskDispatchTool, map[string]any{"task_id": bad.ID}); !strings.Contains(text, "could not be started") {
+	if text := f.call(f.agent, taskDispatchTool, map[string]any{"task_id": bad.ID}); !strings.Contains(text, "could not be started") {
 		t.Fatalf("a failing create: %s", text)
 	}
 	if got := f.taskItems(t); len(got) != 1 || got[0].Link != canonicalTaskPath(bad.ID) {
@@ -960,7 +972,7 @@ func TestAFailedStartLeavesTheTaskToRoute(t *testing.T) {
 		t.Fatalf("%d %v", code, out)
 	}
 	good := int64(out["id"].(float64))
-	if text := f.call(f.chief, taskDispatchTool, map[string]any{"task_id": good}); strings.Contains(text, `"error"`) {
+	if text := f.call(f.agent, taskDispatchTool, map[string]any{"task_id": good}); strings.Contains(text, `"error"`) {
 		t.Fatal(text)
 	}
 	for _, it := range f.taskItems(t) {
@@ -968,7 +980,7 @@ func TestAFailedStartLeavesTheTaskToRoute(t *testing.T) {
 			t.Fatalf("started, still listed: %+v", it)
 		}
 	}
-	// A new upstream event for the started task lists it again; the chief's
+	// A new upstream event for the started task lists it again; the agent's
 	// already_dispatched answer routes it while that agent is running (the
 	// fake provisioner leaves it provisioning, so the test runs it).
 	started := f.agentsOn(t, good)
@@ -987,7 +999,7 @@ func TestAFailedStartLeavesTheTaskToRoute(t *testing.T) {
 	}
 	// Still starting (the fake provisioner leaves it provisioning): nobody can
 	// be forwarded to yet, so the answer says so and the task stays listed.
-	if text := f.call(f.chief, taskDispatchTool, map[string]any{"task_id": good}); !strings.Contains(text, "still starting") {
+	if text := f.call(f.agent, taskDispatchTool, map[string]any{"task_id": good}); !strings.Contains(text, "still starting") {
 		t.Fatalf("already_dispatched with a starting agent: %s", text)
 	}
 	stillListed := false
@@ -1001,7 +1013,7 @@ func TestAFailedStartLeavesTheTaskToRoute(t *testing.T) {
 	if _, err := f.pool.Exec(f.asOwner, `UPDATE agents SET status = 'running' WHERE id = $1`, started[0].ID); err != nil {
 		t.Fatal(err)
 	}
-	if text := f.call(f.chief, taskDispatchTool, map[string]any{"task_id": good}); !strings.Contains(text, `"already_dispatched":true`) ||
+	if text := f.call(f.agent, taskDispatchTool, map[string]any{"task_id": good}); !strings.Contains(text, `"already_dispatched":true`) ||
 		!strings.Contains(text, "An agent is already working this task") {
 		t.Fatalf("already_dispatched with a running agent must point at task_forward: %s", text)
 	}
@@ -1023,7 +1035,7 @@ func TestAFailedStartLeavesTheTaskToRoute(t *testing.T) {
 	if _, err := f.pool.Exec(f.asOwner, `UPDATE agents SET status = 'stopped' WHERE id = $1`, on[0].ID); err != nil {
 		t.Fatal(err)
 	}
-	if text := f.call(f.chief, taskDispatchTool, map[string]any{"task_id": good}); !strings.Contains(text, `"already_dispatched":true`) ||
+	if text := f.call(f.agent, taskDispatchTool, map[string]any{"task_id": good}); !strings.Contains(text, `"already_dispatched":true`) ||
 		!strings.Contains(text, "Use task_route_attention") {
 		t.Fatalf("already_dispatched with a finished agent must point at task_route_attention: %s", text)
 	}
@@ -1149,44 +1161,6 @@ func TestTaskTextCannotCallAToolOrLeaveTheFence(t *testing.T) {
 	}
 }
 
-// TestTheTaskRoutingToolsAreLedgered pins the registry with task routing on: the
-// chief-only set is the base ledger plus EXACTLY the routing tools (task_dispatch
-// only with dispatch on), each on /mcp for the chief and on neither transport
-// for a worker. A tool added to or dropped from the set fails here.
-func TestTheTaskRoutingToolsAreLedgered(t *testing.T) {
-	for _, c := range []struct {
-		dispatch bool
-		want     []string
-	}{
-		{false, []string{taskRouteAttentionTool, taskForwardTool}},
-		{true, []string{taskRouteAttentionTool, taskForwardTool, taskDispatchTool}},
-	} {
-		f := newTaskRouteFixture(t, c.dispatch, c.dispatch)
-		var chiefOnly []string
-		for _, tl := range f.srv.agentTools() {
-			if tl.chiefOnly {
-				chiefOnly = append(chiefOnly, tl.def.Name)
-			}
-		}
-		want := append(append([]string(nil), chiefOnlyLedger...), c.want...)
-		sort.Strings(chiefOnly)
-		sort.Strings(want)
-		if got, want := strings.Join(chiefOnly, ","), strings.Join(want, ","); got != want {
-			t.Errorf("dispatch=%v chief-only = %s, want %s", c.dispatch, got, want)
-		}
-		chiefMCP, _ := mcpListNames(t, f.connFixture, f.chiefTok)
-		workerMCP, _ := mcpListNames(t, f.connFixture, f.workerTok)
-		for _, n := range c.want {
-			if !strings.Contains(","+strings.Join(chiefMCP, ",")+",", ","+n+",") {
-				t.Errorf("dispatch=%v: the chief's /mcp lacks %s", c.dispatch, n)
-			}
-			if strings.Contains(","+strings.Join(workerMCP, ",")+",", ","+n+",") {
-				t.Errorf("dispatch=%v: a worker's /mcp lists %s", c.dispatch, n)
-			}
-		}
-	}
-}
-
 // assertFencedOnly checks a rendered fenced turn: outside text (marker) appears
 // only on content lines, and exactly two lines (the opening and closing
 // markers) start with "<<<".
@@ -1213,7 +1187,7 @@ func assertFencedOnly(t *testing.T, turn, marker string) {
 }
 
 // TestATaskEventKeepsTheRawTitleAndTheQueueShowsItPlain: a task handed to the
-// chief with a markdown title is STORED as written — the plugin's TaskEvent
+// agent with a markdown title is STORED as written — the plugin's TaskEvent
 // carries the raw title, because data keeps the raw title — and the one
 // display sink that reads it, the attention queue, shows it plain. Red before:
 // taskLabel applied the title rule for every caller, so the stored event

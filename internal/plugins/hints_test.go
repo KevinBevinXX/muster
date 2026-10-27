@@ -179,10 +179,10 @@ func TestAMessageCannotForgeTheHint(t *testing.T) {
 }
 
 // TestTheDelivererAppendsTheHintItComputes: the HintFunc runs on the delivery,
-// with the owner's principal and the fresh chief, and its block reaches the
+// with the owner's principal and the fresh target, and its block reaches the
 // turn after the message's fence; a deliverer without one sends no block.
 func TestTheDelivererAppendsTheHintItComputes(t *testing.T) {
-	s, _, gw, d, p, chief := deliverFixture(t)
+	s, _, gw, d, p, target := deliverFixture(t)
 	var askedFor []string
 	d.hints = func(ctx context.Context, c agents.Agent, m Message) Hints {
 		askedFor = append(askedFor, c.Name+"|"+m.Body)
@@ -190,19 +190,19 @@ func TestTheDelivererAppendsTheHintItComputes(t *testing.T) {
 			Titles: []HintTitle{{Title: "Upgrading node-7k", At: hintAt}}}}}
 	}
 	m, _, _ := s.Submit(plugin(2), p.ID, msg("m-hint"))
-	if r := d.Deliver(plugin(2), p.ID, m.ID, chief); r.Outcome != OutcomeDelivered {
+	if r := d.Deliver(plugin(2), p.ID, m.ID, target); r.Outcome != OutcomeDelivered {
 		t.Fatalf("%+v", r)
 	}
 	turn := gw.sent[0]
 	end := strings.Index(turn, "<<<end plugin-message nonce=")
 	hint := strings.Index(turn, "\n"+HintHeader)
-	if len(askedFor) != 1 || askedFor[0] != chief.Name+"|body of m-hint" || end < 0 || hint < end ||
+	if len(askedFor) != 1 || askedFor[0] != target.Name+"|body of m-hint" || end < 0 || hint < end ||
 		!strings.Contains(turn[hint:], "| agent:77 — upgrade-runner\n") {
 		t.Fatalf("asked %q; turn:\n%s", askedFor, turn)
 	}
 	d.hints = nil
 	m2, _, _ := s.Submit(plugin(2), p.ID, msg("m-nohint"))
-	d.Deliver(plugin(2), p.ID, m2.ID, chief)
+	d.Deliver(plugin(2), p.ID, m2.ID, target)
 	if hintLineCount(gw.sent[1]) != 0 {
 		t.Fatalf("no HintFunc, yet a hint:\n%s", gw.sent[1])
 	}

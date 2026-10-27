@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-// THE SERVER-SIDE REFRESH (operator decision: muster computes focus, the chief
+// THE SERVER-SIDE REFRESH (operator decision: muster computes focus, the agent
 // only reads it). A periodic pass (Run) and an on-demand trigger (Refresh, the
 // focus_refresh tool) both come here.
 //

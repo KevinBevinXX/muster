@@ -100,23 +100,6 @@ func TestBothClampedChatSurfacesCarryTheBubbleClamp(t *testing.T) {
 	}
 }
 
-// The chief panel is deliberately NOT clamped: neither its body nor its frame
-// carries the clamp script.
-func TestTheChiefPanelCarriesNoBubbleClamp(t *testing.T) {
-	cv := sampleAgentDetailView()
-	cv.Surface = ChatSurfaceChiefPanel
-	var b strings.Builder
-	if err := RenderChiefPanelBody(&b, ChiefPanelView{Configured: true, Chat: cv}); err != nil {
-		t.Fatal(err)
-	}
-	if n := strings.Count(b.String(), "window.muClamp"); n != 0 {
-		t.Errorf("the chief panel body carries the bubble clamp (%d)", n)
-	}
-	if n := strings.Count(renderString(t, ChiefPanel()), "window.muClamp"); n != 0 {
-		t.Errorf("the chief panel frame carries the bubble clamp (%d)", n)
-	}
-}
-
 // A mirrored prompt's bubble carries its transcript place as its id — the id
 // its prompt-index entry names (MirrorPromptID) — and one from a host that
 // sends no place carries none; a reply never carries one.
@@ -146,7 +129,7 @@ func TestAMirroredPromptsBubbleIsNamedByItsTranscriptPlace(t *testing.T) {
 }
 
 // The index (its header button, its sheet, its script) is on the mirrored view
-// once each — and on neither the agent chat page nor the chief panel.
+// once each — and on neither the agent chat page nor the agent panel.
 func TestTheMessageIndexIsOnTheMirroredViewOnly(t *testing.T) {
 	mirror := renderString(t, MirrorViewPage(MirrorViewView{Host: "host-a", Session: "main"}))
 	for _, want := range []string{`id="chat-index-open" data-chat-index-log="mv-log"`, `id="chat-index" hidden`, "window.muIndex = {", `id="chat-index-partial" hidden`} {
@@ -160,15 +143,6 @@ func TestTheMessageIndexIsOnTheMirroredViewOnly(t *testing.T) {
 	}
 	if strings.Contains(b.String(), "chat-index") {
 		t.Error("the agent chat page carries the message index")
-	}
-	b.Reset()
-	cv := sampleAgentDetailView()
-	cv.Surface = ChatSurfaceChiefPanel
-	if err := RenderChiefPanelBody(&b, ChiefPanelView{Configured: true, Chat: cv}); err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(b.String(), "chat-index") {
-		t.Error("the chief panel carries the message index")
 	}
 }
 

@@ -18,7 +18,7 @@ func TestMirrorLabelsReachEverySurfaceAndNeverTheAddress(t *testing.T) {
 
 	_, list := mirrorGet(t, s, ts, "/ui/agents")
 	for _, want := range []string{`<span data-mirror-label="">mango:1</span>`, `title="tmux session main"`,
-		`href="` + amp(ui.MirrorViewPath("ws", "main")) + `"`, `data-mirror-name="">chief</span>`} {
+		`href="` + amp(ui.MirrorViewPath("ws", "main")) + `"`, `data-mirror-name="">agent</span>`} {
 		if !strings.Contains(list, want) {
 			t.Errorf("the Agents list lacks %q", want)
 		}
@@ -34,8 +34,8 @@ func TestMirrorLabelsReachEverySurfaceAndNeverTheAddress(t *testing.T) {
 	if !strings.Contains(term, amp(ui.MirrorTerminalWSPath("ws", "main"))) {
 		t.Error("the terminal's socket does not address the session by name")
 	}
-	_, chiefTerm := mirrorGet(t, s, ts, ui.MirrorTerminalPath("ws", "chief"))
-	if !strings.Contains(chiefTerm, "<title>Terminal · chief · muster</title>") || strings.Contains(chiefTerm, "data-mirror-session") {
+	_, chiefTerm := mirrorGet(t, s, ts, ui.MirrorTerminalPath("ws", "agent"))
+	if !strings.Contains(chiefTerm, "<title>Terminal · agent · muster</title>") || strings.Contains(chiefTerm, "data-mirror-session") {
 		t.Error("an unlabelled session's terminal is not titled by its raw name alone")
 	}
 
@@ -59,7 +59,7 @@ func TestMirrorLabelsReachEverySurfaceAndNeverTheAddress(t *testing.T) {
 // and the other host's card "mango:1 · tower". A label only ONE host lists
 // ("solo" below) is left as it is.
 func TestASharedLabelIsQualifiedByItsHostOnEverySurface(t *testing.T) {
-	fm := &fakeMirror{online: true, v2: &fakeMirrorV2{}, labels: map[string]string{"main": "mango:1", "chief": "solo"},
+	fm := &fakeMirror{online: true, v2: &fakeMirrorV2{}, labels: map[string]string{"main": "mango:1", "agent": "solo"},
 		others: []mirror.HostView{{Host: "tower", Online: true, Sessions: []string{"mango"}, Labels: map[string]string{"mango": "mango:1"}}}}
 	s, ts := viewServer(t, fm)
 
@@ -98,7 +98,7 @@ func TestASharedLabelIsQualifiedByItsHostOnEverySurface(t *testing.T) {
 	if !strings.Contains(other, "<title>Terminal · mango:1 · tower · muster</title>") {
 		t.Error("the other host's terminal page is not titled mango:1 · tower")
 	}
-	_, unique := mirrorGet(t, s, ts, ui.MirrorTerminalPath("ws", "chief"))
+	_, unique := mirrorGet(t, s, ts, ui.MirrorTerminalPath("ws", "agent"))
 	if !strings.Contains(unique, "<title>Terminal · solo · muster</title>") || strings.Contains(unique, "data-mirror-qualifier") {
 		t.Error("a label only one host lists was qualified")
 	}

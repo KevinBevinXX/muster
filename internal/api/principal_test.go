@@ -112,6 +112,7 @@ var routeVias = map[authz.Via][]string{
 		"GET /plugins",
 		"POST /plugins",
 		"POST /plugins/{id}/revoke",
+		"POST /plugins/{id}/target",
 		"POST /plugins/drafts/{id}/approve",
 		"POST /plugins/drafts/{id}/reject",
 		"POST /plugins/messages/{id}/retry",
@@ -238,8 +239,6 @@ var routeVias = map[authz.Via][]string{
 		"GET /ui/agents/{id}/status",
 		"GET /ui/agents/{name}/chat-log",
 		"GET /ui/agents/{name}/task",
-		"GET /ui/chief/panel",
-		"GET /ui/chief/threads/search",
 		"GET /ui/connector-requests",
 		"GET /ui/connectors",
 		"GET /ui/connectors/new",
@@ -278,7 +277,6 @@ var routeVias = map[authz.Via][]string{
 		"POST /agents/{id}/sessions/{sid}/default",
 		"POST /agents/{id}/start",
 		"POST /agents/{id}/stop",
-		"POST /chief/provision",
 		"POST /connectors",
 		"POST /connectors/{name}/rotate",
 		"POST /github/disconnect",
@@ -312,7 +310,6 @@ var routeVias = map[authz.Via][]string{
 		"PATCH /api/tasks/{id}",
 		"PATCH /api/tasks/{id}/status",
 		"POST /api/agents/{name}/messages",
-		"POST /api/chief/replace",
 		"POST /api/tasks",
 		"POST /api/tasks/{id}/comments",
 		"GET /api/whoami",
@@ -346,7 +343,6 @@ var routeVias = map[authz.Via][]string{
 		"PATCH /api/tasks/{id}",
 		"PATCH /api/tasks/{id}/status",
 		"POST /api/agents/{name}/messages",
-		"POST /api/chief/replace",
 		"POST /api/tasks",
 		"POST /api/tasks/{id}/comments",
 		"POST /api/routes/{id}/reply",
@@ -668,8 +664,7 @@ func TestAnUnarmedHookTierStillActsAsTheMachineUser(t *testing.T) {
 	// The fail-closed (requireArmedHookToken) routes: the agent-steering write,
 	// and session routing's answer (it decides what an outside party is sent).
 	armed := map[string]bool{"POST /api/agents/{name}/messages": true, "POST /api/routes/{id}/reply": true,
-		"POST /api/plugins/messages/{id}/retry": true,
-		"POST /api/chief/replace":               true}
+		"POST /api/plugins/messages/{id}/retry": true}
 	for _, pattern := range routeVias[authz.ViaHook] {
 		method, path := concretePath(pattern)
 		t.Run(pattern, func(t *testing.T) {

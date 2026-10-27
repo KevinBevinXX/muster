@@ -6,11 +6,11 @@ import (
 )
 
 // turnGate counts the chat turns in flight per agent (runUserTurn: the chat
-// socket, the POST send, a route hand-back) and lets the chief replacement CLOSE
+// socket, the POST send, a route hand-back) and lets the agent replacement CLOSE
 // an agent to new turns, atomically with checking that none is running.
 //
 // 🔴 WHY THIS AND NOT THE SESSION CLAIM. A plugin delivery, a kickoff and a memo
-// turn hold the chief's session claim (agents.Store.ClaimKickoff); an operator's
+// turn hold the agent's session claim (agents.Store.ClaimKickoff); an operator's
 // chat turn does not, and making it take one would change chat (a message typed
 // during a delivery would be refused). The replacement needs only "no chat turn
 // is running, and none starts until I am done", which this answers in-process.
@@ -23,9 +23,9 @@ type turnGate struct {
 	closed  map[int64]bool
 }
 
-// ErrAgentBeingReplaced refuses a chat turn to an agent the chief replacement has
+// ErrAgentBeingReplaced refuses a chat turn to an agent the agent replacement has
 // closed: it is about to be deleted.
-var ErrAgentBeingReplaced = errors.New("this agent is being replaced; send the message to the new chief once it is up")
+var ErrAgentBeingReplaced = errors.New("this agent is being replaced; send the message to the new agent once it is up")
 
 // enter starts a turn for id; false (nothing counted) when id is closed.
 func (g *turnGate) enter(id int64) bool {

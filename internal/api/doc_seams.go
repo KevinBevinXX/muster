@@ -15,7 +15,7 @@ package api
 //	WHAT: upstream, the tmux grid renders a one-line AI summary of each window.
 //	  The FEATURE is the permission router's — the grid, the cache, the
 //	  revision rule and the debounce all stay there — but the only GENERATOR is
-//	  the chief agent, which is muster's. The upstream file that wires them
+//	  the dispatched agent, which is muster's. The upstream file that wires them
 //	  together therefore splits: everything except `chiefRecapGenerator` and its
 //	  prompt stays, and those two would come here.
 //	WHY THEY ARE NOT HERE: they would have no caller. The route partition
@@ -33,7 +33,7 @@ package api
 //	  writing down rather than leaving to be noticed.
 //	CLOSING CONDITION: either (a) a pull request adds a muster route that
 //	  generates a recap on demand — at which point the generator, its prompt and
-//	  the chief-agent lookup move here together and appear in muster's route
+//	  the agent-agent lookup move here together and appear in muster's route
 //	  golden — or (b) a pull request deletes the router's `POST /api/recaps`
 //	  seam and the recap card with it, recording the feature as retired. One or
 //	  the other; leaving both halves in place is the state that rots.

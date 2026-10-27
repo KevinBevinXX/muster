@@ -36,7 +36,7 @@ import (
 // browser form (…/edit/confirm, …/edit/save/confirm). Cancel releases a hold
 // and changes nothing that will be pasted, so it needs no step-up.
 //
-// 🔴 A ROUTED MESSAGE IS NOT EDITABLE: its text is the chief's, and its
+// 🔴 A ROUTED MESSAGE IS NOT EDITABLE: its text is the agent's, and its
 // delivery is gated on the route rather than on a sign-in.
 // ---------------------------------------------------------------------------
 
@@ -53,7 +53,7 @@ func (s *Server) registerSendQueueEditRoutes(mux Mux) {
 var (
 	SendQueueNotEditable       = "Not editable: that message is no longer queued (it was sent, or cancelled)."
 	SendQueueEditSending       = "Not editable: that message is being sent right now."
-	SendQueueRoutedNotEditable = "Not editable: your chief routed that message, so its text is the chief's."
+	SendQueueRoutedNotEditable = "Not editable: the target agent routed that message, so its text is the agent's."
 	SendQueueEditLapsed        = "Not saved: the hold on that message ran out (an edit holds it for " + editHoldText +
 		") or it was opened for editing again elsewhere, so it kept its original text. Edit it again to change it."
 	SendQueueEditTooLateSent = "Not saved: the hold on that message ran out and it has been sent with its original text."

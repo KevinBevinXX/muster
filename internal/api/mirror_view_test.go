@@ -178,7 +178,7 @@ func TestAClaudePanesCardOpensTheRenderedViewAndOthersTheTerminal(t *testing.T) 
 		if !strings.Contains(list, `href="`+amp(wantMain)+`"`) {
 			t.Errorf("v2=%v: main's card does not open %s:\n%s", v2, wantMain, list)
 		}
-		if !strings.Contains(list, `href="`+amp(ui.MirrorTerminalPath("ws", "chief"))+`"`) {
+		if !strings.Contains(list, `href="`+amp(ui.MirrorTerminalPath("ws", "agent"))+`"`) {
 			t.Errorf("v2=%v: a non-Claude session's card does not open its terminal", v2)
 		}
 		if got := strings.Count(list, "data-mirror-claude"); got != map[bool]int{true: 1, false: 0}[v2] {
@@ -197,7 +197,7 @@ func TestTheRenderedViewPageIsTheOwnersAndFallsBackToTheTerminal(t *testing.T) {
 		location string
 	}{
 		{"a Claude pane", &fakeMirror{online: true, v2: &fakeMirrorV2{}}, viewMain, 200, ""},
-		{"a non-Claude session", &fakeMirror{online: true, v2: &fakeMirrorV2{}}, ui.MirrorViewPath("ws", "chief"), 303, ui.MirrorTerminalPath("ws", "chief")},
+		{"a non-Claude session", &fakeMirror{online: true, v2: &fakeMirrorV2{}}, ui.MirrorViewPath("ws", "agent"), 303, ui.MirrorTerminalPath("ws", "agent")},
 		{"a v1 host", &fakeMirror{online: true}, viewMain, 303, ui.MirrorTerminalPath("ws", "main")},
 		{"an offline host", &fakeMirror{online: false, v2: &fakeMirrorV2{}}, viewMain, 303, ui.MirrorTerminalPath("ws", "main")},
 		{"an unknown host", &fakeMirror{online: true, v2: &fakeMirrorV2{}}, ui.MirrorViewPath("nope", "main"), 404, ""},
@@ -262,8 +262,8 @@ func TestTheTerminalOffersTheRenderedViewForAClaudePane(t *testing.T) {
 	if !strings.Contains(main, `id="view-rendered" href="`+amp(ui.MirrorViewPath("ws", "main"))+`"`) || !strings.Contains(main, `id="view-terminal" aria-current="page"`) {
 		t.Errorf("main's terminal has no Rendered switch")
 	}
-	_, chief := mirrorGet(t, s, ts, ui.MirrorTerminalPath("ws", "chief"))
-	if strings.Contains(chief, `id="view-rendered"`) {
+	_, agent := mirrorGet(t, s, ts, ui.MirrorTerminalPath("ws", "agent"))
+	if strings.Contains(agent, `id="view-rendered"`) {
 		t.Errorf("a non-Claude session's terminal offers a rendered view")
 	}
 }

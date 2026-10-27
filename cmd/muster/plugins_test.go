@@ -23,7 +23,7 @@ func TestPluginsRetryPostsTheIDAndReportsARefusal(t *testing.T) {
 	}
 
 	h2 := newHarness(t)
-	h2.json("POST /api/plugins/messages/7/retry", http.StatusConflict, `{"error":"That message cannot be retried: your chief already received it."}`)
+	h2.json("POST /api/plugins/messages/7/retry", http.StatusConflict, `{"error":"That message cannot be retried: the target agent already received it."}`)
 	if got := h2.runCLI("plugins", "retry", "7"); got.code != exitConflict || !strings.Contains(got.stderr, "already received it") {
 		t.Fatalf("a refused retry: exit %d stderr %q", got.code, got.stderr)
 	}

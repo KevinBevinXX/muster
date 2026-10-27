@@ -207,19 +207,19 @@ func TestDeletingASentMessageKeepsTheNextOneWaitingForItsTurn(t *testing.T) {
 
 // TestDeletingAFailedRoutedMessageLeavesItsRouteToGoBackToTheChief: a routed
 // injection that failed is deleted by its owner (the operator's case: a
-// chief-routed row offers no Retry and used to sit in the list until it was
+// agent-routed row offers no Retry and used to sit in the list until it was
 // pruned). Its route still names the row (send_queue_id, no foreign key);
 // when the route times out, the sweep finds the row gone and STILL hands the
-// message back to the chief.
+// message back to the agent.
 func TestDeletingAFailedRoutedMessageLeavesItsRouteToGoBackToTheChief(t *testing.T) {
 	f := newRouteFixture(t)
-	m := f.deliveredMessage(t, f.owner, f.chief.ID, "route-deleted")
+	m := f.deliveredMessage(t, f.owner, f.agent.ID, "route-deleted")
 	ps, _ := f.plugins.List(f.asOwner)
-	sess, err := f.srv.ext.Agents.CreateSession(f.asOwner, f.chief.ID, f.chief.Name)
+	sess, err := f.srv.ext.Agents.CreateSession(f.asOwner, f.agent.ID, f.agent.Name)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := f.plugins.SetChiefSession(f.asOwner, ps[0].ID, f.chief.ID, sess.ID); err != nil {
+	if err := f.plugins.SetDeliverySession(f.asOwner, ps[0].ID, f.agent.ID, sess.ID); err != nil {
 		t.Fatal(err)
 	}
 	id := f.route(t, m)
@@ -252,6 +252,6 @@ func TestDeletingAFailedRoutedMessageLeavesItsRouteToGoBackToTheChief(t *testing
 	}
 	msgs, err := f.srv.ext.Agents.ListChatMessages(f.asOwner, sess.ID)
 	if err != nil || len(msgs) != 1 || !strings.Contains(msgs[0].Content, "Route "+id) || !strings.Contains(msgs[0].Content, "back with you") {
-		t.Fatalf("the chief was not handed the message back: %+v %v", msgs, err)
+		t.Fatalf("the agent was not handed the message back: %+v %v", msgs, err)
 	}
 }

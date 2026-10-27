@@ -11,7 +11,7 @@ import (
 
 // dictateSurfaces renders each message box with the microphone path dict:
 // a mirrored session's Rendered view, its Terminal view, an agent's Terminal
-// view, an agent's chat page, and the chief panel's chat.
+// view, an agent's chat page, and the agent panel's chat.
 func dictateSurfaces(t *testing.T, dict string) map[string]string {
 	t.Helper()
 	out := map[string]string{}
@@ -28,13 +28,6 @@ func dictateSurfaces(t *testing.T, dict string) map[string]string {
 		t.Fatal(err)
 	}
 	out["agent chat"] = b.String()
-	b.Reset()
-	cv := sampleAgentDetailView()
-	cv.Dictate, cv.Surface = dict, ChatSurfaceChiefPanel
-	if err := RenderChiefPanelBody(&b, ChiefPanelView{Configured: true, Chat: cv}); err != nil {
-		t.Fatal(err)
-	}
-	out["chief panel"] = b.String()
 	return out
 }
 

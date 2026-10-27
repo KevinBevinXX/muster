@@ -7,7 +7,7 @@
 | A mirrored window's **Rendered** view (Claude Code) | the Claude Code pane, pasted as typed | the host's `-interactive`, plus a fresh sign-in |
 | A mirrored window's **Terminal** view (any program except Hermes) | the window's active pane, followed by Enter | the host's `-interactive`, plus a fresh sign-in |
 | A dispatched agent's chat and **Terminal** view | `POST /agents/<name>/send`: one agent turn, run in the background | a running agent with chat wired ([provisioner.md](provisioner.md)) |
-| The chief panel | the chief agent | as above |
+| The agent panel | the agent agent | as above |
 
 Each box can also have a microphone; see [dictation.md](dictation.md). Each
 box also keeps what you type as a draft on this device; see
@@ -81,10 +81,10 @@ Beside **Send**, a mirrored Claude Code window's **Rendered view** has
 **Queue**. A queued message is kept by the server (`send_queue`, migration
 `0019`) and sent there, so it is sent with the page closed, and every device of
 yours shows the same queue under the box. Each message not yet being sent has a **⋯**
-menu with **Send now**, **Edit** (not on a message your chief routed), **Copy message**
+menu with **Send now**, **Edit** (not on a message the target agent routed), **Copy message**
 and **Cancel**. It is pasted into the
 window's Claude Code pane, the pane whose idle it waited on. The Terminal view,
-dispatched agents and the chief panel have no Queue.
+dispatched agents and the agent panel have no Queue.
 
 - **When.** A message is sent once the window's Claude Code session has been
   idle for `MUSTER_SEND_QUEUE_IDLE` (default `30s`), through the same path as
@@ -247,8 +247,8 @@ any real reply at all. With that:
   but the answer is not: it was delivered as first written. The edit form says
   so before you type, and Save says so again. Cancel says the same thing.
 - Edit is refused for a message being sent, or one that has finished.
-- **A message your chief routed has no Edit**, and the server refuses one: its
-  text is the chief's, and it is gated by its route, not by your sign-in.
+- **A message the target agent routed has no Edit**, and the server refuses one: its
+  text is the agent's, and it is gated by its route, not by your sign-in.
 - 🔴 **Edit and Save need the same fresh sign-in a Queue needs** (the dialog,
   or the plain confirm page). Save records its own sign-in time on the message,
   as a Queue does. When the message is sent, the server checks that this
@@ -261,7 +261,7 @@ any real reply at all. With that:
 A background subagent holds the queue: Claude Code reports `busy` while one
 runs, with no turn running. To send a message anyway, use Send now.
 
-A plugin message your chief [routes to the window](plugins.md#routing-a-message-to-a-session) is queued the same way and waits on the same rules; it carries the route's own time instead of a sign-in (see there).
+A plugin message the target agent [routes to the window](plugins.md#routing-a-message-to-a-session) is queued the same way and waits on the same rules; it carries the route's own time instead of a sign-in (see there).
 
 🔴 **Step-up for a queued message is decided when you QUEUE it.** Queueing
 needs the same fresh sign-in a Send needs (the dialog, or the plain confirm page
@@ -277,17 +277,17 @@ places.
 A failed message of yours offers **Retry**, once. Retry queues the same text
 again as a new message, under the sign-in of the request that retried it, which
 must be fresh like a queue post's. A message that may already have been sent
-asks you to confirm first. A message your chief routed has no Retry: its failed
-route goes back to the chief instead.
+asks you to confirm first. A message the target agent routed has no Retry: its failed
+route goes back to the agent instead.
 
 A finished message (sent, failed, expired or cancelled) has a **Delete**, which
 removes it from the list on every device at once (`POST /send-queue/{id}/delete`).
 A message still queued has no Delete (Cancel it first), and neither has one
 being sent: the send in progress still holds it. Deleting a sent message does
 not let the next one in early: the next message still waits for the turn the
-deleted one started. Deleting a failed message your chief routed is fine: its
+deleted one started. Deleting a failed message the target agent routed is fine: its
 route is not affected, and if the route times out, the message still goes back
-to the chief.
+to the agent.
 
 🔴 **A queued message does not outlive the account that queued it.** When a
 message is sent, the server checks the account again, from the database: if it
@@ -313,7 +313,7 @@ device, or another browser, does not see it.
 |---|---|
 | A mirrored window's **Rendered** view | your account, that host, tmux session and window |
 | A mirrored window's **Terminal** view | your account, that host, tmux session and window (apart from its Rendered view) |
-| A dispatched agent's chat, and the chief panel | your account, that agent and chat session |
+| A dispatched agent's chat, and the agent panel | your account, that agent and chat session |
 | A dispatched agent's **Terminal** view | your account, that agent |
 
 - 🔴 **A draft is only ever put back into the box it was typed in, for the

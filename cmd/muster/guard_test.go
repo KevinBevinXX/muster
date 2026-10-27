@@ -87,9 +87,7 @@ func TestEveryPathParameterVerbRefusesAnEmptyValue(t *testing.T) {
 	var interpolating int
 	for _, w := range wiring {
 		// A route with a numeric or name segment after a collection is one the
-		// caller supplied. `chief ask` is deliberately excluded: its path segment
-		// comes from the RESOLVED roster entry, not from argv, and its own empty
-		// case is covered by the --agent refusal in chief_test.go.
+		// caller supplied.
 		switch w.name {
 		case "task get", "task status", "task comment", "agent messages":
 			interpolating++
@@ -108,7 +106,7 @@ func TestEveryPathParameterVerbRefusesAnEmptyValue(t *testing.T) {
 				h.json("GET /api/tasks/5", http.StatusOK, `{"id":5}`)
 				h.json("PATCH /api/tasks/5/status", http.StatusOK, `{"id":5}`)
 				h.json("POST /api/tasks/5/comments", http.StatusOK, `{"id":1}`)
-				h.json("GET /api/agents/chief/messages", http.StatusOK, `{"messages":[]}`)
+				h.json("GET /api/agents/agent/messages", http.StatusOK, `{"messages":[]}`)
 
 				args := append([]string(nil), tc.args...)
 				args[tc.hole] = empty
@@ -144,7 +142,7 @@ func TestPathParameterVerbsDoReachTheServer(t *testing.T) {
 		{"task get", []string{"task", "get", "5"}, "/api/tasks/5"},
 		{"task status", []string{"task", "status", "5", "open"}, "/api/tasks/5/status"},
 		{"task comment", []string{"task", "comment", "5", "--body", "x"}, "/api/tasks/5/comments"},
-		{"agent messages", []string{"agent", "messages", "chief"}, "/api/agents/chief/messages"},
+		{"agent messages", []string{"agent", "messages", "agent"}, "/api/agents/agent/messages"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -152,7 +150,7 @@ func TestPathParameterVerbsDoReachTheServer(t *testing.T) {
 			h.json("GET /api/tasks/5", http.StatusOK, `{"id":5,"title":"live"}`)
 			h.json("PATCH /api/tasks/5/status", http.StatusOK, `{"id":5}`)
 			h.json("POST /api/tasks/5/comments", http.StatusOK, `{"id":1,"author":"claude-code","body":"x"}`)
-			h.json("GET /api/agents/chief/messages", http.StatusOK, `{"messages":[],"count":0}`)
+			h.json("GET /api/agents/agent/messages", http.StatusOK, `{"messages":[],"count":0}`)
 
 			got := h.runCLI(tc.args...)
 			if got.code != exitOK {

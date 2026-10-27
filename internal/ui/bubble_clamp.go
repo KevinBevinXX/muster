@@ -23,7 +23,7 @@ import (
 // it when its width or content changes, so a bubble that is markdown-converted
 // after insertion is measured when it actually has a size.
 //
-// ⚠ THE CHIEF PANEL IS NOT CLAMPED, deliberately: chiefPanelBody does not
+// ⚠ THE AGENT PANEL IS NOT CLAMPED, deliberately: chiefPanelBody does not
 // include this script, and the shell it lives in includes it nowhere else.
 //
 // ⚠ A STREAMING ASSISTANT REPLY IS NOT CLAMPED, deliberately: the agent chat's

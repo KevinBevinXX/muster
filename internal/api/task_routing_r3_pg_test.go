@@ -17,8 +17,8 @@ import (
 
 // Audit round 3 of task routing: a mention reservation whose action never
 // completed must not swallow the resend (a cancelled request, a crash); a
-// mention and a chief event with the same comment are different rows; and a
-// mention is not refused by the chief's undelivered queue.
+// mention and an agent event with the same comment are different rows; and a
+// mention is not refused by the agent's undelivered queue.
 
 // cancellingAgents cancels the request's context as the mention's delivery
 // opens the agent's conversation — a plugin client that gave up mid-action —
@@ -118,7 +118,7 @@ func TestAnUnfinishedMentionReservationIsRefusedUntilItIsReclaimed(t *testing.T)
 }
 
 // TestAMentionWithTheSameCommentAsAnUpdateIsDelivered: an update routed to the
-// chief and a mention carrying the identical comment are two different
+// agent and a mention carrying the identical comment are two different
 // notices; the mention is delivered (it was refused 409 for good when the two
 // shared one id).
 func TestAMentionWithTheSameCommentAsAnUpdateIsDelivered(t *testing.T) {
@@ -128,7 +128,7 @@ func TestAMentionWithTheSameCommentAsAnUpdateIsDelivered(t *testing.T) {
 	_, turns := f.mentionWorker(t, tok, key)
 	const comment = "HQ task changed: status, then a mention"
 	if out := f.notice(t, tok, key, noticeUpdate, comment, false); out["routed"] != routedChief {
-		t.Fatalf("the update: %v; want routed chief", out)
+		t.Fatalf("the update: %v; want routed agent", out)
 	}
 	code, out := f.handoff(t, tok, map[string]any{"key": key, "comment": comment, "route_to_chief": true, "notice": noticeMentioned})
 	if code != http.StatusOK || out["routed"] != routedAgent || turns() != 1 {
@@ -136,8 +136,8 @@ func TestAMentionWithTheSameCommentAsAnUpdateIsDelivered(t *testing.T) {
 	}
 }
 
-// TestAFullChiefQueueDoesNotRefuseAMention: mentions never reach the chief, so
-// a plugin whose chief has MaxTaskEventsQueued task events undelivered (all
+// TestAFullChiefQueueDoesNotRefuseAMention: mentions never reach the agent, so
+// a plugin whose agent has MaxTaskEventsQueued task events undelivered (all
 // outside the hour) still has a mention delivered.
 func TestAFullChiefQueueDoesNotRefuseAMention(t *testing.T) {
 	f := newTaskRouteFixture(t, false, false)
@@ -148,7 +148,7 @@ func TestAFullChiefQueueDoesNotRefuseAMention(t *testing.T) {
 	dbtest.OwnerExec(t, dbtest.DSN(t), `INSERT INTO plugin_messages (owner_id, plugin_id, external_id, body, task_id, created_at)
 		SELECT $1, $2, 'queued-' || g, 'b', $3, now() - interval '2 hours' FROM generate_series(1, $4) g`,
 		f.owner, p.ID, filler.ID, plugins.MaxTaskEventsQueued)
-	if out := f.notice(t, tok, key, noticeMentioned, "m1: behind a full chief queue", false); out["routed"] != routedAgent || turns() != 1 {
-		t.Fatalf("a mention behind a full chief queue: %v, %d turn(s); want delivered", out, turns())
+	if out := f.notice(t, tok, key, noticeMentioned, "m1: behind a full agent queue", false); out["routed"] != routedAgent || turns() != 1 {
+		t.Fatalf("a mention behind a full agent queue: %v, %d turn(s); want delivered", out, turns())
 	}
 }

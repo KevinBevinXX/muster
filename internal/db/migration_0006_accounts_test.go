@@ -93,7 +93,7 @@ func applyThroughFrom(ctx context.Context, t *testing.T, pool *pgxpool.Pool, max
 //   - pins (0017, the Agents list's pinned entries).
 //   - recents (0018, the Agents list's recently viewed entries).
 //   - send_queue (0019, the server-side send queue).
-//   - session_routes (0021, the chief's routed plugin messages).
+//   - session_routes (0021, the agent's routed plugin messages).
 //   - agent_focus_history (0022, every focus a session has had).
 //   - attention_asks (0025, the attention queue's explicit asks).
 //   - agent_focus (0020, each session's focus).
@@ -291,10 +291,10 @@ func TestMigration0006BackfillsAPopulatedDatabaseToTheOperator(t *testing.T) {
 	mustExec(ctx, t, pool, `INSERT INTO note_attachments (note_id, filename, size_bytes, data) VALUES ($1, 'log.txt', 3, '\x616263')`, note)
 	mustExec(ctx, t, pool, `INSERT INTO task_sessions (note_id, session_id, role) VALUES ($1, 'sess-a', 'created'), ($2, 'sess-a', 'read')`, note, note2)
 	worker := scanID(ctx, t, pool, `INSERT INTO agents (name, namespace, status, note_id) VALUES ('brave-heron', 'muster-agent-brave-heron', 'running', $1) RETURNING id`, note)
-	chief := scanID(ctx, t, pool, `INSERT INTO agents (name, namespace, status, kind, cc_account) VALUES ('chief', 'muster-agent-chief', 'running', 'claude-code', 'acct-a') RETURNING id`)
+	agent := scanID(ctx, t, pool, `INSERT INTO agents (name, namespace, status, kind, cc_account) VALUES ('agent', 'muster-agent-agent', 'running', 'claude-code', 'acct-a') RETURNING id`)
 	session := scanID(ctx, t, pool, `INSERT INTO chat_sessions (agent_id, session_key) VALUES ($1, 'agent:brave-heron:main') RETURNING id`, worker)
 	mustExec(ctx, t, pool, `INSERT INTO chat_messages (agent_id, session_id, role, content) VALUES ($1, $2, 'user', 'hi'), ($1, $2, 'assistant', 'hello')`, worker, session)
-	mustExec(ctx, t, pool, `INSERT INTO chat_messages (agent_id, role, content) VALUES ($1, 'user', 'no session')`, chief)
+	mustExec(ctx, t, pool, `INSERT INTO chat_messages (agent_id, role, content) VALUES ($1, 'user', 'no session')`, agent)
 	mustExec(ctx, t, pool, `INSERT INTO connectors (name, hosts, auth_scheme, secret_ciphertext) VALUES ('clickup', ARRAY['api.clickup.com'], 'bearer', '\x00')`)
 	mustExec(ctx, t, pool, `INSERT INTO connector_grants (agent_id, connector_name, status) VALUES ($1, 'clickup', 'approved'), ($1, 'not-yet', 'pending')`, worker)
 	mustExec(ctx, t, pool, `INSERT INTO connector_audit (kind, agent_id, agent_name, connector_name, method, host, path, status) VALUES ('proxy', $1, 'brave-heron', 'clickup', 'GET', 'api.clickup.com', '/v2/team', 200), ('grant', NULL, '', 'clickup', '', '', '', 0)`, worker)

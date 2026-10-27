@@ -28,7 +28,7 @@ With the App configured:
   `/repos/<owner>/<name>/…`). API paths that name no repository (`/graphql`,
   for example) carry the token, which can reach only the agent's repository.
 - **An agent with no repository gets no github access** while the App is
-  configured. A chief, for example, has no repository to scope a token to.
+  configured. An agent, for example, has no repository to scope a token to.
 - **You approve each repository once.** The first agent's `github` request
   for a repository waits for you under Connectors; approving it is shared
   with every later agent of yours dispatched on **that same repository**

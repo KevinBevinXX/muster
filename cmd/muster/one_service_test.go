@@ -203,9 +203,8 @@ func observedRoutes(t *testing.T) map[string][]string {
 		// and the probe is genuinely exercised rather than short-circuited.
 		h.version = "0.0.0-newer-than-this-cli"
 		h.json("GET /api/agents", http.StatusOK,
-			`[{"id":11,"name":"clever-fox"},{"id":12,"name":"chief"}]`)
-		h.json("GET /api/agents/chief/messages", http.StatusOK, `{"messages":[],"count":0}`)
-		h.json("POST /api/agents/chief/messages", http.StatusOK, `{"reply":"ok"}`)
+			`[{"id":11,"name":"clever-fox"},{"id":12,"name":"agent"}]`)
+		h.json("GET /api/agents/agent/messages", http.StatusOK, `{"messages":[],"count":0}`)
 		h.json("GET /api/tasks", http.StatusOK, `[]`)
 		h.json("GET /api/tasks/5", http.StatusOK, `{"id":5}`)
 		h.json("POST /api/tasks", http.StatusOK, `{"id":5}`)

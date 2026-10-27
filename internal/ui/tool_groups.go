@@ -20,7 +20,7 @@ import (
 // THE RULE IS STATED ONCE AND APPLIED BY THREE RENDERERS:
 //
 //   - groupToolRuns — a persisted transcript (chatLogInner: the agent chat and
-//     the chief panel), server-rendered;
+//     the agent panel), server-rendered;
 //   - MirrorTranscript.Ops — the mirrored view, server-rendered but incremental:
 //     its runState wraps the previous row when a second call arrives and adds to
 //     the group after that (mirror_view.go);

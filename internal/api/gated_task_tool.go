@@ -14,16 +14,16 @@ import (
 	"github.com/ZacxDev/muster/internal/plugins"
 )
 
-// THE CHIEF'S WAY TO ASK FOR WORK: task_create_gated (plugin interface, PR B).
+// THE AGENT'S WAY TO ASK FOR WORK: task_create_gated (plugin interface, PR B).
 //
 // A plugin message is untrusted text an outside party wrote, delivered to the
-// owner's chief. When it calls for work, the chief files a TASK — and the task is
+// owner's agent. When it calls for work, the agent files a TASK — and the task is
 // born gated: the server appends `gate:<reason>` after every check, so nothing
 // dispatches it until the owner removes the gate. The `created` push the shared
 // createTask ends with is the owner's notification ("notify me").
 //
 // 🔴 THE GATE IS THE SERVER'S, NEVER THE CALLER'S. A caller tag in the `gate:` or
-// `auto:` namespace is REFUSED rather than dropped or merged: a chief that tries
+// `auto:` namespace is REFUSED rather than dropped or merged: an agent that tries
 // to set its own gate reason, or to mark the task auto-dispatchable, is acting on
 // instructions that did not come from its owner, and a refusal says so where a
 // silent fix would not. TestAGatedTaskIsAlwaysGatedAndNeverAuto is the property.

@@ -30,7 +30,7 @@ import (
 // Like every Store method but the sweeps, these run under the caller's
 // principal: agent_focus_history is under FORCE row-level security.
 
-// HistoryWindow is how far back the chief's session hint and sessions_overview
+// HistoryWindow is how far back the agent's session hint and sessions_overview
 // read focus history: six hours, the span that, replayed over a real miss,
 // matched the session that was on the job and no other.
 const HistoryWindow = 6 * time.Hour

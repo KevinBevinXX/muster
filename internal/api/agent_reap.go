@@ -24,11 +24,11 @@ import (
 // on every pod. So it runs on every pod, and what keeps two pods from
 // destroying one agent twice is the claim, not a leader: each due agent is claimed by one
 // conditional UPDATE (agents.PGStore.ClaimStoppedReap) after destroyAgent's
-// chief check and before anything is torn down, and only the winner starts the
+// agent check and before anything is torn down, and only the winner starts the
 // teardown.
 //
 // What is never reaped:
-//   - the chief: destroyAgent refuses it (agentIsChief) before the claim;
+//   - the agent: destroyAgent refuses it (agentIsChief) before the claim;
 //   - any agent whose stored status is not `stopped` — `error` included;
 //   - a pool worker (worker_pool set);
 //   - an agent that never ran: saved for later and never started (no
@@ -80,8 +80,8 @@ func (s *Server) SetAgentReapStoppedAfter(d time.Duration) { s.agentReapStoppedA
 // reapPrincipal is ctx acting as owner, through authz.ViaReap: how the reaper
 // claims and destroys one owner's agent, after reading the due rows under
 // System. Acting as the owner is what makes the teardown the owner's own
-// Delete: the chief check reads the owner's agents, the provisioner acts on the
-// owner's row, and the chief-start release (releaseChiefStart) is recorded for
+// Delete: the agent check reads the owner's agents, the provisioner acts on the
+// owner's row, and the agent-start release (releaseDispatchStart) is recorded for
 // the owner. internal/authz's withPrincipalLedger lists it.
 func (s *Server) reapPrincipal(ctx context.Context, owner int64) context.Context {
 	return authz.WithPrincipal(ctx, s.principalFor(ctx, owner, authz.ViaReap))
@@ -150,12 +150,12 @@ func (s *Server) reapStoppedAgents(ctx context.Context) int {
 			}
 			hooks.done = func(context.Context, agents.Agent) { signal(c.ID, nil) }
 		}
-		var chief errDestroyChief
 		switch _, err := s.destroyAgent(octx, c.ID, destroy, hooks); {
 		case err == nil:
-		case errors.As(err, &chief), errors.Is(err, errDestroyNotClaimed):
-			// The chief stays (silently: it would be refused again on every
-			// pass), and a lost claim is another pod's reap or a Start.
+		case errors.Is(err, errDestroyNotClaimed):
+			// A lost claim is another pod's reap or a Start. (No agent is exempt
+			// from the reaper any more: the labelled `agent` used to be skipped
+			// silently here, because the destroy would refuse it on every pass.)
 			continue
 		default:
 			s.logger.Printf("agent-reap: agent %d (%s): nothing was destroyed: %v", c.ID, c.Name, err)

@@ -63,7 +63,7 @@ func TestSearchSessionsReadsABoundedNumberOfMessageSets(t *testing.T) {
 	titled := searchAgent(t, s, pool, ctx, "boundtitle")
 	bodied := searchAgent(t, s, pool, ctx, "boundbody")
 	// n sessions per agent, each with three text messages that match — written in
-	// bulk, then ANALYZEd, so the planner sees the table a real chief has.
+	// bulk, then ANALYZEd, so the planner sees the table a real agent has.
 	for _, f := range []struct {
 		a     Agent
 		title string

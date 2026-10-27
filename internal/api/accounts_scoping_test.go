@@ -19,7 +19,6 @@ import (
 
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/authz"
-	"github.com/ZacxDev/muster/internal/credentials"
 	"github.com/ZacxDev/muster/internal/notes"
 	"github.com/ZacxDev/muster/internal/sse"
 )
@@ -224,36 +223,6 @@ func TestTheReaperNotifiesOnlyTheTasksOwner(t *testing.T) {
 	}
 }
 
-// --- the chief, per user -----------------------------------------------------
-
-// TestTheChiefIsResolvedPerOwner: two users each label an agent "chief"; each
-// is protected, and neither user's label makes the other's agent the chief.
-func TestTheChiefIsResolvedPerOwner(t *testing.T) {
-	list := []agents.Agent{
-		{ID: 10, Name: "brave-owl", DisplayName: "chief", OwnerID: 1},
-		{ID: 11, Name: "calm-fox", DisplayName: "chief", OwnerID: 2},
-		{ID: 12, Name: "keen-wren", OwnerID: 2},
-		{ID: 13, Name: "chief-2", OwnerID: 2},
-	}
-	is := chiefPredicate(list)
-	for _, c := range []struct {
-		id   int64
-		want bool
-	}{{10, true}, {11, true}, {12, false}, {13, true}} {
-		for _, a := range list {
-			if a.ID == c.id && is(a) != c.want {
-				t.Errorf("agent %d (%s, owner %d): chief=%v, want %v", a.ID, a.Name, a.OwnerID, is(a), c.want)
-			}
-		}
-	}
-	// chiefAgent refuses a scope-all context: there is no single chief.
-	s := New(nil, AuthConfig{}, log.New(io.Discard, "", 0))
-	s.UseExtensions(Extensions{Agents: listAgents{list: list}})
-	if _, err := s.chiefAgent(authz.System(context.Background())); !errors.Is(err, ErrNoChief) {
-		t.Errorf("chiefAgent under System = %v; want ErrNoChief", err)
-	}
-}
-
 type listAgents struct {
 	agents.Store
 	list []agents.Agent
@@ -270,63 +239,7 @@ func (l listAgents) GetByName(_ context.Context, name string) (agents.Agent, err
 	return agents.Agent{}, errors.New("not found")
 }
 
-// TestEachUserProvisionsTheirOwnChief: POST /chief/provision as a member
-// creates THAT member's chief (`chief-<id>`), owned by them, beside the
-// operator's `chief` — which it neither starts nor collides with. Real
-// Postgres (the partial unique index and RLS both apply).
-func TestEachUserProvisionsTheirOwnChief(t *testing.T) {
-	w := newIsoWorld(t)
-	opChief, err := agents.NewPG(w.pool).Create(authz.Operator(context.Background()),
-		agents.Agent{Name: agents.ChiefName, Namespace: "ns-iso-opchief-" + w.suffix, Status: agents.StatusStopped})
-	if err != nil && !strings.Contains(err.Error(), "23505") {
-		t.Fatal(err)
-	}
-	if err == nil {
-		t.Cleanup(func() { _, _ = w.pool.Exec(w.sys, `DELETE FROM agents WHERE id=$1`, opChief.ID) })
-	}
-	panel := func() string {
-		return w.do(w.h, "GET", "/ui/chief/panel", "", cred{sessionUser: w.b.uid}).Body.String()
-	}
-	if before := panel(); !strings.Contains(before, "data-chief-panel-missing") {
-		t.Fatalf("control: before provisioning, B's panel already resolves a chief:\n%s", truncate(before, 300))
-	}
-	// Bring-your-own: a member's chief is a gateway agent, which runs on the
-	// member's OWN OpenRouter key — without one the provision is refused (409,
-	// naming what to add), never built on the operator's.
-	rec := w.do(w.h, "POST", "/chief/provision", url.Values{"model": {""}}.Encode(), cred{sessionUser: w.b.uid})
-	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), credentials.NeedOpenRouter) {
-		t.Fatalf("B's chief provision with no OpenRouter key: %d %s; want 409 naming what to add", rec.Code, rec.Body)
-	}
-	bctx := authz.WithPrincipal(context.Background(), authz.Principal{UserID: w.b.uid, Role: authz.RoleMember, Via: authz.ViaSession})
-	if err := w.creds.PutOpenRouter(bctx, "sk-or-v1-iso-member-B-api-key-0003333"); err != nil {
-		t.Fatal(err)
-	}
-	rec = w.do(w.h, "POST", "/chief/provision", url.Values{"model": {""}}.Encode(), cred{sessionUser: w.b.uid})
-	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"created":true`) {
-		t.Fatalf("B's chief provision: %d %s; want 200 created", rec.Code, rec.Body)
-	}
-	var owner int64
-	var name string
-	if err := w.pool.QueryRow(w.sys, `SELECT owner_id, name FROM agents WHERE name=$1`, agents.ChiefNameFor(w.b.uid)).Scan(&owner, &name); err != nil || owner != w.b.uid {
-		t.Fatalf("B's chief row: owner %d name %q (%v); want owned by B", owner, name, err)
-	}
-	// 🔴 The chief must RESOLVE for the member: everything that talks to it
-	// finds it by display name (audit 🟡2 — it used to keep the slug).
-	if after := panel(); strings.Contains(after, "data-chief-panel-missing") {
-		t.Errorf("B's panel still says there is no chief after B provisioned one:\n%s", truncate(after, 300))
-	}
-	if a, err := agents.NewPG(w.pool).GetByName(w.sys, agents.ChiefNameFor(w.b.uid)); err != nil || a.DisplayName != ChiefDisplayName {
-		t.Errorf("B's chief display name = %q (%v); want %q", a.DisplayName, err, ChiefDisplayName)
-	}
-	if got := w.prov.actedOn(opChief.ID, w.b.uid); got != 0 {
-		t.Errorf("B's provision acted on the operator's chief %d time(s)", got)
-	}
-	// Idempotent for B: a second call starts B's chief, not anyone else's.
-	if rec := w.do(w.h, "POST", "/chief/provision", "", cred{sessionUser: w.b.uid}); !strings.Contains(rec.Body.String(), `"created":false`) ||
-		!strings.Contains(rec.Body.String(), agents.ChiefNameFor(w.b.uid)) {
-		t.Fatalf("B's second provision: %d %s; want B's own chief, not created", rec.Code, rec.Body)
-	}
-}
+// TestEachUserProvisionsTheirOwnChief: POST /agent/provision as a member
 
 // --- connectors: a grant names its connector by NAME --------------------------
 

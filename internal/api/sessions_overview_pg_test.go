@@ -93,7 +93,7 @@ const (
 // overviewReplay is the miss's shape: the worker (A) wrote a node-7k focus 4 h
 // ago and is now auditing PRs; B and C are unrelated agents; D's node-7k
 // focus is 7 h old; a STOPPED agent and an OFFLINE mirrored session both have
-// a fresh node-7k focus; the chief's own focus mentions node-7k too. Only A is
+// a fresh node-7k focus; the agent's own focus mentions node-7k too. Only A is
 // live and on the job inside the window.
 func overviewReplay(t *testing.T) (g *gatedFixture, b, c, d, stopped agents.Agent) {
 	g = newGatedFixture(t)
@@ -115,7 +115,7 @@ func overviewReplay(t *testing.T) (g *gatedFixture, b, c, d, stopped agents.Agen
 	backdateHistory(t, focus.AgentSubject(d.ID), "Upgrading node-7k: drain and reboot", 7*time.Hour)
 	g.setFocus(t, focus.AgentSubject(d.ID), "Idle", "")
 	g.setFocus(t, focus.AgentSubject(stopped.ID), "Upgrading node-7k: drain and reboot", "")
-	g.setFocus(t, focus.AgentSubject(g.chief.ID), "Triage of node-7k upgrade messages", "The node-7k drain inbox.")
+	g.setFocus(t, focus.AgentSubject(g.agent.ID), "Triage of node-7k upgrade messages", "The node-7k drain inbox.")
 	g.setFocus(t, focus.MirrorSubject(sidOffline), "Upgrading node-7k: drain and reboot", "")
 	g.setFocus(t, focus.MirrorSubject(sidLive), "Reading the cache dashboards", "")
 	now := time.Now().Unix()
@@ -141,7 +141,7 @@ const overviewMessage = "Operational note for the node-7k upgrade: drain node-7k
 func TestTheHintListsOnlyTheLiveSessionOnTheJob(t *testing.T) {
 	g, _, _, d, stopped := overviewReplay(t)
 	a := "agent:" + strconv.FormatInt(g.worker.ID, 10)
-	h := g.srv.pluginSessionHints(g.asOwner, g.chief, plugins.Message{ID: 1, Subject: "node-7k upgrade", Body: overviewMessage})
+	h := g.srv.pluginSessionHints(g.asOwner, g.agent, plugins.Message{ID: 1, Subject: "node-7k upgrade", Body: overviewMessage})
 	if len(h.Sessions) != 1 || h.Sessions[0].ID != a || h.Window != focus.HistoryWindow ||
 		len(h.Sessions[0].Titles) != 1 || h.Sessions[0].Titles[0].Title != "Upgrading node-7k: drain and reboot" {
 		t.Fatalf("hint %+v; want exactly %s with its node-7k focus", h, a)
@@ -152,16 +152,16 @@ func TestTheHintListsOnlyTheLiveSessionOnTheJob(t *testing.T) {
 		"Quick update on our meeting next week: please review the release notes and the cache dashboards before then.",
 		"This week's newsletter: billing export tips, the next release, cache dashboards and release notes. See you next week.",
 	} {
-		if h := g.srv.pluginSessionHints(g.asOwner, g.chief, plugins.Message{ID: 2, Subject: "news", Body: body}); len(h.Sessions) != 0 {
+		if h := g.srv.pluginSessionHints(g.asOwner, g.agent, plugins.Message{ID: 2, Subject: "news", Body: body}); len(h.Sessions) != 0 {
 			t.Errorf("generic mail named %+v: %q", h.Sessions, body)
 		}
 	}
-	for surface, text := range g.surfaces(t, g.chief, g.chiefTok, "focus_search", `{"query":"node-7k"}`) {
+	for surface, text := range g.surfaces(t, g.agent, g.chiefTok, "focus_search", `{"query":"node-7k"}`) {
 		if strings.Contains(text, a) {
 			t.Errorf("%s: the current-focus search found A, so the fixture does not reproduce the miss: %s", surface, text)
 		}
 	}
-	for surface, text := range g.surfaces(t, g.chief, g.chiefTok, "focus_search", `{"query":"node-7k","since_hours":6}`) {
+	for surface, text := range g.surfaces(t, g.agent, g.chiefTok, "focus_search", `{"query":"node-7k","since_hours":6}`) {
 		var res struct {
 			Results []struct{ ID, Title, At string } `json:"results"`
 		}
@@ -174,9 +174,9 @@ func TestTheHintListsOnlyTheLiveSessionOnTheJob(t *testing.T) {
 		}
 		// Exactly A and the stopped agent: focus_search keeps every agent (as
 		// the current-focus search does); D's node-7k row is 7 h old and the
-		// offline mirror is not live; the chief's own focus says node-7k too
+		// offline mirror is not live; the agent's own focus says node-7k too
 		// but focus_search does not leave the caller out.
-		want := map[string]bool{a: true, "agent:" + strconv.FormatInt(stopped.ID, 10): true, "agent:" + strconv.FormatInt(g.chief.ID, 10): true}
+		want := map[string]bool{a: true, "agent:" + strconv.FormatInt(stopped.ID, 10): true, "agent:" + strconv.FormatInt(g.agent.ID, 10): true}
 		if len(ids) != len(want) {
 			t.Errorf("%s: history search %v; want %v", surface, ids, want)
 		}
@@ -191,12 +191,12 @@ func TestTheHintListsOnlyTheLiveSessionOnTheJob(t *testing.T) {
 	}
 	// since_hours is a recent-work window, at most a day: not a trawl through
 	// the 30 days of history.
-	for surface, text := range g.surfaces(t, g.chief, g.chiefTok, "focus_search", `{"query":"node-7k","since_hours":25}`) {
+	for surface, text := range g.surfaces(t, g.agent, g.chiefTok, "focus_search", `{"query":"node-7k","since_hours":25}`) {
 		if text != toolErr("since_hours is 1 to 24 (omit it to search the current focus)") {
 			t.Errorf("%s: since_hours 25 was not refused: %s", surface, text)
 		}
 	}
-	for surface, text := range g.surfaces(t, g.chief, g.chiefTok, "focus_search", `{"query":"node-7k","since_hours":24}`) {
+	for surface, text := range g.surfaces(t, g.agent, g.chiefTok, "focus_search", `{"query":"node-7k","since_hours":24}`) {
 		if isToolErr(text) || !strings.Contains(text, a) {
 			t.Errorf("%s: control, since_hours 24: %s", surface, text)
 		}
@@ -247,7 +247,7 @@ func (v overviewSessionView) lines(t *testing.T) []overviewLine {
 }
 
 // TestSessionsOverviewSaysWhatEachLiveSessionIsDoing: live sessions only (not
-// the stopped agent, not the offline window, not the chief), each with its
+// the stopped agent, not the offline window, not the agent), each with its
 // current focus, its distinct 6 h titles, its pending attention item and its
 // last user/assistant messages — on both transports.
 func TestSessionsOverviewSaysWhatEachLiveSessionIsDoing(t *testing.T) {
@@ -262,7 +262,7 @@ func TestSessionsOverviewSaysWhatEachLiveSessionIsDoing(t *testing.T) {
 		t.Fatal(text)
 	}
 	a := "agent:" + strconv.FormatInt(g.worker.ID, 10)
-	for surface, text := range g.surfaces(t, g.chief, g.chiefTok, "sessions_overview", `{}`) {
+	for surface, text := range g.surfaces(t, g.agent, g.chiefTok, "sessions_overview", `{}`) {
 		out, by := decodeOverview(t, text)
 		if out.Untrusted != overviewUntrusted || out.Window != "6h0m0s" || out.Truncated != "" {
 			t.Fatalf("%s: envelope %+v", surface, out)
@@ -316,7 +316,7 @@ func TestTheOverviewTranscriptIsRedacted(t *testing.T) {
 	g.chat(t, g.worker,
 		agents.ChatMessage{Role: "user", Content: "push with GITHUB_TOKEN=ghp_FAKE0123abcd please"},
 		agents.ChatMessage{Role: "assistant", Content: "Using Authorization: Bearer FAKEbearer0099 for it. " + strings.Repeat("x", 400)})
-	text := g.srv.AgentToolDispatch(g.asOwner, g.chief)("sessions_overview", `{}`)
+	text := g.srv.AgentToolDispatch(g.asOwner, g.agent)("sessions_overview", `{}`)
 	_, by := decodeOverview(t, text)
 	got := by["agent:"+strconv.FormatInt(g.worker.ID, 10)].lines(t)
 	if len(got) != 2 || got[0].Text != "push with GITHUB_TOKEN=«redacted» please" ||
@@ -348,7 +348,7 @@ func TestTheOverviewIsByteCappedWithAMarker(t *testing.T) {
 			agents.ChatMessage{Role: "user", Content: long})
 		ids = append(ids, "agent:"+strconv.FormatInt(a.ID, 10))
 	}
-	text := g.srv.AgentToolDispatch(g.asOwner, g.chief)("sessions_overview", `{"limit":40}`)
+	text := g.srv.AgentToolDispatch(g.asOwner, g.agent)("sessions_overview", `{"limit":40}`)
 	if len(text) > overviewMaxBytes {
 		t.Fatalf("overview is %d bytes; cap %d", len(text), overviewMaxBytes)
 	}
@@ -388,7 +388,7 @@ func TestAQuietHostDoesNotStallTheOverview(t *testing.T) {
 		hang:   map[string]bool{"@1": true},
 	}
 	start := time.Now()
-	text := g.srv.AgentToolDispatch(g.asOwner, g.chief)("sessions_overview", `{}`)
+	text := g.srv.AgentToolDispatch(g.asOwner, g.agent)("sessions_overview", `{}`)
 	if took := time.Since(start); took > 3*time.Second {
 		t.Fatalf("the overview took %s with one quiet host; the per-session timeout is %s", took, overviewTranscriptTimeout)
 	}
@@ -427,7 +427,7 @@ func TestTheOverviewHasATotalBudget(t *testing.T) {
 	om.hosts = []mirror.HostView{overviewHost("box-1", true, ws...)}
 	g.srv.ext.Mirror = om
 	start := time.Now()
-	text := g.srv.AgentToolDispatch(g.asOwner, g.chief)("sessions_overview", `{}`)
+	text := g.srv.AgentToolDispatch(g.asOwner, g.agent)("sessions_overview", `{}`)
 	if took := time.Since(start); took > 900*time.Millisecond {
 		t.Fatalf("the overview took %s; its total budget is %s (per session %s)", took, overviewBudget, overviewTranscriptTimeout)
 	}
@@ -442,20 +442,20 @@ func TestTheOverviewHasATotalBudget(t *testing.T) {
 	}
 }
 
-// TestSessionsOverviewRefusesAWorker:a worker is refused on the gateway (the
-// chief-only error) and is not offered it on /mcp; the chief is answered.
-func TestSessionsOverviewRefusesAWorker(t *testing.T) {
+// TestSessionsOverviewAnswersAWorkerToo: it was the labelled agent's alone — a
+// worker got the rank refusal on the gateway and "unknown tool" on /mcp. muster
+// has no privileged agent, so a worker is answered on both surfaces, over its
+// OWN OWNER's sessions (row-level security, not rank, is the scope).
+func TestSessionsOverviewAnswersAWorkerToo(t *testing.T) {
 	g := newGatedFixture(t)
-	got := g.surfaces(t, g.worker, g.workerTok, "sessions_overview", `{}`)
-	if got["gateway"] != toolErr("%s is available to your owner's chief agent only", "sessions_overview") {
-		t.Errorf("gateway as a worker: %s", got["gateway"])
-	}
-	if !strings.HasPrefix(got["mcp"], "rpc-error -32602 unknown tool") {
-		t.Errorf("mcp as a worker: %s", got["mcp"])
-	}
-	for surface, text := range g.surfaces(t, g.chief, g.chiefTok, "sessions_overview", `{}`) {
+	for surface, text := range g.surfaces(t, g.worker, g.workerTok, "sessions_overview", `{}`) {
 		if isToolErr(text) || !strings.Contains(text, `"sessions":[`) {
-			t.Errorf("%s: the chief was not answered: %s", surface, text)
+			t.Errorf("%s: a worker was not answered: %s", surface, text)
+		}
+	}
+	for surface, text := range g.surfaces(t, g.agent, g.chiefTok, "sessions_overview", `{}`) {
+		if isToolErr(text) || !strings.Contains(text, `"sessions":[`) {
+			t.Errorf("%s: the agent was not answered: %s", surface, text)
 		}
 	}
 }

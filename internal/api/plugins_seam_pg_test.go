@@ -30,7 +30,7 @@ import (
 
 // pluginRuntime is an agent runtime's /v1/responses endpoint (the event stream
 // internal/agents reads), recording what it was sent and refusing any bearer but
-// the one the chief's token derives.
+// the one the agent's token derives.
 type pluginRuntime struct {
 	mu     sync.Mutex
 	want   string
@@ -103,10 +103,10 @@ var mintedPluginRE = regexp.MustCompile(`id="minted-plugin-token" readonly value
 // the real agentgateway.Gateway with its real bearer derivation — only the agent
 // runtime is a fake. A member mints a plugin on /plugins; the hook token is
 // refused on the plugin door; the plugin's token posts a message (202); the
-// owner's chief receives it ONCE, fenced, in the plugin's own session, with the
-// bearer its token derives and WITH THE TOOLS THAT CHIEF IS OFFERED ON A CHAT
+// owner's agent receives it ONCE, fenced, in the plugin's own session, with the
+// bearer its token derives and WITH THE TOOLS THAT AGENT IS OFFERED ON A CHAT
 // TURN (deliveryTurnTools); the message is `delivered` and audited; a repeat POST
-// answers the same id; and another member's plugin cannot reach this chief.
+// answers the same id; and another member's plugin cannot reach this agent.
 func TestAPluginMessageReachesTheOwnersChiefThroughTheRealPlane(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	t.Cleanup(cancel)
@@ -127,8 +127,8 @@ func TestAPluginMessageReachesTheOwnersChiefThroughTheRealPlane(t *testing.T) {
 		return authz.WithPrincipal(ctx, authz.Principal{UserID: uid, Role: authz.RoleMember, Via: authz.ViaSession})
 	}
 	as := agents.NewPG(pool)
-	chief, err := as.Create(asUser(a), agents.Agent{Name: "plgchief-" + suffix, Namespace: "devpod-plgchief-" + suffix,
-		DisplayName: "chief", Status: agents.StatusRunning, HooksToken: "plg-hooks-" + suffix})
+	agent, err := as.Create(asUser(a), agents.Agent{Name: "plgchief-" + suffix, Namespace: "devpod-plgchief-" + suffix,
+		DisplayName: "agent", Status: agents.StatusRunning, HooksToken: "plg-hooks-" + suffix})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -141,7 +141,7 @@ func TestAPluginMessageReachesTheOwnersChiefThroughTheRealPlane(t *testing.T) {
 	})
 
 	rt := &pluginRuntime{}
-	rt.expect(chief)
+	rt.expect(agent)
 	up := httptest.NewServer(rt)
 	t.Cleanup(up.Close)
 	host, portStr, _ := net.SplitHostPort(strings.TrimPrefix(up.URL, "http://"))
@@ -196,6 +196,31 @@ func TestAPluginMessageReachesTheOwnersChiefThroughTheRealPlane(t *testing.T) {
 		if again := do("GET", "/plugins", "", session(uid)); strings.Contains(again.Body.String(), m[1]) {
 			t.Fatal("the plugin token is rendered again on a later page load")
 		}
+		// 🔴 A MINTED PLUGIN NAMES NOBODY, so point it at this user's own agent.
+		// Delivery used to resolve its recipient from the `agent` display name,
+		// which made this implicit; it reads plugins.target_agent_id now, and
+		// without this every message below stays queued (`no_target`).
+		list, err := as.List(asUser(uid))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var mine int64
+		for _, ag := range list {
+			if ag.OwnerID == uid && (mine == 0 || ag.ID < mine) {
+				mine = ag.ID
+			}
+		}
+		ps2, err := ps.List(asUser(uid))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, pl := range ps2 {
+			if pl.TargetAgentID == nil && mine != 0 {
+				if err := ps.SetTargetAgent(asUser(uid), pl.ID, mine); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
 		return m[1]
 	}
 	aTok := mint(a)
@@ -223,18 +248,18 @@ func TestAPluginMessageReachesTheOwnersChiefThroughTheRealPlane(t *testing.T) {
 	if len(sent) != 1 || !strings.HasPrefix(sent[0], "/v1/responses ") {
 		t.Fatalf("the runtime saw %d request(s); want exactly one turn: %q", len(sent), sent)
 	}
-	deliveryTurnTools(t, srv, asUser(a), chief, strings.TrimPrefix(sent[0], "/v1/responses "))
+	deliveryTurnTools(t, srv, asUser(a), agent, strings.TrimPrefix(sent[0], "/v1/responses "))
 	m, err := ps.Message(asUser(a), first.ID)
-	if err != nil || m.Status != plugins.StatusDelivered || m.AgentID == nil || *m.AgentID != chief.ID {
-		t.Fatalf("the message after delivery: %+v (%v); want delivered to the chief", m, err)
+	if err != nil || m.Status != plugins.StatusDelivered || m.AgentID == nil || *m.AgentID != agent.ID {
+		t.Fatalf("the message after delivery: %+v (%v); want delivered to the agent", m, err)
 	}
 	p, _ := ps.List(asUser(a))
-	if len(p) != 1 || p[0].ChiefSessionID == nil {
-		t.Fatalf("A's plugin %+v; want one with its chief session recorded", p)
+	if len(p) != 1 || p[0].SessionID == nil {
+		t.Fatalf("A's plugin %+v; want one with its agent session recorded", p)
 	}
-	msgs, err := as.ListChatMessages(asUser(a), *p[0].ChiefSessionID)
+	msgs, err := as.ListChatMessages(asUser(a), *p[0].SessionID)
 	if err != nil || len(msgs) != 2 || msgs[1].Content != "noted" {
-		t.Fatalf("the chief's plugin session: %d messages (%v); want the turn and the reply", len(msgs), err)
+		t.Fatalf("the agent's plugin session: %d messages (%v); want the turn and the reply", len(msgs), err)
 	}
 	turn := msgs[0].Content
 	lines := strings.Split(strings.TrimSuffix(turn, "\n"), "\n")
@@ -269,15 +294,15 @@ func TestAPluginMessageReachesTheOwnersChiefThroughTheRealPlane(t *testing.T) {
 		t.Fatalf("the runtime saw %d turns after the duplicate; want still 1", got)
 	}
 
-	// Another member's plugin: its message is B's, and B has no chief, so it
-	// stays queued and nothing more reaches A's chief.
+	// Another member's plugin: its message is B's, and B has no agent, so it
+	// stays queued and nothing more reaches A's agent.
 	rec = do("POST", "/plugin/v1/messages", strings.Replace(msg, "ext-", "bext-", 1), bearer(bTok))
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("B's plugin: %d %s", rec.Code, rec.Body.String())
 	}
 	srv.WaitForPluginDeliveries()
 	if got := len(rt.seen()); got != 1 {
-		t.Fatalf("B's plugin message reached a runtime (%d turns); want none — B has no chief", got)
+		t.Fatalf("B's plugin message reached a runtime (%d turns); want none — B has no agent", got)
 	}
 	var bStatus string
 	var bAttempts int
@@ -299,17 +324,17 @@ func TestAPluginMessageReachesTheOwnersChiefThroughTheRealPlane(t *testing.T) {
 }
 
 // deliveryTurnTools asserts the request that delivered a plugin message to a
-// gateway-kind chief carried that chief's TOOLS and instructions — the ones an
-// ordinary chat turn hands the same agent — so the chief can act (file a task,
+// gateway-kind agent carried that agent's TOOLS and instructions — the ones an
+// ordinary chat turn hands the same agent — so the agent can act (file a task,
 // draft a reply) on the turn that tells it about the message.
 //
 // 🔴 TWO PINS, NOT ONE: the names are compared to the server's own list for THIS
 // agent (the plumbing passes whatever the agent is offered), AND literal names
-// are required — a worker tool and the chief-only task_create_gated and
+// are required — a worker tool and the agent-only task_create_gated and
 // reply_draft — so a turn
 // carrying no tools, or the unfiltered worker set, cannot pass by comparing a
 // list to itself.
-func deliveryTurnTools(t *testing.T, srv *Server, ctx context.Context, chief agents.Agent, body string) {
+func deliveryTurnTools(t *testing.T, srv *Server, ctx context.Context, agent agents.Agent, body string) {
 	t.Helper()
 	var req struct {
 		Instructions string `json:"instructions"`
@@ -324,24 +349,24 @@ func deliveryTurnTools(t *testing.T, srv *Server, ctx context.Context, chief age
 	for _, tl := range req.Tools {
 		got = append(got, tl.Name)
 	}
-	for _, d := range srv.AgentToolDefsFor(ctx, chief) {
+	for _, d := range srv.AgentToolDefsFor(ctx, agent) {
 		want = append(want, d.Name)
 	}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
-		t.Fatalf("the delivery turn offered the chief tools %v; want the ones its chat turn offers: %v", got, want)
+		t.Fatalf("the delivery turn offered the agent tools %v; want the ones its chat turn offers: %v", got, want)
 	}
 	for _, name := range []string{"agent_get_task", "task_create_gated", replyDraftToolName} {
 		if !slices.Contains(got, name) {
-			t.Fatalf("the delivery turn offered the chief %v; want it to include %s", got, name)
+			t.Fatalf("the delivery turn offered the agent %v; want it to include %s", got, name)
 		}
 	}
-	if req.Instructions == "" || req.Instructions != srv.AgentInstructions(chief) {
-		t.Fatalf("the delivery turn's instructions are not the chief's own (%d bytes)", len(req.Instructions))
+	if req.Instructions == "" || req.Instructions != srv.AgentInstructions(agent) {
+		t.Fatalf("the delivery turn's instructions are not the agent's own (%d bytes)", len(req.Instructions))
 	}
 }
 
 // laterRoundRuntime answers request 1 of a delivery turn with a function_call to
-// one of the chief's own tools, and request 2 with second (closing its listener
+// one of the agent's own tools, and request 2 with second (closing its listener
 // first when dial is set, so request 2 never connects). Every request is recorded.
 type laterRoundRuntime struct {
 	mu     sync.Mutex
@@ -384,7 +409,7 @@ func (f *laterRoundRuntime) seen() []string {
 // TestADeliveryWhoseToolTurnFailsAfterItsFirstRequestIsNeverResent is finding 1
 // of round 1, through the real plane: the real deliverer, the real chatTurn and
 // agentgateway.Gateway, the real Postgres store. The runtime answers request 1
-// with a function_call to the chief's own tool — which this process dispatches —
+// with a function_call to the agent's own tool — which this process dispatches —
 // and then request 2 fails in a shape that, on a FIRST request, proves nothing was
 // sent: a dial error (the runtime went away), a typed 409 busy, a 404. The
 // message must be `unconfirmed` and never offered to the runtime again, and the
@@ -425,8 +450,8 @@ func TestADeliveryWhoseToolTurnFailsAfterItsFirstRequestIsNeverResent(t *testing
 			})
 			owner := authz.WithPrincipal(ctx, authz.Principal{UserID: uid, Role: authz.RoleMember, Via: authz.ViaPlugin})
 			as := agents.NewPG(pool)
-			chief, err := as.Create(owner, agents.Agent{Name: "plrchief-" + suffix, Namespace: "devpod-plrchief-" + suffix,
-				DisplayName: "chief", Status: agents.StatusRunning, HooksToken: "plr-hooks-" + suffix})
+			agent, err := as.Create(owner, agents.Agent{Name: "plrchief-" + suffix, Namespace: "devpod-plrchief-" + suffix,
+				DisplayName: "agent", Status: agents.StatusRunning, HooksToken: "plr-hooks-" + suffix})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -452,7 +477,7 @@ func TestADeliveryWhoseToolTurnFailsAfterItsFirstRequestIsNeverResent(t *testing
 				t.Fatal(err)
 			}
 
-			r := srv.pluginDeliverer.Deliver(owner, p.ID, m.ID, chief)
+			r := srv.pluginDeliverer.Deliver(owner, p.ID, m.ID, agent)
 			if r.Outcome != plugins.OutcomeUnconfirmed {
 				t.Fatalf("request 2 failed after request 1's tool call ran: %+v; want unconfirmed — the turn happened", r)
 			}
@@ -467,10 +492,10 @@ func TestADeliveryWhoseToolTurnFailsAfterItsFirstRequestIsNeverResent(t *testing
 			}
 			// The tool call ran in this process: its result is stored in the session.
 			pp, _ := ps.Plugin(owner, p.ID)
-			if pp.ChiefSessionID == nil {
-				t.Fatal("no chief session recorded")
+			if pp.SessionID == nil {
+				t.Fatal("no agent session recorded")
 			}
-			parts, _ := as.ListChatMessages(owner, *pp.ChiefSessionID)
+			parts, _ := as.ListChatMessages(owner, *pp.SessionID)
 			ran := 0
 			for _, part := range parts {
 				if part.Kind == "tool_result" && part.ToolName == "agent_get_task" {
@@ -485,7 +510,7 @@ func TestADeliveryWhoseToolTurnFailsAfterItsFirstRequestIsNeverResent(t *testing
 				t.Fatalf("the message: %+v (%v); want unconfirmed", got, err)
 			}
 			before := len(rt.seen())
-			if r := srv.pluginDeliverer.Deliver(owner, p.ID, m.ID, chief); r.Outcome != plugins.OutcomeSettled {
+			if r := srv.pluginDeliverer.Deliver(owner, p.ID, m.ID, agent); r.Outcome != plugins.OutcomeSettled {
 				t.Fatalf("offered again: %+v; want settled", r)
 			}
 			if after := len(rt.seen()); after != before {

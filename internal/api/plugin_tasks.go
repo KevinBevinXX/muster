@@ -17,12 +17,12 @@ import (
 
 // THE PLUGIN'S WAY TO FILE WORK DIRECTLY: POST /plugin/v1/tasks.
 //
-// A plugin message goes to the chief, which decides what to do with it. Some
+// A plugin message goes to the agent, which decides what to do with it. Some
 // upstreams are not messages for an LLM to judge but deterministic NOTICES about
 // a record elsewhere — "ticket 4711 was assigned to you" — that map to exactly
 // one task here. For those the plugin calls this route: find the task carrying
 // the upstream's key (an external-id tag such as `tracker:4711`), create it if
-// asked and none exists, else append a comment to it. Nothing reaches the chief.
+// asked and none exists, else append a comment to it. Nothing reaches the agent.
 //
 // 🔴 IDEMPOTENT BY CONSTRUCTION, BECAUSE PLUGINS RETRY. A plugin re-posts when it
 // did not see an answer (docs/plugins.md), and the same upstream record can be
@@ -184,7 +184,7 @@ func (s *Server) handlePluginTask(w http.ResponseWriter, r *http.Request) {
 			// resend finds the stored event and delivers nothing twice — and a
 			// plugin resending after a hand-off that failed (or a muster that
 			// stopped between the task and the hand-off) gets it handed off.
-			// `routed` says where the notice went: "chief", "agent",
+			// `routed` says where the notice went: "agent", "agent",
 			// "attention", or false (filed only).
 			var routed any = false
 			if id != nil && taskRoutingOn(s.ext) {

@@ -1,5 +1,5 @@
 // Package plugins is muster's PLUGIN INTERFACE: out-of-process connectors that
-// bring inbound messages from some upstream system to their owner's chief agent.
+// bring inbound messages from some upstream system to an agent their owner picks.
 //
 // # The shape
 //
@@ -13,7 +13,7 @@
 // # What happens to a message
 //
 // It is stored once per (plugin, external_id) — a repeat POST answers the stored
-// row — and then handed to the owner's CHIEF agent as a fenced turn
+// row — and then handed to the agent the plugin NAMES as a fenced turn
 // ([RenderMessage], internal/fence), in a chat session dedicated to that plugin
 // ([Deliverer]). The delivery is attempted right after the POST; a delivery that
 // provably pasted nothing leaves the message `queued` for a later attempt, and one
@@ -57,8 +57,8 @@ const (
 	MaxPerHour       = 60
 	MaxQueued        = 200
 	// Task events (task_events.go) have their OWN allowance, counted apart from
-	// the chief mail above, so a burst of task notices can never get ordinary
-	// chief mail answered 429, nor chief mail crowd out a task event.
+	// the agent mail above, so a burst of task notices can never get ordinary
+	// agent mail answered 429, nor agent mail crowd out a task event.
 	MaxTaskEventsPerHour = 120
 	MaxTaskEventsQueued  = 300
 	rateWindow           = time.Hour
@@ -83,19 +83,19 @@ const MaxRequestBytes = maxRequestBytes
 type Status string
 
 const (
-	// StatusQueued: not yet handed to the chief. A delivery that provably pasted
+	// StatusQueued: not yet handed to any agent. A delivery that provably pasted
 	// nothing ("pending") leaves the message here.
 	StatusQueued Status = "queued"
-	// StatusDelivering: the chief named by AgentID is on the turn that hands the
-	// message over. 🔴 IT IS WRITTEN BEFORE THE TURN RUNS SO THE CHIEF CAN CITE THE
+	// StatusDelivering: the agent named by AgentID is on the turn that hands the
+	// message over. 🔴 IT IS WRITTEN BEFORE THE TURN RUNS SO THE AGENT CAN CITE THE
 	// MESSAGE ON THAT VERY TURN — the turn it is told about it, and the one it
 	// files a gated task or drafts a reply on. It settles to delivered or
 	// unconfirmed after the turn, or back to queued (AgentID cleared) only when the
 	// turn provably sent nothing. A process that dies mid-turn leaves it here; the
-	// next delivery to the same chief settles it unconfirmed, and it is never
+	// next delivery to the same agent settles it unconfirmed, and it is never
 	// sent again ([Deliverer.Deliver]).
 	StatusDelivering Status = "delivering"
-	// StatusDelivered: the chief's turn completed.
+	// StatusDelivered: the agent's turn completed.
 	StatusDelivered Status = "delivered"
 	// StatusUnconfirmed: the send failed after the text may have been pasted. It is
 	// never sent again.
@@ -104,16 +104,23 @@ const (
 
 // Plugin is one minted plugin's record; the token itself is never stored.
 type Plugin struct {
-	ID             int64      `json:"id"`
-	OwnerID        int64      `json:"ownerId"`
-	Name           string     `json:"name"`
-	Label          string     `json:"label"`
-	DataScope      string     `json:"dataScope"`
-	CreatedAt      time.Time  `json:"createdAt"`
-	LastSeenAt     *time.Time `json:"lastSeenAt,omitempty"`
-	RevokedAt      *time.Time `json:"revokedAt,omitempty"`
-	ChiefAgentID   *int64     `json:"-"`
-	ChiefSessionID *int64     `json:"-"`
+	ID         int64      `json:"id"`
+	OwnerID    int64      `json:"ownerId"`
+	Name       string     `json:"name"`
+	Label      string     `json:"label"`
+	DataScope  string     `json:"dataScope"`
+	CreatedAt  time.Time  `json:"createdAt"`
+	LastSeenAt *time.Time `json:"lastSeenAt,omitempty"`
+	RevokedAt  *time.Time `json:"revokedAt,omitempty"`
+	// TargetAgentID is the agent this plugin's messages are delivered to: the
+	// operator's choice (migration 0050). nil means none picked, and the
+	// messages stay queued with reason `no_target`.
+	TargetAgentID *int64 `json:"-"`
+	// SessionAgentID/SessionID are DELIVERY BOOKKEEPING, written after a turn:
+	// the agent and chat session the last message landed in, so a routed reply
+	// reaches the same conversation. Not the choice — see TargetAgentID.
+	SessionAgentID *int64 `json:"-"`
+	SessionID      *int64 `json:"-"`
 }
 
 // MessageIn is one inbound message as a plugin POSTs it.
@@ -125,7 +132,7 @@ type MessageIn struct {
 	ReceivedAt *time.Time `json:"received_at"`
 	// NoReply marks a message nobody may answer (a notification, a no-reply
 	// sender): no reply draft can be filed for it (migration 0016 refuses one),
-	// and the chief's turn says so. Optional; false when absent.
+	// and the agent's turn says so. Optional; false when absent.
 	NoReply bool `json:"no_reply"`
 	// SenderVerified is the plugin's assertion that it AUTHENTICATED Sender
 	// (DKIM/DMARC-aligned mail, a verified signature, the platform's
@@ -154,11 +161,11 @@ type Message struct {
 	// SenderVerified: the plugin asserted the sender is authenticated.
 	SenderVerified bool `json:"senderVerified"`
 	// TaskID is set on a TASK EVENT (migration 0027, task_events.go): muster's
-	// own message handing that task to the chief. nil on every inbound message.
+	// own message handing that task to the agent. nil on every inbound message.
 	TaskID *int64 `json:"taskId,omitempty"`
-	// RoutedTo is set on a notice muster routed AROUND the chief (migration
+	// RoutedTo is set on a notice muster routed AROUND the target agent (migration
 	// 0028, task_events.go ReserveNoticeRoute): "agent" or "attention". Such a
-	// row is delivered from birth and is never a chief event.
+	// row is delivered from birth and is never an agent event.
 	RoutedTo *string `json:"routedTo,omitempty"`
 	// RoutedDoneAt is when that route's action completed; nil while it is
 	// reserved and not yet done (or never finished: NoticeRouteReclaimAfter).
@@ -235,7 +242,7 @@ func ValidScope(scope string) error {
 }
 
 // ValidLabel checks a display label: 1–80 runes, no control or invisible
-// characters (it is drawn on /plugins and names the chief's session).
+// characters (it is drawn on /plugins and names the delivery session).
 func ValidLabel(label string) error {
 	if label == "" || utf8.RuneCountInString(label) > MaxLabelRunes || !utf8.ValidString(label) {
 		return invalid("a label is 1-%d characters", MaxLabelRunes)

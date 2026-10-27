@@ -14,7 +14,7 @@ import (
 //
 // 🔴 IT IS NOT DERIVED HERE, AND IT MUST NOT BE. internal/api composes it from
 // attentionItems — the ONE read the queue page, the sidebar badge and the
-// chief's attention_list make — so a card and the queue cannot disagree about
+// agent's attention_list make — so a card and the queue cannot disagree about
 // what is waiting.
 type CardAttention struct {
 	// Count is the card's items; the badge shows only for Count > 0.

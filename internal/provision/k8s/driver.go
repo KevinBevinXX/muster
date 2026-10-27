@@ -798,7 +798,7 @@ func (d *Driver) apply(ctx context.Context, spec provision.Spec, ns string) erro
 // 🔴 A NAMESPACE THAT IS STILL TERMINATING IS WAITED OUT, NOT ADOPTED. Destroy
 // deletes the per-instance namespace and returns while the apiserver is still
 // finalizing it, so re-creating an instance under the SAME name right after a
-// Destroy (the chief replacement: delete `chief`, create `chief`) used to find
+// Destroy (the agent replacement: delete `agent`, create `agent`) used to find
 // the old namespace here, owned and Terminating, adopt it, and then fail every
 // object write with "namespace … is being terminated". This polls until it is
 // gone and then creates a fresh one, bounded by ctx; on the deadline it says

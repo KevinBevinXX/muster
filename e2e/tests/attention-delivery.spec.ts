@@ -107,17 +107,6 @@ async function mcpCall(name: string, args: Record<string, unknown>): Promise<{ t
   return { text: j.result!.content[0].text, isError: !!j.result!.isError };
 }
 
-async function openChiefPanel(page: Page) {
-  await page.evaluate(() => {
-    const b = document.createElement('button');
-    b.setAttribute('data-chief-panel-toggle', '');
-    b.style.cssText = 'position:fixed;left:-9999px;top:0';
-    document.body.appendChild(b);
-    b.click();
-  });
-  await expect(page.locator('#chief-panel')).toHaveAttribute('data-chief-panel-open', '1');
-}
-
 test('the operator answers the chief on /attention and the chief\'s session receives the answer as a turn, once', async ({ page }) => {
   test.setTimeout(120_000);
   await page.goto(origin + '/login');
@@ -157,10 +146,12 @@ test('the operator answers the chief on /attention and the chief\'s session rece
   expect(carrying[0]).toContain('<<<attention-answer untrusted nonce=');
   expect(carrying[0]).toContain('dispatch a new agent');
 
-  // The chief panel shows the delivered answer and the chief's reply.
-  await page.goto(origin + '/tasks');
-  await openChiefPanel(page);
-  const log = page.locator('#chief-panel #chat-log');
+  // The delivered answer and the agent's reply are on the agent's own page
+  // (muster has no chief panel; the answer arrives in the agent's session,
+  // which its detail page renders). The turn was already delivered above, so
+  // a fresh load shows it.
+  await page.goto(origin + '/agents/' + chiefName);
+  const log = page.locator('#chat-log');
   await expect(log).toContainText(`your owner answered attention #${id}`, { timeout: 15_000 });
   await expect(log).toContainText(REPLY);
 });

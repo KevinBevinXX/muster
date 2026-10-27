@@ -23,7 +23,7 @@ import (
 // is one value whose tier also READS every
 // session's transcript and every tmux pane, resolves anyone's attention entries,
 // deletes anyone's pending request by id and sends arbitrary push
-// notifications; its terminal and chief tokens type into terminals; its service
+// notifications; its terminal and agent tokens type into terminals; its service
 // token is muster's own. A shell-capable agent holding any of them could read or
 // interfere with the operator's other sessions. So the pod authenticates to
 // MUSTER with its own per-agent token (the connector surface's credential, with

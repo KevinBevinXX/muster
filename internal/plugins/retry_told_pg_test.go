@@ -12,21 +12,21 @@ import (
 // the plugin.retried audit rows Requeue writes); the cut-off first turn and a
 // fresh message's turn do not.
 func TestARetriedDeliveryTellsTheChief(t *testing.T) {
-	s, _, gw, d, p, chief := deliverFixture(t)
+	s, _, gw, d, p, target := deliverFixture(t)
 	m, _, _ := s.Submit(plugin(2), p.ID, msg("rt-1"))
 	gw.err = context.DeadlineExceeded
-	if r := d.Deliver(plugin(2), p.ID, m.ID, chief); r.Outcome != OutcomeUnconfirmed {
+	if r := d.Deliver(plugin(2), p.ID, m.ID, target); r.Outcome != OutcomeUnconfirmed {
 		t.Fatalf("setup: %+v", r)
 	}
 	gw.err = nil
 	if _, err := s.Requeue(session(2), m.ID); err != nil {
 		t.Fatal(err)
 	}
-	if r := d.Deliver(plugin(2), p.ID, m.ID, chief); r.Outcome != OutcomeDelivered {
+	if r := d.Deliver(plugin(2), p.ID, m.ID, target); r.Outcome != OutcomeDelivered {
 		t.Fatalf("the retried delivery: %+v", r)
 	}
 	fresh, _, _ := s.Submit(plugin(2), p.ID, msg("rt-2"))
-	if r := d.Deliver(plugin(2), p.ID, fresh.ID, chief); r.Outcome != OutcomeDelivered {
+	if r := d.Deliver(plugin(2), p.ID, fresh.ID, target); r.Outcome != OutcomeDelivered {
 		t.Fatalf("a fresh delivery: %+v", r)
 	}
 	if len(gw.sent) != 3 {

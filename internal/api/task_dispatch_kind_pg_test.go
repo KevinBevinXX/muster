@@ -10,7 +10,7 @@ import (
 	"github.com/ZacxDev/muster/internal/plugins"
 )
 
-// task_dispatch's kind and instructions arguments: which agent the chief
+// task_dispatch's kind and instructions arguments: which agent the agent
 // starts, and the owner's words it may put in front of the task.
 
 // withKinds wires an AgentKinds (both kinds enabled unless enabled says
@@ -24,7 +24,7 @@ func (f *taskRouteFixture) reservationDetail(t *testing.T, id int64) map[string]
 	t.Helper()
 	var raw []byte
 	if err := f.pool.QueryRow(f.asOwner, `SELECT detail FROM audit_log WHERE action = $1 AND object = $2`,
-		plugins.ActionChiefDispatch, plugins.NoteObject(id)).Scan(&raw); err != nil {
+		plugins.ActionTaskDispatch, plugins.NoteObject(id)).Scan(&raw); err != nil {
 		t.Fatal(err)
 	}
 	var out map[string]any
@@ -47,12 +47,12 @@ func (f *taskRouteFixture) startedOne(t *testing.T, text string, id int64) agent
 	return on[0]
 }
 
-// ownerAnswered puts task id in front of the owner the way the chief does
+// ownerAnswered puts task id in front of the owner the way the agent does
 // (task_route_attention, which links the ask to the task) and records the
 // owner's answer, as the attention view does. It returns the ask's id.
 func (f *taskRouteFixture) ownerAnswered(t *testing.T, id int64, answer string) int64 {
 	t.Helper()
-	text := f.call(f.chief, taskRouteAttentionTool, map[string]any{"task_id": id})
+	text := f.call(f.agent, taskRouteAttentionTool, map[string]any{"task_id": id})
 	var out struct {
 		ID int64 `json:"id"`
 	}
@@ -82,7 +82,7 @@ func (f *taskRouteFixture) modelTask(t *testing.T, title string) notes.Note {
 func TestTaskDispatchDefaultsToClaudeCode(t *testing.T) {
 	f := newTaskRouteFixture(t, true, true, withKinds("pool-acct-a"))
 	n := f.modelTask(t, "default kind")
-	got := f.startedOne(t, f.call(f.chief, taskDispatchTool, map[string]any{"task_id": n.ID}), n.ID)
+	got := f.startedOne(t, f.call(f.agent, taskDispatchTool, map[string]any{"task_id": n.ID}), n.ID)
 	if got.Kind != agents.KindClaudeCode || got.CCAccount != "pool-acct-a" || got.Model != "" {
 		t.Fatalf("agent kind=%q account=%q model=%q; want claude-code on pool-acct-a with no model", got.Kind, got.CCAccount, got.Model)
 	}
@@ -96,7 +96,7 @@ func TestTaskDispatchDefaultsToClaudeCode(t *testing.T) {
 func TestTaskDispatchStartsAGatewayWhenAsked(t *testing.T) {
 	f := newTaskRouteFixture(t, true, true, withKinds("pool-acct-a"))
 	n := f.modelTask(t, "gateway kind")
-	got := f.startedOne(t, f.call(f.chief, taskDispatchTool, map[string]any{"task_id": n.ID, "kind": "gateway"}), n.ID)
+	got := f.startedOne(t, f.call(f.agent, taskDispatchTool, map[string]any{"task_id": n.ID, "kind": "gateway"}), n.ID)
 	if got.Kind != agents.KindGateway || got.CCAccount != "" || got.Model != "openrouter/example/model-a" {
 		t.Fatalf("agent kind=%q account=%q model=%q; want a gateway agent on the task's model", got.Kind, got.CCAccount, got.Model)
 	}
@@ -110,7 +110,7 @@ func TestTaskDispatchStartsAGatewayWhenAsked(t *testing.T) {
 func TestTaskDispatchDefaultsToGatewayWithoutClaudeCode(t *testing.T) {
 	f := newTaskRouteFixture(t, true, true, withKinds("pool-acct-a", agents.KindGateway))
 	n := f.task(t, "gateway only")
-	if got := f.startedOne(t, f.call(f.chief, taskDispatchTool, map[string]any{"task_id": n.ID}), n.ID); got.Kind != agents.KindGateway {
+	if got := f.startedOne(t, f.call(f.agent, taskDispatchTool, map[string]any{"task_id": n.ID}), n.ID); got.Kind != agents.KindGateway {
 		t.Fatalf("agent kind %q, want gateway", got.Kind)
 	}
 }
@@ -120,24 +120,24 @@ func TestTaskDispatchDefaultsToGatewayWithoutClaudeCode(t *testing.T) {
 func TestTaskDispatchRefusesAKindItCannotStart(t *testing.T) {
 	f := newTaskRouteFixture(t, true, true, withKinds("pool-acct-a", agents.KindGateway))
 	n := f.task(t, "bad kind")
-	f.mustRefuse(t, f.call(f.chief, taskDispatchTool, map[string]any{"task_id": n.ID, "kind": "claude-code"}), "is not enabled on this deployment", n.ID)
-	f.mustRefuse(t, f.call(f.chief, taskDispatchTool, map[string]any{"task_id": n.ID, "kind": "robot"}), "unknown agent kind", n.ID)
+	f.mustRefuse(t, f.call(f.agent, taskDispatchTool, map[string]any{"task_id": n.ID, "kind": "claude-code"}), "is not enabled on this deployment", n.ID)
+	f.mustRefuse(t, f.call(f.agent, taskDispatchTool, map[string]any{"task_id": n.ID, "kind": "robot"}), "unknown agent kind", n.ID)
 
 	// The REMOVED hermes kind is an unknown kind — even to a kinds service that
 	// still lists it — refused before the reservation.
 	h := newTaskRouteFixture(t, true, true, withKinds("pool-acct-a", agents.KindGateway, agents.KindClaudeCode, "hermes"))
 	hn := h.task(t, "hermes kind")
-	h.mustRefuse(t, h.call(h.chief, taskDispatchTool, map[string]any{"task_id": hn.ID, "kind": "hermes"}), `unknown agent kind \"hermes\"`, hn.ID)
+	h.mustRefuse(t, h.call(h.agent, taskDispatchTool, map[string]any{"task_id": hn.ID, "kind": "hermes"}), `unknown agent kind \"hermes\"`, hn.ID)
 
 	u := newTaskRouteFixture(t, true, true, func(ext *Extensions) {
 		ext.Kinds = stubKinds{pick: "pool-acct-a", unavailable: map[string]string{agents.KindClaudeCode: "add a Claude account first"}}
 	})
 	m := u.task(t, "no credential")
-	u.mustRefuse(t, u.call(u.chief, taskDispatchTool, map[string]any{"task_id": m.ID}), "add a Claude account first", m.ID)
+	u.mustRefuse(t, u.call(u.agent, taskDispatchTool, map[string]any{"task_id": m.ID}), "add a Claude account first", m.ID)
 }
 
 // TestTaskDispatchGivesAClaudeCodeAgentItsRepository: a claude-code agent
-// takes a repository — the chief's `repo` for a task with none, or the task's
+// takes a repository — the agent's `repo` for a task with none, or the task's
 // own — with the task's branch, and still no model. (Before repositories
 // existed for this kind both were refused.)
 func TestTaskDispatchGivesAClaudeCodeAgentItsRepository(t *testing.T) {
@@ -145,16 +145,16 @@ func TestTaskDispatchGivesAClaudeCodeAgentItsRepository(t *testing.T) {
 	f.withConnectedRepos(t, "example/app", "example/other")
 	n := f.task(t, "repo arg")
 	f.ownerAnswered(t, n.ID, "using the x skill")
-	got := f.startedOne(t, f.call(f.chief, taskDispatchTool, map[string]any{"task_id": n.ID, "repo": "example/app",
+	got := f.startedOne(t, f.call(f.agent, taskDispatchTool, map[string]any{"task_id": n.ID, "repo": "example/app",
 		"instructions": "using the x skill"}), n.ID)
 	if got.Kind != agents.KindClaudeCode || got.Repo != "example/app" || got.Model != "" || got.CCAccount != "pool-acct-a" {
-		t.Fatalf("chief-repo agent %+v", got)
+		t.Fatalf("agent-repo agent %+v", got)
 	}
 	r, err := f.notes.Create(f.asOwner, notes.Note{Title: "task repo", Body: "b", Repo: "example/other", RepoBranch: "release/9"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := f.startedOne(t, f.call(f.chief, taskDispatchTool, map[string]any{"task_id": r.ID}), r.ID); got.Kind != agents.KindClaudeCode ||
+	if got := f.startedOne(t, f.call(f.agent, taskDispatchTool, map[string]any{"task_id": r.ID}), r.ID); got.Kind != agents.KindClaudeCode ||
 		got.Repo != "example/other" || got.RepoBranch != "release/9" {
 		t.Fatalf("task-repo agent %+v", got)
 	}
@@ -168,11 +168,11 @@ func TestTaskDispatchStillRefusesAnUnconnectedRepoForClaudeCode(t *testing.T) {
 	f := newTaskRouteFixture(t, true, true, withKinds("pool-acct-a"))
 	f.withConnectedRepos(t, "example/app")
 	n := f.task(t, "stranger repo")
-	f.mustRefuse(t, f.call(f.chief, taskDispatchTool, map[string]any{"task_id": n.ID, "repo": "stranger/app"}), chiefDispatchRepo, n.ID)
-	f.mustRefuse(t, f.call(f.chief, taskDispatchTool, map[string]any{"task_id": n.ID, "repo": "stranger/app", "kind": "claude-code"}), chiefDispatchRepo, n.ID)
+	f.mustRefuse(t, f.call(f.agent, taskDispatchTool, map[string]any{"task_id": n.ID, "repo": "stranger/app"}), taskDispatchRepo, n.ID)
+	f.mustRefuse(t, f.call(f.agent, taskDispatchTool, map[string]any{"task_id": n.ID, "repo": "stranger/app", "kind": "claude-code"}), taskDispatchRepo, n.ID)
 }
 
-// TestTaskDispatchPutsTheInstructionsFirstAndTheRulesLast: the chief's
+// TestTaskDispatchPutsTheInstructionsFirstAndTheRulesLast: the agent's
 // instructions open the first message, fenced and stripped of control
 // characters; the task's text follows; muster's rules close it. The
 // reservation records them, and the agent is still named after the task.
@@ -181,18 +181,18 @@ func TestTaskDispatchPutsTheInstructionsFirstAndTheRulesLast(t *testing.T) {
 	n := f.task(t, "with instructions")
 	raw := "Open with the example-blocks skill.\x1b[31m‮\nThen read the task."
 	askID := f.ownerAnswered(t, n.ID, raw)
-	got := f.startedOne(t, f.call(f.chief, taskDispatchTool, map[string]any{"task_id": n.ID, "instructions": raw}), n.ID)
+	got := f.startedOne(t, f.call(f.agent, taskDispatchTool, map[string]any{"task_id": n.ID, "instructions": raw}), n.ID)
 	msg := got.PendingNote
 	iInstr := strings.Index(msg, "| Open with the example-blocks skill.[31m\n| Then read the task.\n")
-	iBody, iRules := strings.Index(msg, n.Body), strings.Index(msg, chiefDispatchRules)
+	iBody, iRules := strings.Index(msg, n.Body), strings.Index(msg, taskDispatchRules)
 	if iInstr < 0 || iBody < 0 || iRules < 0 || !(iInstr < iBody && iBody < iRules) {
 		t.Fatalf("first message %q: want the fenced instructions, then the task, then the rules", msg)
 	}
-	if !strings.HasPrefix(msg, "muster: your owner's chief relayed the instructions") ||
-		!strings.Contains(msg, "<<<"+chiefInstructionsMarker+" untrusted nonce=") {
+	if !strings.HasPrefix(msg, "muster: your owner's agent relayed the instructions") ||
+		!strings.Contains(msg, "<<<"+relayedInstructionsMarker+" untrusted nonce=") {
 		t.Errorf("first message %q: want muster's preface and the fence first", msg)
 	}
-	if !strings.HasSuffix(msg, chiefDispatchRules) {
+	if !strings.HasSuffix(msg, taskDispatchRules) {
 		t.Errorf("first message does not END with muster's rules: %q", msg)
 	}
 	if strings.ContainsAny(msg, "\x1b‮") {
@@ -218,12 +218,12 @@ func TestTaskDispatchPutsTheInstructionsFirstAndTheRulesLast(t *testing.T) {
 func TestTaskDispatchRefusesInstructionsOverTheCap(t *testing.T) {
 	f := newTaskRouteFixture(t, true, true, withKinds("pool-acct-a"))
 	n := f.task(t, "long instructions")
-	f.ownerAnswered(t, n.ID, strings.Repeat("a", chiefInstructionsMax+1))
-	f.ownerAnswered(t, n.ID, strings.Repeat("a", chiefInstructionsMax))
-	f.mustRefuse(t, f.call(f.chief, taskDispatchTool, map[string]any{"task_id": n.ID,
-		"instructions": strings.Repeat("a", chiefInstructionsMax+1)}), chiefDispatchInstructionsCap, n.ID)
-	f.startedOne(t, f.call(f.chief, taskDispatchTool, map[string]any{"task_id": n.ID,
-		"instructions": strings.Repeat("a", chiefInstructionsMax)}), n.ID)
+	f.ownerAnswered(t, n.ID, strings.Repeat("a", relayedInstructionsMax+1))
+	f.ownerAnswered(t, n.ID, strings.Repeat("a", relayedInstructionsMax))
+	f.mustRefuse(t, f.call(f.agent, taskDispatchTool, map[string]any{"task_id": n.ID,
+		"instructions": strings.Repeat("a", relayedInstructionsMax+1)}), taskDispatchInstructionsCap, n.ID)
+	f.startedOne(t, f.call(f.agent, taskDispatchTool, map[string]any{"task_id": n.ID,
+		"instructions": strings.Repeat("a", relayedInstructionsMax)}), n.ID)
 }
 
 // TestCleanInstructions pins the cap's boundary and what is stripped.
@@ -234,9 +234,9 @@ func TestCleanInstructions(t *testing.T) {
 	}{
 		{"  a\r\nb\tc  ", "a\nb c", true},
 		{"x\x00y​z\x7f", "xyz", true},
-		{strings.Repeat("é", chiefInstructionsMax/2), strings.Repeat("é", chiefInstructionsMax/2), true},
-		{strings.Repeat("é", chiefInstructionsMax/2) + "a", "", false},
-		{"\x00" + strings.Repeat("b", chiefInstructionsMax), "", false},
+		{strings.Repeat("é", relayedInstructionsMax/2), strings.Repeat("é", relayedInstructionsMax/2), true},
+		{strings.Repeat("é", relayedInstructionsMax/2) + "a", "", false},
+		{"\x00" + strings.Repeat("b", relayedInstructionsMax), "", false},
 	} {
 		got, ok := cleanInstructions(c.in)
 		if got != c.want || ok != c.ok {

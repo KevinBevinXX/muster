@@ -89,7 +89,7 @@ func (p *gtPlugins) Plugin(_ context.Context, id int64) (plugins.Plugin, error) 
 type gatedFakeFixture struct {
 	srv           *Server
 	ctx           context.Context
-	chief, worker agents.Agent
+	agent, worker agents.Agent
 	notes         *gtNotes
 	plugins       *gtPlugins
 	pusher        *payloadPusher
@@ -99,7 +99,7 @@ type gatedFakeFixture struct {
 func newGatedFakeFixture(t *testing.T) *gatedFakeFixture {
 	t.Helper()
 	f := &gatedFakeFixture{
-		chief:   agents.Agent{ID: 11, OwnerID: gtOwner, Name: "keen-wren", DisplayName: "chief"},
+		agent:   agents.Agent{ID: 11, OwnerID: gtOwner, Name: "keen-wren", DisplayName: "agent"},
 		worker:  agents.Agent{ID: 12, OwnerID: gtOwner, Name: "plain-otter"},
 		notes:   &gtNotes{},
 		plugins: &gtPlugins{msgs: map[int64]plugins.Message{}},
@@ -114,7 +114,7 @@ func newGatedFakeFixture(t *testing.T) *gatedFakeFixture {
 		Users:   stubUsers{},
 		Push:    push.NewService(store, f.pusher, push.VAPIDConfig{PublicKey: "k"}, logger),
 		Notes:   f.notes,
-		Agents:  gtAgents{list: []agents.Agent{f.chief, f.worker}},
+		Agents:  gtAgents{list: []agents.Agent{f.agent, f.worker}},
 		Plugins: f.plugins,
 	})
 	f.srv.taskCreateAfter = f.timers.after
@@ -128,7 +128,7 @@ func (f *gatedFakeFixture) call(a agents.Agent, args any) string {
 }
 
 // TestAGatedTaskIsAlwaysGatedAndNeverAuto is the PROPERTY: for any input the
-// chief can send — tags and gate reasons drawn from an alphabet built to hit the
+// agent can send — tags and gate reasons drawn from an alphabet built to hit the
 // reserved namespaces in every spelling normalisation folds together — EITHER the
 // call is refused and nothing is created, OR the created task carries exactly one
 // `gate:` tag (the server's) and no `auto:` tag at all.
@@ -173,7 +173,7 @@ func TestAGatedTaskIsAlwaysGatedAndNeverAuto(t *testing.T) {
 	created, refused := 0, 0
 	for _, in := range inputs {
 		before := f.notes.count()
-		out := f.call(f.chief, map[string]any{"title": "t", "body": "b", "gate_reason": in.reason, "tags": in.tags})
+		out := f.call(f.agent, map[string]any{"title": "t", "body": "b", "gate_reason": in.reason, "tags": in.tags})
 		if isToolErr(out) {
 			refused++
 			if f.notes.count() != before {
@@ -230,8 +230,8 @@ func TestTheGateSlug(t *testing.T) {
 // me". Measured red by creating through Notes.Create directly instead.
 func TestAGatedTaskNotifiesTheOwner(t *testing.T) {
 	f := newGatedFakeFixture(t)
-	if out := f.call(f.chief, map[string]any{"title": "Reply to the inbox", "body": "b", "gate_reason": "r"}); isToolErr(out) {
-		t.Fatalf("the chief's call failed: %s", out)
+	if out := f.call(f.agent, map[string]any{"title": "Reply to the inbox", "body": "b", "gate_reason": "r"}); isToolErr(out) {
+		t.Fatalf("the agent's call failed: %s", out)
 	}
 	if n := f.timers.fireAll(); n != 1 {
 		t.Fatalf("%d created-push timers armed, want 1", n)
@@ -243,58 +243,50 @@ func TestAGatedTaskNotifiesTheOwner(t *testing.T) {
 	}
 }
 
-// TestANonChiefCannotCallTheGatedToolThroughTheGateway: the gateway's dispatch
-// closure runs whatever name the runtime hands it, offered or not, so the
-// chief-only re-check in dispatchAgentTool is the ONLY guard on this path. A
-// worker's call is refused with nothing created and no budget spent; so is a
-// caller-side copy of the worker's row that CLAIMS to be the chief, because the
-// re-check reads the current row. The chief's call is the control.
-func TestANonChiefCannotCallTheGatedToolThroughTheGateway(t *testing.T) {
+// TestNoToolIsRestrictedToAParticularAgent pins the registry's contract
+// (agent.go: "🔴 THERE IS NO 'WHO' AXIS"): every tool the registry holds is
+// offered to every one of the owner's agents, agent and worker alike, so what
+// keeps the fleet tools safe is OWNERSHIP, not rank. If a rebuild reintroduces
+// a per-agent filter — an agent-only tool, a rank gate in toolsFor — the two
+// lists differ and this fails.
+func TestNoToolIsRestrictedToAParticularAgent(t *testing.T) {
 	f := newGatedFakeFixture(t)
-	args := map[string]any{"title": "t", "body": "b", "gate_reason": "r"}
-
-	// The listing leaves it out for the worker (the first guard)…
-	for _, d := range f.srv.AgentToolDefsFor(f.ctx, f.worker) {
-		if d.Name == gatedTaskToolName {
-			t.Fatal("the worker is OFFERED the chief-only tool")
+	agent := f.srv.AgentToolDefsFor(f.ctx, f.agent)
+	worker := f.srv.AgentToolDefsFor(f.ctx, f.worker)
+	if len(agent) == 0 {
+		t.Fatal("the registry offered no tools at all — the fixture exercises nothing")
+	}
+	names := func(defs []agents.ToolDef) string {
+		out := make([]string, 0, len(defs))
+		for _, d := range defs {
+			out = append(out, d.Name)
 		}
+		return strings.Join(out, ",")
 	}
-	// …and dispatch refuses it anyway (the second).
-	forged := f.worker
-	forged.DisplayName = "chief"
-	for name, a := range map[string]agents.Agent{"worker": f.worker, "worker claiming to be chief": forged} {
-		out := f.call(a, args)
-		if !strings.Contains(out, "is available to your owner's chief agent only") {
-			t.Errorf("%s: %s, want the chief-only refusal", name, out)
-		}
-	}
-	if f.notes.count() != 0 || f.plugins.reserved != 0 {
-		t.Fatalf("a non-chief call created %d task(s) and reserved %d unit(s)", f.notes.count(), f.plugins.reserved)
-	}
-	if out := f.call(f.chief, args); isToolErr(out) {
-		t.Fatalf("control: the chief's call failed: %s", out)
+	if got, want := names(worker), names(agent); got != want {
+		t.Errorf("the worker's tool set differs from the agent's: worker=[%s] agent=[%s]", got, want)
 	}
 }
 
 // TestAGatedTaskCitesOnlyItsOwnersMessageEvenWithoutRLS: over a store with no
 // row-level security, the tool itself refuses a message of another owner (even
-// one whose row names this chief), one delivered or being delivered to another
+// one whose row names this agent), one delivered or being delivered to another
 // agent, and a queued one — before any budget is spent. The ones delivered and
-// being delivered to this chief are the controls.
+// being delivered to this agent are the controls.
 func TestAGatedTaskCitesOnlyItsOwnersMessageEvenWithoutRLS(t *testing.T) {
 	f := newGatedFakeFixture(t)
-	chief, worker := f.chief.ID, f.worker.ID
+	agent, worker := f.agent.ID, f.worker.ID
 	f.plugins.msgs = map[int64]plugins.Message{
-		1: {ID: 1, OwnerID: gtOwner + 1, AgentID: &chief, Status: plugins.StatusDelivered},
+		1: {ID: 1, OwnerID: gtOwner + 1, AgentID: &agent, Status: plugins.StatusDelivered},
 		2: {ID: 2, OwnerID: gtOwner, AgentID: &worker, Status: plugins.StatusDelivered},
-		3: {ID: 3, OwnerID: gtOwner, AgentID: &chief, Status: plugins.StatusQueued},
-		4: {ID: 4, OwnerID: gtOwner, AgentID: &chief, Status: plugins.StatusDelivered},
+		3: {ID: 3, OwnerID: gtOwner, AgentID: &agent, Status: plugins.StatusQueued},
+		4: {ID: 4, OwnerID: gtOwner, AgentID: &agent, Status: plugins.StatusDelivered},
 		5: {ID: 5, OwnerID: gtOwner, AgentID: &worker, Status: plugins.StatusDelivering},
-		6: {ID: 6, OwnerID: gtOwner + 1, AgentID: &chief, Status: plugins.StatusDelivering},
-		7: {ID: 7, OwnerID: gtOwner, AgentID: &chief, Status: plugins.StatusDelivering},
+		6: {ID: 6, OwnerID: gtOwner + 1, AgentID: &agent, Status: plugins.StatusDelivering},
+		7: {ID: 7, OwnerID: gtOwner, AgentID: &agent, Status: plugins.StatusDelivering},
 	}
 	for _, id := range []int64{1, 2, 3, 5, 6} {
-		out := f.call(f.chief, map[string]any{"title": "t", "body": "b", "gate_reason": "r", "message_id": id})
+		out := f.call(f.agent, map[string]any{"title": "t", "body": "b", "gate_reason": "r", "message_id": id})
 		if !strings.Contains(out, "is not a plugin message delivered to you") {
 			t.Errorf("message %d: %s, want refused", id, out)
 		}
@@ -302,11 +294,11 @@ func TestAGatedTaskCitesOnlyItsOwnersMessageEvenWithoutRLS(t *testing.T) {
 	if f.notes.count() != 0 || f.plugins.reserved != 0 {
 		t.Fatalf("refused citations created %d task(s) and reserved %d unit(s)", f.notes.count(), f.plugins.reserved)
 	}
-	// Controls: delivered to this chief, and BEING delivered to it (the turn that
-	// tells the chief about the message — audit round 1).
+	// Controls: delivered to this agent, and BEING delivered to it (the turn that
+	// tells the agent about the message — audit round 1).
 	for _, id := range []int64{4, 7} {
-		if out := f.call(f.chief, map[string]any{"title": "t", "body": "b", "gate_reason": "r", "message_id": id}); isToolErr(out) {
-			t.Fatalf("control: citing message %d (delivered or delivering to this chief) failed: %s", id, out)
+		if out := f.call(f.agent, map[string]any{"title": "t", "body": "b", "gate_reason": "r", "message_id": id}); isToolErr(out) {
+			t.Fatalf("control: citing message %d (delivered or delivering to this agent) failed: %s", id, out)
 		}
 	}
 }

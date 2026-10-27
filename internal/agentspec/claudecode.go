@@ -162,7 +162,7 @@ type ClaudeCodeConfig struct {
 
 // JobBypassListed reports whether agent a's worker pool is configured for
 // job-lane permission bypass: ONLY a pooled agent (a.WorkerPool set) whose pool
-// BypassPools lists, and never a chief, whatever its row says. It is the
+// BypassPools lists, and never a FLEET agent, whatever its row says. It is the
 // CONFIGURATION half; Build also needs Options.JobBypassVeto to be empty before
 // the pod gets [EnvCCDJobPermissionMode] = [CCDJobPermissionBypass].
 //
@@ -173,7 +173,7 @@ type ClaudeCodeConfig struct {
 // at its next Stop -> Start, which re-applies the spec.
 func JobBypassListed(a agents.Agent, cfg Config) bool {
 	cc := cfg.ClaudeCode
-	if cc == nil || a.WorkerPool == "" || agents.IsChiefName(a.Name) {
+	if cc == nil || a.WorkerPool == "" || agents.IsFleetAgent(a) {
 		return false
 	}
 	return slices.Contains(cc.BypassPools, a.WorkerPool)
@@ -191,7 +191,7 @@ func JobBypassListed(a agents.Agent, cfg Config) bool {
 // would otherwise get an agent silently without them. Instructions IS honoured:
 // it is placed at [ClaudeCodeInstructionsPath], the CLI's managed-policy
 // CLAUDE.md (see that constant for why there and not in the workspace). So is
-// GatewaySidecar (chief_sidecar.go).
+// GatewaySidecar (gateway_sidecar.go).
 func buildClaudeCode(a agents.Agent, cfg Config, opts Options) (provision.Spec, error) {
 	cc := cfg.ClaudeCode
 	if cc == nil {
@@ -296,7 +296,7 @@ func buildClaudeCode(a agents.Agent, cfg Config, opts Options) (provision.Spec, 
 	}
 	if sidecar != nil {
 		// ccd presents the sidecar's OWN credential when it hands a gateway turn
-		// on, never the one muster sent it (chief_sidecar.go).
+		// on, never the one muster sent it (gateway_sidecar.go).
 		var own string
 		for _, e := range sidecar.Secrets {
 			if e.Name == EnvGatewayBearer {

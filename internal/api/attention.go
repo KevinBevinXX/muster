@@ -37,7 +37,7 @@ import (
 //   - "plugin": a reply draft awaiting its owner's approval — read LIVE from
 //     plugin_reply_drafts.
 // attentionItems is the one function that merges them; the page, the badge,
-// and the chief's attention_list all read it, so they cannot
+// and the agent's attention_list all read it, so they cannot
 // disagree about what is waiting.
 //
 // 🔴 A NOTIFICATION PER NEW ITEM, CLEARED BY TAG WHEN IT RESOLVES. An ask
@@ -425,7 +425,7 @@ const (
 // draftInboundText is a draft's inbound message as one line: who sent it and
 // the start of what they wrote (its subject when the body is empty). A sender
 // the plugin did not verify is followed by unverifiedSenderNote: this line
-// reaches the chief too (attention_list), not only the Attention view.
+// reaches the agent too (attention_list), not only the Attention view.
 func draftInboundText(m plugins.Message) string {
 	body := m.Body
 	if strings.TrimSpace(body) == "" {
@@ -490,7 +490,7 @@ func (s *Server) attentionItems(ctx context.Context) ([]attentionItem, error) {
 		errs = append(errs, fmt.Errorf("reply drafts: %w", err))
 	}
 	out = append(out, drafts...)
-	// Task events the chief has not taken (task_routing.go).
+	// Task events the agent has not taken (task_routing.go).
 	tasks, err := s.unroutedTaskItems(ctx)
 	if err != nil {
 		errs = append(errs, fmt.Errorf("tasks to route: %w", err))
@@ -1229,7 +1229,7 @@ func nonNilItems(items []attentionItem) []attentionItem {
 // returns {status: "answered_in_session", answer}.
 //
 // 🔴 ONLY THE OPERATOR'S OWN MESSAGES CALL THIS. A routed message (session
-// routing's send-queue rows), the chief's hand-back turn, a machine-token
+// routing's send-queue rows), the agent's hand-back turn, a machine-token
 // message and anything an agent sends are not the operator answering, and
 // none of those paths call it. ctx is the operator's principal (row-level
 // security keeps it to their own asks).

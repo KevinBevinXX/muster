@@ -26,15 +26,15 @@ import (
 
 // 🔴 THE REPLAY, THROUGH THE REAL PLANE. The shape of a measured miss, in a
 // synthetic fixture: an outside message about the node-7k upgrade reached the
-// chief, and the session that had been on that upgrade for hours was never
+// agent, and the session that had been on that upgrade for hours was never
 // named — its CURRENT focus had moved to another subtask (PR audits). Here the
 // real Postgres stores, the real plugin door, the real deliverer and the real
 // gateway run; only the agent runtime is a fake.
 //
-// What the chief's turn must carry: a "Sessions that may already be on this"
+// What the agent's turn must carry: a "Sessions that may already be on this"
 // block, at column 0 exactly once, naming session A and no other — not B or C
 // (unrelated), not D (its node-7k focus is 7 h old, outside the 6 h window), not
-// the chief itself (whose own focus mentions node-7k). A message about nothing
+// the agent itself (whose own focus mentions node-7k). A message about nothing
 // any session did carries no block, and a message that SPELLS the block's
 // header carries none either.
 //
@@ -75,7 +75,7 @@ func TestTheChiefsTurnNamesTheSessionAlreadyOnTheJob(t *testing.T) {
 		}
 		return a
 	}
-	chief := newAgent("hintchief", "chief")
+	agent := newAgent("hintchief", "agent")
 	sA, sB, sC, sD := newAgent("hint-a", "upgrade runner"), newAgent("hint-b", "notes writer"),
 		newAgent("hint-c", "billing"), newAgent("hint-d", "old runner")
 
@@ -96,10 +96,10 @@ func TestTheChiefsTurnNamesTheSessionAlreadyOnTheJob(t *testing.T) {
 	setFocus(sC, "Refactoring the billing export", "Splitting the CSV writer.", 0)
 	setFocus(sD, "Upgrading node-7k: drain and reboot", "An earlier attempt.", 7*time.Hour)
 	setFocus(sD, "Idle", "", 0)
-	setFocus(chief, "Triage of node-7k upgrade messages", "Reading the inbox about the node-7k drain.", 0)
+	setFocus(agent, "Triage of node-7k upgrade messages", "Reading the inbox about the node-7k drain.", 0)
 
 	rt := &pluginRuntime{}
-	rt.expect(chief)
+	rt.expect(agent)
 	up := httptest.NewServer(rt)
 	t.Cleanup(up.Close)
 	host, portStr, _ := net.SplitHostPort(strings.TrimPrefix(up.URL, "http://"))
@@ -116,9 +116,13 @@ func TestTheChiefsTurnNamesTheSessionAlreadyOnTheJob(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The plugin names the agent it delivers to (migration 0050).
+	if err := ps.SetTargetAgent(asOwner, p.ID, agent.ID); err != nil {
+		t.Fatal(err)
+	}
 	h := srv.Handler()
 
-	// deliver posts one message and returns the turn the chief was handed.
+	// deliver posts one message and returns the turn the agent was handed.
 	deliver := func(ext, subject, body string) string {
 		t.Helper()
 		js := fmt.Sprintf(`{"external_id":%q,"sender":"ops <ops@example.invalid>","subject":%q,"body":%q}`, ext+suffix, subject, body)
@@ -133,12 +137,12 @@ func TestTheChiefsTurnNamesTheSessionAlreadyOnTheJob(t *testing.T) {
 		}
 		srv.WaitForPluginDeliveries()
 		pl, err := ps.Plugin(asOwner, p.ID)
-		if err != nil || pl.ChiefSessionID == nil {
-			t.Fatalf("no chief session after %s: %+v %v (runtime saw %d)", ext, pl, err, len(rt.seen()))
+		if err != nil || pl.SessionID == nil {
+			t.Fatalf("no agent session after %s: %+v %v (runtime saw %d)", ext, pl, err, len(rt.seen()))
 		}
-		msgs, err := as.ListChatMessages(asOwner, *pl.ChiefSessionID)
+		msgs, err := as.ListChatMessages(asOwner, *pl.SessionID)
 		if err != nil || len(msgs) == 0 {
-			t.Fatalf("chief session: %v", err)
+			t.Fatalf("agent session: %v", err)
 		}
 		var last string
 		for _, m := range msgs {
@@ -174,7 +178,7 @@ func TestTheChiefsTurnNamesTheSessionAlreadyOnTheJob(t *testing.T) {
 	if !strings.Contains(block, "| "+id(sA)+" — upgrade runner\n") || !strings.Contains(block, "Upgrading node-7k: drain and reboot") {
 		t.Fatalf("the hint does not name session A with its node-7k focus:\n%s", block)
 	}
-	for _, other := range []agents.Agent{sB, sC, sD, chief} {
+	for _, other := range []agents.Agent{sB, sC, sD, agent} {
 		if strings.Contains(block, id(other)+" ") {
 			t.Errorf("the hint names %s (%s), which is not on the job:\n%s", id(other), other.DisplayName, block)
 		}

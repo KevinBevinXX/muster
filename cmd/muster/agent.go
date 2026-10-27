@@ -55,11 +55,11 @@ const (
 
 // newAgentMessagesCmd wraps GET /api/agents/{name}/messages.
 //
-// 🔴 WHY IT IS IN THE `agent` FAMILY AND NOT UNDER `chief`. It is keyed on an
+// 🔴 WHY IT IS IN THE `agent` FAMILY AND NOT UNDER `agent`. It is keyed on an
 // agent NAME, which is what this family already deals in (`agent resolve`), and
 // it reads the /api/agents namespace — it is the sibling of `agent ls`, one
-// level down. And it is not chief-specific: every agent has chat history;
-// `chief ask --agent` merely defaults to one of them.
+// level down. And it is not agent-specific: every agent has chat history;
+// `agent ask --agent` merely defaults to one of them.
 func newAgentMessagesCmd(a *app) *cobra.Command {
 	var (
 		session int64
@@ -71,12 +71,12 @@ func newAgentMessagesCmd(a *app) *cobra.Command {
 		Short: "GET /api/agents/{name}/messages — one chat session's persisted transcript",
 		Long: `Read what was said to an agent and what it said back.
 
-This is the READ half of ` + "`chief ask`" + `, which posts a message and prints one reply
+This is the READ half of ` + "`agent ask`" + `, which posts a message and prints one reply
 and leaves no way to see the conversation afterwards — not even the agent's own
 past replies.
 
 --session  a chat session id; default is the agent's MOST RECENTLY ACTIVE one,
-           which is the same session ` + "`chief ask`" + ` posts into. A session id that
+           which is the same session ` + "`agent ask`" + ` posts into. A session id that
            belongs to a DIFFERENT agent is a 404, not that agent's transcript.
 --limit    how many messages, keeping the NEWEST (default ` + strconv.Itoa(agentMessagesDefaultLimit) + `, ceiling ` + strconv.Itoa(agentMessagesMaxLimit) + `).
            A larger value is clamped, not refused, and the response reports the

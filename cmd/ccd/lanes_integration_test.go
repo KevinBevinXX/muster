@@ -261,7 +261,7 @@ func TestTmuxLaneEachCLIResumesItsOwnConversation(t *testing.T) {
 	}
 }
 
-// 🔴 A `claude` RUN INSIDE THE PRIMARY IS NOT THE PRIMARY. The chief's own shell
+// 🔴 A `claude` RUN INSIDE THE PRIMARY IS NOT THE PRIMARY. The agent's own shell
 // (here the fake's `!` shell mode, typed in the pane) starts a nested CLI that
 // inherits CLAUDE_CONFIG_DIR and the hook settings and has no CCD_LANE; its
 // SessionStart reaches ccd as a primary hook. Its session id must not replace

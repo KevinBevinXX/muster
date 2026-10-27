@@ -9,7 +9,7 @@ import (
 )
 
 // TestANoticeRouteAndATaskEventNeverTakeEachOthersRow (task routing, audit
-// round 2): a notice route is a delivered row routed around the chief, never
+// round 2): a notice route is a delivered row routed around the target, never
 // a task event, and under one external_id the first kind stored wins: the
 // other answers ErrTaskEventIDTaken. A repeat of the same route is the stored
 // row, not a second one.

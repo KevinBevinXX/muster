@@ -82,7 +82,7 @@ func TestADraftsNotificationNamesWhoAndWhereOnly(t *testing.T) {
 
 // TestADraftsAttentionLineMarksAnUnverifiedSender pins the WHOLE line a draft's
 // attention item shows — to the operator and, through attention_list, to the
-// chief: an unverified sender is followed by "(unverified sender)", the push's
+// agent: an unverified sender is followed by "(unverified sender)", the push's
 // wording; a verified one is not.
 func TestADraftsAttentionLineMarksAnUnverifiedSender(t *testing.T) {
 	for _, c := range []struct {
@@ -153,7 +153,7 @@ func TestWhoseWaitingWindowsTheQueueBelieves(t *testing.T) {
 // the send queue's add and its Retry of a failed message (PasteClaude: the
 // queue pastes into the Claude pane, as sendQueueSend's own paste pins below),
 // an agent's chat form and socket. A
-// new caller — a routed message, the chief's hand-back turn, a machine-token
+// new caller — a routed message, the agent's hand-back turn, a machine-token
 // message, anything an agent sends — or a queue that pasted elsewhere fails
 // here; so does a door that stopped answering.
 func TestOnlyTheOperatorsSendsAnswerAsksInSession(t *testing.T) {

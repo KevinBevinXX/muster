@@ -289,7 +289,7 @@ func (a *App) Credential(ctx context.Context, caller connectors.Caller, host, re
 	if repo == "" {
 		return "", false, fmt.Errorf("%w: the %s connector is backed by a GitHub App, which mints a token for the "+
 			"calling agent's own repository, and agent %s was dispatched without one (an agent with no "+
-			"repository, a chief, has no github access while the App is configured)", connectors.ErrTargetRefused,
+			"repository, an agent, has no github access while the App is configured)", connectors.ErrTargetRefused,
 			ConnectorName, caller.AgentName)
 	}
 	target, scoped, err := a.targetRepo(host, rest)

@@ -196,7 +196,7 @@ own account from the pool unless pinned.
 The form posts `worker_pool` to `POST /agents` with `kind=claude-code`. With any
 other kind, or a name outside the pattern, the server refuses the dispatch with
 **409** and the reason, and creates nothing. Neither the `muster` CLI nor the
-chief's `task_dispatch` can create an agent in a pool.
+agent's `task_dispatch` can create an agent in a pool.
 
 **A pool worker holds no GitHub credential.** The one way an agent gets one is
 a grant on a connector that reaches github.com — the `github` connector (the
@@ -375,7 +375,7 @@ kept — the job keeps its status and `error` says
 
    The agent's checkout, its branch, HEAD and working tree are not touched: an
    agent with uncommitted work is not refused and not changed.
-4. The prompt is sent as one turn — the same synchronous call `chief ask` makes
+4. The prompt is sent as one turn — the same synchronous call `agent ask` makes
    to ccd's `/v1/responses`. For a `sha` job the turn names the worktree, and
    ccd starts the session's CLI there (it accepts only a job worktree of that
    agent's workspace). The CLI treats a git worktree of the checkout it already

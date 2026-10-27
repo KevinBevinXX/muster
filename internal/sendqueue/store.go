@@ -214,11 +214,11 @@ var (
 	ErrEmpty = errors.New("sendqueue: nothing to queue: type a message first")
 	// ErrNotRetryable: the message did not fail, or was already retried.
 	ErrNotRetryable = errors.New("sendqueue: only a failed message can be retried, and only once")
-	// ErrRoutedNotRetryable: the message was routed by the chief (RouteID).
-	// Its failed route goes back to the chief; a Retry would requeue it as
+	// ErrRoutedNotRetryable: the message was routed by the agent (RouteID).
+	// Its failed route goes back to the agent; a Retry would requeue it as
 	// the person's own, with no route and no session binding. It is an
 	// ErrNotRetryable (errors.Is), so a caller that maps that one maps this.
-	ErrRoutedNotRetryable = fmt.Errorf("%w: a message your chief routed is not retried here; its failed route goes back to the chief", ErrNotRetryable)
+	ErrRoutedNotRetryable = fmt.Errorf("%w: a message the target agent routed is not retried here; its failed route goes back to the agent", ErrNotRetryable)
 )
 
 // PGStore is the queue on Postgres.
@@ -348,7 +348,7 @@ func (s *PGStore) enqueueTx(ctx context.Context, tx pgx.Tx, it Item) (Item, erro
 // (ErrRoutedNotRetryable): requeued as the person's own it would carry no route
 // and no session binding, so nothing would check the route its delivery is
 // gated on (internal/api sendQueueRoutedGate); its failed route goes back to
-// the chief instead. Another user's message is not found; the per-target bound
+// the agent instead. Another user's message is not found; the per-target bound
 // applies (ErrFull). Whether a message that may already have been delivered
 // may be retried is the caller's decision.
 func (s *PGStore) Retry(ctx context.Context, id int64, stepUpAt time.Time, afterSince int64) (Item, error) {
@@ -475,7 +475,7 @@ func (s *PGStore) Cancel(ctx context.Context, id int64, now time.Time) (Item, er
 // A ROUTED message is deleted like a person's: its route (session_routes)
 // names the row by send_queue_id with no foreign key, and the one thing that
 // reads it back — the route sweep's Cancel on a timeout — finds nothing and
-// still hands the route back to the chief.
+// still hands the route back to the agent.
 func (s *PGStore) Delete(ctx context.Context, id int64) error {
 	return pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
 		it, err := scanItem(tx.QueryRow(ctx, `SELECT `+cols+` FROM send_queue WHERE id = $1 FOR UPDATE`, id))

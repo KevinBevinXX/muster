@@ -53,12 +53,12 @@ func TestEachSendRouteAsksForItsOwnPane(t *testing.T) {
 func TestAnOlderMirrorDrawsTheComposerDisabledWhereItCannotPaste(t *testing.T) {
 	fm := &fakeMirror{online: true, interactive: true, oldMirror: true, v2: &fakeMirrorV2{}}
 	s, ts := viewServer(t, fm)
-	_, chief := mirrorGet(t, s, ts, ui.MirrorTerminalPath("ws", "chief"))
-	input, send := tagOf(chief, "mv-input"), tagOf(chief, "mv-send")
+	_, agent := mirrorGet(t, s, ts, ui.MirrorTerminalPath("ws", "agent"))
+	input, send := tagOf(agent, "mv-input"), tagOf(agent, "mv-send")
 	if !disabledAttr.MatchString(input) || !disabledAttr.MatchString(send) {
 		t.Fatalf("an older mirror's non-Claude session: the composer is not disabled: %s / %s", input, send)
 	}
-	if !strings.Contains(chief, "upgrade it to send into this session") || !strings.Contains(input, `placeholder="Update muster-mirror to send"`) {
+	if !strings.Contains(agent, "upgrade it to send into this session") || !strings.Contains(input, `placeholder="Update muster-mirror to send"`) {
 		t.Error("the disabled composer does not say why")
 	}
 	_, main := mirrorGet(t, s, ts, ui.MirrorTerminalPath("ws", "main"))
@@ -67,7 +67,7 @@ func TestAnOlderMirrorDrawsTheComposerDisabledWhereItCannotPaste(t *testing.T) {
 	}
 
 	fm.v2.pasteErr = mirror.ErrPanePasteUnsupported
-	code, body, _ := postSend(t, ts.URL, ui.MirrorTerminalSendPath, sessionCookieFor(s), "", url.Values{"host": {"ws"}, "session": {"chief"}, "text": {"ls"}})
+	code, body, _ := postSend(t, ts.URL, ui.MirrorTerminalSendPath, sessionCookieFor(s), "", url.Values{"host": {"ws"}, "session": {"agent"}, "text": {"ls"}})
 	if code != http.StatusConflict || !strings.Contains(body, "upgrade") {
 		t.Fatalf("the plugin's own refusal: %d %q, want 409 naming the upgrade", code, body)
 	}

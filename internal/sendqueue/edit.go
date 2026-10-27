@@ -39,7 +39,7 @@ import (
 // say so: a row carries a hold only while it is live.
 //
 // ROUTED messages are not editable (ErrRoutedNotEditable): their text is the
-// chief's, and their delivery is gated on the route, not on a person's sign-in.
+// agent's, and their delivery is gated on the route, not on a person's sign-in.
 
 // EditHold is how long an Edit holds its row: long enough to rewrite a message
 // on a phone, short enough that an abandoned edit does not stall the queue for
@@ -53,9 +53,9 @@ var (
 	// ErrEditSending: the message is being sent right now; it is past editing.
 	// An ErrNotEditable (errors.Is).
 	ErrEditSending = fmt.Errorf("%w: this one is being sent right now", ErrNotEditable)
-	// ErrRoutedNotEditable: the chief routed it; its text is the chief's. An
+	// ErrRoutedNotEditable: the agent routed it; its text is the agent's. An
 	// ErrNotEditable (errors.Is).
-	ErrRoutedNotEditable = fmt.Errorf("%w: a message your chief routed is not edited here", ErrNotEditable)
+	ErrRoutedNotEditable = fmt.Errorf("%w: a message the target agent routed is not edited here", ErrNotEditable)
 	// ErrHoldLapsed: Save (or Cancel) presented a hold that is no longer the
 	// row's live one — it ran out, or a later Edit took the row over. The row
 	// is still queued, with the text it had.

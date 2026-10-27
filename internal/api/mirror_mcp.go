@@ -30,16 +30,16 @@ import (
 // connector_request_decide, the operator deciding one of their agents'
 // connector requests through it (connector_decide_tools.go), which no
 // dispatched agent gets — and, with session routing on, route_reply: the
-// answer to a message the chief routed to THAT session (route_reply_tool.go).
+// answer to a message the agent routed to THAT session (route_reply_tool.go).
 //
 // 🔴 A MIRROR TOKEN NOW OPENS A SECOND ROUTE, AND THIS ONE IS NARROW. Until this
 // door, mmt_ opened /mirror/connect and nothing else. Here it opens exactly
-// mirrorTools and nothing else: no chief tool (they are not listed, and
+// mirrorTools and nothing else: no agent tool (they are not listed, and
 // serveMCP refuses an unlisted name), no agent connector tool, no flow. So a LEAKED mmt_
 // reaches, beyond what /mirror/connect already gives, the asks of that host's
 // sessions (file, wait, cancel), the tasks those sessions created, and — 🔴
 // through attention_answer — an answer AS THE OPERATOR to any of the owner's
-// open asks not raised by a mirrored session on that host (the chief's
+// open asks not raised by a mirrored session on that host (the agent's
 // included — and, by operator decision, as task_dispatch instructions too:
 // a leaked mmt_ can write a dispatched agent's prompt; the kickoff and audit
 // row name the host it came from) — and 🔴 through connector_request_decide,
@@ -47,8 +47,8 @@ import (
 // requests (operator decision "Build connector_approve MCP"; the grant and the
 // audit line name the host it came from) — and 🔴 through agent_destroy
 // (agent_destroy_tool.go, operator decision), the teardown of any agent of
-// the owner's but the chief, with NO audit row (the server log names the host). Never another task, another host's session, another owner's ask
-// or request, a secret, or a chief tool. The SESSION a call names is the caller's claim (its pane);
+// the owner's but the agent, with NO audit row (the server log names the host). Never another task, another host's session, another owner's ask
+// or request, a secret, or an agent tool. The SESSION a call names is the caller's claim (its pane);
 // only the HOST is proven, which is why attention_answer's rule is per host.
 //
 // 🔴 A HOST ACTS ONLY AS ITS OWN SESSIONS. The token names its host; the

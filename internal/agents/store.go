@@ -237,7 +237,7 @@ type ChatSession struct {
 	ReadAt time.Time `json:"readAt"`
 	// Runtime and Model are fixed when the session is created (migration 0030,
 	// session_runtime.go): Runtime "" is a LEGACY session, on the agent's own
-	// kind. IsDefault marks the one session plugin deliveries and `chief ask`
+	// kind. IsDefault marks the one session plugin deliveries and `agent ask`
 	// go to.
 	Runtime   string `json:"runtime"`
 	Model     string `json:"model"`

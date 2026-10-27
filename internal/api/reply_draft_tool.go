@@ -13,9 +13,9 @@ import (
 	"github.com/ZacxDev/muster/internal/push"
 )
 
-// THE CHIEF'S WAY TO ANSWER A PLUGIN MESSAGE: reply_draft (plugin interface, PR C).
+// THE AGENT'S WAY TO ANSWER A PLUGIN MESSAGE: reply_draft (plugin interface, PR C).
 //
-// The chief never sends anything. It files a DRAFT; the owner reads the exact
+// The agent never sends anything. It files a DRAFT; the owner reads the exact
 // text on /plugins and approves it (with a fresh sign-in) or rejects it; only an
 // approved draft is ever handed to the plugin, which sends it upstream.
 //
@@ -92,7 +92,7 @@ func draftCardAnchor(id int64) string { return "draft-" + strconv.FormatInt(id, 
 // 🔴 WHO AND WHERE, NEVER WHAT (operator decision "Summary only"): the title is
 // muster's; the body is "Reply draft: <sender's name> (<plugin label>)"
 // (draftPushBody) — no word of the message or of the draft, which are an
-// outside party's and the chief's text on a lock screen with no fence. The
+// outside party's and the agent's text on a lock screen with no fence. The
 // queue page and /plugins show them, behind the sign-in. Without the message
 // (m.ID 0) it is muster's fixed sentence.
 func (s *Server) notifyDraftAwaiting(ctx context.Context, owner int64, d plugins.Draft, m plugins.Message) {
@@ -148,7 +148,7 @@ func senderDisplayName(sender string) string {
 
 // unverifiedSender is how a one-line surface names a sender the plugin did not
 // verify: the draft push says it INSTEAD of the name, the attention item
-// (draftInboundText) AFTER it, as unverifiedSenderNote. The chief's turn and a
+// (draftInboundText) AFTER it, as unverifiedSenderNote. The agent's turn and a
 // routed paste carry the longer plugins.UnverifiedSenderMark.
 const unverifiedSender = "unverified sender"
 
@@ -163,5 +163,5 @@ const draftPushNameMax = 60
 // be read.
 const (
 	DraftPushTitle = "A reply draft awaits your approval"
-	DraftPushBody  = "Your chief drafted a reply to a plugin message. Nothing is sent until you approve it."
+	DraftPushBody  = "The target agent drafted a reply to a plugin message. Nothing is sent until you approve it."
 )

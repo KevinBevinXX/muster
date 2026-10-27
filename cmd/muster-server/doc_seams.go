@@ -372,14 +372,14 @@ package main
 //	  image this tree builds, with Provisioner nil, NINE routes answered 200 and
 //	  did nothing — POST /agents, POST /agents/{id}/start, POST /agents/{id}/stop,
 //	  DELETE /agents/{id}, GET /agents/{name}/logs/stream, GET /agents/{name}/ws,
-//	  POST /chief/provision, POST /runbooks/{id}/dispatch and
+//	  POST /agent/provision, POST /runbooks/{id}/dispatch and
 //	  POST /api/agents/{name}/messages. A dispatch rendered a card over a row that
 //	  stayed `provisioning`; a delete removed the card and left the row; the log
 //	  stream wrote `: connected` and closed, which a reader takes for "no logs".
 //	  🔴 THAT IS THE IDENTICAL OBSERVABLE THIS ENTRY REJECTS A FAKE FOR, six
 //	  paragraphs up. Wiring nil and wiring a fake were the same lie; only the
 //	  wrapper made the nil the honest option this entry always claimed it was.
-//	  POST /chief/provision was worse than a lie: its goroutine was bare, so the
+//	  POST /agent/provision was worse than a lie: its goroutine was bare, so the
 //	  nil deref killed the process rather than being recovered.
 //	⚠ THE WRAPPER'S LEDGER IS THE THING TO UPDATE, NOT THIS PROSE. The routes
 //	  above are pinned by TestEveryProvisionerRouteRefusesWhenItIsUnwired in

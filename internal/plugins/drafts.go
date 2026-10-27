@@ -15,7 +15,7 @@ import (
 	"github.com/ZacxDev/muster/internal/flows"
 )
 
-// REPLY DRAFTS (plugin_reply_drafts, migration 0016): the chief drafts a
+// REPLY DRAFTS (plugin_reply_drafts, migration 0016): the agent drafts a
 // reply to a plugin message (the reply_draft tool), its OWNER approves or rejects
 // the exact text on /plugins, and the plugin then CLAIMS an approved draft, sends
 // it upstream, and reports the result. muster never sends anything itself.
@@ -37,7 +37,7 @@ import (
 // whose lease lapses without a result becomes `unconfirmed` and is never offered
 // again. The claim query's `claimed_at IS NULL` is the rule; the lapse is
 // bookkeeping. What the owner may do instead is approve a NEW draft for the same
-// message (the chief files one; its card warns that an earlier reply may already
+// message (the agent files one; its card warns that an earlier reply may already
 // have reached the sender) — and if the unconfirmed one is then reported sent
 // after all, that new draft is superseded before it can go (FinishDraft).
 
@@ -265,7 +265,7 @@ func sweepDrafts(ctx context.Context, tx pgx.Tx) error {
 //
 // 🔴 ONE REPLY IN FLIGHT PER MESSAGE, AND THE MESSAGE ROW IS THE LOCK. Filing,
 // approving and settling all take it first, so an owner approving draft 1
-// while the chief files draft 2 for the same message are serialised, and the
+// while the agent files draft 2 for the same message are serialised, and the
 // second never becomes a second approved reply the sender would receive too.
 // A reply that has SETTLED (sent, failed) does not block a new one: answering
 // again after a send is the owner's decision to make on the new card.
@@ -561,7 +561,7 @@ func (s *PGStore) ClaimDraft(ctx context.Context, pluginID int64) (Claim, bool, 
 // of that message must not go too: every OTHER draft of it that is pending, or
 // approved and not yet claimed, becomes `superseded` (audited, naming the sent
 // draft). This is the MESSAGE-scoped rule, not a per-draft chain: it is what
-// closes the case where a draft's lease lapses (unconfirmed), the chief files a
+// closes the case where a draft's lease lapses (unconfirmed), the agent files a
 // new draft for the message, the owner approves it — and the first is then
 // reported sent after all. A claimed sibling is left alone (its plugin may be
 // sending it; its own result will settle it), and a "failed" supersedes nothing.

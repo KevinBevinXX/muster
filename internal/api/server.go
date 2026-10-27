@@ -142,7 +142,7 @@ type Server struct {
 	pluginRetrying sync.Map
 	draftWake      draftSignal
 	// routeKick wakes the route sweep (RunRouteTimeouts) early: a route just
-	// ended owing its chief a hand-back.
+	// ended owing its agent a hand-back.
 	routeKick     chan struct{}
 	routeKickOnce sync.Once
 	// attention is the attention queue's process state (attention.go): the
@@ -199,7 +199,7 @@ type Server struct {
 	activeAgentsMu  sync.Mutex
 	activeAgents    map[string]agentPhase
 	activeAgentsNow func() time.Time
-	// turns counts chat turns per agent and lets the chief replacement close
+	// turns counts chat turns per agent and lets the agent replacement close
 	// one (turn_gate.go).
 	turns turnGate
 
@@ -540,19 +540,14 @@ func (s *Server) registerAll(mux Mux) {
 	mux.HandleFunc("GET /share", s.requireSession(s.handleShare))
 	// The desktop app badge's count. Session-gated: it is task data.
 	mux.HandleFunc("GET /ui/tasks/review-count", s.requireSession(s.handleReviewCount))
-	mux.HandleFunc("GET /ui/chief/panel", s.requireSession(s.handleChiefPanel))
-	// 🔴 THREAD SEARCH IS requireSession AND ONLY requireSession. It returns
-	// MESSAGE CONTENT — an excerpt cut out of a chat message body — so no machine
-	// credential may reach it, however many neighbouring routes those credentials
-	// open. TestChiefThreadSearchIsOperatorOnly asserts the refusals.
-	mux.HandleFunc("GET /ui/chief/threads/search", s.requireSession(s.handleChiefThreadSearch))
-	// chief is the reserved-name agent; nothing else can create one.
-	mux.HandleFunc("POST /chief/provision", s.requireSession(s.requireLifecycleProvisioner(s.handleChiefProvision)))
-	// Replacing the chief (chief_replace.go): delete + re-create on another kind,
-	// behind an explicit confirm. requireArmedHookToken: a machine write that
-	// destroys an agent must not be served open on an unarmed server; a personal
-	// token acts as its owner.
-	mux.HandleFunc("POST /api/chief/replace", s.requireArmedHookToken(s.requireLifecycleProvisioner(s.handleChiefReplace)))
+	// ⚠ THE FOUR /agent ROUTES ARE GONE, WITH THE PRIVILEGED AGENT THEY SERVED:
+	// GET /ui/agent/panel and GET /ui/agent/threads/search (the slide-out and its
+	// thread search — every agent is reached at /agents/{name} instead),
+	// POST /agent/provision (it minted the reserved slug; agents are created by
+	// POST /agents like any other) and POST /api/agent/replace (it deleted and
+	// re-created the reserved slug to move it to another kind; an agent's kind is
+	// still fixed for life, so the equivalent is deleting one and dispatching
+	// another, which needs no route of its own).
 
 	s.registerNotesRoutes(mux)
 	s.registerGitHubRoutes(mux)

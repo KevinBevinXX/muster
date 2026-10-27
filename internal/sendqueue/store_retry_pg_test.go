@@ -82,7 +82,7 @@ func TestRetryQueuesAFailedMessageAgainOnce(t *testing.T) {
 // (ErrRoutedNotRetryable) — it is not requeued as the person's own, with no
 // route and no session binding, which would bypass the route's gate — and the
 // refusal queues nothing and leaves the row unretried. A failed route goes
-// back to the chief instead. The control is the same kind of row with no
+// back to the agent instead. The control is the same kind of row with no
 // route, which is retried.
 func TestARoutedMessageIsNotRetried(t *testing.T) {
 	s, _ := pgStore(t)

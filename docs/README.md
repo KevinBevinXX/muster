@@ -6,20 +6,19 @@ Start with the [project README](../README.md) for the pitch and a quickstart.
 
 - [tasks.md](tasks.md) — the task board, statuses, tags, the reaper, GitHub
 - [mirroring.md](mirroring.md) — mirrored tmux and Claude Code sessions
-- [focus.md](focus.md) — what each session is working on, and how the chief finds one
+- [focus.md](focus.md) — what each session is working on, and how the agent finds one
 - [suggested-replies.md](suggested-replies.md) — AI-suggested replies for a mirrored session's composer: when they appear, what is sent, and how they stay grounded
 - [attention.md](attention.md) — the attention queue: everything waiting on you, the agents' ask-and-wait tools, and answering an ask (`attention_answer`) or destroying an agent (`agent_destroy`) from your own mirrored session
 - [sending-and-step-up.md](sending-and-step-up.md) — the message box, and the step-up check that guards it
 - [dictation.md](dictation.md) — the microphone on every message box
 - [uploads.md](uploads.md) — attaching files in the composer; the signed link an agent downloads them through
 - [push.md](push.md) — Web Push and the installable app
-- [provisioner.md](provisioner.md) — dispatching agents, agent kinds, the chief, the provisioner seam
-- [chief.md](chief.md) — the chief on each agent kind, and replacing it (runbook)
+- [provisioner.md](provisioner.md) — dispatching agents, agent kinds, the agent, the provisioner seam
 - [browser-flows.md](browser-flows.md) — the browser-job queue and its runner protocol
 - [connectors.md](connectors.md) — credentials agents use without seeing them, and deciding an agent's request from your own mirrored session (`connector_request_decide`)
 - [github-app.md](github-app.md) — the GitHub App: muster's GitHub identity, and one-repository tokens for agents
 - [memo-relay.md](memo-relay.md) — cairn memos delivered to dispatched agents
-- [plugins.md](plugins.md) — out-of-process plugins that bring messages to your chief agent
+- [plugins.md](plugins.md) — out-of-process plugins that bring messages to the target agent agent
 - [jobs.md](jobs.md) — the machine job API: an external orchestrator runs one prompt on a claude-code agent and reads the result back
 
 **Running it**

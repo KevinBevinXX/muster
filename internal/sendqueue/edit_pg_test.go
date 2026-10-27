@@ -163,7 +163,7 @@ func TestEditIsRefusedOnARowBeingSentFinishedOrRouted(t *testing.T) {
 	if _, err := s.Hold(as(2), cancelled.ID); !errors.Is(err, ErrNotEditable) || errors.Is(err, ErrEditSending) {
 		t.Fatalf("Edit of a cancelled message: %v; want ErrNotEditable", err)
 	}
-	routed := mustEnqueue(t, s, 2, mirrorItem("the chief's words"))
+	routed := mustEnqueue(t, s, 2, mirrorItem("the agent's words"))
 	if _, err := pool.Exec(authzAll(), `UPDATE send_queue SET route_id = 'rt_000000000000000000000001' WHERE id = $1`, routed.ID); err != nil {
 		t.Fatal(err)
 	}

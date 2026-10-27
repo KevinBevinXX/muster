@@ -21,7 +21,7 @@ type kindSet struct {
 	plane *credentials.Plane
 }
 
-// The chief replacement refuses a dead account only through this optional
+// The agent replacement refuses a dead account only through this optional
 // interface; losing it here would silently drop that refusal.
 var _ api.ClaudeAccountHealth = kindSet{}
 

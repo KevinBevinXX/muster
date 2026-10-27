@@ -384,22 +384,22 @@ var bannerLedger = []string{
 	// plugin that files tasks holds its notices, so the operator must be told
 	// which state this is (and which namespaces are accepted).
 	envPluginTaskNamespaces,
-	// 🔴 SESSION ROUTING IS LEDGERED: ON, the chief can put an outside party's
+	// 🔴 SESSION ROUTING IS LEDGERED: ON, the agent can put an outside party's
 	// message into the operator's own sessions and relay the answer without
 	// approval to allowlisted senders, so the log must say which state this is
 	// and how many owners have an allowlist.
 	envSessionRouting,
 	envRouteRelayAllow,
 	// The route deadline: ON, the line names the value a route waits before it
-	// goes back to the chief; OFF, that it is not read.
+	// goes back to the agent; OFF, that it is not read.
 	envRouteTimeout,
 	// 🔴 TASK ROUTING IS LEDGERED: ON, an outside system's task notice reaches
-	// the chief, and with dispatch the chief can start agents on the owner's
+	// the agent, and with dispatch the agent can start agents on the owner's
 	// credentials, so the log must say which state this is.
 	envTaskRouting,
-	// CHIEF SESSION RUNTIMES ARE LEDGERED: ON, the chief's sessions may run on
+	// AGENT SESSION RUNTIMES ARE LEDGERED: ON, the agent's sessions may run on
 	// another runtime and model than its own, so the log must name which.
-	envChiefSessionRuntimes,
+	envAgentSessionRuntimes,
 	// 🔴 THE AGENT-FLOW DENY WORDS ARE LEDGERED: unset, the agent door screens
 	// agent-composed text with the generic patterns only, and that fail-open
 	// state must be a loud line, not a silence (the operator's audit of #76).
@@ -424,8 +424,8 @@ var bannerLedger = []string{
 // GITHUB_CLIENT_ID and MUSTER_GITHUB_TOKEN and neither of the other two, so the
 // entries say what is actually true of them.
 var bannerExempt = map[string]string{
-	envChiefDispatchOwners: "counted on the `task routing: ON with DISPATCH` line (with the caps), named on the ON line " +
-		"when empty, and on a `chief dispatch: INERT` line when set with task routing off",
+	envTaskDispatchOwners: "counted on the `task routing: ON with DISPATCH` line (with the caps), named on the ON line " +
+		"when empty, and on a `task dispatch: INERT` line when set with task routing off",
 	envStepUpWindow: "printed with its VALUE on the `mirrored sessions: ENABLED` line, the one plugin whose " +
 		"writes it gates; it has no OFF state (unset is the 12h default, an out-of-bounds value refuses to " +
 		"boot in loadConfig), and with the plugin off nothing reads it",
@@ -755,11 +755,11 @@ func bannerBothDirections(t *testing.T) (onOut, offOut string) {
 		SessionRouting:     true,
 		RouteRelayAllowRaw: "1:example-inbox:someone@example.invalid",
 		// Task routing: the banner branches on ext.TaskRouting (below).
-		TaskRouting:            true,
-		ChiefDispatchOwnersRaw: "1",
-		ChiefDispatchOwners:    map[int64]bool{1: true},
-		// Chief session runtimes: the banner branches on ext.SessionRuntimes (below).
-		ChiefSessionRuntimes: []string{"claude-code", "gateway"},
+		TaskRouting:           true,
+		TaskDispatchOwnersRaw: "1",
+		TaskDispatchOwners:    map[int64]bool{1: true},
+		// Agent session runtimes: the banner branches on ext.SessionRuntimes (below).
+		AgentSessionRuntimes: []string{"claude-code", "gateway"},
 		// The GitHub App: the banner branches on ext.GitHubApp (below); the key
 		// itself is never printed, so the fixture needs none.
 		GitHubAppID:         12345,

@@ -9,7 +9,7 @@ import (
 
 // A CHAT SESSION'S RUNTIME AND MODEL (migration 0030).
 //
-// The chief's pod runs two runtimes side by side: ccd (Claude Code) and the
+// The agent's pod runs two runtimes side by side: ccd (Claude Code) and the
 // model-gateway runtime (agentspec's sidecar). A session is tagged with one of
 // them, and a model, when it is created, and both are fixed for its life (a
 // database trigger refuses a change). muster routes each turn by the tag

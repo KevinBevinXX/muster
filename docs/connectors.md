@@ -163,10 +163,10 @@ the rest of the decision it replaces; the audit line keeps it.
 `POST /mirror/mcp`; no dispatched agent's tool list (gateway or `POST /mcp`)
 has them, and `POST /mcp` refuses an unlisted name. Because a gateway runtime
 can name any tool, each handler also refuses every caller that is not a
-mirrored session — the requesting agent and the chief included: *"… is
+mirrored session — the requesting agent and the agent included: *"… is
 available only to your owner's own mirrored Claude Code sessions"*. `POST
 /mirror/mcp` admits only a mirror host token (the hook token, an agent's and
-the chief's are 401), acts as that token's owner (row-level security), and runs
+the agent's are 401), acts as that token's owner (row-level security), and runs
 a call only for a Claude session **that host** lists now.
 
 **With the GitHub App, an agent dispatched without a repository gets nothing

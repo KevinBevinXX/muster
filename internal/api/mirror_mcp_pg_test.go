@@ -89,7 +89,7 @@ func mcpToolCall(name string, args any) string {
 
 // TestAMirroredSessionGetsTheAllAgentsToolsAndNothingElse: tools/list is
 // exactly the attention and task tools and the operator's own attention_answer
-// and connector decision tools; a chief tool or an agent tool called by name is
+// and connector decision tools; an agent tool or an agent tool called by name is
 // refused as unknown.
 func TestAMirroredSessionGetsTheAllAgentsToolsAndNothingElse(t *testing.T) {
 	f, ws, _, _ := newMirrorMCPFixture(t)

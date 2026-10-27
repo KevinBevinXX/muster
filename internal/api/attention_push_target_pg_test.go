@@ -25,7 +25,7 @@ func (f *answerFixture) tap(t *testing.T, key string) string {
 // MCP doors (row-level security and all), each push carries its tap route, and
 // a tap opens the asker's session — a mirrored Claude session's window
 // (secondSID runs in ws's @3, session "side"), a dispatched agent's page (the
-// chief's), a waiting window.
+// agent's), a waiting window.
 func TestAnAskOverEachDoorPushesItsSession(t *testing.T) {
 	f := newAnswerFixture(t)
 	urls := func() map[string]string {
@@ -49,8 +49,8 @@ func TestAnAskOverEachDoorPushesItsSession(t *testing.T) {
 	if loc, want := f.tap(t, mirrored), "/mirror/view?host=ws&session=side&window=%403"; loc != want {
 		t.Errorf("a tap on the mirrored ask opens %q, want %q", loc, want)
 	}
-	if loc, want := f.tap(t, chiefAsk), "/agents/"+f.chief.Name; loc != want {
-		t.Errorf("a tap on the chief's ask opens %q, want %q", loc, want)
+	if loc, want := f.tap(t, chiefAsk), "/agents/"+f.agent.Name; loc != want {
+		t.Errorf("a tap on the agent's ask opens %q, want %q", loc, want)
 	}
 	// ws's @1 starts waiting at a prompt after the host's first observation
 	// (which seeds silently).
@@ -82,7 +82,7 @@ func TestATapResolvesWhenTappedNotWhenSent(t *testing.T) {
 	if loc := f.tap(t, mirrored); !strings.HasPrefix(loc, "/mirror/view?") {
 		t.Fatalf("control: %s opens %q", mirrored, loc)
 	}
-	if loc := f.tap(t, chiefAsk); loc != "/agents/"+f.chief.Name {
+	if loc := f.tap(t, chiefAsk); loc != "/agents/"+f.agent.Name {
 		t.Fatalf("control: %s opens %q", chiefAsk, loc)
 	}
 	// ws's @1 starts waiting; the window list it is read from no longer has
@@ -97,10 +97,10 @@ func TestATapResolvesWhenTappedNotWhenSent(t *testing.T) {
 		t.Fatalf("control: %s opens %q", waiting, loc)
 	}
 
-	// @1 stops waiting, the chief is destroyed, and the third ask is answered
+	// @1 stops waiting, the agent is destroyed, and the third ask is answered
 	// on another device.
 	f.setWindows(mirror.StatusBusy)
-	if _, err := f.pool.Exec(authz.System(context.Background()), `DELETE FROM agents WHERE id = $1`, f.chief.ID); err != nil {
+	if _, err := f.pool.Exec(authz.System(context.Background()), `DELETE FROM agents WHERE id = $1`, f.agent.ID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := f.srv.answerAsk(asUser(1), answered, "done"); err != nil {

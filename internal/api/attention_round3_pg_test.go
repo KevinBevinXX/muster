@@ -157,7 +157,7 @@ func TestARecomputeNeverCommitsAnOlderReadOverANewerOne(t *testing.T) {
 
 // TestAnAgentCallerOfTheTaskStatusAPIObeysTheAgentRule: PATCH
 // /api/tasks/{id}/status with the service credential asserting an AGENT's
-// name (the chief's way in) can neither complete a task nor reopen a completed
+// name (the agent's way in) can neither complete a task nor reopen a completed
 // one; the operator's hook token can do both.
 func TestAnAgentCallerOfTheTaskStatusAPIObeysTheAgentRule(t *testing.T) {
 	f := newAttnFixture(t)
@@ -277,8 +277,8 @@ func (l listedAgents) List(context.Context) ([]agents.Agent, error) { return l.l
 // agent, the stricter rule.
 func TestActorIsAgentNamesTheChiefEitherWayAndFailsClosed(t *testing.T) {
 	s := New(nil, AuthConfig{}, log.New(io.Discard, "", 0))
-	s.UseExtensions(Extensions{Agents: listedAgents{list: []agents.Agent{{Name: "chief", DisplayName: "Chief of Staff"}}}, Notes: stubNotesStore{}, SessionLiveness: stubLiveness{}})
-	for actor, want := range map[string]bool{"chief": true, "CHIEF": true, " chief of staff ": true, "ci-bot": false, "": false} {
+	s.UseExtensions(Extensions{Agents: listedAgents{list: []agents.Agent{{Name: "agent", DisplayName: "Agent of Staff"}}}, Notes: stubNotesStore{}, SessionLiveness: stubLiveness{}})
+	for actor, want := range map[string]bool{"agent": true, "AGENT": true, " agent of staff ": true, "ci-bot": false, "": false} {
 		if got := s.actorIsAgent(context.Background(), actor); got != want {
 			t.Errorf("actorIsAgent(%q) = %v, want %v (the slug or the display name)", actor, got, want)
 		}

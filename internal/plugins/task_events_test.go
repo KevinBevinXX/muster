@@ -16,7 +16,7 @@ import (
 // TestTheTaskEventTurnIsExactlyThisBlock pins the WHOLE task-event turn: the
 // preface (muster's words: the task, the three tools, no reply) and the fence
 // carrying muster's structured record, with the outside fields on their own
-// lines. A reword fails here on purpose — this text is what tells the chief
+// lines. A reword fails here on purpose — this text is what tells the target
 // what it may do.
 func TestTheTaskEventTurnIsExactlyThisBlock(t *testing.T) {
 	task := int64(812)
@@ -117,7 +117,7 @@ func TestNoTaskEventFieldCanLeaveTheFence(t *testing.T) {
 }
 
 // TestTheTaskIDOnTheTurnIsTheRowsNotTheBodys: a body naming another task
-// cannot move the chief to it — the turn names the row's linked task.
+// cannot move the target to it — the turn names the row's linked task.
 func TestTheTaskIDOnTheTurnIsTheRowsNotTheBodys(t *testing.T) {
 	row := int64(5)
 	got := renderTaskEvent(Plugin{Label: "L"}, Message{ID: 1, Body: `{"event":"assigned","task_id":999}`, TaskID: &row}, fixedNonce, Retry{})
@@ -183,9 +183,9 @@ func TestATaskEventIsMustersAndItsOwners(t *testing.T) {
 	}
 }
 
-// TestConcurrentChiefDispatchesForOneTaskReserveOnce: ten racing reservations
+// TestConcurrentTaskDispatchesForOneTaskReserveOnce: ten racing reservations
 // for one task make ONE reservation; the rest answer Prior.
-func TestConcurrentChiefDispatchesForOneTaskReserveOnce(t *testing.T) {
+func TestConcurrentTaskDispatchesForOneTaskReserveOnce(t *testing.T) {
 	s, pool, _ := pgStore(t)
 	dbtest.OwnerExec(t, dbtest.DSN(t), `DELETE FROM audit_log WHERE action LIKE 'task.chief_dispatch%'`)
 	const task = 424242
@@ -196,7 +196,7 @@ func TestConcurrentChiefDispatchesForOneTaskReserveOnce(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			r, err := s.ReserveChiefDispatch(session(2), task, nil, nil)
+			r, err := s.ReserveTaskDispatch(session(2), task, nil, nil)
 			mu.Lock()
 			defer mu.Unlock()
 			switch {
@@ -215,22 +215,22 @@ func TestConcurrentChiefDispatchesForOneTaskReserveOnce(t *testing.T) {
 	}
 	var rows int
 	if err := pool.QueryRow(session(2), `SELECT count(*) FROM audit_log WHERE action = $1 AND object = $2`,
-		ActionChiefDispatch, NoteObject(task)).Scan(&rows); err != nil || rows != 1 {
+		ActionTaskDispatch, NoteObject(task)).Scan(&rows); err != nil || rows != 1 {
 		t.Fatalf("reservation rows %d (%v), want 1", rows, err)
 	}
 }
 
-// TestAChiefDispatchCheckRefusalWritesNothing: the caller's check refusing
+// TestATaskDispatchCheckRefusalWritesNothing: the caller's check refusing
 // leaves no reservation, so a refused start spends nothing.
-func TestAChiefDispatchCheckRefusalWritesNothing(t *testing.T) {
+func TestATaskDispatchCheckRefusalWritesNothing(t *testing.T) {
 	s, pool, _ := pgStore(t)
 	dbtest.OwnerExec(t, dbtest.DSN(t), `DELETE FROM audit_log WHERE action LIKE 'task.chief_dispatch%'`)
 	no := errors.New("gated")
-	if _, err := s.ReserveChiefDispatch(session(2), 77, nil, func() error { return no }); !errors.Is(err, no) {
+	if _, err := s.ReserveTaskDispatch(session(2), 77, nil, func() error { return no }); !errors.Is(err, no) {
 		t.Fatalf("err %v, want the check's", err)
 	}
 	var rows int
-	if err := pool.QueryRow(session(2), `SELECT count(*) FROM audit_log WHERE action = $1`, ActionChiefDispatch).Scan(&rows); err != nil || rows != 0 {
+	if err := pool.QueryRow(session(2), `SELECT count(*) FROM audit_log WHERE action = $1`, ActionTaskDispatch).Scan(&rows); err != nil || rows != 0 {
 		t.Fatalf("rows %d (%v), want 0", rows, err)
 	}
 }
@@ -243,13 +243,13 @@ func TestAPendingStartCountsAsLive(t *testing.T) {
 	s, _, _ := pgStore(t)
 	dbtest.OwnerExec(t, dbtest.DSN(t), `DELETE FROM audit_log WHERE action LIKE 'task.chief_%'`)
 	// The cap is the operator's number (5, raised from 2), pinned as a literal
-	// so a change to MaxChiefLiveAgents has to change this too.
+	// so a change to MaxLiveDispatchedAgents has to change this too.
 	for _, task := range []int64{501, 502, 503, 504, 505} {
-		if r, err := s.ReserveChiefDispatch(session(2), task, nil, nil); err != nil || r.Prior {
+		if r, err := s.ReserveTaskDispatch(session(2), task, nil, nil); err != nil || r.Prior {
 			t.Fatalf("reserve %d: %+v %v", task, r, err)
 		}
 	}
-	if _, err := s.ReserveChiefDispatch(session(2), 506, nil, nil); !errors.Is(err, ErrChiefLiveCap) {
-		t.Fatalf("a sixth start with five in flight: %v, want ErrChiefLiveCap", err)
+	if _, err := s.ReserveTaskDispatch(session(2), 506, nil, nil); !errors.Is(err, ErrDispatchLiveCap) {
+		t.Fatalf("a sixth start with five in flight: %v, want ErrDispatchLiveCap", err)
 	}
 }

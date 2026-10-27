@@ -3,7 +3,7 @@
 //
 // 🔴 ONE COPY, EVERY CALLER. It was internal/mirrorhost's (the pending-action
 // summary a waiting session sends, below) and moved here unchanged when the
-// chief's sessions_overview began quoting session transcripts
+// agent's sessions_overview began quoting session transcripts
 // (internal/api's sessions_overview.go); the host also runs every field of a
 // rendered view's transcript stream through it (internal/mirrorhost's
 // redact_stream.go). A second redactor would drift from this one — the shapes
@@ -21,7 +21,7 @@ import (
 // BEFORE sessions_overview QUOTES A TRANSCRIPT.
 //
 // What a waiting session waits on is shown on muster's queue page and handed
-// to the chief's model by attention_list, so a command line pasted there must
+// to the agent's model by attention_list, so a command line pasted there must
 // not carry the credential it was typed with. Every value that LOOKS like a
 // secret is replaced by «redacted» here, on the host, before muster sees it:
 //

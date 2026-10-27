@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -448,3 +449,63 @@ func TestAnAgentSendThatComesBackAsAGETIsSentBackToItsPage(t *testing.T) {
 		t.Fatal("a GET ran a turn")
 	}
 }
+
+// ---------------------------------------------------------------------------
+
+// tokenAgentsStore resolves exactly one hooks token to a real agent, so the
+// agent credential presented below is one requireAgentToken would accept.
+type tokenAgentsStore struct {
+	agents.Store
+	token string
+	agent agents.Agent
+}
+
+func (s tokenAgentsStore) GetByHooksToken(_ context.Context, token string) (agents.Agent, error) {
+	if token == s.token {
+		a := s.agent
+		if a.OwnerID == 0 { // a Postgres row always has an owner; see relayAgents
+			a.OwnerID = 1
+		}
+		return a, nil
+	}
+	return agents.Agent{}, errNoSuchAgentInTest
+}
+
+var errNoSuchAgentInTest = &testError{"no agent with that hooks token"}
+
+type testError struct{ s string }
+
+func (e *testError) Error() string { return e.s }
+
+const (
+	// A configured hook token: the shared machine credential every hook script
+	// on both hosts holds.
+	testHookToken = "hook-token-for-the-shared-machine-tier-not-a-real-secret"
+	// A per-agent hooks token that the store below resolves.
+	testAgentToken = "agent-hooks-token-that-resolves-to-a-row-not-a-real-secret"
+	// Long enough to clear minUIPasswordLen so the browser tier is CONFIGURED
+	// rather than fail-closed. See the control test below for why that matters.
+	testUIPassword = "an-operator-password-long-enough-to-be-accepted-not-a-real-one"
+)
+
+// operatorOnlyServer is a Server on which both machine credentials are real.
+func operatorOnlyServer(t *testing.T) http.Handler {
+	t.Helper()
+	s := New(nil, AuthConfig{
+		HookToken:  testHookToken,
+		UIPassword: testUIPassword,
+	}, log.New(os.Stderr, "", 0))
+	s.UseExtensions(Extensions{
+		Agents: tokenAgentsStore{
+			token: testAgentToken,
+			agent: agents.Agent{ID: 1, Name: "agent"},
+		},
+	})
+	return s.Handler()
+}
+
+// chiefThreadSearchPath is the route under test. It is spelled once.
+const chiefThreadSearchPath = "/ui/agent/threads/search"
+
+// TestChiefThreadSearchIsOperatorOnly asserts the refusal the route's comment
+// promises: neither machine credential gets in.

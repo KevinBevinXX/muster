@@ -190,9 +190,9 @@ type Extensions struct {
 	// 0015). nil means plugins are OFF (MUSTER_PLUGINS unset), which is the
 	// default: every /plugin/* route and /plugins answer 404. See plugins.go.
 	Plugins plugins.Store
-	// PluginGateway resolves the owner's chief before a plugin message is handed
+	// PluginGateway resolves the owner's agent before a plugin message is handed
 	// to it (agentgateway.Gateway satisfies it); the turn itself is chatTurn's,
-	// over Gateway, so the chief has its tools on it. nil (or a nil Gateway) with
+	// over Gateway, so the agent has its tools on it. nil (or a nil Gateway) with
 	// Plugins set: messages are stored and stay queued — nothing is delivered.
 	PluginGateway plugins.Gateway
 
@@ -242,19 +242,19 @@ type Extensions struct {
 
 	// Routes is session routing's store (internal/plugins/routes.go, migration
 	// 0021) and Routing its configuration. Routing nil — MUSTER_SESSION_ROUTING
-	// unset — is OFF: the chief's route_to_session tool is not offered,
-	// POST /api/routes/{id}/reply answers 404, and the chief's plugin turns do
+	// unset — is OFF: the agent's route_to_session tool is not offered,
+	// POST /api/routes/{id}/reply answers 404, and the agent's plugin turns do
 	// not mention routing.
 	Routes  plugins.RouteStore
 	Routing *Routing
 
 	// TaskRouting is task routing's configuration (task_routing.go,
 	// MUSTER_TASK_ROUTING). nil is OFF, the default: POST /plugin/v1/tasks
-	// ignores route_to_chief and the chief's task_route_attention / task_forward
-	// / task_dispatch tools are not offered. ChiefDispatch is the ledger
+	// ignores route_to_chief and the agent's task_route_attention / task_forward
+	// / task_dispatch tools are not offered. TaskDispatch is the ledger
 	// task_dispatch counts its caps from (the plugin store).
-	TaskRouting   *TaskRouting
-	ChiefDispatch plugins.DispatchStore
+	TaskRouting  *TaskRouting
+	TaskDispatch plugins.DispatchStore
 
 	// Attention is the attention queue's explicit asks (internal/attention,
 	// migration 0025). nil (no database): the attention tools are not offered,
@@ -265,13 +265,13 @@ type Extensions struct {
 	// /mirror/connect reads. nil: POST /mirror/mcp answers 404.
 	MirrorTokens MirrorTokenAuth
 
-	// SessionRuntimes is MUSTER_CHIEF_SESSION_RUNTIMES: the runtimes a chief
+	// SessionRuntimes is MUSTER_AGENT_SESSION_RUNTIMES: the runtimes an agent
 	// chat session may be started on besides its own kind (session_runtime.go).
 	// Empty, the default: no picker is drawn and POST /agents/{id}/sessions
 	// refuses a runtime.
 	//
-	// ⚠ IT GATES THE PICKER, NOT THE ROUTING. Plugin deliveries and `chief ask`
-	// go to the chief's DEFAULT session (defaultSession) whether or not this is
+	// ⚠ IT GATES THE PICKER, NOT THE ROUTING. Plugin deliveries and `agent ask`
+	// go to the agent's DEFAULT session (defaultSession) whether or not this is
 	// set, on any store with the 0030 half — so on such a deployment a plugin no
 	// longer gets a session of its own even with this empty. That is the
 	// operator's "one pinned default session" decision, not a leak of the flag.
@@ -348,7 +348,7 @@ type Routing struct {
 	// fall back to a pending draft.
 	Allow plugins.RelayAllowlist
 	// Timeout is how long a routed message waits for its session's answer
-	// before it is handed back to the chief (0: DefaultRouteTimeout).
+	// before it is handed back to the agent (0: DefaultRouteTimeout).
 	Timeout time.Duration
 }
 
@@ -448,7 +448,7 @@ func (s *Server) UseExtensions(ext Extensions) {
 	s.pluginDeliverer = nil
 	if ext.Plugins != nil && ext.PluginGateway != nil && ext.Gateway != nil && ext.Agents != nil {
 		// 🔴 Turn IS chatTurn: the delivered message runs as an ordinary chat turn
-		// WITH the chief's tools, never as a toolless send (plugins.TurnFunc).
+		// WITH the agent's tools, never as a toolless send (plugins.TurnFunc).
 		d, err := plugins.NewDeliverer(plugins.DelivererConfig{Store: ext.Plugins, Agents: ext.Agents,
 			Gateway: ext.PluginGateway, Turn: s.chatTurn, Logger: s.logger, Routing: routingOn(ext),
 			// The session hint (sessions_overview.go): which live sessions may
@@ -905,7 +905,7 @@ type AgentKinds interface {
 
 // ClaudeAccountHealth is an optional extension of [AgentKinds]: whether one of
 // owner's Claude accounts can authenticate. "" means usable; a sentence says why
-// not. The chief replacement asks it before deleting anything
+// not. The agent replacement asks it before deleting anything
 // (chief_replace.go); dispatch does not, because a pin there is an override.
 // cmd/muster-server's kindSet implements it (asserted there).
 type ClaudeAccountHealth interface {

@@ -386,7 +386,7 @@ func exprText(e ast.Expr) string {
 }
 
 // TestTheCompleteStopIsOnTheStatusFunnel: a task becoming `complete` stops the
-// agent the chief started for it (stopChiefAgentOnComplete), and the call sits
+// agent the agent started for it (stopDispatchedAgentOnComplete), and the call sits
 // in setNoteStatus — so, with
 // TestSetNoteStatusIsTheOnlyPlaceThisPackageCallsTheStoresSetStatus above,
 // every status writer reaches it by construction. It fails when anything ELSE
@@ -397,13 +397,13 @@ func TestTheCompleteStopIsOnTheStatusFunnel(t *testing.T) {
 	files := parsePackageSources(t, fset)
 	var callers []string
 	for _, f := range files {
-		forEachCallTo(f, "stopChiefAgentOnComplete", func(enclosing string, _ *ast.CallExpr) {
+		forEachCallTo(f, "stopDispatchedAgentOnComplete", func(enclosing string, _ *ast.CallExpr) {
 			callers = append(callers, enclosing)
 		})
 	}
 	sort.Strings(callers)
 	if got := strings.Join(callers, ","); got != "setNoteStatus" {
-		t.Errorf("stopChiefAgentOnComplete is called from [%s], want exactly [setNoteStatus]: "+
+		t.Errorf("stopDispatchedAgentOnComplete is called from [%s], want exactly [setNoteStatus]: "+
 			"the funnel every status writer passes, so no writer of `complete` can skip it", got)
 	}
 }

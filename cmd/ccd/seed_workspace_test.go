@@ -132,7 +132,7 @@ func TestSeedDoesNotReplaceADirectoryWhoseParentIsUnwritable(t *testing.T) {
 }
 
 // Invariant guard (not regression coverage — the bug never touched it): a
-// writable workspace that already exists — the chief's, ccd-created on its
+// writable workspace that already exists — the agent's, ccd-created on its
 // volume — is used as it is: its files kept, nothing replaced, nothing logged.
 func TestSeedLeavesAWritableWorkspaceAlone(t *testing.T) {
 	ws := filepath.Join(t.TempDir(), "workspace")

@@ -15,7 +15,7 @@ import (
 // a pending or a stopped agent), the task's own state (open, gated, in
 // progress) and the owner's dispatch opt-in (off, on for someone else, on for
 // this owner), the actions task_route_attention offers the owner are exactly
-// the tools that then ACT when the chief calls them — task_forward forwards,
+// the tools that then ACT when the agent calls them — task_forward forwards,
 // task_dispatch starts an agent (any refusal at all counts as not acting).
 // route_to_session is never offered (a task event is no_reply). The ask's
 // buttons are the offered actions, in order.
@@ -28,6 +28,12 @@ func TestTheActionsOfferedOnATaskAreExactlyTheToolsThatWouldAct(t *testing.T) {
 		// status, when set, is the task's status before the ask.
 		status string
 	}
+	// executed counts the subtests that ran PAST the fixture's skip: without a
+	// database every subtest skips inside newTaskRouteFixture before doing
+	// anything, and the vacuity check below must not then fire — the comparison
+	// is not vacuous, it merely never ran. Only a database-less run leaves
+	// executed at 0; with one, every subtest reaches it.
+	executed := 0
 	for _, dc := range []struct {
 		name            string
 		dispatch, optIn bool
@@ -39,6 +45,7 @@ func TestTheActionsOfferedOnATaskAreExactlyTheToolsThatWouldAct(t *testing.T) {
 				}
 				t.Run(dc.name+"/worker-"+firstNonBlank(worker, "none")+"/task-"+tc.name, func(t *testing.T) {
 					f := newTaskRouteFixture(t, dc.dispatch, dc.optIn)
+					executed++
 					f.srv.taskForwardTurn = func(context.Context, agents.Agent, agents.ChatSession, string) {}
 					n := f.task(t, "who takes it", tc.tags...)
 					if tc.status != "" {
@@ -52,7 +59,7 @@ func TestTheActionsOfferedOnATaskAreExactlyTheToolsThatWouldAct(t *testing.T) {
 							t.Fatal(err)
 						}
 					}
-					res := f.call(f.chief, taskRouteAttentionTool, map[string]any{"task_id": n.ID, "note": "Who should take it?"})
+					res := f.call(f.agent, taskRouteAttentionTool, map[string]any{"task_id": n.ID, "note": "Who should take it?"})
 					var out struct {
 						ID      int64    `json:"id"`
 						Offered []string `json:"actions_offered"`
@@ -77,9 +84,9 @@ func TestTheActionsOfferedOnATaskAreExactlyTheToolsThatWouldAct(t *testing.T) {
 					if offered[routeToSessionToolName] {
 						t.Error("route_to_session was offered for a task event, which it refuses (no_reply)")
 					}
-					fwd := f.call(f.chief, taskForwardTool, map[string]any{"task_id": n.ID, "note": "over to you"})
+					fwd := f.call(f.agent, taskForwardTool, map[string]any{"task_id": n.ID, "note": "over to you"})
 					forwarded := !strings.Contains(fwd, `"error"`)
-					disp := f.call(f.chief, taskDispatchTool, map[string]any{"task_id": n.ID})
+					disp := f.call(f.agent, taskDispatchTool, map[string]any{"task_id": n.ID})
 					started := !strings.Contains(disp, `"error"`) && strings.Contains(disp, `"agent_id"`)
 					if offered[taskForwardTool] != forwarded {
 						t.Errorf("task_forward offered=%v, but the tool forwarded=%v: %s", offered[taskForwardTool], forwarded, fwd)
@@ -102,9 +109,13 @@ func TestTheActionsOfferedOnATaskAreExactlyTheToolsThatWouldAct(t *testing.T) {
 		}
 	}
 	// The comparison is not vacuous: each action was both offered and withheld.
-	for tool, tl := range seen {
-		if tl.offered == 0 || tl.withheld == 0 {
-			t.Errorf("%s was offered %d and withheld %d times across the matrix: the comparison cannot see one side", tool, tl.offered, tl.withheld)
+	// Only enforce it when at least one subtest executed — a database-less run
+	// skipped them all, and a tally that never ran proves nothing.
+	if executed > 0 {
+		for tool, tl := range seen {
+			if tl.offered == 0 || tl.withheld == 0 {
+				t.Errorf("%s was offered %d and withheld %d times across the matrix: the comparison cannot see one side", tool, tl.offered, tl.withheld)
+			}
 		}
 	}
 }
@@ -118,7 +129,7 @@ func TestATaskWithALiveAgentOffersForwardNotDispatch(t *testing.T) {
 	if _, err := agents.NewPG(f.pool).Create(f.asOwner, agents.Agent{Name: "tact-live", Namespace: "ns-tact", Status: agents.StatusRunning, NoteID: &n.ID}); err != nil {
 		t.Fatal(err)
 	}
-	res := f.call(f.chief, taskRouteAttentionTool, map[string]any{"task_id": n.ID, "note": "?"})
+	res := f.call(f.agent, taskRouteAttentionTool, map[string]any{"task_id": n.ID, "note": "?"})
 	var out struct {
 		Offered []string `json:"actions_offered"`
 	}

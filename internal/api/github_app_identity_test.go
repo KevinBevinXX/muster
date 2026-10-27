@@ -83,7 +83,7 @@ func TestAClaudeCodeDispatchChecksTheAppsRepositoriesFirst(t *testing.T) {
 	connectRepos(t, s, "oauth-account/only-via-oauth")
 	s.ext.GitHubApp = &listingApp{repos: []string{"example-org/widget"}}
 	rec := postDispatch(t, s, h, url.Values{"kind": {"claude-code"}, "note_text": {"t"}, "repo": {"oauth-account/only-via-oauth"}})
-	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), chiefDispatchRepo) || len(store.rows()) != 0 {
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), taskDispatchRepo) || len(store.rows()) != 0 {
 		t.Fatalf("an OAuth-only repository under the App: %d %q rows=%d", rec.Code, rec.Body, len(store.rows()))
 	}
 	rec = postDispatch(t, s, h, url.Values{"kind": {"claude-code"}, "note_text": {"t"}, "repo": {"Example-Org/Widget"}})
@@ -99,21 +99,21 @@ func TestAClaudeCodeDispatchChecksTheAppsRepositoriesFirst(t *testing.T) {
 // OAuth connection's repositories are the connected ones, as before.
 func TestTheOAuthConnectionStillDecidesWithoutAnApp(t *testing.T) {
 	s, _, _ := kindsServer(t, stubKinds{pick: "work"})
-	if why := s.connectedRepo(context.Background(), "oauth-account/repo"); why != chiefDispatchNoGitHub {
+	if why := s.connectedRepo(context.Background(), "oauth-account/repo"); why != taskDispatchNoGitHub {
 		t.Fatalf("no App, no OAuth: %q", why)
 	}
 	connectRepos(t, s, "oauth-account/repo")
 	if why := s.connectedRepo(context.Background(), "oauth-account/repo"); why != "" {
 		t.Fatalf("no App, OAuth-connected repo refused: %q", why)
 	}
-	if why := s.connectedRepo(context.Background(), "example-org/widget"); !strings.Contains(why, chiefDispatchRepo) {
+	if why := s.connectedRepo(context.Background(), "example-org/widget"); !strings.Contains(why, taskDispatchRepo) {
 		t.Fatalf("no App, an unconnected repo: %q", why)
 	}
 }
 
 // TestTaskDispatchsEffectiveRepoIsCheckedAgainstTheApp: task_dispatch's
 // effective-repository check (#150) uses the App's installation repositories
-// for an ADMIN owner's chief — and, for a MEMBER owner's chief (R2), the App's
+// for an ADMIN owner's agent — and, for a MEMBER owner's agent (R2), the App's
 // repositories are not connected at all.
 func TestTaskDispatchsEffectiveRepoIsCheckedAgainstTheApp(t *testing.T) {
 	f := newTaskRouteFixture(t, true, true)
@@ -123,10 +123,10 @@ func TestTaskDispatchsEffectiveRepoIsCheckedAgainstTheApp(t *testing.T) {
 		p, _ := authz.From(f.asOwner)
 		p.Role = role
 		raw, _ := json.Marshal(args)
-		return f.srv.dispatchAgentTool(authz.WithPrincipal(f.asOwner, p), f.chief, taskDispatchTool, string(raw))
+		return f.srv.dispatchAgentTool(authz.WithPrincipal(f.asOwner, p), f.agent, taskDispatchTool, string(raw))
 	}
-	f.mustRefuse(t, callAs(authz.RoleMember, map[string]any{"task_id": n.ID, "repo": "example/app"}), chiefDispatchNoGitHub, n.ID)
-	f.mustRefuse(t, callAs(authz.RoleAdmin, map[string]any{"task_id": n.ID, "repo": "stranger/app"}), chiefDispatchRepo, n.ID)
+	f.mustRefuse(t, callAs(authz.RoleMember, map[string]any{"task_id": n.ID, "repo": "example/app"}), taskDispatchNoGitHub, n.ID)
+	f.mustRefuse(t, callAs(authz.RoleAdmin, map[string]any{"task_id": n.ID, "repo": "stranger/app"}), taskDispatchRepo, n.ID)
 	text := callAs(authz.RoleAdmin, map[string]any{"task_id": n.ID, "repo": "example/app"})
 	if strings.Contains(text, `"error"`) {
 		t.Fatalf("an installation repository, admin owner: %s", text)
@@ -169,17 +169,17 @@ func TestTheAgentCardShowsTheAppsProblemForARepoAgent(t *testing.T) {
 	s, _, _ := kindsServer(t, stubKinds{pick: "work"})
 	s.ext.GitHubApp = &listingApp{problem: "GitHub refused the GitHub App's credentials (401) while minting"}
 	withRepo := s.cardViewIndexed(agents.Agent{ID: 1, Name: "a", Repo: "example-org/widget", OwnerID: 1}, nil, time.Time{}, 0,
-		func(agents.Agent) bool { return false }, pins.Set{}, nil)
+		pins.Set{}, nil)
 	if !strings.Contains(withRepo.GitHubProblem, "(401)") {
 		t.Fatalf("a repository agent's card carries no App problem: %+v", withRepo.GitHubProblem)
 	}
 	noRepo := s.cardViewIndexed(agents.Agent{ID: 2, Name: "b"}, nil, time.Time{}, 0,
-		func(agents.Agent) bool { return false }, pins.Set{}, nil)
+		pins.Set{}, nil)
 	if noRepo.GitHubProblem != "" {
 		t.Fatalf("an agent without a repository shows the App's problem: %q", noRepo.GitHubProblem)
 	}
 	memberOwned := s.cardViewIndexed(agents.Agent{ID: 3, Name: "c", Repo: "example-org/widget", OwnerID: 2}, nil, time.Time{}, 0,
-		func(agents.Agent) bool { return false }, pins.Set{}, nil)
+		pins.Set{}, nil)
 	if memberOwned.GitHubProblem != "" {
 		t.Fatalf("a member's agent shows the (admin-only) App's problem: %q", memberOwned.GitHubProblem)
 	}

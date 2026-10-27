@@ -102,7 +102,7 @@ func TestANoticeIsACodeThePageTranslatesNeverTextFromTheLink(t *testing.T) {
 		i := strings.Index(page, `<p id="mv-note"`)
 		return page[i : i+strings.Index(page[i:], "</p>")]
 	}
-	base := ui.MirrorTerminalPath("ws", "chief")
+	base := ui.MirrorTerminalPath("ws", "agent")
 	for code, want := range map[string]string{
 		noticeSent:     "Sent.",
 		noticeAgain:    ComposerNoticeAgain,

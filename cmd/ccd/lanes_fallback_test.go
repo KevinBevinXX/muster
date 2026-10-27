@@ -41,7 +41,7 @@ func writeTranscriptAt(t *testing.T, dir, id, body string, at time.Time) {
 
 // 🟡 A `claude -p` RUN IN THE POD IS NOT THE PRIMARY'S CONVERSATION. With no
 // record, the primary resumes the newest transcript in its project directory
-// that is not a lane's — and `claude -p` (a chief's shell, a script) writes a
+// that is not a lane's — and `claude -p` (an agent's shell, a script) writes a
 // top-level transcript there too, stamped "entrypoint":"sdk-cli". It must be
 // skipped for the older interactive ("cli") one, however new it is.
 func TestTheUnrecordedFallbackSkipsAnSDKRun(t *testing.T) {

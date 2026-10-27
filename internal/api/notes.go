@@ -1299,13 +1299,11 @@ func (s *Server) handleNoteDelete(w http.ResponseWriter, r *http.Request) {
 // produced). Reading it first is kept regardless: it is the order that makes the
 // two deletion modes behave identically, and it is what a future purge needs.
 //
-// 🔴 THE CHIEF IS NEVER TORN DOWN BY A DISMISS. The TASK is still dismissed —
-// the operator asked for that and it is recoverable — but a linked agent that
-// isChiefAmong answers for is left running, and the skip is logged. Refusing the
-// whole dismiss instead would make a task un-dismissable for as long as the
-// chief stays linked to it, and both the human dismiss and the machine DELETE
-// come through here. A failed chief check also leaves the agent
-// alone (agentIsChief: fail closed); the dismiss itself is unaffected.
+// ⚠ NO LINKED AGENT IS EXEMPT ANY MORE, AND THE EXEMPTION HAD BECOME VACUOUS.
+// A dismiss used to leave the labelled agent running while still dismissing the
+// task. The exemption cannot apply now even in principle: an agent LINKED to a
+// task holds one, so it is not a fleet agent (agents.IsFleetAgent), and there is
+// no label left to protect it. A dismissed task tears its linked agent down.
 func (s *Server) dismissTask(ctx context.Context, id int64) error {
 	// Resolve the task's linked agent (latest) before dismissing it.
 	var linkedAgentID int64
@@ -1314,17 +1312,6 @@ func (s *Server) dismissTask(ctx context.Context, id int64) error {
 			if a, ok := m[id]; ok {
 				linkedAgentID = a.ID
 			}
-		}
-	}
-	if linkedAgentID != 0 {
-		_, chief, err := s.agentIsChief(ctx, linkedAgentID)
-		switch {
-		case err != nil:
-			s.logger.Printf("dismiss task %d: chief check for linked agent %d: %v; leaving the agent running", id, linkedAgentID, err)
-			linkedAgentID = 0
-		case chief:
-			s.logger.Printf("dismiss task %d: linked agent %d is the chief; dismissing the task and leaving the agent running", id, linkedAgentID)
-			linkedAgentID = 0
 		}
 	}
 	if err := s.ext.Notes.SoftDelete(ctx, id); err != nil {
@@ -1588,7 +1575,7 @@ func (s *Server) handleAPITaskStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	status := strings.TrimSpace(body.Status)
 	ctx := r.Context()
-	// 🔴 AN AGENT CALLER — the chief included, asserting its name through the
+	// 🔴 AN AGENT CALLER — the agent included, asserting its name through the
 	// service credential — obeys the ONE agent rule (agentStatusRefusal): never
 	// into complete, never out of it, the latter decided by the row itself
 	// (notes.ForAgent). The operator's hook token, a personal token and an
@@ -2136,7 +2123,7 @@ func (s *Server) renderNotesPanel(w http.ResponseWriter, r *http.Request) {
 }
 
 // actorIsAgent reports whether a service caller's asserted name is one of the
-// principal's agents (its slug or its display name — the chief asserts
+// principal's agents (its slug or its display name — the agent asserts
 // either). A list that cannot be read answers true: the agent rule is the
 // stricter one, so it fails closed.
 func (s *Server) actorIsAgent(ctx context.Context, actor string) bool {

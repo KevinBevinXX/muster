@@ -17,7 +17,9 @@ type answersStore struct {
 	asks []attention.Ask
 }
 
-func (s answersStore) AnswersForTask(context.Context, int64) ([]attention.Ask, error) { return s.asks, nil }
+func (s answersStore) AnswersForTask(context.Context, int64) ([]attention.Ask, error) {
+	return s.asks, nil
+}
 
 // TestOwnerAnswerChecksTaskOwnerAndWordsItself: ownerAnswer does not trust its
 // store to have filtered. Owner 7, task 41, words W: an ask of another task,
@@ -44,7 +46,7 @@ func TestOwnerAnswerChecksTaskOwnerAndWordsItself(t *testing.T) {
 		if c.ok != (why == "") || (c.ok && got.ID != c.ask.ID) {
 			t.Errorf("%s: got ask %d, refusal %q; want ok=%v", c.name, got.ID, why, c.ok)
 		}
-		if !c.ok && why != chiefDispatchInstructionsUnsourced {
+		if !c.ok && why != taskDispatchInstructionsUnsourced {
 			t.Errorf("%s: refusal %q", c.name, why)
 		}
 	}

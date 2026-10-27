@@ -1108,7 +1108,7 @@ func (a *Adapter) ensureGatewaySecret(ctx context.Context, ag agents.Agent) (age
 // able to disagree — a supervisor told it holds a read+write key it does not have
 // reports a working subsystem as broken. What makes that impossible is that both
 // answers come from [agentspec.Config.CairnConfigured]: this function passes it to
-// ChiefInstructions, and agentspec's own gate calls the same method when it decides
+// SupervisorInstructions, and agentspec's own gate calls the same method when it decides
 // whether to place the client and the credential. The hazard is a SECOND
 // EXPRESSION — `cfg.CairnURL != ""` in one place and the method in the other, which
 // disagree for every half-configured input. Two guards pin it, both behavioural:
@@ -1132,14 +1132,18 @@ func (a *Adapter) buildSpec(ctx context.Context, ag agents.Agent) (provision.Spe
 	case agents.KindClaudeCode:
 		return a.buildClaudeCodeSpec(ag, cfg, a.jobBypassVeto(ctx, ag, cfg))
 	}
-	if !agents.IsChiefName(ag.Name) {
+	// 🔴 THE PROSE FOLLOWS THE AGENT'S SHAPE, NOT A RESERVED NAME. An agent with
+	// a task or a repository is a worker and is told so; one with neither works on
+	// the fleet and gets the supervisor prose (agents.IsFleetAgent). muster has no
+	// privileged agent, so nothing here reads a label or a rank.
+	if !agents.IsFleetAgent(ag) {
 		return agentspec.Build(ag, cfg, agentspec.Options{
 			Instructions: agentspec.WorkerInstructions,
 		})
 	}
 	store := cfg.CairnConfigured()
 	return agentspec.Build(ag, cfg, agentspec.Options{
-		Instructions:  agentspec.ChiefInstructions(store, cfg.Plugins),
+		Instructions:  agentspec.SupervisorInstructions(store, cfg.Plugins),
 		CairnEligible: true,
 	})
 }
@@ -1153,39 +1157,56 @@ func (a *Adapter) buildSpec(ctx context.Context, ag agents.Agent) (provision.Spe
 // describing tools the instance does not have. A worker's task reaches it as its
 // kickoff turn. A claude-code worker prose is its own change.
 //
-// 🔴 THE CHIEF (the reserved slug) GETS ChiefInstructionsClaudeCode AND IS NEVER
+// 🔴 A FLEET AGENT GETS SupervisorInstructionsClaudeCode AND IS NEVER
 // CairnEligible. The subsystem-store client is a Python program installed by an
 // Init step, and a claude-code spec carries no Init (the image's apt list has no
 // python3 either); the instance's network policy admits public 443 only, so the
 // store would be out of reach regardless — the credential would
 // be a secret placed for nothing, and agentspec refuses CairnEligible for this
 // kind anyway. When the deployment HAS a store configured that is a capability the
-// gateway chief would have had, so it is said in the log rather than dropped
+// gateway fleet agent would have had, so it is said in the log rather than dropped
 // silently.
 //
-// 🔴 A CHIEF WITH NO MCP SERVER IS REFUSED. Every tool its prose names is an MCP
-// tool, and without [agentspec.Config.ClaudeCodeMCPOffered] ccd registers no
-// server: the chief would boot with no muster tools and a prompt promising them.
+// 🔴 WITH NO MCP SERVER IT IS BUILT AS A WORKER, NOT REFUSED — AND THE DIFFERENCE
+// MATTERS BECAUSE THE SHAPE RULE WIDENED WHO ASKS. Every tool the supervisor
+// prose names is an MCP tool, and without
+// [agentspec.Config.ClaudeCodeMCPOffered] ccd registers no server, so that prose
+// would promise tools the pod does not have. Upstream REFUSED the spec here,
+// which was safe when only the RESERVED SLUG could reach this branch: nothing
+// else was ever built as a supervisor. The question is now the agent's SHAPE
+// (no task, no repository), so an ORDINARY dispatched agent that happens to hold
+// neither reaches it — and refusing would make every such agent unprovisionable
+// on a deployment with no MCP door, which is how this was first caught
+// (TestAStartedAgentsStoredStatusFollowsItsReadyInstance went to status `error`
+// on its claude-code half). Falling back to the worker prose keeps the
+// invariant that actually matters — the prose matches the tools the pod has —
+// and the agent still starts.
 //
-// jobBypassVeto is Adapter.jobBypassVeto's answer for a worker; a chief is never
-// listed for bypass (agentspec.JobBypassListed), so it is unused there.
+// jobBypassVeto is Adapter.jobBypassVeto's answer for a worker; a fleet agent is
+// never listed for bypass (agentspec.JobBypassListed), so it is unused there.
 func (a *Adapter) buildClaudeCodeSpec(ag agents.Agent, cfg agentspec.Config, jobBypassVeto string) (provision.Spec, error) {
-	if !agents.IsChiefName(ag.Name) {
+	if !agents.IsFleetAgent(ag) {
 		return agentspec.Build(ag, cfg, agentspec.Options{JobBypassVeto: jobBypassVeto})
 	}
 	if !cfg.ClaudeCodeMCPOffered() {
-		return provision.Spec{}, fmt.Errorf("agentprovision: chief %q is kind %s, which reaches muster's tools only "+
-			"over its MCP server, and this deployment offers none (MUSTER_AGENT_CONNECT_URL is unset)", ag.Name, agents.KindClaudeCode)
+		a.log.Printf("agentprovision: agent %q holds no task and no repository, but this deployment offers no MCP "+
+			"server (MUSTER_AGENT_CONNECT_URL is unset), which is the only way a %s agent reaches muster's tools: "+
+			"building it with the WORKER instructions, so its prose does not promise tools it has no door to",
+			ag.Name, agents.KindClaudeCode)
+		return agentspec.Build(ag, cfg, agentspec.Options{JobBypassVeto: jobBypassVeto})
 	}
 	if cfg.CairnConfigured() {
-		a.log.Printf("agentprovision: chief %q is kind %s: the subsystem store (cairn) is configured but is SKIPPED "+
+		a.log.Printf("agentprovision: fleet agent %q is kind %s: the subsystem store (cairn) is configured but is SKIPPED "+
 			"for this kind — the client is not in its image and its network policy cannot reach the store", ag.Name, agents.KindClaudeCode)
 	}
-	opts := agentspec.Options{Instructions: agentspec.ChiefInstructionsClaudeCode(cfg.Plugins)}
-	// The gateway runtime beside ccd, for the chief's sessions on it
-	// (agentspec/chief_sidecar.go). Start re-applies the spec, so a deployment
-	// turning this on reaches a running chief on its next Stop→Start.
-	if cfg.ChiefGatewaySidecar {
+	opts := agentspec.Options{Instructions: agentspec.SupervisorInstructionsClaudeCode(cfg.Plugins)}
+	// The gateway runtime beside ccd, for the agent's sessions on it
+	// (agentspec/gateway_sidecar.go). Start re-applies the spec, so a deployment
+	// turning this on reaches a running agent on its next Stop→Start.
+	// ⚠ ALREADY INSIDE THE FLEET BRANCH, so the shape is not re-asked: the
+	// sidecar exists for the chat sessions a fleet agent hosts, and a worker's
+	// pod would carry a second container it never uses.
+	if cfg.GatewaySidecarEnabled {
 		opts.GatewaySidecar = &agentspec.GatewaySidecar{}
 	}
 	return agentspec.Build(ag, cfg, opts)
@@ -1220,14 +1241,14 @@ func (a *Adapter) specFor(ctx context.Context, ag agents.Agent) (agentspec.Confi
 			return cfg, fmt.Errorf("agentprovision: agent %q: Claude account %q of its owner: %w", ag.Name, ag.CCAccount, err)
 		}
 		cfg.ClaudeCode.Accounts[ag.CCAccount] = tok
-		// A chief running the gateway runtime beside ccd needs its owner's
-		// OpenRouter key for that runtime. Without one the chief still starts —
+		// An agent running the gateway runtime beside ccd needs its owner's
+		// OpenRouter key for that runtime. Without one the agent still starts —
 		// its Claude Code sessions do not need it — and its gateway sessions fail
 		// at the model call, naming the provider; that is said here too.
-		if cfg.ChiefGatewaySidecar && agents.IsChiefName(ag.Name) {
+		if cfg.GatewaySidecarEnabled && agents.IsFleetAgent(ag) {
 			key, err := a.creds.OpenRouterKey(ctx, ag.OwnerID)
 			if err != nil {
-				a.log.Printf("agentprovision: chief %q: no OpenRouter key of its owner for the gateway runtime beside it "+
+				a.log.Printf("agentprovision: agent %q: no OpenRouter key of its owner for the gateway runtime beside it "+
 					"(%v); its gateway sessions will fail at the model call", ag.Name, err)
 			} else {
 				cfg.OpenRouterAPIKey = key

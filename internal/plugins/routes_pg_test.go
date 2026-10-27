@@ -20,7 +20,7 @@ var target = RouteTarget{Kind: "mirror", Key: "0b2c3d4e-5f60-4718-8a9b-0c1d2e3f4
 
 func (w draftWorld) route(t *testing.T, m Message) Route {
 	t.Helper()
-	r, err := w.s.CreateRoute(session(2), w.chief.ID, 2, m.ID, target, time.Hour)
+	r, err := w.s.CreateRoute(session(2), w.target.ID, 2, m.ID, target, time.Hour)
 	if err != nil {
 		t.Fatalf("route %d: %v", m.ID, err)
 	}
@@ -54,7 +54,7 @@ func TestARoutedAnswerFromAnAllowlistedSenderIsRelayedApprovedAndClaimedOnce(t *
 	if err != nil || !fresh || a.State != RouteAnswered || a.ReplyBody != "Noon works for us." {
 		t.Fatalf("answer: %+v %v %v", a, fresh, err)
 	}
-	got, d, err := w.s.RelayRoute(session(2), r.RouteID, w.chief.Name, true)
+	got, d, err := w.s.RelayRoute(session(2), r.RouteID, w.target.Name, true)
 	if err != nil || got.State != RouteRelayed || d.Status != DraftApproved || d.ApprovedAt == nil || got.DraftID == nil || *got.DraftID != d.ID {
 		t.Fatalf("relay: %+v / %+v / %v", got, d, err)
 	}
@@ -64,7 +64,7 @@ func TestARoutedAnswerFromAnAllowlistedSenderIsRelayedApprovedAndClaimedOnce(t *
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_, again, err := w.s.RelayRoute(session(2), r.RouteID, w.chief.Name, true)
+			_, again, err := w.s.RelayRoute(session(2), r.RouteID, w.target.Name, true)
 			if err != nil || again.ID != d.ID {
 				t.Errorf("a repeated relay: draft %d, %v; want the same draft %d", again.ID, err, d.ID)
 			}
@@ -100,7 +100,7 @@ func TestANonAllowlistedAnswerFallsBackToAPendingDraft(t *testing.T) {
 	if _, _, err := w.s.AnswerRoute(session(2), r.RouteID, "Let me check."); err != nil {
 		t.Fatal(err)
 	}
-	got, d, err := w.s.RelayRoute(session(2), r.RouteID, w.chief.Name, false)
+	got, d, err := w.s.RelayRoute(session(2), r.RouteID, w.target.Name, false)
 	if err != nil || got.State != RouteFallback || d.Status != DraftPending || d.ApprovedAt != nil {
 		t.Fatalf("relay: %+v / %+v / %v", got, d, err)
 	}
@@ -144,16 +144,16 @@ func TestARouteRefusesWhatTheChiefMayNotRoute(t *testing.T) {
 		t.Fatalf("a message not delivered to this agent: %v", err)
 	}
 	noReply := w.delivered(t, "m-noreply", true)
-	if _, err := w.s.CreateRoute(session(2), w.chief.ID, 2, noReply.ID, target, time.Hour); !errors.Is(err, ErrNoReply) {
+	if _, err := w.s.CreateRoute(session(2), w.target.ID, 2, noReply.ID, target, time.Hour); !errors.Is(err, ErrNoReply) {
 		t.Fatalf("a no_reply message: %v", err)
 	}
 	w.route(t, w.m)
-	if _, err := w.s.CreateRoute(session(2), w.chief.ID, 2, w.m.ID, target, time.Hour); !errors.Is(err, ErrAlreadyRouted) {
+	if _, err := w.s.CreateRoute(session(2), w.target.ID, 2, w.m.ID, target, time.Hour); !errors.Is(err, ErrAlreadyRouted) {
 		t.Fatalf("a second open route: %v", err)
 	}
 	inflight := w.delivered(t, "m-inflight", false)
 	w.approve(t, w.file(t, inflight, "already answered"))
-	if _, err := w.s.CreateRoute(session(2), w.chief.ID, 2, inflight.ID, target, time.Hour); !errors.Is(err, ErrReplyInFlight) {
+	if _, err := w.s.CreateRoute(session(2), w.target.ID, 2, inflight.ID, target, time.Hour); !errors.Is(err, ErrReplyInFlight) {
 		t.Fatalf("a message with a reply in flight: %v", err)
 	}
 }
@@ -190,7 +190,7 @@ func TestARouteTimesOutOnlyPastItsDeadlineAndThenTakesNoAnswer(t *testing.T) {
 	if _, _, err := w.s.AnswerRoute(session(2), r.RouteID, "late"); !errors.Is(err, ErrRouteClosed) {
 		t.Fatalf("an answer after the timeout: %v", err)
 	}
-	if _, _, err := w.s.RelayRoute(session(2), r.RouteID, w.chief.Name, true); !errors.Is(err, ErrRouteNotAnswered) {
+	if _, _, err := w.s.RelayRoute(session(2), r.RouteID, w.target.Name, true); !errors.Is(err, ErrRouteNotAnswered) {
 		t.Fatalf("a relay after the timeout: %v", err)
 	}
 	// The message can be routed again once its route is closed.
@@ -208,8 +208,8 @@ func TestARelayThatCannotBeMadeFailsTheRoute(t *testing.T) {
 	if _, _, err := w.s.AnswerRoute(session(2), r.RouteID, "From the session."); err != nil {
 		t.Fatal(err)
 	}
-	w.approve(t, w.file(t, w.m, "From the chief meanwhile."))
-	got, d, err := w.s.RelayRoute(session(2), r.RouteID, w.chief.Name, true)
+	w.approve(t, w.file(t, w.m, "From the target meanwhile."))
+	got, d, err := w.s.RelayRoute(session(2), r.RouteID, w.target.Name, true)
 	if !errors.Is(err, ErrRouteClosed) || got.State != RouteFailed || d.ID != 0 || got.Error == "" {
 		t.Fatalf("relay: %+v / %+v / %v", got, d, err)
 	}

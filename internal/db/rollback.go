@@ -83,7 +83,7 @@ const sendQueueMigrationVersion = 19
 // and under the same row-level security; same treatment again.
 const agentFocusMigrationVersion = 20
 
-// sessionRoutesMigrationVersion is 0021: session_routes (the chief's routed plugin messages), owned
+// sessionRoutesMigrationVersion is 0021: session_routes (the agent's routed plugin messages), owned
 // and under the same row-level security; same treatment again.
 const sessionRoutesMigrationVersion = 21
 
