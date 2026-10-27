@@ -154,7 +154,7 @@ func (s *Server) reapStoppedAgents(ctx context.Context) int {
 		case err == nil:
 		case errors.Is(err, errDestroyNotClaimed):
 			// A lost claim is another pod's reap or a Start. (No agent is exempt
-			// from the reaper any more: the labelled `agent` used to be skipped
+			// from the reaper any more: the labelled `chief` used to be skipped
 			// silently here, because the destroy would refuse it on every pass.)
 			continue
 		default:

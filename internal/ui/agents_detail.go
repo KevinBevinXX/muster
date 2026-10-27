@@ -71,7 +71,7 @@ const (
 	// ChatSurfacePage is a standalone document — AgentDetailPage or OperatorPage.
 	//
 	// 🔴 IT IS THE ONLY SURFACE LEFT. There was a second, "agent-panel": a
-	// slide-out in the home shell wired to whichever agent carried the `agent`
+	// slide-out in the home shell wired to whichever agent carried the `chief`
 	// label. muster has no privileged agent, so the panel had no subject and was
 	// removed with it; every agent is reached through its own detail page. The
 	// type is kept because every construction site already sets it and a future

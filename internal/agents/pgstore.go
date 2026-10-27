@@ -174,7 +174,7 @@ func (s *PGStore) LastMessageByAgentIDs(ctx context.Context, ids []int64) (map[i
 // ledger this reads.
 //
 // ⚠ THE LEDGER IS ONLY EVER READ HERE. Nothing refuses an INSERT of a retired
-// name, deliberately (migration 0002 says why: `agent` is provisioned with a
+// name, deliberately (migration 0002 says why: `chief` is provisioned with a
 // hand-set name and a refusal would make re-provisioning it impossible). So this
 // closes the AUTO-GENERATED path and no other.
 //

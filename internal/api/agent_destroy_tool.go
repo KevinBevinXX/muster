@@ -128,7 +128,7 @@ func (s *Server) toolAgentDestroy(ctx context.Context, c toolCaller, arguments s
 	}
 	from := c.asker.MirrorHost + "/" + c.asker.MirrorSession
 	destroy := func(ctx context.Context, id int64) error { return s.ext.Provisioner.Destroy(ctx, id) }
-	// 🔴 NO AGENT IS EXEMPT. This used to refuse the labelled `agent` and point
+	// 🔴 NO AGENT IS EXEMPT. This used to refuse the labelled `chief` and point
 	// the caller at `muster agent replace`; there is no privileged agent and no
 	// such command.
 	if _, err = s.destroyAgent(ctx, a.ID, destroy, destroyHooks{done: s.reopenTaskAfterDestroy}); err != nil {

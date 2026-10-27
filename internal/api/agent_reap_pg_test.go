@@ -222,14 +222,14 @@ func (f *reapAPIFixture) destroyedOnly(t *testing.T, watch []int64, want ...int6
 // with a stopped_at 15 days old unless noted — a stopped one on a task (due), a
 // stopped one 13 days old, a running one and an errored one (stopped, aged,
 // then moved on, so status is the only difference), and two STANDING agents
-// (user 1's own, and the member's agent labelled `agent`), both stopped and
+// (user 1's own, and the member's agent labelled `chief`), both stopped and
 // aged. One pass: Destroy runs for every aged, stopped agent — the two standing
 // ones included — the due agent's task is kept, and the log names its reap. A
 // second pass destroys nothing more.
 //
 // 🔴 THE TWO STANDING AGENTS USED TO BE THE EXEMPTIONS THIS TEST PINNED, and
 // their inversion is the point. The reaper skipped whichever agent held the
-// reserved `agent` slug or carried the `agent` display name, silently and on
+// reserved `chief` slug or carried the `chief` display name, silently and on
 // every pass. muster has no privileged agent, so STOPPED AND AGED is the whole
 // rule: what keeps an agent is being young, running or errored, never what it
 // is called.

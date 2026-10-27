@@ -35,11 +35,11 @@ func TestTheIdleSectionFollowsTheServersClockAndTheLiveRefresh(t *testing.T) {
 	s.now = func() time.Time { return now }
 	s.ext.AgentsIdleAfter = 14 * 24 * time.Hour
 	fm := s.ext.Mirror.(*fakeMirror)
-	mainID, agentID := "mirror-b0a314c33976", "mirror-dd10d8b1345a"
+	mainID, chiefID := "mirror-b0a314c33976", "mirror-dd10d8b1345a"
 
 	for _, path := range []string{"/agents", "/ui/agents"} {
 		ids, head := idleCardIDs(getOwed(t, s, h, path).Body.String())
-		want := []string{"agent-5", mainID, "agent-7", agentID}
+		want := []string{"agent-5", mainID, "agent-7", chiefID}
 		if strings.Join(ids, ",") != strings.Join(want, ",") || head != "4" {
 			t.Errorf("%s: idle cards %v with count %q, want %v with count 4 (pinned agent-6 never idle)", path, ids, head, want)
 		}
@@ -51,21 +51,21 @@ func TestTheIdleSectionFollowsTheServersClockAndTheLiveRefresh(t *testing.T) {
 	fm.mu.Unlock()
 	body := getOwed(t, s, h, "/ui/agents").Body.String()
 	ids, head := idleCardIDs(body)
-	if strings.Join(ids, ",") != "agent-5,agent-7,"+agentID || head != "3" {
-		t.Errorf("after main:@1 became active: idle cards %v with count %q, want [agent-5 agent-7 %s] with 3", ids, head, agentID)
+	if strings.Join(ids, ",") != "agent-5,agent-7,"+chiefID || head != "3" {
+		t.Errorf("after main:@1 became active: idle cards %v with count %q, want [agent-5 agent-7 %s] with 3", ids, head, chiefID)
 	}
 	if order := listArticle.FindAllStringSubmatch(body, 2); len(order) < 2 || order[1][1] != mainID {
 		t.Errorf("the reactivated window is not drawn right after the pinned agent: %v", order)
 	}
 
-	// Boundary: agent:@2 (t0+2h) idle EXACTLY 14 days is not idle; a second more is.
+	// Boundary: chief:@2 (t0+2h) idle EXACTLY 14 days is not idle; a second more is.
 	chiefAt := time.Unix(fm.windows[1].Activity, 0)
 	now = chiefAt.Add(14 * 24 * time.Hour)
-	if ids, _ := idleCardIDs(getOwed(t, s, h, "/ui/agents").Body.String()); strings.Contains(strings.Join(ids, ","), agentID) {
+	if ids, _ := idleCardIDs(getOwed(t, s, h, "/ui/agents").Body.String()); strings.Contains(strings.Join(ids, ","), chiefID) {
 		t.Errorf("a window idle exactly the threshold is in the section: %v", ids)
 	}
 	now = now.Add(time.Second)
-	if ids, _ := idleCardIDs(getOwed(t, s, h, "/ui/agents").Body.String()); !strings.Contains(strings.Join(ids, ","), agentID) {
+	if ids, _ := idleCardIDs(getOwed(t, s, h, "/ui/agents").Body.String()); !strings.Contains(strings.Join(ids, ","), chiefID) {
 		t.Errorf("a window idle the threshold and a second is not in the section: %v", ids)
 	}
 

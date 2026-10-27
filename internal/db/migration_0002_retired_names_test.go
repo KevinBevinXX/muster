@@ -368,7 +368,7 @@ func TestRetiredNameTombstoneIsSearchPathProof(t *testing.T) {
 // refuse the insert.
 //
 // 🔴 IT IS A DECISION, NOT AN OMISSION, and it is the reason 0002 guards the
-// GENERATOR rather than the table. The reserved `agent` agent is provisioned
+// GENERATOR rather than the table. The reserved `chief` agent is provisioned
 // with a hand-set name (internal/api/chief_provision.go), so a BEFORE INSERT
 // refusal on a retired name would make destroying and re-provisioning agent
 // impossible with no override — an outage in exchange for a property the

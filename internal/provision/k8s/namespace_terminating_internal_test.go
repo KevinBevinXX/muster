@@ -15,8 +15,8 @@ import (
 )
 
 // The re-create-after-destroy case: an instance created under a name whose
-// previous namespace is still terminating (the agent replacement deletes `agent`
-// and creates `agent` at once).
+// previous namespace is still terminating (a replacement deletes `chief`
+// and creates `chief` at once).
 //
 // ⚠ THE FAKE CLIENTSET HAS NO NAMESPACE LIFECYCLE: it neither finalizes a
 // namespace nor refuses writes into a terminating one. So these tests build the

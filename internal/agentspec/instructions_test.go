@@ -364,7 +364,15 @@ func TestNoTextReachesTheSupervisorPromptWithoutAPin(t *testing.T) {
 		{
 			name: "supervisorIdentityClaudeCode",
 			text: supervisorIdentityClaudeCode,
-			want: "b6bb364754ec14646aac5c1789b750df82b3cccf564b88702d709f12749aa5de",
+			// Re-recorded with the chief's removal. Two edits, both read and
+			// confirmed to carry no private detail: the opening said "muster's
+			// chief", which named a role that no longer exists; and the tools
+			// paragraph claimed the agent "is offered tools no other agent is",
+			// which became FALSE when the chief-only axis went — every tool is
+			// offered to every agent, scoped by owner. A prompt that promises
+			// exclusivity it does not have is the kind of thing this pin exists
+			// to make visible.
+			want: "833758b66e85f0a325c4787101c88a1d06749c2505edf8d4ffa050739bd6fc38",
 			min:  1000,
 		},
 		{

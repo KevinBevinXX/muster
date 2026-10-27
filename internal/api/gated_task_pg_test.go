@@ -23,7 +23,7 @@ import (
 
 // gatedFixture is the connector fixture (real Postgres, real /mcp door) with the
 // task store and the plugin store wired, and a FRESH member owning an agent and a
-// worker — fresh so no other test's agent labelled "agent" can outrank this one
+// worker — fresh so no other test's agent labelled "chief" can outrank this one
 // in chiefPredicate's lowest-id rule.
 type gatedFixture struct {
 	*connFixture

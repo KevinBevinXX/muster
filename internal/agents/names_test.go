@@ -303,7 +303,7 @@ func TestTheDiscriminatorCeilingIsDerivedFromProvisionRef(t *testing.T) {
 // undiscriminated and discriminated, against the two validators that decide
 // whether a name can become cluster objects.
 //
-// 🔴 IT ASSERTS STATE, NOT SPELLING. `agent` is refused by identity — the name a
+// 🔴 IT ASSERTS STATE, NOT SPELLING. `chief` is refused by identity — the name a
 // reserved-agent branch compares against — rather than by a rule about dashes
 // that a future pool entry could satisfy while still colliding.
 func TestEveryNameThisGeneratorCanProduceSurvivesItsConsumers(t *testing.T) {

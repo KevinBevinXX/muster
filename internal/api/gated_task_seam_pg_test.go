@@ -120,10 +120,10 @@ func newPluginPlane(t *testing.T, rt http.Handler) *pluginPlane {
 		t.Fatal(err)
 	}
 	// 🔴 THE PLUGIN MUST NAME ITS TARGET. Delivery once resolved the recipient
-	// from the `agent` display name above, so creating the agent was enough; it
+	// from the `chief` display name above, so creating the agent was enough; it
 	// now reads plugins.target_agent_id, and a plugin with none leaves every
 	// message queued (`no_target`). Set here so every test on this plane
-	// delivers to the agent it already calls `agent`.
+	// delivers to the agent it already calls `chief`.
 	if err := ps.SetTargetAgent(owner, p.ID, agent.ID); err != nil {
 		t.Fatal(err)
 	}

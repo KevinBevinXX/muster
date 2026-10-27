@@ -645,7 +645,7 @@ func TestOnlyAMirroredSessionCanDestroyAnAgent(t *testing.T) {
 // TestAgentDestroyDestroysTheOwnersStandingAgent is the other half of the
 // refusal test above, and it exists because the behaviour INVERTED: the owner's
 // standing agent — no task, no repository, the shape that once carried the
-// `agent` label and the deletion protection — is destroyed by the ordinary door
+// `chief` label and the deletion protection — is destroyed by the ordinary door
 // like any other agent of theirs.
 //
 // 🔴 THE PROTECTION WAS NOT MERELY REMOVED, IT WAS UNREACHABLE BY DESIGN. The

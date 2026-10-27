@@ -158,7 +158,7 @@ func (d *draftSeam) mint(uid int64) string {
 //
 // 🔴 THE LINK USED TO BE IMPLICIT IN THE DISPLAY NAME, AND NOW HAS TO BE
 // WRITTEN. Delivery resolved its recipient by label — the lowest-id agent called
-// `agent` — so creating this row was all a test had to do. A plugin now names
+// `chief` — so creating this row was all a test had to do. A plugin now names
 // its target (plugins.target_agent_id), so a fixture that only creates the agent
 // leaves every message QUEUED with reason `no_target`, which is how each of
 // these tests first failed. linkPlugins is called from BOTH ends (here and in

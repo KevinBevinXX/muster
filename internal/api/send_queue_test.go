@@ -174,11 +174,11 @@ func (m *memQueue) all() []sendqueue.Item {
 }
 
 // queueWindows is user 1's per-window host "ws": main:@1 runs Claude Code,
-// agent:@2 is a shell.
+// chief:@2 is a shell.
 func queueWindows() []mirror.Window {
 	return []mirror.Window{
 		{Session: "main", ID: "@1", Index: 0, Active: true, Claude: true},
-		{Session: "agent", ID: "@2", Index: 0, Active: true, Command: "zsh"},
+		{Session: "chief", ID: "@2", Index: 0, Active: true, Command: "zsh"},
 	}
 }
 
@@ -250,7 +250,7 @@ func TestQueueingForAMirrorIsGatedLikeASendAndFailsClosed(t *testing.T) {
 			mirrorQueueForm("main", "@1", "hi"), http.StatusConflict, "read-only"},
 		{"an older muster-mirror", func() *fakeMirror { f := queueMirror(); f.statusReport = false; return f }, false,
 			mirrorQueueForm("main", "@1", "hi"), http.StatusConflict, "does not report whether Claude Code is busy"},
-		{"a shell window", queueMirror, false, mirrorQueueForm("agent", "@2", "hi"), http.StatusConflict, SendQueueNotClaude},
+		{"a shell window", queueMirror, false, mirrorQueueForm("chief", "@2", "hi"), http.StatusConflict, SendQueueNotClaude},
 		{"a window not listed", queueMirror, false, mirrorQueueForm("main", "@9", "hi"), http.StatusConflict, "no longer lists this tmux window"},
 		{"a control character", queueMirror, false, mirrorQueueForm("main", "@1", "a\x1bb"), http.StatusBadRequest, "control character"},
 		{"nothing typed", queueMirror, false, mirrorQueueForm("main", "@1", "  "), http.StatusBadRequest, MirrorSendEmpty},
