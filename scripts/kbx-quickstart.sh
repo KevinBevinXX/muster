@@ -291,9 +291,18 @@ start_mirror() {
   # both on 127.0.0.1), so there is no network to sniff. The flag's own help
   # calls it test-and-local-development only, which is exactly this case. A
   # REMOTE host agent must use https — do not copy this line to one.
+  # PRETTY CARD NAMES. muster labels a mirrored card "<codename>:<active window
+  # index>", and the codename comes from a labels file — a JSON object mapping a
+  # tmux SESSION name to a display name ({"scratch13": "mango"}). Without one the
+  # card reads the raw "<session>:<index>", so one tmux session PER PIECE OF WORK
+  # plus this file is what makes the Agents list readable. Optional: an absent or
+  # invalid file is logged and ignored, never fatal.
+  local labels=()
+  [ -s "$STATE/labels.json" ] && labels=(-labels-file "$STATE/labels.json")
   setsid "$STATE/bin/muster-mirror" \
     -url "http://$LOCAL:$PORT" \
     -allow-http \
+    "${labels[@]+"${labels[@]}"}" \
     -token-file "$STATE/secrets/mirror-token" \
     -host "$(cat "$STATE/secrets/mirror-host" 2>/dev/null || host_label)" \
     -interactive >> "$STATE/log/mirror.log" 2>&1 &
